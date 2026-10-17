@@ -81,7 +81,8 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
-    hold_ungrounded_sql,
+    grant_hold,
+    load_verified_ontology,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -1090,20 +1091,27 @@ class Executor:
             else:
                 raise AskServiceError(err.code, err.detail) from exc
         grant_set = set(self.grantable_tables(space_id=space_id))
+        # wiring.py builds the Executor without warehouse_path. The default
+        # lake is the one the grant check and the served-result gate read.
+        lake = ensure_demo_warehouse(self._warehouse)
         held = None
-        if not resp.abstained:
-            held = hold_ungrounded_sql(
+        rejected: str | None = None
+        # Only SQL is grant-checked. A document answer carries none, and an
+        # empty string is not a rejected query.
+        if not resp.abstained and str(resp.sql_used or "").strip():
+            held, rejected = grant_hold(
                 str(resp.sql_used or ""),
                 question=question,
                 space_id=space_id,
                 session_id=acl.session_id,
-                warehouse=self._warehouse,
+                warehouse=lake,
                 grantable=grant_set,
             )
         if held is not None:
             env = attach_cascade(held, cascade)
             self._store_turn(session_id, space_id, env)
             return env
+        gate_warehouse, gate_ontology = _served_check_inputs(lake)
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -1113,6 +1121,10 @@ class Executor:
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                warehouse=gate_warehouse,
+                ontology=gate_ontology,
+                as_of=datetime_now(),
+                grant_rejected=rejected is not None,
             ),
             cascade,
         )
@@ -1197,6 +1209,17 @@ def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | Non
 _chart_from_rows = chart_from_rows
 
 
+def _served_check_inputs(warehouse: Path | None) -> tuple[Path | None, Any]:
+    """Warehouse file and its verified ontology (None when it does not verify).
+
+    A missing warehouse does not pass. The grain check reads the lake itself,
+    so a lake the demo ontology does not describe is still checked.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None, None
+    return warehouse, load_verified_ontology(warehouse)
+
+
 def map_ask_response_to_envelope(
     resp: AskResponse,
     *,
@@ -1205,8 +1228,18 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    warehouse: Path | None = None,
+    ontology: Any | None = None,
+    as_of: str | None = None,
+    grant_rejected: bool = False,
 ) -> dict[str, Any]:
-    """Map contract Answer-shaped AskResponse into UI envelope."""
+    """Map contract Answer-shaped AskResponse into UI envelope.
+
+    ``grant_rejected`` is SQL the one grant function rejected that the ask
+    route did not refuse outright (a bronze label, an EXPLAIN miss). Nothing
+    probes it, so nothing certifies it: it takes no confident badge. The envelope's own,
+    more specific demotions (scope conflict, shape mismatch) run first.
+    """
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
         assert_envelope_valid,
@@ -1254,10 +1287,20 @@ def map_ask_response_to_envelope(
     gate_finding: str | None = None
     if not refused and not engine_unsure and not resp.abstained:
         raw_name = (badge_raw or "").strip().lower()
-        if raw_name == "generated":
+        if raw_name == "generated" and not grant_rejected:
             from dms_executor.served_gate import served_result_reason
 
-            gate_finding = served_result_reason(str(resp.sql_used or ""))
+            # A missing warehouse or as_of is not a pass and not L2. The
+            # ontology is optional: it adds the many-to-many link check.
+            if warehouse is None or not as_of:
+                gate_finding = "inputs_missing"
+            else:
+                gate_finding = served_result_reason(
+                    str(resp.sql_used or ""),
+                    warehouse=warehouse,
+                    ontology=ontology,
+                    as_of=as_of,
+                )
             gate_passed = gate_finding is None
     unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))
     badge = normalize_badge(
@@ -1375,6 +1418,22 @@ def map_ask_response_to_envelope(
         )
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
+        if grant_rejected and env.get("badge") != "ABSTAIN":
+            # Fail closed. SQL the one grant function rejected was never probed,
+            # so an answer on it carries no confident badge (L0, L1, L2 or
+            # anomalous). Runs after the envelope's own demotions so a scope
+            # conflict or shape mismatch keeps its more specific reason.
+            from dms_executor.gen_path_refuse import customer_abstain_text
+
+            fields["text"] = customer_abstain_text("reconfirm:grant_rejected")
+            fields["assumptions"] = [*assumptions, "GEN-01: reconfirm:grant_rejected"]
+            fields.update(rows=[], chart=None, sql_used=None, drillthrough_token=None)
+            env = build_abstain(
+                reason="reconfirm:grant_rejected",
+                question=question or "",
+                stage="served_gate",
+                **fields,
+            )
     assert_envelope_valid(env)
     return env
 

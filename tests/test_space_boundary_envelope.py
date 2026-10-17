@@ -300,7 +300,12 @@ class FreeRouteCortex:
             answer="Top 3 outbound movements: 726,158.36 / 581,836.43 / 538,201.10.",
             abstained=False,
             badge="generated",  # L2 - the model chose this SQL
-            sql_used=f"SELECT sku, SUM(qty*price) FROM {self.wants_table} LIMIT 3",
+            # SQL the lake binds: SQL the grant function rejects (an EXPLAIN
+            # miss) is never probed and never takes L2.
+            sql_used=(
+                f"SELECT sku, SUM(quantity_kg * unit_cost_myr) AS value_myr "
+                f"FROM {self.wants_table} GROUP BY sku ORDER BY value_myr DESC LIMIT 3"
+            ),
             rows=[
                 {"sku": "SKU-00397", "value_myr": 726158.36},
                 {"sku": "SKU-00183", "value_myr": 581836.43},

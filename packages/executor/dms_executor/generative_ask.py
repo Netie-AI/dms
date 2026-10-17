@@ -61,6 +61,7 @@ from dms_executor.demo_warehouse import (
 )
 from dms_executor.envelope import (
     RESERVED_PARAM_AS_OF,
+    _is_demo_lake_relation,
     _relation_bare,
     _sql_cited_labels,
     asked_calendar_years,
@@ -87,6 +88,7 @@ from dms_executor.ontology import (
     demo_ontology,
     detect_supply_chain_grains,
     missing_join_for_ungranted,
+    table_is_granted,
     try_compile_multi_grain,
 )
 from dms_executor.schema_context import (
@@ -101,7 +103,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
-from dms_executor.served_gate import served_result_reason
+from dms_executor.served_gate import lake_alias_sql, served_result_reason
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
@@ -675,7 +677,191 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
 
 
 def cited_relations(sql: str) -> set[str]:
+    """Bare names of the real tables a query reads. A CTE alias is not one.
+
+    sqlglot scopes decide it. When a query cannot be scoped, every FROM/JOIN
+    name counts, which can only reject more.
+    """
+    scoped = _scoped_tables(sql)
+    if scoped is not None:
+        return scoped
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
+
+
+def _scoped_tables(sql: str) -> set[str] | None:
+    """Real tables by scope, or None when the SQL cannot be scoped.
+
+    A name is a CTE only where an enclosing WITH defines it and the name has
+    no schema. The same name used as a table elsewhere is still that table:
+    inside its own CTE body, in a scope the WITH does not reach, or as
+    ``main.<name>``. A table node no scope claims counts as real.
+    """
+    from sqlglot import exp, parse
+    from sqlglot.optimizer.scope import traverse_scope
+
+    try:
+        trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+        if not all(isinstance(t, exp.Query) for t in trees):
+            return None
+        named: set[str] = set()
+        for tree in trees:
+            claimed: set[int] = set()
+            for scope in traverse_scope(tree):
+                ctes = {_ident_fold(name) for name in scope.cte_sources}
+                for table in scope.tables:
+                    claimed.add(id(table))
+                    name = _ident_fold(table.name)
+                    if not (table.db or table.catalog) and name in ctes:
+                        if not _names_real_table(table, name):
+                            continue
+                    named.add(_table_label(table))
+            named.update(
+                _table_label(t) for t in tree.find_all(exp.Table) if id(t) not in claimed
+            )
+    except Exception:  # noqa: BLE001 - an unscoped query falls back to the strict read
+        return None
+    named.discard("")
+    return named
+
+
+#: DuckDB folds identifier case for ASCII letters only and never trims.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _ident_fold(name: Any) -> str:
+    """An identifier as DuckDB compares it. Python's lower() also folds non-ASCII
+    letters (the Kelvin sign becomes k), which would let a CTE stand for a table."""
+    return str(name or "").translate(_ASCII_LOWER)
+
+
+def _names_real_table(table: Any, name: str) -> bool:
+    """True when a CTE-named reference inside that CTE's own body reads the real table.
+
+    DuckDB binds a CTE's own name inside its body to the table of that name,
+    except in the recursive term of a WITH RECURSIVE, which reads the CTE's
+    working rows. The recursive term is the arm right of the last UNION;
+    everything left of it is the base. Only a plain UNION [ALL] recurses.
+    Outside its body the name is the CTE, and so is a same-named CTE of a
+    WITH nested inside that body.
+    """
+    from sqlglot import exp
+
+    child: Any = table
+    node = table.parent
+    while node is not None:
+        holder = node.args.get("with") if isinstance(node, exp.Expression) else None
+        if (
+            isinstance(holder, exp.With)
+            and child is not holder
+            and any(_ident_fold(c.alias) == name for c in holder.expressions)
+        ):
+            return False
+        if isinstance(node, exp.CTE) and _ident_fold(node.alias) == name:
+            holder = node.parent
+            recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+            body = node.this
+            # Only a plain UNION [ALL] recurses. Under EXCEPT, INTERSECT or
+            # UNION BY NAME, DuckDB binds the name to the table in every arm.
+            if not (
+                recursive and isinstance(body, exp.Union) and not body.args.get("by_name")
+            ):
+                return True
+            ancestor = table.parent
+            while ancestor is not None and ancestor is not body.expression:
+                ancestor = ancestor.parent
+            return ancestor is None
+        child = node
+        node = node.parent
+    return False
+
+
+def _table_label(table: Any) -> str:
+    """The bare name a plain table reference cites. A table function has none."""
+    from sqlglot import exp
+
+    if not isinstance(table.this, exp.Identifier):
+        return ""
+    parts = [str(p) for p in (table.catalog, table.db, table.name) if p]
+    return _relation_bare(".".join(parts))
+
+
+#: Pure row generators. They read no file and no table, so they are not a
+#: reader. Any other table function is one: read_csv, read_text, glob,
+#: duckdb_settings(), pragma_table_info(), ...
+_GENERATORS = frozenset({"range", "generate_series", "unnest"})
+
+
+def _is_generator(node: Any) -> bool:
+    from sqlglot import exp
+
+    if isinstance(node, (exp.GenerateSeries, exp.Unnest)):
+        return True
+    return isinstance(node, exp.Anonymous) and str(node.name).lower() in _GENERATORS
+
+
+_PATH_CHARS = re.compile(r"[/\\:*?]")
+_FILE_EXT = re.compile(r"\.(csv|tsv|txt|json|jsonl|ndjson|parquet|xlsx?|db|duckdb)$", re.I)
+
+
+def _lake_granted(name: str, grantable: set[str]) -> bool:
+    """A demo-lake table is granted by its exact name or its warehouse_ alias.
+
+    The alias runs both ways: the Space grants ``inventory`` and Cortex cites
+    ``warehouse_inventory``, or the grant carries the alias and the SQL the
+    bare name. A qualified upload grant (bronze.alerts) is neither.
+    """
+    prefix = "warehouse_"
+    bare = name[len(prefix) :] if name.startswith(prefix) else name
+    return bool({name, bare, f"{prefix}{bare}"} & grantable)
+
+
+def _reads_files(sql: str, grantable: set[str]) -> bool:
+    """True when a FROM/JOIN source is a table function or a path, not a table.
+
+    Every DuckDB file reader (read_text, read_blob, sniff_csv, read_ndjson,
+    glob, ...) is a table function, and ``FROM 'x.csv'`` is a replacement scan.
+    One structural test replaces a name list that has to grow with DuckDB.
+    A source that is not a plain identifier is never a granted table, unless
+    it is a pure generator (range, generate_series, unnest): a date spine
+    reads nothing. A granted upload may carry its file name as its table
+    name, so an extension alone refuses only when the Space does not grant
+    that exact name.
+    """
+    from sqlglot import exp, parse
+
+    granted = {str(g).strip().lower() for g in grantable}
+    try:
+        trees = parse(sql, read="duckdb")
+    except Exception:  # noqa: BLE001 - the EXPLAIN step owns unparseable SQL
+        return False
+    for tree in trees:
+        if tree is None:
+            continue
+        if any(
+            not ident.quoted and str(ident.this).upper() == "TABLE"
+            for ident in tree.find_all(exp.Identifier)
+        ) or any(not isinstance(cte.this, exp.Query) for cte in tree.find_all(exp.CTE)):
+            # DuckDB's TABLE <name> shorthand reads the table; sqlglot parses it
+            # as a column named TABLE, so no table node would carry the name.
+            return True
+        for lateral in tree.find_all(exp.Lateral):
+            # JOIN LATERAL f(...) and ", LATERAL f(...)" put the function on a
+            # Lateral node, not a Table: query_table('t'), sniff_csv, catalog
+            # functions. A subquery there is read like any other.
+            inner = lateral.this
+            if not isinstance(inner, (exp.Subquery, exp.Select)) and not _is_generator(inner):
+                return True
+        for table in tree.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier):
+                if _is_generator(table.this):
+                    continue
+                return True
+            name = table.name
+            if _PATH_CHARS.search(name):
+                return True
+            if _FILE_EXT.search(name) and name.lower() not in granted:
+                return True
+    return False
 
 
 def validate_compiled_sql(
@@ -691,8 +877,36 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
+    if _reads_files(sql, grantable):
+        return "hostile_sql:file_reader"
+    if _scoped_tables(sql) is None:
+        # sqlglot cannot read it, so the tables it reads are not known (TABLE t
+        # in a UNION arm, EXISTS (PIVOT t ...)). A syntax error still reaches
+        # the repair loop as the engine's own; anything the engine accepts is
+        # not granted on a guess.
+        if warehouse is None or not Path(warehouse).is_file():
+            return "warehouse_missing"
+        con = connect_serving(Path(warehouse))
+        try:
+            con.execute(f"EXPLAIN {lake_alias_sql(sql)}")
+        except Exception as exc:  # noqa: BLE001
+            return f"explain:{type(exc).__name__}"
+        finally:
+            con.close()
+        return "hostile_sql:sql_not_analyzable"
     named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    # A qualified upload grant (bronze.sheet) matches the bare cited sheet
+    # name. A demo-lake table keeps the exact match: bronze.alerts is an
+    # upload and does not open the lake table alerts.
+    missing = {
+        t
+        for t in named
+        if not (
+            _lake_granted(t, grantable)
+            if _is_demo_lake_relation(t)
+            else table_is_granted(t, grantable)
+        )
+    }
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
     # No cited relation. A literal select is the same grant outcome, bare
@@ -710,13 +924,18 @@ def validate_compiled_sql(
         no_table = isinstance(tree, exp.Select) and not any(
             isinstance(node, exp.Table) and node.name for node in tables
         )
-        if no_table and not any(isinstance(node, exp.Func) for node in funcs):
+        # A generator over no table is constants too (a spine of dates).
+        generated = tree is not None and any(
+            _is_generator(node)
+            for node in tree.find_all(exp.GenerateSeries, exp.Unnest, exp.Anonymous)
+        )
+        if no_table and (generated or not any(isinstance(node, exp.Func) for node in funcs)):
             return "ungranted"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     con = connect_serving(Path(warehouse))
     try:
-        con.execute(f"EXPLAIN {sql}")
+        con.execute(f"EXPLAIN {lake_alias_sql(sql)}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
@@ -790,6 +1009,7 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    ladder_rung: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -860,6 +1080,8 @@ def _l2_envelope(
             "checker_version": version,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    if ladder_rung:
+        env["ladder_rung"] = ladder_rung
     return env
 
 
@@ -931,7 +1153,14 @@ def _ladder_retry(
             "step": step,
         }
         if step == "richer_context" and not nxt.get("schema_context"):
-            nxt["schema_context"] = "richer_context"
+            richer = _richer_schema_prompt(
+                question,
+                warehouse=warehouse,
+                ontology=ontology,
+                grantable=grantable,
+            )
+            if richer:
+                nxt["schema_context"] = richer
         try:
             payload = compute(nxt)
         except Exception:  # noqa: BLE001 - one rung failing is not a serve
@@ -981,9 +1210,51 @@ def _ladder_retry(
             ctx=ctx,
             ontology=ontology,
             grantable=grantable,
+            ladder_rung=step,
             _from_ladder=True,
         )
     return None
+
+
+def _richer_schema_prompt(
+    question: str,
+    *,
+    warehouse: Path | None,
+    ontology: Ontology | None,
+    grantable: set[str] | None,
+) -> str:
+    """Catalog prompt for the richer-context rung. Never the placeholder token."""
+    try:
+        from dms_executor.schema_context import build_schema_context, read_catalog
+
+        _fingerprint, schema = read_catalog(warehouse, grantable, "duckdb")
+        built = build_schema_context(
+            question,
+            schema,
+            ontology=ontology,
+            grantable=grantable,
+        )
+        prompt = str(getattr(built, "prompt", "") or "").strip()
+    except Exception:  # noqa: BLE001 - a missing prompt is not the placeholder
+        return ""
+    if not prompt or prompt == "richer_context":
+        return ""
+    return prompt
+
+
+def _cited_ungranted(why: str | None) -> bool:
+    """True for bare ``ungranted`` and for ``ungranted:<demo-lake names>``.
+
+    A bronze sheet name is not this refusal. Scope conflict still owns that
+    SQL, and a qualified upload grant is not a demo-lake miss.
+    """
+    if not isinstance(why, str) or why.split(":", 1)[0] != "ungranted":
+        return False
+    rest = why.split(":", 1)[1] if ":" in why else ""
+    names = [n.strip() for n in rest.split(",") if n.strip()]
+    if not names:
+        return True
+    return any(_is_demo_lake_relation(n) for n in names)
 
 
 def hold_ungrounded_sql(
@@ -995,21 +1266,59 @@ def hold_ungrounded_sql(
     warehouse: Path | None,
     grantable: set[str],
 ) -> dict[str, Any] | None:
-    """Direct refusal when the grant check says the statement cites no relation.
+    """Direct refusal for an ungranted or hostile outcome of the one grant check.
 
-    None means the SQL may keep its badge. The check is ``validate_compiled_sql``.
-    #421 replaces that call. This is not a reconfirm and not a second grant check.
+    Bare ``ungranted`` and ``ungranted:<names>`` both abstain when a missing
+    name is a demo-lake table. The names stay in the grant function and are
+    not copied onto the reply. A bronze sheet label is not this refusal.
+    None means the SQL may keep its badge. #421 replaces that call.
+    This is not a reconfirm and not a second grant check.
     """
-    why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
-    if why != "ungranted":
-        return None
-    return _abstain(
-        question,
-        why,
+    return grant_hold(
+        sql,
+        question=question,
         space_id=space_id,
         session_id=session_id,
-        plan_source=PLAN_SOURCE_OTHER,
-        stage="grant",
+        warehouse=warehouse,
+        grantable=grantable,
+    )[0]
+
+
+def grant_hold(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The refusal (or None) and the one grant function's reason for this SQL.
+
+    A reason that is not None and not refused here (a bronze sheet label, an
+    EXPLAIN miss on a table the lake does not hold) still means the SQL was
+    rejected: the caller must not hand it to a probe that executes SQL.
+    """
+    why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+    # Hostile SQL (file readers, multi-statement, any non-SELECT) is refused
+    # here too, so the served-result probe never runs it in this process.
+    # An EXPLAIN permission denial is the engine saying the SQL reaches for
+    # something outside the lake: the same refusal.
+    hostile = isinstance(why, str) and (
+        why.startswith("hostile_sql:") or why.startswith("explain:PermissionException")
+    )
+    if not hostile and not _cited_ungranted(why):
+        return None, why
+    return (
+        _abstain(
+            question,
+            "hostile_sql" if hostile else "ungranted",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=PLAN_SOURCE_OTHER,
+            stage="grant",
+        ),
+        why,
     )
 
 
@@ -1034,6 +1343,7 @@ def _submit_validated(
     ctx: dict[str, Any] | None = None,
     ontology: Ontology | None = None,
     grantable: set[str] | None = None,
+    ladder_rung: str = "",
     _from_ladder: bool = False,
 ) -> dict[str, Any]:
     finding = served_result_reason(
@@ -1172,6 +1482,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        ladder_rung=ladder_rung,
     )
 
 
@@ -1407,6 +1718,7 @@ def _run_extract_loop(
     dialect: str,
     grantable: set[str],
     declared: Ontology | None,
+    ontology: Ontology | None,
     declared_violations: list[Violation],
     space_id: str | None,
     session_id: str | None,
@@ -1443,6 +1755,8 @@ def _run_extract_loop(
         return None
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        # Product path. The grain check reads the lake, so it runs with or
+        # without a verified ontology (which adds the many-to-many check).
         return _submit_validated(
             sql,
             question=question,
@@ -1457,7 +1771,7 @@ def _run_extract_loop(
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
             compute=compute,
             ctx=ctx,
-            ontology=declared,
+            ontology=ontology,
             grantable=grantable,
         )
 
@@ -1858,6 +2172,7 @@ def maybe_generative_ask(
                         dialect=dialect,
                         grantable=allowed,
                         declared=declared,
+                        ontology=onto,
                         declared_violations=declared_violations,
                         space_id=space_id,
                         session_id=session_id,
