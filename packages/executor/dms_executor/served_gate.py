@@ -242,7 +242,13 @@ def _fanout(tree: exp.Query, path: Path) -> str | None:
     aggregate is checked on the rows it returns.
     """
     for select in tree.find_all(exp.Select):
-        if _in_recursive_cte(select) or _correlated(select):
+        if _in_recursive_cte(select):
+            continue
+        if _correlated(select):
+            # Not probed on its own. One that adds up over a join cannot be
+            # shown to stay at its grain, so it is not certified.
+            if select.args.get("joins") and any(map(_counts_rows, _select_aggs(select))):
+                raise _Unprobed("correlated_join")
             continue
         found = _select_fanout(select, path)
         if found:
@@ -272,6 +278,12 @@ def _select_fanout(select: exp.Select, path: Path) -> str | None:
     targets = [node for node in _select_aggs(select) if _counts_rows(node)]
     if not targets:
         return None
+    if any(
+        isinstance(node, exp.Subquery) and not isinstance(node.this, exp.Query)
+        for node in _sources(select)
+    ):
+        # FROM (a JOIN b): a parenthesised join list maps to no source.
+        raise _Unprobed("parenthesised_join")
     sources = _source_map(select)
     if not sources or select.args.get("from") is None:
         return None
@@ -543,7 +555,8 @@ def _all_aliases(select: exp.Select) -> set[str]:
 def _correlated(select: exp.Select) -> bool:
     """A subquery that reads a column of an enclosing query.
 
-    Its FROM cannot be probed on its own; it is not checked (a named gap).
+    Its FROM cannot be probed on its own. One that adds up over a join is
+    not certified (_fanout); any other is not checked (a named gap).
     """
     if select.parent is None:
         return False

@@ -817,16 +817,22 @@ def _lake_granted(name: str, grantable: set[str]) -> bool:
     return bool({name, bare, f"{prefix}{bare}"} & grantable)
 
 
-def _invisible_format_char(sql: str) -> bool:
-    """A Unicode format character (category Cf) anywhere in the SQL.
+#: sqlglot splits names at these; DuckDB keeps them inside a name, so
+#: ``zz<U+2028>`` reads as granted ``zz`` to the syntax tree only.
+_SPLIT_DIFFERENTLY = frozenset({"\u0085", "\u1680", "\u2028", "\u2029"})
 
-    DuckDB skips U+200B, U+2060 and U+FEFF as whitespace; sqlglot reads them
-    as part of a name, so ``FROM<U+200B>alerts`` is a column alias to every
-    sqlglot-based check while DuckDB reads the table.
+
+def _invisible_format_char(sql: str) -> bool:
+    """A character the syntax tree and DuckDB read differently, anywhere in the SQL.
+
+    DuckDB skips U+200B, U+2060 and U+FEFF (category Cf) as whitespace;
+    sqlglot reads them as part of a name, so ``FROM<U+200B>alerts`` is a
+    column alias to every sqlglot-based check while DuckDB reads the table.
+    Four separators go the other way (_SPLIT_DIFFERENTLY).
     """
     import unicodedata
 
-    return any(unicodedata.category(ch) == "Cf" for ch in sql)
+    return any(unicodedata.category(ch) == "Cf" or ch in _SPLIT_DIFFERENTLY for ch in sql)
 
 
 #: Plan names of the table functions that only generate rows.

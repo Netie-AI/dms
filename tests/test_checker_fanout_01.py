@@ -2711,3 +2711,56 @@ def test_a_child_boolean_count_is_kept(tmp_path: Path) -> None:
     ):
         why = served_result_reason(sql, warehouse=db, as_of="2026-10-16T00:00:00Z")
         assert why is None, (sql, why)
+
+
+@pytest.mark.parametrize("mark", ["\u0085", " ", " ", " "])
+def test_a_separator_duckdb_keeps_in_a_name_cannot_hide_a_table(tmp_path: Path, mark: str) -> None:
+    """sqlglot splits zz<mark> into the granted zz; DuckDB reads the table zz<mark>."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(
+        tmp_path,
+        "split.duckdb",
+        "CREATE TABLE zz AS SELECT 1 AS n",
+        f'CREATE TABLE "zz{mark}" AS SELECT 1 AS n FROM range(9)',
+    )
+    for sql in (f"SELECT COUNT(*) AS n FROM zz{mark} t", f"SELECT * FROM zz{mark} LIMIT 0"):
+        why = validate_compiled_sql(sql, grantable={"zz", "inventory"}, warehouse=db)
+        assert why == "hostile_sql:sql_not_analyzable", (repr(sql), why)
+
+
+_UNPROBED_JOINS = {
+    "paren_join": (
+        "SELECT SUM(i.quantity_kg) AS kg FROM (inventory i JOIN transactions t ON t.sku = i.sku)"
+    ),
+    "paren_join_grouped": (
+        "SELECT i.category AS category, SUM(i.quantity_kg) AS kg "
+        "FROM (inventory i JOIN transactions t ON t.sku = i.sku) GROUP BY i.category"
+    ),
+    "correlated_join": (
+        "SELECT i.sku AS sku, (SELECT SUM(i2.quantity_kg) FROM inventory i2 "
+        "JOIN transactions t ON t.sku = i2.sku WHERE i2.sku = i.sku) AS kg FROM inventory i"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_UNPROBED_JOINS))
+def test_a_join_the_probe_cannot_place_is_not_certified(gate_lake: Path, name: str) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    why = served_result_reason(
+        _UNPROBED_JOINS[name], warehouse=gate_lake, as_of="2026-10-16T00:00:00Z"
+    )
+    assert why == "grain_unprobed", (name, why)
+
+
+def test_a_correlated_count_without_a_join_and_a_derived_table_are_kept(gate_lake: Path) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    for sql in (
+        "SELECT l.location_id, (SELECT COUNT(*) FROM alerts a "
+        "WHERE a.location_id = l.location_id) AS n FROM locations l",
+        "SELECT SUM(x.kg) AS kg FROM (SELECT quantity_kg AS kg FROM inventory) x",
+    ):
+        why = served_result_reason(sql, warehouse=gate_lake, as_of="2026-10-16T00:00:00Z")
+        assert why is None, (sql, why)
