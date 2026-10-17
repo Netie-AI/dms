@@ -1228,11 +1228,13 @@ def _richer_schema_prompt(
         from dms_executor.schema_context import build_schema_context, read_catalog
 
         _fingerprint, schema = read_catalog(warehouse, grantable, "duckdb")
+        # A re-render for one rung. Catalog records belong to a schema build.
         built = build_schema_context(
             question,
             schema,
             ontology=ontology,
             grantable=grantable,
+            note_unsure=False,
         )
         prompt = str(getattr(built, "prompt", "") or "").strip()
     except Exception:  # noqa: BLE001 - a missing prompt is not the placeholder

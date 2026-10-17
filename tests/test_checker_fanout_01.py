@@ -627,8 +627,13 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         )
         assert res.status_code == 200, res.text
         body = res.json()
-        if route == "generated" or via_ask:
+        if route == "generated" or (via_ask and route != "cloop_b"):
             assert cortex.asks, route
+        if route == "cloop_b" and via_ask:
+            # COMPILE-FALLBACK-KEEP-01: an empty Insights reply under
+            # DMS_CLOOP_B is held (ladder, then reconfirm). It is not
+            # handed to Cortex /ask.
+            assert not cortex.asks, route
         return body
 
     try:
@@ -660,9 +665,12 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                         assert env["badge"] == "ABSTAIN", label
                         assert env["badge"] != "L0_CERTIFIED", label
                         assert env.get("answer_id") == "ans_gen01_abstain", label
-                        assert "ungranted" in notes, label
-                        assert "reconfirm" not in folded, label
                         assert "alerts" not in folded, label
+                        if route == "cloop_b":
+                            assert "provider_error" in notes, label
+                        else:
+                            assert "ungranted" in notes, label
+                            assert "reconfirm" not in folded, label
     finally:
         if old_tz is None:
             os.environ.pop("TZ", None)
