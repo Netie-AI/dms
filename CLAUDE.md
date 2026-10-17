@@ -130,6 +130,13 @@ INVARIANT-CHANGE: <reason>
 
 If acceptance is verifiable from a terminal → Claude Code. If you need to look at it → Cursor.
 
+## Claude Code sessions
+
+1. **Reproduce CI before any push.** Build `cortex_contract` from the public `Netie-AI/cortex` (`packages/cortex_contract`, sparse checkout) into a venv with the `.[dev]` deps. Do not `pip install` the DMS packages: a non-editable install writes `packages/*/build/`, and `tests/invariants/test_envelope.py` then fails on the copied `envelope.py`. Run from the worktree root with `PYTHONPATH` set to the five package roots and `DMS_SKIP_CONTROL_PLANE_TESTS=1`, then `ruff check apps packages tests`, the CI `mypy` set, `lint-imports`, `pytest tests/` (11 to 14 min on 4 CPUs).
+2. **Review lane.** Claude Code is the opposite-family second-model reviewer for Grok-written PRs. It never AGREEs a Claude-written PR. Cursor agents can run Claude models, so read the `Co-Authored-By` trailers and the PR body, not the branch prefix, and state the writer-family evidence in the review. First line: `AGREE|DISAGREE (Claude family, second-model review) @ <head sha8>`. Re-read the head at the end; a head move voids the review. A blocker or major needs a repro that was run.
+3. **Never quote scored-pack or held-out pack content** (questions, gold SQL, ids, table or row totals) in a review, a finding or a commit, even to show a leak. Name the commit and the file instead.
+4. **Merge lane.** `tier:full` merges are serial. While another merger is working the queue, Claude Code supplies the AGREE or the DMS Check leg (`CLEAR` or `HOLD` @ head, with the gate output) and does not squash.
+
 ## Archive
 
 Retired text: [T0 scope](docs/archive/2026-10-06_CLAUDE_t0-scope.md), [pre-index AGENTS.md](docs/archive/2026-10-06_AGENTS_pre-index.md) (DOCS-01, [#371](https://github.com/Netie-AI/dms/issues/371)).
