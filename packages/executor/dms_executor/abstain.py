@@ -3,6 +3,8 @@
 Every abstain envelope is built here. The same function writes the
 pipeline-failure ticket, and only after that write succeeds does it set
 ``ticket_id``. ``DMS_CLOOP_B`` off writes nothing and adds no key.
+An intent-spec abstain (``stage="intent_spec"``) always tickets, because
+that exit is armed by ``DMS_INTENT_SPEC``, not by the loop flag.
 
 Import ``build_abstain`` from this module. #419, #420, and #421 use it
 instead of building an abstain envelope themselves.
@@ -35,10 +37,13 @@ def _stamp_ticket(
     stage: str,
     ask_id: str | None,
 ) -> None:
-    """One ticket when the flag is on. A raise leaves ``env`` untouched."""
+    """One ticket when the loop flag is on, or this is an intent-spec exit.
+
+    A raise leaves ``env`` untouched.
+    """
     from cortex_client.compute import cloop_b_enabled
 
-    if not cloop_b_enabled():
+    if not cloop_b_enabled() and stage != "intent_spec":
         return
     try:
         from dms_executor.pipeline_failure import log_pipeline_failure_ticket
