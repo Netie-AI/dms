@@ -23,6 +23,7 @@ from cortex_client.compute import (
     recorded_model_calls,
 )
 
+from dms_executor.lake_registry import SERVING_ERRORS
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
 #: sqlglot dialect for a connector kind. The extract engine is separate.
@@ -43,7 +44,14 @@ EMPTY_NOTE = "no rows match"
 #: caller can serve this empty answer. Until then the reason is an abstain.
 EMPTY_UNVERIFIED = "empty_result_unverified:value_exists_pending"
 _NO_RETRY_HEADS = frozenset(
-    {"hostile_sql", "ungranted", "multi_statement", "warehouse_missing"}
+    {
+        "hostile_sql",
+        "ungranted",
+        "multi_statement",
+        "warehouse_missing",
+        "statement_not_allowed",
+        "sql_not_analyzable",
+    }
 )
 # Key-name segments after splitting on non-alphanumerics. "token" is a
 # segment, so "prompt_tokens" is not a secret key.
@@ -154,27 +162,79 @@ def _granted_columns(con: Any, sql: str) -> list[str]:
         return []
 
 
-def run_readonly(
-    sql: str, warehouse: Path
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Execute on a read-only extract connection. ``(rows, None)`` or ``(None, code)``.
+#: Refusals for SQL that is not exactly one SELECT. Nothing executed.
+_REFUSED_SHAPES = frozenset(
+    {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}
+)
 
-    The error is a typed code from ``typed_db_error``, not the database message.
+
+def _one_select(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT, else the refusal code. Nothing ran.
+
+    ``WITH`` that ends in SELECT is a SELECT. Any other statement type and any
+    other count are refused without executing. The type comes from the parser,
+    not from the text of the question or the SQL.
+
+    A parse failure also executes nothing, but it is a syntax error, not a
+    hostile shape: it comes back as ``explain:<Error>``, the code main gave it,
+    so the extract loop still feeds the error back and the repaired SQL can be
+    served. Refusing it with no retry threw that repair away (R-0005).
     """
     import duckdb
 
     try:
-        con = duckdb.connect(str(warehouse), read_only=True)
-    except Exception as exc:
-        return None, typed_db_error(exc)
+        stmts = con.extract_statements(sql)
+    except Exception as exc:  # noqa: BLE001 - nothing ran; retryable like EXPLAIN
+        return f"explain:{type(exc).__name__}"
+    if len(stmts) != 1:
+        return "multi_statement"
+    if stmts[0].type != duckdb.StatementType.SELECT:
+        return "statement_not_allowed"
+    return None
+
+
+def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
         cur = con.execute(sql)
         desc = cur.description or []
         cols = [d[0] for d in desc]
         rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
         return rows, None
-    except Exception as exc:
+    except SERVING_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001 — engine error is the extract result
+        # A typed code: DuckDB echoes cell values and paths in its messages.
         return None, typed_db_error(exc, _granted_columns(con, sql))
+
+
+def run_readonly(
+    sql: str, warehouse: Path
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Execute on a pooled serving cursor. ``(rows, None)`` or ``(None, error)``.
+
+    The cursor comes from ``connect_serving``: the lake registry's one parent
+    for this file, opened read-only with external access off and the config
+    locked. Every open of the file in the process shares that configuration,
+    so this open cannot clash with the schema index or the checker. A writer
+    waits for it, and a lease miss raises the registry's named serving error
+    to the ask boundary. One SELECT runs. A WITH that ends in SELECT is a
+    SELECT. Anything else, including a parse failure, is refused without
+    executing. An engine error comes back as a typed code from
+    ``typed_db_error``, never the database message.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
+    try:
+        con = connect_serving(Path(warehouse))
+    except SERVING_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return None, typed_db_error(exc)
+    try:
+        gate = _one_select(con, sql)
+        if gate is not None:
+            return None, gate
+        return _fetch(con, sql)
     finally:
         con.close()
 
@@ -598,6 +658,18 @@ def run_model_loop(
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
+        if exec_err in _REFUSED_SHAPES:
+            # Not one SELECT. Refused before execute, no model retry.
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome=f"checker:{exec_err}",
+                    dialect=dialect,
+                )
+            )
+            return abstain(exec_err, attempts, sql=sql, retries=retries)
         if exec_err:
             # A typed code from run_readonly. The database message never gets here.
             outcome = f"db_error:{exec_err}"
