@@ -59,6 +59,7 @@ Cursor and Claude Code start here. This file is an index only; the law is `CLAUD
 | [PARKING_LOT.md](PARKING_LOT.md) | deferred, each with an unlock condition |
 | [CHANGELOG.md](CHANGELOG.md) | history, append-only |
 | [docs/decisions/](docs/decisions/) | DR-NNNN decision records |
+| [docs/subagents_findings/INDEX.md](docs/subagents_findings/INDEX.md) | past findings by keyword. Search before non-trivial work, file one after |
 | [GitHub issues](https://github.com/Netie-AI/dms/issues) | live tickets - the source of truth |
 | [docs/archive/](docs/archive/) | retired doc text, incl. the [pre-index AGENTS.md](docs/archive/2026-10-06_AGENTS_pre-index.md) |
 
