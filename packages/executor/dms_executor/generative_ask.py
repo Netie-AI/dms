@@ -690,9 +690,11 @@ def _binds_to_cte(table: Any, name: str) -> bool:
 
     The nearest enclosing WITH that defines the name decides. The query body
     sees every CTE. A CTE body sees only the CTEs before it. A reference to
-    its own name or to a later CTE binds to the base table in DuckDB, and so
-    does the anchor of a recursive CTE. That is not proven, so the name is
-    grant-checked.
+    its own name or to a later CTE can bind to the base table in DuckDB (a
+    plain CTE does, and so does the anchor of a recursive CTE). The recursive
+    term binds to the CTE instead, so a legitimate WITH RECURSIVE is refused
+    unless its name is granted. Either way the binding is not proven here,
+    so the name is grant-checked.
     """
     from sqlglot import exp
 
@@ -726,6 +728,9 @@ def _serving_relation_names(sql: str) -> set[str] | None:
     a query (``CALL`` parses as an opaque Command). It also covers a FROM,
     JOIN or LATERAL item that is a function call and not a table name
     (``query_table``, ``query``, ``duckdb_tables``, ``range``).
+
+    sqlglot can still miss a read DuckDB makes, so ``validate_compiled_sql``
+    also grant-checks DuckDB's own parse (``_duckdb_read_names``).
     """
     from sqlglot import exp, parse
 
@@ -752,6 +757,90 @@ def _serving_relation_names(sql: str) -> set[str] | None:
     return names
 
 
+# DuckDB's JSON parse tree. A query node carries "modifiers", a table
+# reference carries "sample", an expression carries "class".
+_DUCKDB_QUERY_NODES = frozenset(
+    {"SELECT_NODE", "SET_OPERATION_NODE", "RECURSIVE_CTE_NODE", "CTE_NODE"}
+)
+_DUCKDB_TABLE_REFS = frozenset(
+    {"BASE_TABLE", "JOIN", "SUBQUERY", "EXPRESSION_LIST", "EMPTY", "EMPTY_FROM", "PIVOT"}
+)
+
+
+def _duckdb_read_names(con: Any, sql: str) -> set[str] | None:
+    """Bare names of the tables DuckDB's own parser reads, for the grant check.
+
+    sqlglot does not parse every statement the way DuckDB runs it. It reads
+    ``(TABLE payroll_secret)`` as a column named TABLE, and ``FROM (TABLE t)``
+    as a table named ``table``. DuckDB runs both as ``SELECT * FROM t``. So
+    the tree DuckDB itself parsed (``json_serialize_sql``) is grant-checked
+    as well, wherever a BASE_TABLE sits: FROM, a CTE body or any expression.
+
+    An unqualified name is skipped only when an enclosing WITH certainly
+    binds it, by the rule in ``_binds_to_cte``: a CTE body sees the CTEs
+    before it, and the WITH nearest the reference decides.
+
+    None means the parse cannot be proven, and the caller refuses: DuckDB
+    could not serialize it, or it holds a table function, a SHOW, DESCRIBE
+    or SUMMARIZE reference, or a node type this walk does not know.
+    """
+    import json
+
+    import duckdb
+
+    try:
+        row = con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
+        tree = json.loads(row[0])
+    except (duckdb.Error, TypeError, ValueError, IndexError):
+        return None
+    if not isinstance(tree, dict) or tree.get("error") is not False:
+        return None
+    names: set[str] = set()
+
+    def walk(node: Any, visible: frozenset[str]) -> bool:
+        if isinstance(node, list):
+            return all(walk(item, visible) for item in node)
+        if not isinstance(node, dict):
+            return True
+        kind = node.get("type")
+        if isinstance(kind, str) and "class" not in node:
+            if "modifiers" in node and kind not in _DUCKDB_QUERY_NODES:
+                return False
+            if ("sample" in node or "table_name" in node) and "modifiers" not in node:
+                if kind not in _DUCKDB_TABLE_REFS:
+                    return False
+            if kind == "BASE_TABLE":
+                name = _duckdb_fold(str(node.get("table_name") or ""))
+                if not name:
+                    return False
+                if node.get("schema_name") or node.get("catalog_name") or name not in visible:
+                    names.add(name)
+        ctes = node.get("cte_map")
+        if ctes is not None:
+            entries = ctes.get("map") if isinstance(ctes, dict) else None
+            if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+                return False
+            keys = [_duckdb_fold(str(e.get("key") or "")) for e in entries]
+            for at, entry in enumerate(entries):
+                scope = (visible | set(keys[:at])) - set(keys[at:])
+                if not walk(entry, frozenset(scope)):
+                    return False
+            visible = visible | frozenset(keys)
+        return all(walk(value, visible) for key, value in node.items() if key != "cte_map")
+
+    return names if walk(tree.get("statements"), frozenset()) else None
+
+
+def _ungranted(named: set[str] | None, grantable: set[str]) -> str | None:
+    """The grant refusal for a read set, or None when every name is granted."""
+    if named is None:
+        return "ungranted"
+    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    if missing:
+        return f"ungranted:{','.join(sorted(missing))}"
+    return None
+
+
 def validate_compiled_sql(
     sql: str,
     *,
@@ -765,12 +854,9 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    named = _serving_relation_names(sql)
-    if named is None:
-        return "ungranted"
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
-    if missing:
-        return f"ungranted:{','.join(sorted(missing))}"
+    refused = _ungranted(_serving_relation_names(sql), grantable)
+    if refused:
+        return refused
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
@@ -780,6 +866,11 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
+        # The read set in DuckDB's own parse must be granted too, not only the
+        # one sqlglot saw. json_serialize_sql parses the text and runs none of it.
+        refused = _ungranted(_duckdb_read_names(con, sql), grantable)
+        if refused:
+            return refused
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"

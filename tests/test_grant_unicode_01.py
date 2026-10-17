@@ -409,6 +409,103 @@ def test_unprovable_read_of_ungranted_table_is_refused(
     assert [str(row[0]) for row in leaked] == [expected]
 
 
+# DuckDB runs ``(TABLE t)`` as ``SELECT * FROM t``. sqlglot reads it as a
+# column named TABLE, and ``FROM (TABLE t)`` as a table named "table" that the
+# CTE called "table" covers. So the sqlglot walk saw no read of {t}, and the
+# previous head served every shape below. Main served the three without a CTE
+# of their own; it refused the CTE shapes only because it refused every CTE.
+_TABLE_FORM_SHAPES = (
+    ("cte_body", "WITH c AS (TABLE {t}) SELECT n FROM c"),
+    ("cte_scalar", "WITH c AS (SELECT (TABLE {t}) AS n) SELECT n FROM c"),
+    ("cte_values", "WITH c AS (VALUES ((TABLE {t}))) SELECT * FROM c"),
+    ("scalar", "SELECT (TABLE {t}) AS n"),
+    ("granted_rows", "SELECT location_code, (TABLE {t}) AS n FROM locations"),
+    ("cte_named_table", 'WITH "table" AS (SELECT 1 AS n) SELECT n FROM (TABLE {t}) AS x'),
+)
+
+
+@pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
+@pytest.mark.parametrize(("plant", "table", "value"), _PLANTS, ids=[p[0] for p in _PLANTS])
+@pytest.mark.parametrize(
+    ("shape", "template"), _TABLE_FORM_SHAPES, ids=[s[0] for s in _TABLE_FORM_SHAPES]
+)
+def test_table_query_form_of_ungranted_table_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cloop: bool,
+    plant: str,
+    table: str,
+    value: int,
+    shape: str,
+    template: str,
+) -> None:
+    del plant, shape
+    sql = template.format(t=table)
+    body, cortex = _ask(tmp_path, monkeypatch, sql, cloop=cloop, prepare=_plant(table, value))
+    _assert_direct_refusal(body, cortex, table)
+    assert str(value) not in json.dumps(body)
+
+    # The refusal matters: the serving connection does read the planted table.
+    leaked = _serving_rows(tmp_path / "unicode.duckdb", sql)
+    assert str(value) in {str(v) for row in leaked for v in row}
+
+
+# The same form in every other place an expression goes. As a predicate it
+# leaks the value through which granted rows come back.
+_TABLE_FORM_EXPRESSIONS = (
+    "SELECT CASE WHEN (TABLE {t}) > 0 THEN (TABLE {t}) END AS n",
+    "SELECT coalesce((TABLE {t}), 0) AS n",
+    "SELECT (TABLE {t}) + 0 AS n",
+    "SELECT list_value((TABLE {t})) AS n",
+    "SELECT unnest([(TABLE {t})]) AS n",
+    "SELECT n FROM (SELECT 1 AS k) AS d, LATERAL (SELECT (TABLE {t}) AS n)",
+    "SELECT location_code FROM locations WHERE (TABLE {t}) = {v}",
+    "SELECT location_code FROM locations GROUP BY location_code HAVING (TABLE {t}) = {v}",
+    "SELECT location_code FROM locations ORDER BY (TABLE {t})",
+    "WITH c AS MATERIALIZED (TABLE {t}) SELECT n FROM c",
+    # A later CTE of the same name does not cover the earlier body.
+    "WITH c AS (TABLE {t}), {t} AS (SELECT 1 AS n) SELECT c.n FROM c, {t}",
+)
+
+
+@pytest.mark.parametrize(("plant", "table", "value"), _PLANTS, ids=[p[0] for p in _PLANTS])
+def test_table_query_form_in_any_expression_is_refused(
+    tmp_path: Path,
+    plant: str,
+    table: str,
+    value: int,
+) -> None:
+    del plant
+    db = tmp_path / "names.duckdb"
+    ensure_demo_warehouse(db)
+    _plant(table, value)(db)
+    for template in _TABLE_FORM_EXPRESSIONS:
+        sql = template.format(t=table, v=value)
+        assert validate_compiled_sql(sql, grantable=set(_GRANTS), warehouse=db) == (
+            f"ungranted:{table}"
+        ), sql
+        assert _serving_rows(db, sql), sql
+
+
+@pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
+def test_table_query_form_of_granted_table_stays_served(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cloop: bool,
+) -> None:
+    """The refusal is the grant, not the form: TABLE over a granted table serves."""
+    sql = "WITH c AS (TABLE locations) SELECT location_code FROM c WHERE is_cold_storage"
+    body, cortex = _ask(
+        tmp_path, monkeypatch, sql, cloop=cloop, prepare=_plant("payroll_secret", _SECRET)
+    )
+    assert_envelope_valid(body)
+    assert body["badge"] == "L2_VALIDATED"
+    assert body["abstained"] is False
+    assert body["rows"] == [{"location_code": "WH-C"}]
+    assert body["text"] == "Found 1 row(s).\n  - location_code=WH-C"
+    assert cortex.sql_submits == 1
+
+
 @pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
 @pytest.mark.parametrize(("plant", "table", "value"), _PLANTS, ids=[p[0] for p in _PLANTS])
 def test_cte_named_after_ungranted_table_serves_the_cte(
