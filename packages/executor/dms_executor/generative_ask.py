@@ -743,7 +743,8 @@ def _plan_names(part: str) -> tuple[str, str]:
 
 
 def _cited_names(sql: str) -> set[str]:
-    """Every relation name the SQL writes, schema-qualified as written, folded."""
+    """Every relation name the SQL writes, folded. A main table is named
+    without its schema: main."x.y" is the lake table called "x.y"."""
     from sqlglot import exp, parse
 
     out: set[str] = set()
@@ -754,8 +755,9 @@ def _cited_names(sql: str) -> set[str]:
     for tree in trees:
         for table in tree.find_all(exp.Table):
             if isinstance(table.this, exp.Identifier):
-                name = f"{table.db}.{table.name}" if table.db else str(table.name)
-                out.add(name.translate(_ASCII_FOLD))
+                schema = str(table.db or "").translate(_ASCII_FOLD)
+                name = str(table.name).translate(_ASCII_FOLD)
+                out.add(name if schema in {"", "main"} else f"{schema}.{name}")
     return out
 
 

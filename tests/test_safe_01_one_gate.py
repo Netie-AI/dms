@@ -999,3 +999,29 @@ def test_a_grant_that_names_an_upload_and_a_dotted_lake_table_opens_neither(
     ), sql
     lake = "SELECT sku, quantity_kg FROM inventory"
     assert validate_compiled_sql(lake, grantable=grant, warehouse=db) is None
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'SELECT COUNT(*) AS n FROM main."bronze.sheet1"',
+        'SELECT COUNT(*) AS n FROM "MAIN"."BRONZE.SHEET1"',
+        'SELECT * FROM (SELECT MAX(n) AS m FROM main."bronze.sheet1")',
+        'SELECT COUNT(*) AS n FROM lake.main."bronze.sheet1"',
+    ],
+)
+def test_a_main_qualified_name_does_not_skip_the_ambiguity_guard(tmp_path: Path, sql: str) -> None:
+    import duckdb
+
+    db = tmp_path / "lake.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA bronze")
+        con.execute("CREATE TABLE bronze.sheet1 AS SELECT 1 AS n FROM range(3)")
+        con.execute('CREATE TABLE "bronze.sheet1" AS SELECT 1 AS n FROM range(7)')
+    finally:
+        con.close()
+    grant = {"sheet1", "bronze.sheet1", "inventory"}
+    why = validate_compiled_sql(sql, grantable=grant, warehouse=db)
+    assert why is not None and why.startswith(("ungranted", "hostile_sql")), (sql, why)
