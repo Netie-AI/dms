@@ -141,7 +141,9 @@ class LedgerCortex:
                     "answer": "Done.",
                     "abstained": False,
                     "badge": "certified",
-                    "sql_used": "SELECT name FROM customers WHERE email = 'alice.tan@example.com'",
+                    # A granted lake table: the one grant function refuses SQL on
+                    # a table the Space does not hold, whatever the badge.
+                    "sql_used": "SELECT sku FROM inventory WHERE sku = 'alice.tan@example.com'",
                     "rows": [{"orders": 2}],
                     "audit_id": entry,
                     "route": "sql",
@@ -1449,8 +1451,8 @@ def test_the_export_holds_no_personal_data_the_envelope_masks(minter: ManifestMi
         assert "alice.tan@example.com" not in row[field_name], field_name
         assert "DMSMASK_email" in row[field_name], field_name
     # Table and column names are intact.
-    assert row["tables_read"] == "customers"
-    assert "FROM customers WHERE email = " in row["executed_sql"]
+    assert row["tables_read"] == "inventory"
+    assert "FROM inventory WHERE sku = " in row["executed_sql"]
     assert int(row["redactions"]) >= 2
 
 

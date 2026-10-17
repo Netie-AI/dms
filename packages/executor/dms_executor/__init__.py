@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,8 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    grant_hold,
+    load_verified_ontology,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -1021,8 +1024,14 @@ class Executor:
                 # hides that exact-match / pack-metric miss. A confident
                 # generative answer is left as-is. None still reaches Cortex ask.
                 # A budget stop keeps its named reason (insights_timeout:<leg>).
+                notes = gen_env.get("assumptions") or []
+                gate_hold = any(
+                    isinstance(note, str) and note.startswith("GEN-01: reconfirm:")
+                    for note in notes
+                )
                 if (
                     gen_env.get("abstained")
+                    and not gate_hold
                     and not insights_budget_stop(gen_env)
                     and is_curated_l0_without_pack_metric(asked)
                 ):
@@ -1050,6 +1059,7 @@ class Executor:
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
+        dms_payload = self._ask_payload(question, acl)
         try:
             raise_if_ask_stopped()
             resp = self._cortex.ask(
@@ -1057,6 +1067,7 @@ class Executor:
                     question=question,
                     session_id=acl.session_id,
                     space_id=space_id,
+                    dms_payload=dms_payload,
                 )
             )
         except (
@@ -1078,10 +1089,33 @@ class Executor:
                         question=question,
                         session_id=acl.session_id,
                         space_id=space_id,
+                        dms_payload=dms_payload,
                     )
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        grant_set = set(self.grantable_tables(space_id=space_id))
+        # wiring.py builds the Executor without warehouse_path. The default
+        # lake is the one the grant check and the served-result gate read.
+        lake = ensure_demo_warehouse(self._warehouse)
+        held = None
+        rejected: str | None = None
+        # Only SQL is grant-checked. A document answer carries none, and an
+        # empty string is not a rejected query.
+        if not resp.abstained and str(resp.sql_used or "").strip():
+            held, rejected = grant_hold(
+                str(resp.sql_used or ""),
+                question=question,
+                space_id=space_id,
+                session_id=acl.session_id,
+                warehouse=lake,
+                grantable=grant_set,
+            )
+        if held is not None:
+            env = attach_cascade(held, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
+        gate_warehouse, gate_ontology = _served_check_inputs(lake)
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -1091,11 +1125,36 @@ class Executor:
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                warehouse=gate_warehouse,
+                ontology=gate_ontology,
+                as_of=datetime_now(),
+                grant_rejected=rejected is not None,
             ),
             cascade,
         )
         self._store_turn(session_id, space_id, env)
         return env
+
+    def _ask_payload(self, question: str, acl: SessionAcl) -> dict[str, Any] | None:
+        """WIRE-01: the tables, columns and joins Cortex's plan+SQL ladder may use.
+
+        Sent only under DMS_SCHEMA_CONTEXT, the flag that already governs
+        sending schema to Cortex. Built from the minted grant, so it can only
+        narrow what Cortex will allow. None when off or when nothing survives.
+        """
+        from cortex_client.insights import schema_context_enabled
+
+        if not schema_context_enabled():
+            return None
+        from dms_executor.ask_payload import build_dms_payload
+
+        warehouse, ontology = _served_check_inputs(ensure_demo_warehouse(self._warehouse))
+        return build_dms_payload(
+            question,
+            serving=warehouse,
+            readable=sorted(acl.row_predicates),
+            ontology=ontology,
+        )
 
     def take_executed(self) -> ExecutedTrace:
         """What the last ``live_ask`` on this thread ran: statements with row counts,
@@ -1150,7 +1209,16 @@ class Executor:
 
 #: Engine routes that mean "no answer was produced". Authoritative over any
 #: badge the engine sends alongside them - see map_ask_response_to_envelope.
-_REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
+_REFUSAL_ROUTES = frozenset(
+    {"abstain", "blocked", "needs_clarification", "refused", "reconfirm"}
+)
+
+#: Cortex plan+SQL rungs that serve model SQL (cortex-contract 1.5.0).
+_PLAN_SQL_MODEL_RUNG = re.compile(r"^(plan|stronger-model|error-fed-retry-[1-9][0-9]*)$")
+_RECONFIRM_TEXT = (
+    "I can't answer that question as asked, so no figure is shown. "
+    "Try the closest question I can answer, listed below."
+)
 
 _BADGE_MAP = {
     "certified": "L0_CERTIFIED",
@@ -1189,6 +1257,17 @@ def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | Non
 _chart_from_rows = chart_from_rows
 
 
+def _served_check_inputs(warehouse: Path | None) -> tuple[Path | None, Any]:
+    """Warehouse file and its verified ontology (None when it does not verify).
+
+    A missing warehouse does not pass. The grain check reads the lake itself,
+    so a lake the demo ontology does not describe is still checked.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None, None
+    return warehouse, load_verified_ontology(warehouse)
+
+
 def map_ask_response_to_envelope(
     resp: AskResponse,
     *,
@@ -1197,8 +1276,18 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    warehouse: Path | None = None,
+    ontology: Any | None = None,
+    as_of: str | None = None,
+    grant_rejected: bool = False,
 ) -> dict[str, Any]:
-    """Map contract Answer-shaped AskResponse into UI envelope."""
+    """Map contract Answer-shaped AskResponse into UI envelope.
+
+    ``grant_rejected`` is SQL the one grant function rejected that the ask
+    route did not refuse outright (a bronze label, an EXPLAIN miss). Nothing
+    probes it, so nothing certifies it: it takes no confident badge. The envelope's own,
+    more specific demotions (scope conflict, shape mismatch) run first.
+    """
     # BANK-02: the engine's own SQL and rows, taken before anything below drops
     # them for an abstain or swaps in a placeholder. This is what ran.
     executed_trace.record(resp.sql_used, len(resp.rows or []))
@@ -1232,7 +1321,12 @@ def map_ask_response_to_envelope(
     # The engine-side fix - teaching _is_abstain_signal about "refused" - is
     # still needed and is not what this is. This is the half DMS owns: whatever
     # the engine sends, DMS does not put a confident badge on a refusal.
-    refused = route_l in _REFUSAL_ROUTES
+    reconfirm = (
+        route_l == "reconfirm"
+        or str(resp.badge or "").strip().lower() == "reconfirm"
+        or resp.reconfirm is not None
+    )
+    refused = route_l in _REFUSAL_ROUTES or reconfirm
     engine_unsure = resp.unsure is True
     if refused or engine_unsure:
         badge_raw = "abstain"
@@ -1244,8 +1338,32 @@ def map_ask_response_to_envelope(
     # Go through envelope.py rather than this module's own _BADGE_MAP copy.
     # Two maps for one vocabulary is a drift waiting to happen, and the drift
     # would be invisible: both sides would still produce a legal badge.
+    # Route "generated" does not grant L2. The served-result gate has to pass.
+    gate_passed = False
+    gate_finding: str | None = None
+    if not refused and not engine_unsure and not resp.abstained:
+        raw_name = (badge_raw or "").strip().lower()
+        if raw_name == "generated" and not grant_rejected:
+            from dms_executor.served_gate import served_result_reason
+
+            # A missing warehouse or as_of is not a pass and not L2. The
+            # ontology is optional: it adds the many-to-many link check.
+            if warehouse is None or not as_of:
+                gate_finding = "inputs_missing"
+            else:
+                gate_finding = served_result_reason(
+                    str(resp.sql_used or ""),
+                    warehouse=warehouse,
+                    ontology=ontology,
+                    as_of=as_of,
+                )
+            gate_passed = gate_finding is None
     unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))
-    badge = normalize_badge(badge_raw, abstained=bool(resp.abstained))
+    badge = normalize_badge(
+        badge_raw,
+        abstained=bool(resp.abstained),
+        gate_passed=gate_passed,
+    )
     abstained = bool(resp.abstained) or badge == "ABSTAIN"
     if abstained:
         badge = "ABSTAIN"
@@ -1260,6 +1378,10 @@ def map_ask_response_to_envelope(
             f"Rather than show you a number under a badge I cannot stand behind, "
             f"I'm abstaining. This usually means DMS is older than the engine."
         )
+    elif gate_finding:
+        from dms_executor.gen_path_refuse import customer_abstain_text
+
+        text = customer_abstain_text(f"reconfirm:{gate_finding}")
     values = list(resp.values or [])
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
@@ -1297,6 +1419,8 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
+    if gate_finding:
+        assumptions.append(f"GEN-01: reconfirm:{gate_finding}")
     sources = normalize_contributing_sources(
         resp.contributing_sources, space_id=space_id
     )
@@ -1333,7 +1457,9 @@ def map_ask_response_to_envelope(
         "contributing_sources": sources,
         "rows": [] if abstained else rows,
         "chart": None if abstained else chart,
-        "suggestions": list(resp.suggestions or []),
+        "suggestions": _closest(resp) + list(resp.suggestions or []) if reconfirm else list(
+            resp.suggestions or []
+        ),
         "audit_id": resp.receipt_id or resp.audit_id,
         "route": resp.route,
         "drillthrough_token": None if abstained else token,
@@ -1341,17 +1467,68 @@ def map_ask_response_to_envelope(
         "competing_scopes": competing_scopes,
         "exclude_reasons": list(resp.exclude_reasons) if resp.exclude_reasons else None,
     }
+    if reconfirm:
+        # Cortex asks to confirm a closest question. DMS has no yes/no round
+        # trip yet, so it refuses and offers that question; Cortex's own
+        # reason is not echoed (it may name tables the viewer cannot see).
+        fields["text"] = _RECONFIRM_TEXT
+        fields["assumptions"] = [*assumptions, "plan_sql: reconfirm"]
     if abstained:
         env = build_abstain(
-            reason="abstain",
+            reason=f"reconfirm:{gate_finding}" if gate_finding else "abstain",
             question=question or "",
-            stage="cortex_ask",
+            stage="served_gate" if gate_finding else "cortex_ask",
             **fields,
         )
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
+        if grant_rejected and env.get("badge") != "ABSTAIN":
+            # Fail closed. SQL the one grant function rejected was never probed,
+            # so an answer on it carries no confident badge (L0, L1, L2 or
+            # anomalous). Runs after the envelope's own demotions so a scope
+            # conflict or shape mismatch keeps its more specific reason.
+            from dms_executor.gen_path_refuse import customer_abstain_text
+
+            fields["text"] = customer_abstain_text("reconfirm:grant_rejected")
+            fields["assumptions"] = [*assumptions, "GEN-01: reconfirm:grant_rejected"]
+            fields.update(rows=[], chart=None, sql_used=None, drillthrough_token=None)
+            env = build_abstain(
+                reason="reconfirm:grant_rejected",
+                question=question or "",
+                stage="served_gate",
+                **fields,
+            )
+    _stamp_plan_sql(env, resp)
     assert_envelope_valid(env)
     return env
+
+
+def _closest(resp: AskResponse) -> list[str]:
+    """Cortex's closest answerable question from a reconfirm, if it sent one."""
+    raw = resp.reconfirm if isinstance(resp.reconfirm, dict) else {}
+    closest = str(raw.get("closest_question") or "").strip()
+    return [closest] if closest else []
+
+
+def _stamp_plan_sql(env: dict[str, Any], resp: AskResponse) -> None:
+    """Copy the Cortex plan+SQL stamps onto the envelope, never computed here.
+
+    ``ladder_rung`` is the rung verbatim; a served model rung is model SQL
+    (``plan_origin`` generate_sql). The per-step call counts keep their own
+    key: ``model_calls`` is the ask's own counter.
+    """
+    rung = str(resp.plan_sql_rung or "").strip()
+    if not rung:
+        return
+    env["ladder_rung"] = rung
+    if resp.served_model:
+        env["served_model"] = resp.served_model
+    if resp.served_provider:
+        env["served_provider"] = resp.served_provider
+    if isinstance(resp.model_calls, dict):
+        env["model_calls_by_step"] = dict(resp.model_calls)
+    if not env.get("abstained") and _PLAN_SQL_MODEL_RUNG.match(rung):
+        env["plan_origin"] = "generate_sql"
 
 
 def datetime_now() -> str:
