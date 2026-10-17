@@ -4,7 +4,10 @@ The question text is not an input. Callers pass the extract dialect they
 already use (warehouse SQL is duckdb). sqlglot parses in that dialect.
 
 Allow-list: every relation the parser can see, including inside CTEs and
-subqueries, must be a granted qualified name. A file or external reader
+subqueries, must be a granted qualified name. A one-part name is a CTE
+reference only where a WITH enclosing it defines that name (scope, not
+spelling); anywhere else it is a relation and the grant decides. A self or
+forward reference inside a CTE body is a relation. A file or external reader
 anywhere in the tree is refused. A pure generator is not itself a
 grant; it is served only beside a granted base table. The default
 schema is part of the comparison, so a different schema is not the
@@ -25,7 +28,7 @@ from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
 
 from dms_executor.abstain import build_abstain
-from dms_executor.demo_warehouse import SERVING_DIALECT, clear_engine_clock, connect_file
+from dms_executor.demo_warehouse import SERVING_DIALECT, clear_engine_clock, connect_serving
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.gen_path_refuse import customer_abstain_text
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
@@ -215,45 +218,10 @@ def _trees(sql: str, dialect: str | None) -> list[exp.Expression] | None:
     return [tree for tree in trees if tree is not None]
 
 
-def _cte_names(tree: exp.Expression) -> set[str]:
-    names: set[str] = set()
-    for cte in tree.find_all(exp.CTE):
-        alias = str(cte.alias or "").strip().lower()
-        if alias:
-            names.add(alias)
-    return names
-
-
 def _slash_path(name: str) -> bool:
     # A slash inside one identifier is a path. A dot may be a quoted relation
     # (``"usd.book"``). Do not bare on that dot.
     return "/" in name or "\\" in name
-
-
-def _relations(tree: exp.Expression) -> list[tuple[str, str]]:
-    """``table`` tokens, ``dotted`` names, or ``unresolved`` non-relations."""
-    found: list[tuple[str, str]] = []
-    ctes = _cte_names(tree)
-    for table in tree.find_all(exp.Table):
-        this = table.this
-        if not isinstance(this, exp.Identifier):
-            found.append(("unresolved", ""))
-            continue
-        name = str(table.name or "")
-        if not name:
-            found.append(("unresolved", ""))
-            continue
-        if not table.db and name.lower() in ctes:
-            continue
-        if _slash_path(name):
-            found.append(("unresolved", ""))
-            continue
-        if "." in name:
-            found.append(("dotted", name))
-            continue
-        token = f"{table.db}.{name}" if table.db else name
-        found.append(("table", token))
-    return found
 
 
 # Fixed default schema an unqualified name resolves to. DuckDB's
@@ -454,17 +422,41 @@ def _file_reader(tree: exp.Expression) -> bool:
     return False
 
 
-def _cte_keys(tree: exp.Expression, engine: Dialect) -> set[str]:
-    names: set[str] = set()
-    for cte in tree.find_all(exp.CTE):
-        alias = cte.args.get("alias")
-        ident = getattr(alias, "this", None)
-        if not isinstance(ident, exp.Identifier):
-            continue
-        text = _norm_ident(ident, engine)
-        if text:
-            names.add(text)
-    return names
+def _cte_key(cte: exp.Expression, engine: Dialect) -> str | None:
+    alias = cte.args.get("alias")
+    ident = getattr(alias, "this", None)
+    if not isinstance(ident, exp.Identifier):
+        return None
+    return _norm_ident(ident, engine)
+
+
+def _cte_in_scope(table: exp.Table, name: str, engine: Dialect) -> bool:
+    """True only when a WITH that encloses ``table`` defines ``name`` for it.
+
+    Scope, not spelling. Walk up from the table. A WITH on an enclosing
+    query covers that query's body. Inside one CTE's own body only the
+    CTEs before it count: DuckDB reads the base table for a self or a
+    forward reference, also under RECURSIVE, so that name is checked as a
+    relation. A CTE defined in a sibling subquery, another union branch or
+    another scalar subquery does not enclose the table, so the name is a
+    relation and the grant decides.
+    """
+    child: exp.Expression = table
+    node = table.parent
+    while node is not None:
+        if isinstance(node, exp.With):
+            ctes = list(node.expressions)
+            index = next((i for i, cte in enumerate(ctes) if cte is child), 0)
+            if any(_cte_key(cte, engine) == name for cte in ctes[:index]):
+                return True
+        else:
+            with_ = node.args.get("with")
+            if isinstance(with_, exp.With) and with_ is not child:
+                if any(_cte_key(cte, engine) == name for cte in with_.expressions):
+                    return True
+        child = node
+        node = node.parent
+    return False
 
 
 def _allow(
@@ -482,7 +474,6 @@ def _allow(
     default = _default_schema(dialect_name, engine)
     keys = _grant_keys(grantable, dialect)
     granted_rows = _grant_rows(grantable, dialect, catalog)
-    ctes = _cte_keys(tree, engine)
     not_relation = False
     qualified_miss = False
     unsettled = False
@@ -523,7 +514,7 @@ def _allow(
         if broken or not names:
             not_relation = True
             continue
-        if len(names) == 1 and names[0] in ctes:
+        if len(names) == 1 and _cte_in_scope(table, names[0], engine):
             continue
         had_qualifier = bool(table.args.get("db") or table.args.get("catalog"))
         cited = list(names)
@@ -666,7 +657,11 @@ class _Catalog:
 def _catalog_for(
     tree: exp.Expression, warehouse: Path | None, dialect: str | None
 ) -> _Catalog | None:
-    """Read the file only when the statement cites a qualifier."""
+    """Read the file only when the statement cites a qualifier.
+
+    Chat-path read: the serving cursor (read-only lease), never the ingest
+    writer, so a grant check does not queue behind or block serving reads.
+    """
     if warehouse is None or not Path(warehouse).is_file():
         return None
     if not any(
@@ -679,7 +674,7 @@ def _catalog_for(
         return None
     _name, engine = found
     try:
-        con = connect_file(Path(warehouse))
+        con = connect_serving(Path(warehouse))
     except Exception:  # noqa: BLE001 - no catalog, the name check stays on keys
         return None
     try:

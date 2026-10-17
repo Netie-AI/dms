@@ -1381,3 +1381,268 @@ def test_usd_book_grant_is_the_same_verdict() -> None:
     assert serve_gap(
         "SELECT * FROM \"usd.book\"", grantable=grant, dialect="duckdb"
     ) is None
+
+
+# --- CTE scope: a CTE name hides nothing outside the scope that defines it ---
+#
+# ``suppliers`` is a real demo table the Warehouse Ops Space does not grant
+# (it grants inventory, locations, shipments). Each shape defines a CTE called
+# ``suppliers`` somewhere, and also reads the base table ``suppliers`` from a
+# scope that CTE does not cover. DuckDB binds that read to the base table
+# (``_binds_base_suppliers`` proves it per shape), so the grant must check it.
+# These all served on 1bfa5ca: the CTE name was skipped wherever it appeared.
+
+_CTE_SCOPE_HOLES = (
+    (
+        "derived_table",
+        "SELECT COUNT(*) AS n FROM inventory g, "
+        "(WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) x, suppliers s",
+    ),
+    (
+        "union_branch",
+        "SELECT COUNT(*) AS n FROM inventory "
+        "UNION ALL (WITH suppliers AS (SELECT 1 AS a) SELECT COUNT(*) FROM suppliers) "
+        "UNION ALL SELECT COUNT(*) FROM suppliers",
+    ),
+    (
+        "in_subquery",
+        "SELECT COUNT(*) AS n FROM inventory "
+        "WHERE 1 IN (WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) "
+        "OR 4 IN (SELECT COUNT(*) FROM suppliers)",
+    ),
+    (
+        "scalar_subquery",
+        "SELECT (WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) AS q, "
+        "(SELECT COUNT(*) FROM suppliers) AS n FROM inventory LIMIT 1",
+    ),
+    (
+        "self_reference",
+        "WITH suppliers AS (SELECT * FROM suppliers) "
+        "SELECT COUNT(*) AS n FROM inventory, suppliers",
+    ),
+    (
+        "recursive_self_reference",
+        "WITH RECURSIVE suppliers AS (SELECT * FROM suppliers) "
+        "SELECT COUNT(*) AS n FROM inventory, suppliers",
+    ),
+    (
+        "forward_reference",
+        "WITH x AS (SELECT * FROM suppliers), suppliers AS (SELECT 1 AS a) "
+        "SELECT COUNT(*) AS n FROM inventory, x",
+    ),
+    (
+        "cte_inside_cte",
+        "WITH x AS (WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) "
+        "SELECT COUNT(*) AS n FROM inventory, x, suppliers",
+    ),
+)
+
+# The CTE does cover these reads, so no base ``suppliers`` is read and they serve.
+_CTE_IN_SCOPE = (
+    "WITH suppliers AS (SELECT 1 AS a) SELECT COUNT(*) AS n FROM inventory, suppliers",
+    "SELECT COUNT(*) AS n FROM inventory g, "
+    "(WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) x",
+    "WITH suppliers AS (SELECT 1 AS a) "
+    "SELECT COUNT(*) AS n FROM inventory WHERE 1 IN (SELECT a FROM suppliers)",
+    "WITH s AS (SELECT * FROM inventory), suppliers AS (SELECT COUNT(*) AS c FROM s) "
+    "SELECT c AS n FROM suppliers",
+)
+
+
+def _binds_base_suppliers(sql: str) -> bool:
+    """True when DuckDB needs a base table ``suppliers`` to bind ``sql``.
+
+    Without the base table the statement does not bind (a missing table, or
+    a CTE that would have to read itself). With it, the same statement runs.
+    """
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE inventory AS SELECT 1 AS id")
+        try:
+            con.execute(sql).fetchall()
+        except duckdb.Error as exc:
+            if "suppliers" not in str(exc):
+                return False
+        else:
+            return False
+        con.execute("CREATE TABLE suppliers AS SELECT 1 AS a")
+        con.execute(sql).fetchall()
+        return True
+    finally:
+        con.close()
+
+
+class _ExecPlant:
+    """Model SQL is ``sql``. A submit runs it on a copy of the file: real rows."""
+
+    def __init__(self, sql: str, copy: Path) -> None:
+        self.sql = sql
+        self.copy = copy
+        self.submits: list[Any] = []
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        return {"query_sql": self.sql, "plan_source": "ontology_plan"}
+
+    def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        con = duckdb.connect(str(self.copy), read_only=True)
+        try:
+            cur = con.execute(self.sql)
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            con.close()
+        return QueryResult(ok=True, status="ok", run_id="run_cte", output={"rows": rows})
+
+    def ask(self, req: Any) -> Any:
+        raise AssertionError("ask")
+
+    def ledger_append(self, req: Any) -> Any:
+        from cortex_client.models import LedgerAppendResponse
+
+        return LedgerAppendResponse(entry_id="led_cte", hash="hash_cte_not_led")
+
+
+def _http_ask(
+    sql: str, db: Path, copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, Any], _ExecPlant]:
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from fastapi.testclient import TestClient
+
+    plant = _ExecPlant(sql, copy)
+    app = create_app()
+    exe = Executor(
+        cortex=plant, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    app.state.ask_service = exe
+    app.state.cortex = plant
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/ask",
+        json={"question": "how many inventory rows", "session_id": "ses_cte", "space_id": OPS},
+    )
+    assert response.status_code == 200, response.text
+    env = response.json()
+    assert_envelope_valid(env)
+    return env, plant
+
+
+@pytest.mark.parametrize(("name", "sql"), _CTE_SCOPE_HOLES)
+def test_cte_name_in_another_scope_is_checked_as_a_relation(
+    name: str, sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fail on 1bfa5ca: every shape served rows computed over ``suppliers``."""
+    import shutil
+
+    from dms_executor.gen_path_refuse import customer_abstain_text
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    assert _binds_base_suppliers(sql), name
+    db = ensure_demo_warehouse(tmp_path / "cte.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert "inventory" in grants and "suppliers" not in grants
+    refused = customer_abstain_text("ungranted")
+
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") == "ungranted", name
+    assert (
+        validate_compiled_sql(sql, grantable=grants, warehouse=db, dialect="duckdb")
+        == "ungranted"
+    ), name
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id=f"ses_cte_user_{name}"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is True, name
+    assert user["badge"] == "ABSTAIN", name
+    assert user["rows"] == [], name
+    assert user["values"] == [], name
+    assert user["sql_used"] is None, name
+    assert user["text"] == refused, name
+    assert "validate:ungranted" in _reason(user), name
+    assert "suppliers" not in json.dumps(user), name
+
+    copy = tmp_path / "plant.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is True, name
+    assert env["badge"] == "ABSTAIN", name
+    assert env["rows"] == [], name
+    assert env["values"] == [], name
+    assert env["sql_used"] is None, name
+    assert env["text"] == refused, name
+    assert "validate:ungranted" in _reason(env), name
+    assert "suppliers" not in json.dumps(env), name
+    assert plant.submits == [], name
+
+
+@pytest.mark.parametrize("sql", _CTE_IN_SCOPE)
+def test_cte_in_scope_still_serves_real_rows(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fix is scope, not a ban on CTE names: an enclosing CTE still serves."""
+    import shutil
+
+    assert not _binds_base_suppliers(sql)
+    db = ensure_demo_warehouse(tmp_path / "cte_ok.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") is None
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id="ses_cte_ok_user"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is False
+    assert user["rows"] == [{"n": 7}]
+    assert user["text"] == "Query result."
+    assert "suppliers" not in json.dumps(user["rows"])
+
+    copy = tmp_path / "plant_ok.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is False
+    assert env["badge"] != "ABSTAIN"
+    assert env["rows"] == [{"n": 7}]
+    assert env["text"] == "Found 1 row(s).\n  - n=7"
+    assert _sql_submits(plant.submits)
+
+
+def test_catalog_read_takes_the_serving_lease_not_the_ingest_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A qualified name reads the catalog on the chat path. That is a read lease.
+
+    Must-fail on 1bfa5ca after CONN-POOL-01: ``connect_file`` opened the ingest
+    writer, which waits for in-flight serving reads. With one held here it timed
+    out, the catalog was lost, and ``<database>.inventory`` stopped binding.
+    """
+    import dms_executor.lake_registry as lake_registry
+
+    db = ensure_demo_warehouse(tmp_path / "lease.duckdb")
+    monkeypatch.setenv("DMS_LAKE_INGEST_WAIT_S", "0.2")
+    real = lake_registry.open_lake
+    held = real(db, write=False)  # a serving read already in flight
+    modes: list[bool] = []
+
+    def _spy(path: Path | str, *, write: bool = False) -> Any:
+        modes.append(write)
+        return real(path, write=write)
+
+    monkeypatch.setattr(lake_registry, "open_lake", _spy)
+    try:
+        # ``lease`` is this file's database name, so only the catalog binds it.
+        gap = serve_gap(
+            "SELECT COUNT(*) AS n FROM lease.inventory",
+            grantable={"inventory"},
+            dialect="duckdb",
+            warehouse=db,
+        )
+    finally:
+        held.close()
+    assert modes == [False]
+    assert gap is None
