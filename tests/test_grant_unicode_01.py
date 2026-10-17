@@ -18,7 +18,12 @@ from dms_api.app import create_app
 from dms_api.settings import get_settings
 from dms_executor import Executor
 from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
-from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, ensure_demo_warehouse
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    connect_file,
+    connect_serving,
+    ensure_demo_warehouse,
+)
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.gen_path_refuse import customer_abstain_text
 from dms_executor.generative_ask import validate_compiled_sql
@@ -279,6 +284,7 @@ def test_granted_unicode_table_serves_same_rows(
     assert body["badge"] == "L2_VALIDATED"
     assert body["abstained"] is False
     assert body["rows"] == _SERVED_ROWS
+    assert body["text"] == f"Found 1 row(s).\n  - n={_PLANTED}"
     assert "Catalog Error" not in json.dumps(body)
     assert cortex.calls == 1
     assert cortex.sql_submits == 1
@@ -294,8 +300,8 @@ def test_granted_ascii_query_stays_served(
     assert_envelope_valid(body)
     assert body["badge"] == "L2_VALIDATED"
     assert body["abstained"] is False
-    assert body["rows"]
-    assert any("location_code" in row for row in body["rows"])
+    assert body["rows"] == [{"location_code": "WH-C"}]
+    assert body["text"] == "Found 1 row(s).\n  - location_code=WH-C"
     assert "Catalog Error" not in json.dumps(body)
     assert cortex.calls == 1
     assert cortex.sql_submits == 1
@@ -329,3 +335,139 @@ def test_schema_qualified_unicode_and_cte_refs(tmp_path: Path) -> None:
         warehouse=db,
     )
     assert hidden == "ungranted:人员"
+
+
+# Ungranted tables planted in the lake: (id, name, the one row it holds).
+_SECRET = 4242
+_PLANTS = (
+    ("ascii", "payroll_secret", _SECRET),
+    ("unicode", "人员", _PLANTED),
+)
+
+# Each shape reads the planted table {t} in DuckDB. Main refused the first
+# five as ungranted. The previous head served them: it skipped a FROM item
+# that is a function call, kept one source per alias, and took a recursive
+# CTE's anchor for the CTE. Main and the previous head both served the
+# LATERAL function and the SUMMARIZE subquery.
+_BYPASS_SHAPES = (
+    ("query_table", "SELECT n FROM query_table('{t}')"),
+    ("query", "SELECT n FROM query('SELECT n FROM {t}')"),
+    ("duckdb_tables", "SELECT table_name AS n FROM duckdb_tables() WHERE table_name = '{t}'"),
+    ("alias_shadow", "SELECT n FROM {t}, (SELECT 1 AS z) AS {t}"),
+    (
+        "recursive_cte",
+        "WITH RECURSIVE {t} AS (SELECT n FROM {t} UNION ALL SELECT 1 WHERE false) "
+        "SELECT n FROM {t}",
+    ),
+    ("lateral_function", "SELECT n FROM (SELECT 1 AS k) AS d, LATERAL query_table('{t}')"),
+    ("summarize", 'SELECT "max" AS n FROM (SUMMARIZE {t})'),
+)
+
+
+def _plant(table: str, value: int) -> Any:
+    def _prepare(db: Path) -> None:
+        con = connect_file(db)
+        try:
+            con.execute(f'CREATE TABLE "{table}" (n INTEGER)')
+            con.execute(f'INSERT INTO "{table}" VALUES (?)', [value])
+        finally:
+            con.close()
+
+    return _prepare
+
+
+def _serving_rows(db: Path, sql: str) -> list[tuple[Any, ...]]:
+    con = connect_serving(db)
+    try:
+        return list(con.execute(sql).fetchall())
+    finally:
+        con.close()
+
+
+@pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
+@pytest.mark.parametrize(("plant", "table", "value"), _PLANTS, ids=[p[0] for p in _PLANTS])
+@pytest.mark.parametrize(("shape", "template"), _BYPASS_SHAPES, ids=[s[0] for s in _BYPASS_SHAPES])
+def test_unprovable_read_of_ungranted_table_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cloop: bool,
+    plant: str,
+    table: str,
+    value: int,
+    shape: str,
+    template: str,
+) -> None:
+    del plant
+    sql = template.format(t=table)
+    body, cortex = _ask(tmp_path, monkeypatch, sql, cloop=cloop, prepare=_plant(table, value))
+    _assert_direct_refusal(body, cortex, table)
+    assert str(value) not in json.dumps(body)
+
+    # The refusal matters: the serving connection does read the planted table.
+    leaked = _serving_rows(tmp_path / "unicode.duckdb", sql)
+    expected = table if shape == "duckdb_tables" else str(value)
+    assert [str(row[0]) for row in leaked] == [expected]
+
+
+@pytest.mark.parametrize("cloop", [False, True], ids=["flag-off", "cloop-b"])
+@pytest.mark.parametrize(("plant", "table", "value"), _PLANTS, ids=[p[0] for p in _PLANTS])
+def test_cte_named_after_ungranted_table_serves_the_cte(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cloop: bool,
+    plant: str,
+    table: str,
+    value: int,
+) -> None:
+    """The query body binds the name to the CTE, so this reads locations only."""
+    del plant
+    sql = f"WITH {table} AS (SELECT location_code AS n FROM locations) SELECT n FROM {table}"
+    body, cortex = _ask(tmp_path, monkeypatch, sql, cloop=cloop, prepare=_plant(table, value))
+    assert_envelope_valid(body)
+    assert body["badge"] == "L2_VALIDATED"
+    assert body["abstained"] is False
+    codes = ["WH-A", "WH-B", "WH-C", "WH-D", "WH-E"]
+    assert body["rows"] == [{"n": c} for c in codes]
+    assert body["text"] == "Found 5 row(s).\n" + "\n".join(f"  - n={c}" for c in codes)
+    assert str(value) not in json.dumps(body)
+    assert cortex.sql_submits == 1
+
+
+def test_names_the_check_cannot_prove_are_refused(tmp_path: Path) -> None:
+    db = tmp_path / "names.duckdb"
+    ensure_demo_warehouse(db)
+    _plant("payroll_secret", _SECRET)(db)
+    _plant("ä", 1)(db)
+    _plant("Ä", 777)(db)
+    grants = {*_GRANTS, "ä"}
+    refused = {
+        # CALL parses as an opaque Command, so its table is not visible.
+        "SELECT 1 AS n; CALL query_table('payroll_secret')": "ungranted",
+        # DuckDB folds ASCII letters only: "Ä" is a table apart from "ä".
+        'SELECT n FROM "Ä"': "ungranted:Ä",
+        'WITH "ä" AS (SELECT location_code AS n FROM locations) SELECT n FROM "Ä"': (
+            "ungranted:Ä"
+        ),
+        # A CTE body that names a later CTE reads the base table.
+        "WITH a AS (SELECT n FROM payroll_secret), payroll_secret AS (SELECT 1 AS n) "
+        "SELECT n FROM a": "ungranted:payroll_secret",
+        # A CTE inside a subquery does not cover the same name outside it.
+        "SELECT payroll_secret.n FROM (WITH payroll_secret AS (SELECT 1 AS n) "
+        "SELECT n FROM payroll_secret) AS q, payroll_secret": "ungranted:payroll_secret",
+    }
+    for sql, reason in refused.items():
+        assert validate_compiled_sql(sql, grantable=grants, warehouse=db) == reason, sql
+        rows = [str(v) for row in _serving_rows(db, sql) for v in row]
+        assert {"4242", "777"} & set(rows), sql
+
+    served = (
+        'SELECT n FROM "ä"',
+        "WITH locations AS (SELECT * FROM locations WHERE is_cold_storage) "
+        "SELECT location_code FROM locations",
+        "WITH a AS (SELECT location_code FROM locations), b AS (SELECT * FROM a) SELECT * FROM b",
+        "WITH x AS (SELECT location_code FROM locations) "
+        "SELECT * FROM x UNION ALL SELECT location_code FROM x",
+        "WITH X AS (SELECT location_code FROM locations) SELECT * FROM x",
+    )
+    for sql in served:
+        assert validate_compiled_sql(sql, grantable=grants, warehouse=db) is None, sql

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import re
+import string
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -672,40 +673,82 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
-def _serving_relation_names(sql: str) -> set[str] | None:
-    """Bare table names sqlglot sees in the serving dialect.
+_ASCII_FOLD = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
 
-    A schema-qualified name contributes its table identifier. A CTE
-    reference is not a table. None means the SQL did not parse, so the
-    grant check cannot see the tables.
+
+def _duckdb_fold(name: str) -> str:
+    """Fold a name the way DuckDB matches it: ASCII letters only.
+
+    DuckDB keeps "Ä" and "ä" as two tables. str.lower() merged them, so a
+    grant on one passed a read of the other.
+    """
+    return name.translate(_ASCII_FOLD)
+
+
+def _binds_to_cte(table: Any, name: str) -> bool:
+    """True only when DuckDB binds this unqualified table name to a CTE.
+
+    The nearest enclosing WITH that defines the name decides. The query body
+    sees every CTE. A CTE body sees only the CTEs before it. A reference to
+    its own name or to a later CTE binds to the base table in DuckDB, and so
+    does the anchor of a recursive CTE. That is not proven, so the name is
+    grant-checked.
+    """
+    from sqlglot import exp
+
+    path = [table]
+    node = table.parent
+    while node is not None:
+        with_ = node.args.get("with")
+        if isinstance(with_, exp.With):
+            ctes = list(with_.expressions)
+            names = [_duckdb_fold(cte.alias_or_name) for cte in ctes]
+            if name in names:
+                if path[-1] is not with_:
+                    return True
+                at = next((i for i, cte in enumerate(ctes) if cte is path[-2]), 0)
+                return name not in names[at:]
+        path.append(node)
+        node = node.parent
+    return False
+
+
+def _serving_relation_names(sql: str) -> set[str] | None:
+    """Bare names of the tables DuckDB reads, for the grant check.
+
+    Every ``Table`` node counts. Scope sources are keyed by alias, so
+    ``(SELECT 1) AS payroll_secret`` hid the real ``payroll_secret``. A
+    schema-qualified name contributes its table identifier. An unqualified
+    name is skipped only when it certainly binds to a CTE.
+
+    None means the check cannot prove what the SQL reads, and the caller
+    refuses. That covers SQL that does not parse, and a statement that is not
+    a query (``CALL`` parses as an opaque Command). It also covers a FROM,
+    JOIN or LATERAL item that is a function call and not a table name
+    (``query_table``, ``query``, ``duckdb_tables``, ``range``).
     """
     from sqlglot import exp, parse
-    from sqlglot.optimizer.scope import traverse_scope
 
     try:
         trees = [tree for tree in parse(sql or "", read=SERVING_DIALECT) if tree is not None]
     except Exception:
         return None
+    items = (exp.Table, exp.Subquery, exp.Unnest, exp.Values, exp.Lateral)
     names: set[str] = set()
     for tree in trees:
-        try:
-            scopes = list(traverse_scope(tree))
-        except Exception:
+        if not isinstance(tree, exp.Query) or tree.find(exp.Command) is not None:
             return None
-        sources: list[Any] = []
-        if scopes:
-            for scope in scopes:
-                sources.extend(scope.sources.values())
-        else:
-            sources.extend(tree.find_all(exp.Table))
-        for source in sources:
-            if not isinstance(source, exp.Table):
-                continue
-            if not isinstance(source.this, exp.Identifier):
-                continue
-            bare = str(source.name or "").strip().lower()
-            if bare:
-                names.add(bare)
+        for clause in tree.find_all(exp.From, exp.Join, exp.Lateral):
+            allowed = (exp.Subquery,) if isinstance(clause, exp.Lateral) else items
+            if not isinstance(clause.this, allowed):
+                return None
+        for table in tree.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier):
+                return None
+            name = _duckdb_fold(table.name)
+            qualified = table.args.get("db") or table.args.get("catalog")
+            if qualified or not _binds_to_cte(table, name):
+                names.add(name)
     return names
 
 
