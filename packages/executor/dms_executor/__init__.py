@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -1046,6 +1047,7 @@ class Executor:
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
+        dms_payload = self._ask_payload(question, acl)
         try:
             raise_if_ask_stopped()
             resp = self._cortex.ask(
@@ -1053,6 +1055,7 @@ class Executor:
                     question=question,
                     session_id=acl.session_id,
                     space_id=space_id,
+                    dms_payload=dms_payload,
                 )
             )
         except (
@@ -1074,6 +1077,7 @@ class Executor:
                         question=question,
                         session_id=acl.session_id,
                         space_id=space_id,
+                        dms_payload=dms_payload,
                     )
                 )
             else:
@@ -1119,6 +1123,27 @@ class Executor:
         self._store_turn(session_id, space_id, env)
         return env
 
+    def _ask_payload(self, question: str, acl: SessionAcl) -> dict[str, Any] | None:
+        """WIRE-01: the tables, columns and joins Cortex's plan+SQL ladder may use.
+
+        Sent only under DMS_SCHEMA_CONTEXT, the flag that already governs
+        sending schema to Cortex. Built from the minted grant, so it can only
+        narrow what Cortex will allow. None when off or when nothing survives.
+        """
+        from cortex_client.insights import schema_context_enabled
+
+        if not schema_context_enabled():
+            return None
+        from dms_executor.ask_payload import build_dms_payload
+
+        warehouse, ontology = _served_check_inputs(ensure_demo_warehouse(self._warehouse))
+        return build_dms_payload(
+            question,
+            serving=warehouse,
+            readable=sorted(acl.row_predicates),
+            ontology=ontology,
+        )
+
     def submit_sql(
         self,
         sql: str,
@@ -1158,7 +1183,16 @@ class Executor:
 
 #: Engine routes that mean "no answer was produced". Authoritative over any
 #: badge the engine sends alongside them - see map_ask_response_to_envelope.
-_REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
+_REFUSAL_ROUTES = frozenset(
+    {"abstain", "blocked", "needs_clarification", "refused", "reconfirm"}
+)
+
+#: Cortex plan+SQL rungs that serve model SQL (cortex-contract 1.5.0).
+_PLAN_SQL_MODEL_RUNG = re.compile(r"^(plan|stronger-model|error-fed-retry-[1-9][0-9]*)$")
+_RECONFIRM_TEXT = (
+    "I can't answer that question as asked, so no figure is shown. "
+    "Try the closest question I can answer, listed below."
+)
 
 _BADGE_MAP = {
     "certified": "L0_CERTIFIED",
@@ -1258,7 +1292,12 @@ def map_ask_response_to_envelope(
     # The engine-side fix - teaching _is_abstain_signal about "refused" - is
     # still needed and is not what this is. This is the half DMS owns: whatever
     # the engine sends, DMS does not put a confident badge on a refusal.
-    refused = route_l in _REFUSAL_ROUTES
+    reconfirm = (
+        route_l == "reconfirm"
+        or str(resp.badge or "").strip().lower() == "reconfirm"
+        or resp.reconfirm is not None
+    )
+    refused = route_l in _REFUSAL_ROUTES or reconfirm
     engine_unsure = resp.unsure is True
     if refused or engine_unsure:
         badge_raw = "abstain"
@@ -1389,7 +1428,9 @@ def map_ask_response_to_envelope(
         "contributing_sources": sources,
         "rows": [] if abstained else rows,
         "chart": None if abstained else chart,
-        "suggestions": list(resp.suggestions or []),
+        "suggestions": _closest(resp) + list(resp.suggestions or []) if reconfirm else list(
+            resp.suggestions or []
+        ),
         "audit_id": resp.receipt_id or resp.audit_id,
         "route": resp.route,
         "drillthrough_token": None if abstained else token,
@@ -1397,6 +1438,12 @@ def map_ask_response_to_envelope(
         "competing_scopes": competing_scopes,
         "exclude_reasons": list(resp.exclude_reasons) if resp.exclude_reasons else None,
     }
+    if reconfirm:
+        # Cortex asks to confirm a closest question. DMS has no yes/no round
+        # trip yet, so it refuses and offers that question; Cortex's own
+        # reason is not echoed (it may name tables the viewer cannot see).
+        fields["text"] = _RECONFIRM_TEXT
+        fields["assumptions"] = [*assumptions, "plan_sql: reconfirm"]
     if abstained:
         env = build_abstain(
             reason=f"reconfirm:{gate_finding}" if gate_finding else "abstain",
@@ -1422,8 +1469,37 @@ def map_ask_response_to_envelope(
                 stage="served_gate",
                 **fields,
             )
+    _stamp_plan_sql(env, resp)
     assert_envelope_valid(env)
     return env
+
+
+def _closest(resp: AskResponse) -> list[str]:
+    """Cortex's closest answerable question from a reconfirm, if it sent one."""
+    raw = resp.reconfirm if isinstance(resp.reconfirm, dict) else {}
+    closest = str(raw.get("closest_question") or "").strip()
+    return [closest] if closest else []
+
+
+def _stamp_plan_sql(env: dict[str, Any], resp: AskResponse) -> None:
+    """Copy the Cortex plan+SQL stamps onto the envelope, never computed here.
+
+    ``ladder_rung`` is the rung verbatim; a served model rung is model SQL
+    (``plan_origin`` generate_sql). The per-step call counts keep their own
+    key: ``model_calls`` is the ask's own counter.
+    """
+    rung = str(resp.plan_sql_rung or "").strip()
+    if not rung:
+        return
+    env["ladder_rung"] = rung
+    if resp.served_model:
+        env["served_model"] = resp.served_model
+    if resp.served_provider:
+        env["served_provider"] = resp.served_provider
+    if isinstance(resp.model_calls, dict):
+        env["model_calls_by_step"] = dict(resp.model_calls)
+    if not env.get("abstained") and _PLAN_SQL_MODEL_RUNG.match(rung):
+        env["plan_origin"] = "generate_sql"
 
 
 def datetime_now() -> str:
