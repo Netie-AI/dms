@@ -73,40 +73,47 @@ def _sql_outside_space(sql: str, grantable: set[str]) -> set[str]:
 
 
 def _ensure(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {_TABLE} (
-          asset_id VARCHAR PRIMARY KEY,
-          space_id VARCHAR NOT NULL,
-          question VARCHAR NOT NULL,
-          question_norm VARCHAR NOT NULL,
-          sql_text VARCHAR NOT NULL,
-          synonyms_json VARCHAR NOT NULL,
-          created_at TIMESTAMPTZ,
-          pack_hash VARCHAR
+    from dms_executor.lake_schema import catalog_lock
+
+    # First CREATE from two cursors write-write conflicts. Later IF NOT EXISTS does not.
+    with catalog_lock:
+        con.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {_TABLE} (
+              asset_id VARCHAR PRIMARY KEY,
+              space_id VARCHAR NOT NULL,
+              question VARCHAR NOT NULL,
+              question_norm VARCHAR NOT NULL,
+              sql_text VARCHAR NOT NULL,
+              synonyms_json VARCHAR NOT NULL,
+              created_at TIMESTAMPTZ,
+              pack_hash VARCHAR
+            )
+            """
         )
-        """
-    )
-    # Tables created before pack_hash existed. CREATE IF NOT EXISTS does not
-    # add the column. NULL means no provenance: the filter then uses the SQL
-    # content hash and, when result hashes are configured, the result hash.
-    names = {
-        str(row[0]).lower()
-        for row in con.execute(
-            """
-            SELECT column_name FROM information_schema.columns
-            WHERE table_name = '_verified_queries'
-            """
-        ).fetchall()
-    }
-    if "pack_hash" not in names:
-        con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN pack_hash VARCHAR")
+        # Tables created before pack_hash existed. CREATE IF NOT EXISTS does not
+        # add the column. NULL means no provenance: the filter then uses the SQL
+        # content hash and, when result hashes are configured, the result hash.
+        names = {
+            str(row[0]).lower()
+            for row in con.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = '_verified_queries'
+                """
+            ).fetchall()
+        }
+        if "pack_hash" not in names:
+            con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN pack_hash VARCHAR")
 
 
-def _connect(path: Path | None) -> duckdb.DuckDBPyConnection:
+def _connect(path: Path | None, *, write: bool = False) -> duckdb.DuckDBPyConnection:
+    from dms_executor.demo_warehouse import connect_file, connect_serving
+
     db = ensure_demo_warehouse(path)
-    # Write-mode: mixed read_only=True vs RW on one file 500s DuckDB.
-    return duckdb.connect(str(db))
+    if write:
+        return connect_file(db, write=True)
+    return connect_serving(db)
 
 
 def _cell(value: Any) -> Any:
@@ -162,20 +169,28 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
-    """Load one Space, then drop scored-pack rows. The only SELECT."""
-    con = _connect(db)
-    try:
-        _ensure(con)
-        raw = con.execute(
-            f"""
+    """Load one Space on the serving connection, then drop scored-pack rows.
+
+    Register creates the table. Lookup does not: a missing table is no rows.
+    A table from before ``pack_hash`` is read with a null provenance column.
+    """
+    def _sql(pack_expr: str) -> str:
+        return f"""
             SELECT asset_id, space_id, question, question_norm, sql_text,
-                   synonyms_json, created_at, pack_hash
+                   synonyms_json, created_at, {pack_expr}
             FROM {_TABLE}
             WHERE space_id = ?
             ORDER BY created_at DESC
-            """,
-            [sid],
-        ).fetchall()
+        """
+
+    con = _connect(db)
+    try:
+        try:
+            raw = con.execute(_sql("pack_hash"), [sid]).fetchall()
+        except duckdb.CatalogException:
+            return []
+        except duckdb.BinderException:
+            raw = con.execute(_sql("NULL"), [sid]).fetchall()
     finally:
         con.close()
     return filter_retrieved_rows((_stored_row(row) for row in raw), warehouse=db)
@@ -218,7 +233,7 @@ def register_verified_query(
     asset_id = f"vq_{uuid.uuid4().hex[:16]}"
     created = datetime.now(UTC)
     with _LOCK:
-        con = _connect(db)
+        con = _connect(db, write=True)
         try:
             _ensure(con)
             con.execute(
