@@ -37,6 +37,7 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.ontology import demo_ontology
+from dms_executor.route_stamp import route_of
 
 _BASE = "http://127.0.0.1:8010"
 _KEY = "fake-steward-key-for-served-attr-tests"
@@ -217,19 +218,23 @@ def test_ranking_after_model_call_reports_served_fields(
     leg = {"phase": "generate", **_STAMP, **_SERVED}
     fake = _Http([leg, leg], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
+    assert env["plan_origin"] == "ontology_ranking"
     assert env["served_route"] == "ontology_compile"
-    assert env["plan_origin"] == "compile"
+    assert env["ladder_rung"] == "compile"
     # A model call happened. The served SQL is the ontology compile, not that
     # model's SQL, so credit is missing. The copied served_* fields stay.
     assert env["served_attribution"] == "missing"
+    assert env["served_model"] == _SERVED["served_model"]
+    # The copied model name does not make the compile route contradictory.
+    assert route_of(env) == "ontology_compile"
     assert env["generate_legs"]["legs"][0] == {"returned": "nothing", **_SERVED}
 
 
 def test_ranking_after_model_call_without_served_is_missing(tmp_path: Path) -> None:
     fake = _Http([{"phase": "generate", **_STAMP}], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
+    assert env["plan_origin"] == "ontology_ranking"
     assert env["served_route"] == "ontology_compile"
-    assert env["plan_origin"] == "compile"
     assert env["served_attribution"] == "missing"
 
 
@@ -256,8 +261,8 @@ def test_ranking_only_with_no_model_call_is_none(tmp_path: Path) -> None:
     }
     fake = _Http([unarmed, unarmed], ranking=["cq_cold_storage"])
     env = _assert_answered_includes_wh_c(_ask(tmp_path, _COLD_Q, fake))
+    assert env["plan_origin"] == "ontology_ranking"
     assert env["served_route"] == "ontology_compile"
-    assert env["plan_origin"] == "compile"
     assert env["generate_legs"]["count"] >= 1
     assert env["served_attribution"] == "none"
 

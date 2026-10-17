@@ -91,7 +91,6 @@ from dms_executor.ontology import (
 )
 from dms_executor.route_stamp import (
     ROUTE_COMPILE,
-    ROUTE_EXEC,
     ROUTE_LADDER,
     ROUTE_MODEL,
     freeze_route,
@@ -727,13 +726,15 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _sql_route(payload: dict[str, Any] | None) -> tuple[str, str | None]:
-    """Model SQL names the model. Executed SQL with no model is the L2 stub."""
+def _sql_route(payload: dict[str, Any] | None) -> str:
+    """Model SQL is the model route only when the producer named the model.
+
+    No ``served_model`` is missing attribution (SERVED-ATTR-01): no route is
+    stamped, so the envelope stays unattributed. It is never a rule path.
+    """
     raw = payload.get("served_model") if isinstance(payload, dict) else None
     name = str(raw).strip() if isinstance(raw, str) else ""
-    if name:
-        return ROUTE_MODEL, name
-    return ROUTE_EXEC, None
+    return ROUTE_MODEL if name else ""
 
 
 def _abstain(
@@ -785,7 +786,6 @@ def _l2_envelope(
     plan_origin: str = "",
     lead: str = "",
     served_route: str = "",
-    served_model: str | None = None,
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -822,7 +822,7 @@ def _l2_envelope(
         assert_envelope_valid(env)
         env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
         if served_route:
-            stamp_route(env, served_route, served_model=served_model)
+            stamp_route(env, served_route)
         return env
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
@@ -860,7 +860,7 @@ def _l2_envelope(
             "error": f"{type(exc).__name__}: {exc}",
         }
     if served_route:
-        stamp_route(env, served_route, served_model=served_model)
+        stamp_route(env, served_route)
     return env
 
 
@@ -882,7 +882,6 @@ def _submit_validated(
     plan_origin: str = "",
     lead: str = "",
     served_route: str = "",
-    served_model: str | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -980,7 +979,6 @@ def _submit_validated(
         plan_origin=plan_origin,
         lead=lead,
         served_route=served_route,
-        served_model=served_model,
     )
 
 
@@ -1245,7 +1243,6 @@ def _run_extract_loop(
         return None
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
-        route, model = _sql_route(payload)
         return _submit_validated(
             sql,
             question=question,
@@ -1258,8 +1255,7 @@ def _run_extract_loop(
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
-            served_route=route,
-            served_model=model,
+            served_route=_sql_route(payload),
         )
 
     def abstain(
@@ -1309,16 +1305,13 @@ def _run_extract_loop(
             grounded_tables=sorted(cited_relations(sql)),
         )
         assert_envelope_valid(env)
-        route, model = _sql_route(payload)
-        stamped = stamp_route(
-            with_plan_origin(
-                with_plan_source(env, PLAN_SOURCE_ONTOLOGY),
-                PLAN_ORIGIN_GENERATE_SQL,
-            ),
-            route,
-            served_model=model,
+        stamped = with_plan_origin(
+            with_plan_source(env, PLAN_SOURCE_ONTOLOGY),
+            PLAN_ORIGIN_GENERATE_SQL,
         )
-        assert stamped is not None
+        route = _sql_route(payload)
+        if route:
+            stamp_route(stamped, route)
         return stamped
 
     return run_model_loop(
@@ -1729,9 +1722,7 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
-            sql_route, sql_model = _sql_route(
-                payload if isinstance(payload, dict) else None
-            )
+            sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(
                     sql,
@@ -1746,7 +1737,6 @@ def maybe_generative_ask(
                     warehouse=lake,
                     plan_origin=origin,
                     served_route=sql_route,
-                    served_model=sql_model,
                 )
             )
     if kind != "plan":

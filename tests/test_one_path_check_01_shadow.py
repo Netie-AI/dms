@@ -3,8 +3,7 @@
 The 52-question replay is the existing flag-off fixture
 (``tests/fixtures/ask_guide``). ``as_of`` is the wall clock, so both sides
 replace it. The other allowed differences are ``served_check_shadow`` and
-the route stamp fields (``served_route``, ``plan_origin``, ``ladder_rung``,
-``served_model``).
+the two keys ROUTE-STAMP-01 adds (``served_route`` and ``ladder_rung``).
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ import json
 from typing import Any
 
 import pytest
-from dms_executor.route_stamp import STAMP_FIELDS
 
 from tests.fixtures.ask_guide.capture_flag_off_52 import HERE, dump_rows, replay_pack
 
@@ -46,7 +44,7 @@ def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
 def _stable(env: dict[str, Any]) -> dict[str, Any]:
     out = dict(env)
     out.pop(_SHADOW, None)
-    for key in STAMP_FIELDS:
+    for key in ("served_route", "ladder_rung"):
         out.pop(key, None)
     if "as_of" in out:
         out["as_of"] = _AS_OF

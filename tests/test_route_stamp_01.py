@@ -3,9 +3,10 @@
 COPY-only is the Dockerfile COPY set (no tests/). Insights are unarmed and
 submit executes the product SQL. Flags off and on, every envelope has one
 route. A planted contradiction is not a route. Answers stay the main bytes
-apart from the stamp fields, as_of, and ticket_id. Unordered SQL uses the
-row-order rule: rows, value cells, and the row lines in the text compare
-as a set.
+apart from the two new keys (served_route, ladder_rung), as_of, and
+ticket_id: plan_origin, served_model, and abstain_reason are compared.
+Unordered SQL uses the row-order rule: rows, value cells, and the row lines
+in the text compare as a set.
 """
 
 from __future__ import annotations
@@ -18,23 +19,24 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
-from dms_executor.route_stamp import ROUTES, is_abstain_route, route_of
+from cortex_client.models import AskResponse
+from dms_executor import map_ask_response_to_envelope
+from dms_executor.abstain import build_abstain
+from dms_executor.route_stamp import (
+    ROUTE_L1,
+    ROUTES,
+    is_abstain_route,
+    route_of,
+    stamp_route,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "route_stamp"
 PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
-_VOLATILE = frozenset(
-    {
-        "as_of",
-        "ticket_id",
-        "served_route",
-        "plan_origin",
-        "ladder_rung",
-        "served_model",
-        "abstain_reason",
-    }
-)
+# Wall clock, per-run ticket ids, and the two keys this PR adds. Nothing else.
+_VOLATILE = frozenset({"as_of", "ticket_id", "served_route", "ladder_rung"})
 
 _ASK = r"""
 import json, os
@@ -301,7 +303,12 @@ def _no_sql(env: dict[str, Any]) -> bool:
 
 
 def no_sql_route_violation(env: dict[str, Any]) -> str:
-    """Why a no-SQL envelope is compile, L1, or ai. Empty when it is abstain:<stage>."""
+    """Why a no-SQL envelope is compile, L1, or ai. Empty when it is abstain:<stage>.
+
+    Reads the builder's stamp (``served_route``, ``ladder_rung``).
+    ``plan_origin`` is the producer's copied stamp, compared to main bytes
+    elsewhere, and the customer reason is compared to main bytes too.
+    """
     if not _no_sql(env):
         return ""
     if str(env.get("badge") or "") == "L1_GOVERNED_METRIC":
@@ -309,13 +316,9 @@ def no_sql_route_violation(env: dict[str, Any]) -> str:
     route = str(env.get("served_route") or "").strip()
     if not is_abstain_route(route):
         return f"served_route {route or 'missing'}"
-    for key in ("plan_origin", "ladder_rung"):
-        token = str(env.get(key) or "").strip().lower()
-        if token in _FORBIDDEN_ROUTE or (token and not is_abstain_route(token)):
-            return f"{key} {token or 'missing'}"
-    reason = str(env.get("abstain_reason") or "").strip()
-    if not reason or reason.lower() in _FORBIDDEN_ROUTE:
-        return "abstain_reason"
+    rung = str(env.get("ladder_rung") or "").strip().lower()
+    if rung in _FORBIDDEN_ROUTE or rung != route:
+        return f"ladder_rung {rung or 'missing'}"
     return ""
 
 
@@ -380,6 +383,146 @@ def test_planted_contradiction_is_not_a_route() -> None:
     src = (ROOT / "packages/executor/dms_executor/route_stamp.py").read_text(encoding="utf-8")
     assert "lane_for_route" not in src
     assert "NO_MODEL_LANES" not in src
+
+
+def _from_dir(rel: str, module: str) -> Any:
+    import importlib
+
+    path = str(ROOT / rel)
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    return importlib.import_module(module)
+
+
+def _rendered_reason(env: dict[str, Any]) -> str:
+    """The reason the customer sees: rt_grader order, same as the UI's namedAbstainReason."""
+    return str(_from_dir("tests/redteam", "rt_grader").abstain_reason(env))
+
+
+def _grade52_path(env: dict[str, Any]) -> str:
+    return str(_from_dir("scripts/verify", "grade52").serve_path(env))
+
+
+def test_cortex_abstain_keeps_the_named_reason() -> None:
+    """The ticket code ``abstain`` is not the customer's reason."""
+    named = "no governed metric for spend by bin"
+    resp = AskResponse(
+        answer=f"I can't answer that: {named}",
+        badge="ABSTAIN",
+        abstained=True,
+        assumptions=[named],
+        route="abstain",
+    )
+    env = map_ask_response_to_envelope(resp, session_id="ses_rs", question="spend by bin")
+    assert env["abstained"] is True
+    assert "abstain_reason" not in env
+    assert _rendered_reason(env) == named
+    assert env["served_route"] == "abstain:cortex_ask"
+    assert env["ladder_rung"] == "abstain:cortex_ask"
+    assert "plan_origin" not in env
+    assert route_of(env) == "abstain:cortex_ask"
+
+
+def test_build_abstain_writes_abstain_reason_only_when_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+    fields: dict[str, Any] = {
+        "answer_id": "ans_rs",
+        "text": "Abstained: insights are not armed.",
+        "assumptions": ["GEN-01: insights_unarmed"],
+        "as_of": "2026-01-01T00:00:00Z",
+        "ask_mode": "live",
+        "route": "generated",
+    }
+    coded = build_abstain(reason="insights_unarmed", stage="generative", **dict(fields))
+    assert "abstain_reason" not in coded
+    assert _rendered_reason(coded) == "insights_unarmed"
+    assert coded["served_route"] == "abstain:generative"
+    named = build_abstain(
+        reason="reserved_param:as_of",
+        stage="generative",
+        abstain_reason="reserved_param:as_of",
+        **dict(fields),
+    )
+    assert named["abstain_reason"] == "reserved_param:as_of"
+
+
+def test_cortex_l2_answer_is_unattributed_not_a_rule_path() -> None:
+    """Cortex does not say which route built an L2 answer. DMS invents none."""
+    resp = AskResponse(
+        answer="Found 1 row(s).",
+        badge="L2_VALIDATED",
+        abstained=False,
+        sql_used="SELECT 1 AS n",
+        rows=[{"n": 1}],
+        values=[{"id": "v0", "value": 1.0, "label": "n"}],
+        route="generated",
+    )
+    env = map_ask_response_to_envelope(resp, session_id="ses_rs", question="count")
+    assert env["badge"] == "L2_VALIDATED"
+    for key in ("served_route", "ladder_rung", "plan_origin"):
+        assert key not in env, key
+    assert route_of(env) == "unattributed"
+    assert _grade52_path(env) == "unattributed"
+
+
+def test_cortex_l1_badge_is_the_l1_rung() -> None:
+    resp = AskResponse(
+        answer="Found 1 row(s).",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        sql_used="SELECT 1 AS n",
+        rows=[{"n": 1}],
+        values=[{"id": "v0", "value": 1.0, "label": "n"}],
+        route="metric",
+    )
+    env = map_ask_response_to_envelope(resp, session_id="ses_rs", question="count")
+    assert env["abstained"] is False
+    assert env["served_route"] == ROUTE_L1
+    assert env["ladder_rung"] == "l1"
+    assert "plan_origin" not in env
+    assert route_of(env) == ROUTE_L1
+    assert _grade52_path(env) == "L1"
+
+
+def test_stamp_route_does_not_relabel_a_no_sql_abstain() -> None:
+    env: dict[str, Any] = {
+        "abstained": True,
+        "sql_used": None,
+        "served_route": "abstain:envelope",
+        "ladder_rung": "abstain:envelope",
+    }
+    stamp_route(env, ROUTE_L1)
+    assert env["served_route"] == "abstain:envelope"
+    assert env["ladder_rung"] == "abstain:envelope"
+    assert no_sql_route_violation(env) == ""
+    ran = {"abstained": True, "sql_used": "SELECT 1"}
+    stamp_route(ran, ROUTE_L1)
+    assert ran["served_route"] == ROUTE_L1
+
+
+def test_route_of_reads_the_builder_stamp() -> None:
+    compile_with_model = {
+        "served_route": "ontology_compile",
+        "ladder_rung": "compile",
+        "plan_origin": "ontology_ranking",
+        "served_model": "model-305-unique",
+    }
+    assert route_of(compile_with_model) == "ontology_compile"
+    assert _grade52_path(compile_with_model) == "compile"
+    model = {
+        "served_route": "model",
+        "ladder_rung": "generate_sql",
+        "plan_origin": "generate_sql",
+        "served_model": "model-305-unique",
+    }
+    assert route_of(model) == "model"
+    assert _grade52_path(model) == "ai"
+    assert route_of({**model, "served_model": ""}) == "contradictory"
+    assert route_of({**model, "plan_origin": "ontology_ranking"}) == "contradictory"
+    assert route_of({"ladder_rung": "compile"}) == "contradictory"
+    assert route_of({"served_route": "ontology_compile", "ladder_rung": "l1"}) == "contradictory"
 
 
 def test_copy_only_52_flags_off_one_route(tmp_path: Path) -> None:

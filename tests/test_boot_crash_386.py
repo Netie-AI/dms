@@ -462,22 +462,17 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     ids = [row["id"] for row in _cases()]
     assert set(golden["cases"]) == set(ids)
     assert list(got["cases"]) == ids
+    # Only the two keys ROUTE-STAMP-01 adds. Every existing field is compared.
     def _drop(body: Any) -> Any:
         if isinstance(body, dict):
             return {
                 key: _drop(val)
                 for key, val in body.items()
-                if key not in {
-                    "served_route",
-                    "plan_origin",
-                    "ladder_rung",
-                    "served_model",
-                    "abstain_reason",
-                }
+                if key not in {"served_route", "ladder_rung"}
             }
         if isinstance(body, list):
             return [_drop(val) for val in body]
         return body
 
     for qid in ids:
-        assert _drop(got["cases"][qid]) == _drop(golden["cases"][qid]), qid
+        assert _drop(got["cases"][qid]) == golden["cases"][qid], qid

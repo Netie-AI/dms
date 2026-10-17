@@ -1354,30 +1354,17 @@ def map_ask_response_to_envelope(
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
-    from dms_executor.route_stamp import (
-        ROUTE_EXEC,
-        ROUTE_L1,
-        ROUTE_LADDER,
-        ROUTE_MODEL,
-        ROUTE_VERIFIED,
-        stamp_route,
-    )
+    from dms_executor.route_stamp import ROUTE_L1, ROUTE_VERIFIED, stamp_route
 
-    model = str(getattr(resp, "served_model", None) or "").strip()
-    if abstained:
-        # build_abstain already wrote abstain:<stage>. Do not relabel it.
-        return env
-    if badge == "L0_CERTIFIED":
-        route = ROUTE_VERIFIED
-    elif badge == "L1_GOVERNED_METRIC":
-        route = ROUTE_L1
-    elif badge == "L2_VALIDATED" and model:
-        route = ROUTE_MODEL
-    elif badge == "L2_VALIDATED":
-        route = ROUTE_EXEC
-    else:
-        route = ROUTE_LADDER
-    stamp_route(env, route, served_model=model or None)
+    # Cortex built this answer. Its own L0/L1 badge names the rung (grade52
+    # reads the same badge). Any other badge, L2 included, does not say which
+    # route served it, so nothing is stamped and it stays unattributed. An
+    # abstain keeps the abstain:<stage> that build_abstain wrote.
+    served = {"L0_CERTIFIED": ROUTE_VERIFIED, "L1_GOVERNED_METRIC": ROUTE_L1}.get(
+        str(env.get("badge") or "")
+    )
+    if served and env.get("abstained") is not True:
+        stamp_route(env, served)
     return env
 
 

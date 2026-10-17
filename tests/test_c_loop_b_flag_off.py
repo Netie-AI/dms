@@ -6,7 +6,9 @@ does not route on question words.
 
 Wall-clock fields are placeholders. Every other key and value is
 compared, including ``served_check_shadow``. A key main does not send
-fails the test.
+fails the test. The two ROUTE-STAMP-01 keys (``served_route`` and
+``ladder_rung``) are new and are the only keys removed before the compare;
+``plan_origin``, ``served_model`` and ``abstain_reason`` stay compared.
 
 The fixture bytes were captured from ce08153. The same bytes match
 beabdc6 (skills quarantine, no stamp on this stub).
@@ -96,21 +98,12 @@ def _freeze(env: dict[str, Any]) -> dict[str, Any]:
     return frozen
 
 
-_STAMP_FIELDS = frozenset(
-    {"served_route", "plan_origin", "ladder_rung", "served_model", "abstain_reason"}
-)
+# New in ROUTE-STAMP-01. Main never sends them. Nothing else is masked.
+_NEW_ROUTE_KEYS = frozenset({"served_route", "ladder_rung"})
 
 
-def _drop_stamps(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _drop_stamps(item)
-            for key, item in value.items()
-            if key not in _STAMP_FIELDS
-        }
-    if isinstance(value, list):
-        return [_drop_stamps(item) for item in value]
-    return value
+def _drop_new_route_keys(env: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in env.items() if key not in _NEW_ROUTE_KEYS}
 
 
 def _extra_keys(main: Any, got: Any, path: str = "") -> list[str]:
@@ -243,16 +236,16 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
     canned = 0
     extras_all: list[tuple[str, list[str]]] = []
     for index, question in enumerate(_questions()):
-        env = _drop_stamps(got[index]["envelope"])
-        main = _drop_stamps(expected[index]["envelope"])
+        env = _drop_new_route_keys(got[index]["envelope"])
+        main = expected[index]["envelope"]
         assert expected[index]["question"] == question
         extras = _extra_keys(main, env)
         if extras:
             extras_all.append((question, extras))
     assert extras_all == [], extras_all
     for index, question in enumerate(_questions()):
-        env = _drop_stamps(got[index]["envelope"])
-        main = _drop_stamps(expected[index]["envelope"])
+        env = _drop_new_route_keys(got[index]["envelope"])
+        main = expected[index]["envelope"]
         assert env == main, question
         if env.get("badge") == "L2_VALIDATED":
             l2 += 1

@@ -22,7 +22,6 @@ from cortex_client.compute import compute_insights, compute_query, insights_fail
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.ontology import Ontology
-from dms_executor.route_stamp import STAMP_FIELDS
 from test_gen_restore_01 import _grantable, _ledger_ok, _ontology, _seed
 
 _TIMEOUT_ENV = "DMS_INSIGHTS_TIMEOUT_S"
@@ -163,7 +162,8 @@ def test_unset_timeout_abstain_is_byte_identical_to_6f7139a3(
         payload = _compute(_Scripted(time_out=leg))
         env = dict(_ask(payload, onto, wh))
         env["as_of"] = "<as_of>"
-        for key in STAMP_FIELDS:
+        # Only the two keys ROUTE-STAMP-01 adds.
+        for key in ("served_route", "ladder_rung"):
             env.pop(key, None)
         got[leg] = {"payload": payload, "envelope": env}
         assert payload is not None and payload["insights_fail"] == "insights_timeout"

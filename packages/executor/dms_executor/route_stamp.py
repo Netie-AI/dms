@@ -1,12 +1,13 @@
 """Route stamp written by the path that builds the envelope.
 
-One field set: ``served_route`` plus ``plan_origin``, ``ladder_rung``, and
-``served_model``. The builder writes it. A later copy of setup fields must
-not add a second family; ``freeze_route`` puts the builder's profile back
-and does not choose a route.
+Two fields: ``served_route`` and ``ladder_rung``. The builder writes them.
+``plan_origin`` and ``served_model`` are the producer's copied stamps and
+this module never writes them. A path with no attribution (model SQL whose
+producer did not name the model) writes no stamp, so it stays unattributed.
+``freeze_route`` puts the builder's rung back and does not choose a route.
 
-Companions are the tokens grade52 (a2b39e21) already treats as one path.
-This module does not read the question or a lane table.
+Rungs are the tokens grade52 already reads. This module does not read the
+question or a lane table.
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ from typing import Any
 ROUTE_VERIFIED = "verified_query"
 ROUTE_L1 = "l1_governed_metric"
 ROUTE_COMPILE = "ontology_compile"
-ROUTE_EXEC = "exec_stub_l2"
 ROUTE_LADDER = "ladder_rung"
 ROUTE_MODEL = "model"
 
@@ -24,38 +24,20 @@ ROUTES = (
     ROUTE_VERIFIED,
     ROUTE_L1,
     ROUTE_COMPILE,
-    ROUTE_EXEC,
     ROUTE_LADDER,
     ROUTE_MODEL,
 )
 
-# plan_origin, ladder_rung, whether a non-empty served_model belongs.
-_PROFILES: dict[str, tuple[str, str, bool]] = {
-    ROUTE_VERIFIED: ("l0", "l0", False),
-    ROUTE_L1: ("l1", "l1", False),
-    ROUTE_COMPILE: ("compile", "compile", False),
-    ROUTE_EXEC: ("oracle", "oracle", False),
-    ROUTE_LADDER: ("compile", "compile", False),
-    ROUTE_MODEL: ("generate_sql", "generate_sql", True),
+# ladder_rung, and whether the route needs a non-empty served_model.
+_PROFILES: dict[str, tuple[str, bool]] = {
+    ROUTE_VERIFIED: ("l0", False),
+    ROUTE_L1: ("l1", False),
+    ROUTE_COMPILE: ("compile", False),
+    ROUTE_LADDER: ("compile", False),
+    ROUTE_MODEL: ("generate_sql", True),
 }
 
-STAMP_FIELDS = (
-    "served_route",
-    "plan_origin",
-    "ladder_rung",
-    "served_model",
-    "abstain_reason",
-)
-
-# Stamp tokens. Not question words and not a lane table.
-_RULE_TOKENS = {
-    "l0": "l0",
-    "l0_certified": "l0",
-    "l1": "l1",
-    "l1_governed_metric": "l1",
-    "compile": "compile",
-    "oracle": "oracle",
-}
+# Producer plan_origin tokens that name model SQL.
 _AI_TOKENS = frozenset({"generate_sql", "model_sql", "ai"})
 
 
@@ -66,6 +48,11 @@ def _text(env: dict[str, Any], key: str) -> str:
     if raw is None:
         return ""
     return str(raw).strip()
+
+
+def _ran_sql(env: dict[str, Any]) -> bool:
+    sql_used = env.get("sql_used")
+    return isinstance(sql_used, str) and bool(sql_used.strip())
 
 
 def abstain_route(stage: str) -> str:
@@ -83,27 +70,6 @@ def is_abstain_route(route: str) -> bool:
     )
 
 
-def _claim(token: str) -> str:
-    if is_abstain_route(token):
-        return "abstain"
-    if token in _RULE_TOKENS:
-        return _RULE_TOKENS[token]
-    if token in _AI_TOKENS:
-        return "ai"
-    return "unknown"
-
-
-def _families(env: dict[str, Any]) -> set[str]:
-    claims: list[str] = []
-    for key in ("plan_origin", "ladder_rung"):
-        token = _text(env, key).lower()
-        if token:
-            claims.append(_claim(token))
-    if _text(env, "served_model"):
-        claims.append("ai")
-    return set(claims)
-
-
 def stamp_abstain(
     env: dict[str, Any] | None,
     *,
@@ -111,14 +77,13 @@ def stamp_abstain(
 ) -> dict[str, Any] | None:
     """No-SQL abstain route. Not compile, L1, or ai.
 
-    The reason code is written by ``build_abstain``. This function does not
-    assign ``abstain_reason``.
+    Writes ``served_route`` and ``ladder_rung`` only. The customer reason
+    (``abstain_reason``, assumptions, text) is not touched here.
     """
     if not isinstance(env, dict):
         return env
     route = abstain_route(stage)
     env["served_route"] = route
-    env["plan_origin"] = route
     env["ladder_rung"] = route
     return env
 
@@ -126,76 +91,62 @@ def stamp_abstain(
 def stamp_route(
     env: dict[str, Any] | None,
     route: str,
-    *,
-    served_model: str | None = None,
 ) -> dict[str, Any] | None:
-    """Write this path's stamp. Call at the build site."""
+    """Write this path's stamp. Call at the build site.
+
+    A no-SQL abstain keeps its ``abstain:<stage>`` stamp: nothing was served.
+    """
     if not isinstance(env, dict):
         return env
-    origin, rung, needs_model = _PROFILES[route]
+    if env.get("abstained") is True and not _ran_sql(env):
+        return env
+    rung, _needs_model = _PROFILES[route]
     env["served_route"] = route
-    env["plan_origin"] = origin
     env["ladder_rung"] = rung
-    if needs_model:
-        model = str(served_model or "").strip()
-        if model:
-            env["served_model"] = model
     return env
 
 
 def freeze_route(env: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Put back the profile the builder already wrote. Does not pick a route."""
+    """Put back the rung the builder already wrote. Does not pick a route."""
     if not isinstance(env, dict):
         return env
     route = _text(env, "served_route")
     if is_abstain_route(route):
-        env["served_route"] = route
-        env["plan_origin"] = route
         env["ladder_rung"] = route
         return env
     if route not in _PROFILES:
         return env
-    return stamp_route(env, route, served_model=_text(env, "served_model") or None)
+    env["ladder_rung"] = _PROFILES[route][0]
+    return env
 
 
 def route_of(env: dict[str, Any] | None) -> str:
     """The one route this envelope claims, or unattributed, or contradictory.
 
-    Reads the stamp fields only. A missing ``served_route`` is unattributed
-    unless the companions disagree, which is contradictory.
+    Reads the builder's stamp. No ``served_route`` and no ``ladder_rung`` is
+    unattributed; half a stamp is contradictory. ``served_model`` is a copied
+    setup field, so a model name beside a compile route does not change it
+    (grade52 counts that compile too). The model route needs a model name,
+    and a producer ``plan_origin`` there must name model SQL.
     """
     if not isinstance(env, dict):
         return "unattributed"
-    families = _families(env)
-    if len(families) > 1 or "unknown" in families:
-        return "contradictory"
     route = _text(env, "served_route")
-    if is_abstain_route(route):
-        if families != {"abstain"}:
-            return "contradictory"
-        if _text(env, "plan_origin") != route or _text(env, "ladder_rung") != route:
-            return "contradictory"
-        if not _text(env, "abstain_reason"):
-            return "contradictory"
-        return route
+    rung = _text(env, "ladder_rung").lower()
     if not route:
-        return "unattributed"
+        return "contradictory" if rung else "unattributed"
+    if is_abstain_route(route):
+        return route if rung == route else "contradictory"
     profile = _PROFILES.get(route)
     if profile is None:
         return "contradictory"
-    origin, rung, needs_model = profile
-    if _text(env, "plan_origin").lower() != origin or _text(env, "ladder_rung").lower() != rung:
+    expected_rung, needs_model = profile
+    if rung != expected_rung:
         return "contradictory"
-    model = _text(env, "served_model")
-    if needs_model != bool(model):
-        return "contradictory"
-    if families and families != {_family_for(route)}:
-        return "contradictory"
-    return route
-
-
-def _family_for(route: str) -> str:
-    origin, _rung, needs_model = _PROFILES[route]
     if needs_model:
-        return "ai"
-    return _RULE_TOKENS[origin]
+        if not _text(env, "served_model"):
+            return "contradictory"
+        origin = _text(env, "plan_origin").lower()
+        if origin and origin not in _AI_TOKENS:
+            return "contradictory"
+    return route
