@@ -133,6 +133,7 @@ def _ask(
         submit=_submit(db),
         ledger_append=_ledger,
         ontology=onto,
+        dialect="duckdb",
     )
 
 
@@ -281,6 +282,7 @@ def test_timeout_leg_already_on_payload_is_missing(tmp_path: Path) -> None:
             submit=_submit(db),
             ledger_append=_ledger,
             ontology=onto,
+            dialect="duckdb",
         )
     )
     assert env["generate_legs"]["legs"] == [{"returned": "timeout"}]

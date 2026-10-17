@@ -310,9 +310,11 @@ def test_ask_in_space_is_l0_foreign_space_misses(
 
 def test_match_without_cortex_submit_does_not_stamp_l0(warehouse: Path) -> None:
     """Planted: restoring local execute_sql would go red if this stays None."""
-    register_verified_query(space_id=FINANCE, question=QUESTION, sql=SQL, path=warehouse)
+    register_verified_query(space_id=FINANCE, question=QUESTION, sql=SQL, path=warehouse,
+        dialect="duckdb")
     env = maybe_verified_ask(
-        QUESTION, space_id=FINANCE, warehouse=warehouse, session_id="ses_vq02_nsubmit"
+        QUESTION, space_id=FINANCE, warehouse=warehouse, session_id="ses_vq02_nsubmit",
+        dialect="duckdb",
     )
     assert env is None
 
