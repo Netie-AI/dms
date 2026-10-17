@@ -606,11 +606,13 @@ def test_first_call_keeps_the_per_leg_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _flags(monkeypatch, cloop=True)
-    # Bound 3 s, cap 2: a split would give the first call 1 s, less than the reply.
-    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "3")
+    # Bound 5.4 s, cap 2: a split would give the first call 1.8 s, less than
+    # the 2.0 s reply. The rest of the ask keeps 3.4 s, so a slow box does not
+    # cut the checks, probe and submit that follow the reply.
+    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "5.4")
     db = tmp_path / "keep.duckdb"
     ensure_demo_warehouse(db)
-    cortex = _SlowGood(db, sleep_s=1.8)
+    cortex = _SlowGood(db, sleep_s=2.0)
     env = _chat_ask(db, cortex, _COLD_Q, monkeypatch)
     assert cortex.calls == 1
     assert env.get("abstained") is not True
