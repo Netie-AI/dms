@@ -38,6 +38,21 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def quote_ident(name: str) -> str:
+    """``name`` as ONE DuckDB quoted identifier: every ``"`` doubled, nothing else read.
+
+    A source column name is whatever the source's author typed. Interpolated as
+    ``"{name}"`` a ``"`` closes the identifier and the rest runs as SQL, and DuckDB's
+    ``execute`` runs a multi-statement string, so a column name could create a table,
+    ``COPY ... TO`` a file or ``ATTACH`` a database on the lake. NUL and the empty string
+    are not identifiers DuckDB can parse at all; they are refused here, by name, instead
+    of surfacing as a ``ParserException``.
+    """
+    if not isinstance(name, str) or not name or "\x00" in name:
+        raise ValueError(f"not a usable identifier: {name!r}")
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _safe_table_stem(filename: str) -> str:
     return "".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40]
 
@@ -514,13 +529,16 @@ def write_bronze_rows(
         schema, name = "bronze", table
     if not columns:
         raise ValueError("columns required")
+    # Every name is quoted (and refused when it cannot be an identifier) BEFORE the lake is
+    # opened, so a refused write leaves the existing table in place.
+    rel = f"{quote_ident(schema)}.{quote_ident(name)}"
+    col_defs = ", ".join(f"{quote_ident(c)} VARCHAR" for c in columns)
     db = ensure_demo_warehouse(path or warehouse_path())
     con = connect_file(db, write=True)
     try:
         ensure_lake_schemas(con)
-        con.execute(f'DROP TABLE IF EXISTS "{schema}"."{name}"')
-        col_defs = ", ".join(f'"{c}" VARCHAR' for c in columns)
-        con.execute(f'CREATE TEMP TABLE _bronze_raw ({col_defs})')
+        con.execute(f"DROP TABLE IF EXISTS {rel}")
+        con.execute(f"CREATE TEMP TABLE _bronze_raw ({col_defs})")
         if rows:
             con.executemany(
                 f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * len(columns))})",
@@ -528,7 +546,7 @@ def write_bronze_rows(
             )
         con.execute(
             f"""
-            CREATE TABLE "{schema}"."{name}" AS
+            CREATE TABLE {rel} AS
             SELECT
               src.*,
               [{{'ref_id': '{ref_id}', 'row': row_number() OVER ()::INTEGER}}] AS _src,
