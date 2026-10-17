@@ -854,11 +854,13 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    refused = _ungranted(_serving_relation_names(sql), grantable)
-    if refused:
-        return refused
+    named = _serving_relation_names(sql)
+    if named is not None:
+        refused = _ungranted(named, grantable)
+        if refused:
+            return refused
     if warehouse is None or not Path(warehouse).is_file():
-        return "warehouse_missing"
+        return "ungranted" if named is None else "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
     # off). Refuse anything that is not one SELECT before EXPLAIN runs.
     con = connect_serving(Path(warehouse))
@@ -866,6 +868,10 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
+        # A read set sqlglot could not prove refuses after the statement-type
+        # gate, so a non-SELECT or a syntax error keeps its own reason (main).
+        if named is None:
+            return "ungranted"
         # The read set in DuckDB's own parse must be granted too, not only the
         # one sqlglot saw. json_serialize_sql parses the text and runs none of it.
         refused = _ungranted(_duckdb_read_names(con, sql), grantable)
