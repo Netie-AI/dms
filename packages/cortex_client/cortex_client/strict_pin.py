@@ -118,7 +118,11 @@ def _base_url() -> str | None:
 
 
 def stamp_generate_body(body: Mapping[str, Any]) -> dict[str, Any]:
-    """Copy ``body`` and, when the pin is sendable, set model + JSON true strict."""
+    """Copy ``body`` and, when the pin is sendable, set model + JSON true strict.
+
+    OpenVault chat only. Cortex ``/v1/insights`` must not use this: those
+    keys are unknown fields there. Routing for Insights stays in OpenVault.
+    """
     out = dict(body)
     cfg = pin_config()
     if cfg.refusal:
