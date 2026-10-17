@@ -149,6 +149,9 @@ export type AskPayload = {
   /** Tables the user grounded the question in. Narrows the session manifest,
    *  so the scope is enforced by the engine, not suggested to the model. */
   grounded_tables?: string[] | null;
+  clarify_id?: string;
+  option_id?: string;
+  clarify_text?: string;
 };
 
 export async function postAsk(
@@ -165,6 +168,9 @@ export async function postAsk(
       grounded_tables: payload.grounded_tables?.length
         ? payload.grounded_tables
         : undefined,
+      clarify_id: payload.clarify_id,
+      option_id: payload.option_id,
+      clarify_text: payload.clarify_text,
     }),
     signal,
   });

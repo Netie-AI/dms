@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/api";
+import { clarifyPickPayload } from "@/lib/clarifyPick";
 import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import { storedProductMode, type ProductMode } from "@/lib/productMode";
@@ -77,6 +78,11 @@ type AppState = {
   groundedLabels: string[];
   setGrounded: (tables: string[], labels?: string[]) => void;
   ask: (question: string) => Promise<void>;
+  replyClarify: (
+    envelope: AnswerEnvelope,
+    optionId: string | null,
+    freeText?: string,
+  ) => Promise<void>;
   clearThread: () => void;
   focusedSourceId: string | null;
   setFocusedSourceId: (id: string | null) => void;
@@ -366,6 +372,44 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const replyClarify = useCallback(
+    async (envelope: AnswerEnvelope, optionId: string | null, freeText?: string) => {
+      const payload = clarifyPickPayload(envelope, optionId, freeText);
+      if (!payload.question || !payload.clarify_id) return;
+      const label = optionId
+        ? envelope.options?.find((opt) => opt.id === optionId)?.label || optionId
+        : (freeText || "").trim();
+      if (!label) return;
+      const userId = `u_${Date.now()}`;
+      setMessages((prev) => [...prev, { id: userId, role: "user", text: label }]);
+      setAsking(true);
+      setActivity({ label: "Asking…", progress: null });
+      setAskError(null);
+      try {
+        const next = await postAsk({
+          question: payload.question,
+          space_id: activeSpaceIdRef.current,
+          session_id: sessionIdRef.current,
+          grounded_tables: groundedTablesRef.current,
+          clarify_id: payload.clarify_id,
+          option_id: payload.option_id,
+          clarify_text: payload.clarify_text,
+        });
+        setMessages((prev) => [
+          ...prev,
+          { id: next.answer_id || `a_${Date.now()}`, role: "assistant", envelope: next },
+        ]);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "ask failed";
+        setAskError(msg);
+      } finally {
+        setAsking(false);
+        setActivity(null);
+      }
+    },
+    [],
+  );
+
   const drainQueue = useCallback(async () => {
     if (drainingRef.current) return;
     drainingRef.current = true;
@@ -448,6 +492,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     activity,
     setActivity,
     ask,
+    replyClarify,
     clearThread,
     focusedSourceId,
     setFocusedSourceId,

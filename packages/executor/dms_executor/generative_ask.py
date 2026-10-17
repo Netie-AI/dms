@@ -1202,6 +1202,62 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
     )
 
 
+def _clarify_grounded_skip(
+    question: str,
+    *,
+    tables: list[str] | None,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None] | None,
+    clarify_store: dict[str, Any] | None,
+    clarify_model: Any,
+    clarify_locked: bool,
+    clarify_original: str | None,
+    space_id: str | None,
+    session_id: str | None,
+) -> Any:
+    """Clarify a file-grounded ask, which otherwise skips this function.
+
+    ``None`` means clarify did not run. A gate with an envelope is the
+    clarify reply. A gate with ``skipped`` set means the writer was down
+    and the caller continues the normal pipeline.
+    """
+    if not tables or compute is None or clarify_locked or clarify_store is None:
+        return None
+    from dms_executor.ask_clarify import clarify_enabled, consider_clarify
+
+    if not clarify_enabled():
+        return None
+    q = normalize_ask_question(question)
+    if not q:
+        return None
+    if warehouse is not None:
+        lake: Path | None = Path(warehouse)
+    else:
+        candidate = warehouse_path()
+        lake = candidate if candidate.is_file() else None
+    if lake is not None and not lake.is_file():
+        lake = None
+    allowed = set(grantable) if grantable is not None else set()
+    try:
+        ctx = retrieve_short_context(
+            q, warehouse=lake, grantable=allowed, ontology=None
+        )
+    except Exception:  # noqa: BLE001 -- skip clarify, keep the grounded miss
+        return None
+    gate = consider_clarify(
+        q,
+        original=clarify_original or q,
+        warehouse=lake,
+        grantable=allowed,
+        ctx=ctx,
+        store=clarify_store,
+        model=clarify_model,
+        space_id=space_id,
+        session_id=session_id,
+        compute=compute,
+    )
+    return gate
 def _run_extract_loop(
     *,
     question: str,
@@ -1326,6 +1382,35 @@ def _run_extract_loop(
     )
 
 
+def _compute_or_none(compute: Any, ctx: Any) -> Any:
+    """One compute call. A miss is None (do not 503 the steward); a serving
+    deadline or lease refusal is the caller's answer and is re-raised."""
+    try:
+        payload = compute(ctx)
+    except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
+        from dms_executor.lake_registry import (
+            ServingDeadlineExceeded,
+            ServingDeadlineReserve,
+            ServingLeaseCap,
+            ServingLeaseQueueFull,
+            ServingWaitCancelled,
+        )
+
+        if isinstance(
+            exc,
+            (
+                ServingLeaseCap,
+                ServingLeaseQueueFull,
+                ServingWaitCancelled,
+                ServingDeadlineExceeded,
+                ServingDeadlineReserve,
+            ),
+        ):
+            raise
+        return None
+    return payload
+
+
 def maybe_generative_ask(
     question: str,
     *,
@@ -1339,6 +1424,11 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    clarify_store: dict[str, Any] | None = None,
+    clarify_model: Any = None,
+    clarify_locked: bool = False,
+    clarify_original: str | None = None,
+    clarify_skip_out: list[str] | None = None,
     dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
@@ -1370,6 +1460,25 @@ def maybe_generative_ask(
     File-grounded asks skip.
     """
     if tables or compute is None or submit is None or ledger_append is None:
+        # Grounded asks skip generative compile. Ambiguity is still structural,
+        # and only when the flag is on. A clear ask adds no model call.
+        clarified = _clarify_grounded_skip(
+            question,
+            tables=tables,
+            warehouse=warehouse,
+            grantable=grantable,
+            compute=compute,
+            clarify_store=clarify_store,
+            clarify_model=clarify_model,
+            clarify_locked=clarify_locked,
+            clarify_original=clarify_original,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if clarified is not None and clarified.skipped and clarify_skip_out is not None:
+            clarify_skip_out.append(clarified.skipped)
+        if clarified is not None and clarified.envelope is not None:
+            return clarified.envelope
         return None
     q = normalize_ask_question(question)
     if not q:
@@ -1466,29 +1575,54 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
-    try:
-        payload = compute(ctx)
-    except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
-        from dms_executor.lake_registry import (
-            ServingDeadlineExceeded,
-            ServingDeadlineReserve,
-            ServingLeaseCap,
-            ServingLeaseQueueFull,
-            ServingWaitCancelled,
-        )
+    # ASK-CLARIFY-01. Flag off, or a resolved pick, keeps the compute call
+    # below byte-for-byte. A clear retrieval makes zero extra model calls.
+    payload: dict[str, Any] | None
+    prefetched = False
+    from dms_executor.ask_clarify import clarify_enabled
 
-        if isinstance(
-            exc,
-            (
-                ServingLeaseCap,
-                ServingLeaseQueueFull,
-                ServingWaitCancelled,
-                ServingDeadlineExceeded,
-                ServingDeadlineReserve,
-            ),
-        ):
-            raise
-        payload = None
+    if not clarify_locked and clarify_store is not None and clarify_enabled():
+        from dms_executor.ask_clarify import clarify_from_planner, consider_clarify
+
+        gate = consider_clarify(
+            q,
+            original=clarify_original or q,
+            warehouse=lake,
+            grantable=set(allowed),
+            ctx=ctx,
+            store=clarify_store,
+            model=clarify_model,
+            space_id=space_id,
+            session_id=session_id,
+            compute=compute,
+        )
+        if gate.skipped and clarify_skip_out is not None:
+            clarify_skip_out.append(gate.skipped)
+        if gate.envelope is not None:
+            return gate.envelope
+        if gate.prefetched:
+            payload = gate.payload if isinstance(gate.payload, dict) else None
+            prefetched = True
+        else:
+            payload = None
+        if not prefetched:
+            payload = _compute_or_none(compute, ctx)
+        if gate.check_planner:
+            planned = clarify_from_planner(
+                payload,
+                question=q,
+                original=clarify_original or q,
+                warehouse=lake,
+                grantable=set(allowed),
+                ctx=ctx,
+                store=clarify_store,
+                space_id=space_id,
+                session_id=session_id,
+            )
+            if planned is not None:
+                return planned
+    else:
+        payload = _compute_or_none(compute, ctx)
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
     # or drop Cortex setup fields. Ranking merge keeps these keys.
     setup_src = payload if isinstance(payload, dict) else None

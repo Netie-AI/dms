@@ -151,7 +151,7 @@ def case_expect(case: dict[str, Any], bronze_names: list[str] | None) -> str | N
 
 
 def _tally() -> dict[str, int]:
-    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0}
+    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0, "CLARIFY": 0}
 
 
 def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:

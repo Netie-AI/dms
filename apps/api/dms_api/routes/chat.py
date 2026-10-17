@@ -133,6 +133,11 @@ class AskBody(BaseModel):
     #: sets DMS_HARNESS_ASK_PATHS (GEN-03). A body field, not an x-dms header
     #: (DR-0004), and the switch that allows it is server config, not the request.
     ask_path: Literal["product", "exact", "generative"] | None = None
+    #: ASK-CLARIFY-01. A prior clarify envelope's id plus the picked option
+    #: (or free text). Ignored unless DMS_ASK_CLARIFY is on.
+    clarify_id: str | None = Field(default=None, max_length=64)
+    option_id: str | None = Field(default=None, max_length=64)
+    clarify_text: str | None = Field(default=None, max_length=500)
 
 
 #: The ask_path values only a measurement origin may run (GEN-03).
@@ -260,6 +265,15 @@ def _stop_client_disconnect(task: asyncio.Task[None] | None) -> None:
         return
 
 
+def _reask_text(body: AskBody) -> str | None:
+    """The free text a clarify re-ask would run, or None when there is none."""
+    if body.clarify_id and not body.option_id:
+        text = (body.clarify_text or "").strip()
+        if text:
+            return text
+    return None
+
+
 @router.post("/ask")
 def chat_ask(
     body: AskBody,
@@ -301,6 +315,21 @@ def chat_ask(
         metadata={"question": body.question, "space_id": body.space_id, "task_id": "chat.ask"},
         client=cortex,
     )
+    # Hard rule 8: the gate also judges the text that actually runs. A free-text
+    # clarify re-ask (clarify_id + clarify_text, no option_id) executes
+    # clarify_text, not body.question. Which of the two runs depends on the
+    # DMS_ASK_CLARIFY flag, so both are gated and the first hard denial wins.
+    reask = _reask_text(body)
+    if reask is not None and reask != body.question:
+        reask_decision = compliance_gate(
+            action="chat.ask",
+            metadata={"question": reask, "space_id": body.space_id, "task_id": "chat.ask"},
+            client=cortex,
+        )
+        if not reask_decision.allowed and (
+            decision.allowed or decision.reason in _SOFT_GATE
+        ):
+            decision = reask_decision
 
     # BANK-02 (dms#269): one audit row per ask, written once the outcome is known.
     # Asks that never reach the gate (the lane refusal, an unknown Space) are
@@ -381,6 +410,9 @@ def _answer_ask(
                 session_id=body.session_id,
                 tables=body.grounded_tables,
                 ask_path=body.ask_path,
+                clarify_id=body.clarify_id,
+                option_id=body.option_id,
+                clarify_text=body.clarify_text,
             )
         except GroundingRefused as exc:
             # Refusing is the fix, not the failure: this used to widen the manifest
