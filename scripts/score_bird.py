@@ -38,9 +38,12 @@ from score_bound import (  # noqa: E402
     zero_wrong_summary_bounded,
 )
 from score_curated import (  # noqa: E402
+    REFUSE,
     ask_error_envelope,
     judge,
+    judge_envelope_detailed,
     load_pack,
+    require_oracle_db,
 )
 
 DEFAULT_PACK = ROOT / "tests" / "fixtures" / "bird_minidev" / "questions.yaml"
@@ -52,6 +55,7 @@ EXIT_CONFIG = 2
 EXIT_BLOCKED = 3
 TRANSPORT_BLOCK = frozenset({"ConnectError", "ConnectTimeout", "ReadTimeout", "TimeoutException"})
 KEEP_REFUSE = frozenset({"demo_pack_bleed", "full_extract"})
+NO_ORACLE = "NO_ORACLE"
 
 
 def load_bird(path: Path = DEFAULT_PACK) -> dict[str, Any]:
@@ -151,10 +155,47 @@ def case_expect(case: dict[str, Any], bronze_names: list[str] | None) -> str | N
 
 
 def _tally() -> dict[str, int]:
-    return {"OK": 0, "ABSTAIN": 0, "LAYER": 0, "WRONG": 0}
+    return {
+        "OK": 0,
+        "ABSTAIN": 0,
+        "LAYER": 0,
+        "WRONG": 0,
+        NO_ORACLE: 0,
+        "ORACLE_ERROR": 0,
+        "INVALID": 0,
+    }
 
 
-def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
+def judge_case(
+    case: dict[str, Any],
+    env: dict[str, Any],
+    oracle_db: Path | None,
+) -> tuple[str, str]:
+    """(verdict, reason). Answer rows vs the case's gold_sql rows (dms#292 judge).
+
+    A refuse trap is judged by badge: green on a trap is WRONG with or without
+    rows. Any other case needs --oracle-db and a gold_sql, else NO_ORACLE:
+    a badge alone never claims OK or WRONG (SCORE-BIRD-ROWS-01 #300).
+    Gold SQL that errors is ORACLE_ERROR, never OK.
+    """
+    if str(case.get("expect") or "").lower() in REFUSE:
+        return judge(case, env), ""
+    sql = str(case.get("gold_sql") or "").strip()
+    if oracle_db is None:
+        return NO_ORACLE, "no --oracle-db"
+    if not sql:
+        return NO_ORACLE, "no gold_sql on case"
+    res = judge_envelope_detailed(
+        {**case, "expect": "l0"}, env, oracle_db=oracle_db, oracle_sql=sql
+    )
+    # l0 only marks a non-L0 badge; for BIRD a confident row match is OK.
+    return ("OK" if res.verdict == "LAYER" else res.verdict), res.reason
+
+
+def _path_report(
+    name: str, tallies: dict[str, int], n: int, *, oracle: bool = True
+) -> dict[str, Any]:
+    """Without an oracle, OK and answered are null: rows were not judged."""
     wrong = tallies["WRONG"]
     answered = tallies["OK"] + tallies["LAYER"]
     precision: float | None
@@ -165,14 +206,20 @@ def _path_report(name: str, tallies: dict[str, int], n: int) -> dict[str, Any]:
     return {
         "path": name,
         "n": n,
-        "ok": tallies["OK"],
-        "layer": tallies["LAYER"],
+        "oracle": oracle,
+        "ok": tallies["OK"] if oracle else None,
+        "layer": tallies["LAYER"] if oracle else None,
         "abstain": tallies["ABSTAIN"],
         "wrong": wrong,
-        "answered": answered,
-        "bound_pct": bound_pct(answered),
-        "precision_on_answered_pct": precision,
-        "coverage_answered_pct": round(100.0 * answered / n, 2) if n else 0.0,
+        "no_oracle": tallies.get(NO_ORACLE, 0),
+        "oracle_error": tallies.get("ORACLE_ERROR", 0),
+        "invalid": tallies.get("INVALID", 0),
+        "answered": answered if oracle else None,
+        "bound_pct": bound_pct(answered) if oracle else None,
+        "precision_on_answered_pct": precision if oracle else None,
+        "coverage_answered_pct": (
+            (round(100.0 * answered / n, 2) if n else 0.0) if oracle else None
+        ),
     }
 
 
@@ -396,6 +443,7 @@ def run_exact(
     pack: dict[str, Any],
     space_id: str,
     bronze_names: list[str] | None = None,
+    oracle_db: Path | None = None,
 ) -> tuple[dict[str, int], list[dict[str, Any]], int]:
     tallies = _tally()
     rows: list[dict[str, Any]] = []
@@ -410,7 +458,7 @@ def run_exact(
             continue
         scored = {**case, "expect": expect}
         env = exact_match_env(str(case["question"]), space_id)
-        verdict = judge(scored, env)
+        verdict, reason = judge_case(scored, env, oracle_db)
         tallies[verdict] += 1
         rows.append(
             {
@@ -418,9 +466,10 @@ def run_exact(
                 "expect": expect,
                 "exact": verdict,
                 "exact_badge": env.get("badge"),
+                "exact_reason": reason,
             }
         )
-        print(f"{qid}\texact\t{verdict}\t{env.get('badge')}\texpect={expect}")
+        print(f"{qid}\texact\t{verdict}\t{env.get('badge')}\texpect={expect}\t{reason}")
     return tallies, rows, skipped
 
 
@@ -430,6 +479,7 @@ def run_live(
     url: str,
     timeout: float,
     bronze_names: list[str] | None,
+    oracle_db: Path | None = None,
 ) -> tuple[str, dict[str, int], list[dict[str, Any]], int]:
     """Return (ok|blocked, tallies, per-case, skipped). blocked does not invent PASS."""
     tallies = _tally()
@@ -458,7 +508,7 @@ def run_live(
                 rows.append({"id": qid, "generative": "WRONG", "generative_badge": "ERROR"})
                 continue
             print(f"{qid}\tlive\tGRANT_REFUSE\t{type(exc).__name__}")
-        verdict = judge(scored, env)
+        verdict, reason = judge_case(scored, env, oracle_db)
         tallies[verdict] += 1
         n = len(env.get("rows") or env.get("values") or [])
         rows.append(
@@ -466,11 +516,12 @@ def run_live(
                 "id": qid,
                 "generative": verdict,
                 "generative_badge": env.get("badge"),
+                "generative_reason": reason,
                 "rows": n,
                 "expect": expect,
             }
         )
-        print(f"{qid}\tlive\t{verdict}\t{env.get('badge')}\trows={n}\texpect={expect}")
+        print(f"{qid}\tlive\t{verdict}\t{env.get('badge')}\trows={n}\texpect={expect}\t{reason}")
     return "ok", tallies, rows, skipped
 
 
@@ -494,40 +545,54 @@ def _write_artifact(report: dict[str, Any]) -> None:
     art.mkdir(parents=True, exist_ok=True)
     slim = {k: v for k, v in report.items() if k != "cases"}
     # A1-01: answered (OK+LAYER over measured paths) and its rule-of-three bound.
-    answered = sum(
-        int(slim[k].get("answered") or 0)
-        for k in ("exact_match", "generative")
-        if isinstance(slim.get(k), dict)
-    )
-    slim["answered"] = answered
-    slim["bound_pct"] = bound_pct(answered)
+    paths = [slim[k] for k in ("exact_match", "generative") if isinstance(slim.get(k), dict)]
+    if any(path.get("oracle") is False for path in paths):
+        # #300: rows not judged, so no answered count and no bound to claim.
+        slim["answered"] = None
+        slim["bound_pct"] = None
+    else:
+        answered = sum(int(path.get("answered") or 0) for path in paths)
+        slim["answered"] = answered
+        slim["bound_pct"] = bound_pct(answered)
     (art / "score_bird.json").write_text(json.dumps(slim, indent=2) + "\n", encoding="utf-8")
 
 
+def _na(value: Any) -> str:
+    return "n/a" if value is None else str(value)
+
+
 def print_paths(*rows: dict[str, Any]) -> None:
-    print(f"{'path':<22} n ok layer abstain wrong answered precision")
+    print(
+        f"{'path':<22} n ok layer abstain wrong no_oracle oracle_error invalid answered precision"
+    )
     for row in rows:
         prec = row.get("precision_on_answered_pct")
         prec_s = "n/a" if prec is None else f"{prec:.2f} pct"
         print(
-            f"{row['path']:<22} {row['n']} {row['ok']} {row['layer']} "
-            f"{row['abstain']} {row['wrong']} {row['answered']} {prec_s}"
+            f"{row['path']:<22} {row['n']} {_na(row['ok'])} {_na(row['layer'])} "
+            f"{row['abstain']} {row['wrong']} {row['no_oracle']} {row['oracle_error']} "
+            f"{row['invalid']} {_na(row['answered'])} {prec_s}"
         )
+        if not row.get("oracle"):
+            print(
+                f"  {row['path']}: no --oracle-db. Rows not judged; OK and answered "
+                "not reported. wrong counts refuse traps only."
+            )
 
 
 def _scored_n(pack_n: int, skipped: int) -> int:
     return max(pack_n - skipped, 0)
 
 
-def ab_offline() -> int:
+def ab_offline(oracle_db: Path | None = None) -> int:
     pack = load_bird()
     space = os.environ.get("BIRD_SPACE_ID", "").strip() or BIRD_SPACE
     snapshot = as_tables(pack["honesty"].get("attached_tables"))
     print("SCORE-BIRD-01 A/B exact-match only (no live Studio). generative=BLOCKED.")
     print_honesty(pack["honesty"], measured=snapshot)
-    exact_t, cases, skipped = run_exact(pack, space, snapshot)
+    exact_t, cases, skipped = run_exact(pack, space, snapshot, oracle_db)
     n = _scored_n(len(pack["questions"]), skipped)
-    exact_r = _path_report("exact_match", exact_t, n)
+    exact_r = _path_report("exact_match", exact_t, n, oracle=oracle_db is not None)
     exact_r["skipped"] = skipped
     print_paths(exact_r)
     if skipped:
@@ -538,6 +603,7 @@ def ab_offline() -> int:
         "kind": "dms.score_bird",
         "pack": "bird_minidev",
         "space_id": space,
+        "oracle_db": str(oracle_db) if oracle_db else None,
         "honesty": pack["honesty"],
         "measured_tables": snapshot,
         "leftover_remaining": leftover_remaining(len(snapshot)),
@@ -553,23 +619,28 @@ def ab_offline() -> int:
     if exact_r["wrong"]:
         print("FAIL: exact-match WRONG>0")
         return EXIT_FAIL
+    if exact_r["oracle_error"]:
+        print("FAIL: ORACLE_ERROR>0 (gold SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
     print("VERDICT: BLOCKED (generative not measured). Not COMPLETE.")
     return EXIT_BLOCKED
 
 
-def live(url: str, timeout: float, space_id: str) -> int:
+def live(url: str, timeout: float, space_id: str, oracle_db: Path | None = None) -> int:
     pack = load_bird()
     snapshot = as_tables(pack["honesty"].get("attached_tables"))
     print("SCORE-BIRD-01 live A/B: exact-match pack vs POST /v1/chat/ask (GEN-01).")
     print(f"space_id={space_id}")
     print(f"DMS_API_BASE={url}")
+    print(f"oracle_db={oracle_db if oracle_db else 'none (rows not judged: NO_ORACLE)'}")
     bronze_status, measured = fetch_bronze(url, space_id, timeout)
     names = measured if bronze_status == "ok" and measured else snapshot
     print_honesty(pack["honesty"], measured=names)
-    exact_t, exact_cases, skip_e = run_exact(pack, space_id, names)
-    status, live_t, live_cases, skip_g = run_live(pack, space_id, url, timeout, names)
+    exact_t, exact_cases, skip_e = run_exact(pack, space_id, names, oracle_db)
+    status, live_t, live_cases, skip_g = run_live(pack, space_id, url, timeout, names, oracle_db)
     pack_n = len(pack["questions"])
-    exact_r = _path_report("exact_match", exact_t, _scored_n(pack_n, skip_e))
+    has_oracle = oracle_db is not None
+    exact_r = _path_report("exact_match", exact_t, _scored_n(pack_n, skip_e), oracle=has_oracle)
     exact_r["skipped"] = skip_e
     by_id = {row["id"]: dict(row) for row in exact_cases}
     for row in live_cases:
@@ -582,6 +653,7 @@ def live(url: str, timeout: float, space_id: str) -> int:
             "kind": "dms.score_bird",
             "pack": "bird_minidev",
             "space_id": space_id,
+            "oracle_db": str(oracle_db) if oracle_db else None,
             "honesty": pack["honesty"],
             "measured_tables": names,
             "leftover_remaining": leftover,
@@ -595,23 +667,30 @@ def live(url: str, timeout: float, space_id: str) -> int:
         _write_artifact(report)
         print("VERDICT: BLOCKED. Not COMPLETE.")
         return EXIT_BLOCKED
-    gen_r = _path_report("generative_live", live_t, _scored_n(pack_n, skip_g))
+    gen_r = _path_report("generative_live", live_t, _scored_n(pack_n, skip_g), oracle=has_oracle)
     gen_r["skipped"] = skip_g
     print_paths(exact_r, gen_r)
     if skip_g:
         print(f"skipped {skip_g} leftover traps (table now in bronze; no invented oracle)")
     wrong = exact_r["wrong"] + gen_r["wrong"]
+    oracle_error = exact_r["oracle_error"] + gen_r["oracle_error"]
+    no_oracle = exact_r["no_oracle"] + gen_r["no_oracle"]
+    invalid = exact_r["invalid"] + gen_r["invalid"]
     report = {
         "kind": "dms.score_bird",
         "pack": "bird_minidev",
         "space_id": space_id,
+        "oracle_db": str(oracle_db) if oracle_db else None,
         "honesty": pack["honesty"],
         "measured_tables": names,
         "leftover_remaining": leftover,
         "exact_match": exact_r,
         "generative": gen_r,
         "wrong": wrong,
-        "passed": wrong == 0,
+        "oracle_error": oracle_error,
+        "no_oracle": no_oracle,
+        "invalid": invalid,
+        "passed": wrong == 0 and oracle_error == 0 and no_oracle == 0 and invalid == 0,
         "complete": False,
         "cases": list(by_id.values()),
     }
@@ -619,6 +698,15 @@ def live(url: str, timeout: float, space_id: str) -> int:
     if wrong:
         print("FAIL: WRONG>0 (confidently wrong or transport error)")
         return EXIT_FAIL
+    if oracle_error:
+        print("FAIL: ORACLE_ERROR>0 (gold SQL did not run). Not OK, not skipped.")
+        return EXIT_FAIL
+    if no_oracle or invalid:
+        print(
+            f"VERDICT: NOT SCORED. NO_ORACLE={no_oracle} INVALID={invalid}. "
+            "Rows not judged against gold SQL; no OK count claimed. Not COMPLETE."
+        )
+        return EXIT_BLOCKED
     for line in pass_lines(exact_r["answered"], gen_r["answered"], leftover):
         print(line)
     return EXIT_PASS
@@ -632,6 +720,14 @@ def main(argv: list[str]) -> int:
     p.add_argument("--url", default=None)
     p.add_argument("--timeout", type=float, default=60.0)
     p.add_argument("--space", default=None)
+    p.add_argument(
+        "--oracle-db",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="DuckDB holding the pack's source tables. Each case's gold_sql runs "
+        "read-only here and answer rows are judged against it (#300).",
+    )
     p.add_argument(
         "--minidev",
         default=None,
@@ -666,6 +762,19 @@ def main(argv: list[str]) -> int:
         help="Allow a labeled cross-setup compare. Never implied same-setup.",
     )
     args = p.parse_args(argv)
+    if args.oracle_db is not None:
+        pack_path = (args.live or args.ab) and not (args.self_check or args.minidev or args.compare)
+        bad = (
+            None
+            if pack_path
+            else "CONFIG: --oracle-db applies to the pack --live / --ab paths only "
+            "(--minidev grades on the Space source). Not ignored silently."
+        )
+        bad = bad or require_oracle_db(args.oracle_db)
+        if bad:
+            print(bad)
+            print("VERDICT: CONFIG")
+            return EXIT_CONFIG
     if args.self_check:
         return self_check()
     if args.minidev or args.compare:
@@ -680,9 +789,9 @@ def main(argv: list[str]) -> int:
             print(f"CONFIG: {exc}")
             print("VERDICT: CONFIG")
             return EXIT_CONFIG
-        return live(url, args.timeout, space)
+        return live(url, args.timeout, space, args.oracle_db)
     if args.ab:
-        return ab_offline()
+        return ab_offline(args.oracle_db)
     print(
         "usage: python scripts/score_bird.py --self-check | --ab | --live | "
         "--minidev JSON --live | --compare A B\n"
