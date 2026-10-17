@@ -702,10 +702,10 @@ def _scoped_tables(sql: str) -> set[str] | None:
         for tree in trees:
             claimed: set[int] = set()
             for scope in traverse_scope(tree):
-                ctes = {str(name).lower() for name in scope.cte_sources}
+                ctes = {_ident_fold(name) for name in scope.cte_sources}
                 for table in scope.tables:
                     claimed.add(id(table))
-                    name = table.name.lower()
+                    name = _ident_fold(table.name)
                     if not (table.db or table.catalog) and name in ctes:
                         if not _names_real_table(table, name):
                             continue
@@ -717,6 +717,16 @@ def _scoped_tables(sql: str) -> set[str] | None:
         return None
     named.discard("")
     return named
+
+
+#: DuckDB folds identifier case for ASCII letters only and never trims.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _ident_fold(name: Any) -> str:
+    """An identifier as DuckDB compares it. Python's lower() also folds non-ASCII
+    letters (the Kelvin sign becomes k), which would let a CTE stand for a table."""
+    return str(name or "").translate(_ASCII_LOWER)
 
 
 def _names_real_table(table: Any, name: str) -> bool:
@@ -738,10 +748,10 @@ def _names_real_table(table: Any, name: str) -> bool:
         if (
             isinstance(holder, exp.With)
             and child is not holder
-            and any(str(c.alias).lower() == name for c in holder.expressions)
+            and any(_ident_fold(c.alias) == name for c in holder.expressions)
         ):
             return False
-        if isinstance(node, exp.CTE) and str(node.alias).lower() == name:
+        if isinstance(node, exp.CTE) and _ident_fold(node.alias) == name:
             holder = node.parent
             recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
             body = node.this
@@ -822,6 +832,13 @@ def _reads_files(sql: str, grantable: set[str]) -> bool:
     for tree in trees:
         if tree is None:
             continue
+        if any(
+            not ident.quoted and str(ident.this).upper() == "TABLE"
+            for ident in tree.find_all(exp.Identifier)
+        ) or any(not isinstance(cte.this, exp.Query) for cte in tree.find_all(exp.CTE)):
+            # DuckDB's TABLE <name> shorthand reads the table; sqlglot parses it
+            # as a column named TABLE, so no table node would carry the name.
+            return True
         for lateral in tree.find_all(exp.Lateral):
             # JOIN LATERAL f(...) and ", LATERAL f(...)" put the function on a
             # Lateral node, not a Table: query_table('t'), sniff_csv, catalog

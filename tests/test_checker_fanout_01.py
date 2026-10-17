@@ -2107,3 +2107,27 @@ def test_uploaded_tables_are_grain_checked_with_bare_columns(tmp_path: Path) -> 
         "ON d.cust = s.cust AND d.region = 'N' GROUP BY d.region"
     )
     assert served_result_reason(one_to_one, warehouse=db, as_of=as_of) is None
+
+
+def test_a_cte_name_folds_case_as_duckdb_does() -> None:
+    """U+212A (Kelvin sign) lowercases to k in Python, not in DuckDB: stock stays a table."""
+    from dms_executor.generative_ask import cited_relations
+
+    sql = 'WITH "stoc\u212a" AS (SELECT 1 AS x) SELECT s.secret FROM stock s, inventory i'
+    assert "stock" in cited_relations(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH inventory AS (TABLE alerts) SELECT * FROM inventory",
+        "SELECT * FROM inventory WHERE EXISTS ((TABLE alerts))",
+    ],
+)
+def test_the_table_shorthand_never_reaches_the_grant(sql: str, tmp_path: Path) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = tmp_path / "table_kw.duckdb"
+    ensure_demo_warehouse(db)
+    why = validate_compiled_sql(sql, grantable=set(DEMO_TABLES) - {"alerts"}, warehouse=db)
+    assert why is not None and why.startswith("hostile_sql:"), why
