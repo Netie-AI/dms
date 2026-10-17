@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import re
+import string
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -55,6 +56,7 @@ from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    SERVING_DIALECT,
     connect_serving,
     sql_has_reserved_as_of,
     warehouse_path,
@@ -671,6 +673,174 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
+_ASCII_FOLD = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def _duckdb_fold(name: str) -> str:
+    """Fold a name the way DuckDB matches it: ASCII letters only.
+
+    DuckDB keeps "Ä" and "ä" as two tables. str.lower() merged them, so a
+    grant on one passed a read of the other.
+    """
+    return name.translate(_ASCII_FOLD)
+
+
+def _binds_to_cte(table: Any, name: str) -> bool:
+    """True only when DuckDB binds this unqualified table name to a CTE.
+
+    The nearest enclosing WITH that defines the name decides. The query body
+    sees every CTE. A CTE body sees only the CTEs before it. A reference to
+    its own name or to a later CTE can bind to the base table in DuckDB (a
+    plain CTE does, and so does the anchor of a recursive CTE). The recursive
+    term binds to the CTE instead, so a legitimate WITH RECURSIVE is refused
+    unless its name is granted. Either way the binding is not proven here,
+    so the name is grant-checked.
+    """
+    from sqlglot import exp
+
+    path = [table]
+    node = table.parent
+    while node is not None:
+        with_ = node.args.get("with")
+        if isinstance(with_, exp.With):
+            ctes = list(with_.expressions)
+            names = [_duckdb_fold(cte.alias_or_name) for cte in ctes]
+            if name in names:
+                if path[-1] is not with_:
+                    return True
+                at = next((i for i, cte in enumerate(ctes) if cte is path[-2]), 0)
+                return name not in names[at:]
+        path.append(node)
+        node = node.parent
+    return False
+
+
+def _serving_relation_names(sql: str) -> set[str] | None:
+    """Bare names of the tables DuckDB reads, for the grant check.
+
+    Every ``Table`` node counts. Scope sources are keyed by alias, so
+    ``(SELECT 1) AS payroll_secret`` hid the real ``payroll_secret``. A
+    schema-qualified name contributes its table identifier. An unqualified
+    name is skipped only when it certainly binds to a CTE.
+
+    None means the check cannot prove what the SQL reads, and the caller
+    refuses. That covers SQL that does not parse, and a statement that is not
+    a query (``CALL`` parses as an opaque Command). It also covers a FROM,
+    JOIN or LATERAL item that is a function call and not a table name
+    (``query_table``, ``query``, ``duckdb_tables``, ``range``).
+
+    sqlglot can still miss a read DuckDB makes, so ``validate_compiled_sql``
+    also grant-checks DuckDB's own parse (``_duckdb_read_names``).
+    """
+    from sqlglot import exp, parse
+
+    try:
+        trees = [tree for tree in parse(sql or "", read=SERVING_DIALECT) if tree is not None]
+    except Exception:
+        return None
+    items = (exp.Table, exp.Subquery, exp.Unnest, exp.Values, exp.Lateral)
+    names: set[str] = set()
+    for tree in trees:
+        if not isinstance(tree, exp.Query) or tree.find(exp.Command) is not None:
+            return None
+        for clause in tree.find_all(exp.From, exp.Join, exp.Lateral):
+            allowed = (exp.Subquery,) if isinstance(clause, exp.Lateral) else items
+            if not isinstance(clause.this, allowed):
+                return None
+        for table in tree.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier):
+                return None
+            name = _duckdb_fold(table.name)
+            qualified = table.args.get("db") or table.args.get("catalog")
+            if qualified or not _binds_to_cte(table, name):
+                names.add(name)
+    return names
+
+
+# DuckDB's JSON parse tree. A query node carries "modifiers", a table
+# reference carries "sample", an expression carries "class".
+_DUCKDB_QUERY_NODES = frozenset(
+    {"SELECT_NODE", "SET_OPERATION_NODE", "RECURSIVE_CTE_NODE", "CTE_NODE"}
+)
+_DUCKDB_TABLE_REFS = frozenset(
+    {"BASE_TABLE", "JOIN", "SUBQUERY", "EXPRESSION_LIST", "EMPTY", "EMPTY_FROM", "PIVOT"}
+)
+
+
+def _duckdb_read_names(con: Any, sql: str) -> set[str] | None:
+    """Bare names of the tables DuckDB's own parser reads, for the grant check.
+
+    sqlglot does not parse every statement the way DuckDB runs it. It reads
+    ``(TABLE payroll_secret)`` as a column named TABLE, and ``FROM (TABLE t)``
+    as a table named ``table``. DuckDB runs both as ``SELECT * FROM t``. So
+    the tree DuckDB itself parsed (``json_serialize_sql``) is grant-checked
+    as well, wherever a BASE_TABLE sits: FROM, a CTE body or any expression.
+
+    An unqualified name is skipped only when an enclosing WITH certainly
+    binds it, by the rule in ``_binds_to_cte``: a CTE body sees the CTEs
+    before it, and the WITH nearest the reference decides.
+
+    None means the parse cannot be proven, and the caller refuses: DuckDB
+    could not serialize it, or it holds a table function, a SHOW, DESCRIBE
+    or SUMMARIZE reference, or a node type this walk does not know.
+    """
+    import json
+
+    import duckdb
+
+    try:
+        row = con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
+        tree = json.loads(row[0])
+    except (duckdb.Error, TypeError, ValueError, IndexError):
+        return None
+    if not isinstance(tree, dict) or tree.get("error") is not False:
+        return None
+    names: set[str] = set()
+
+    def walk(node: Any, visible: frozenset[str]) -> bool:
+        if isinstance(node, list):
+            return all(walk(item, visible) for item in node)
+        if not isinstance(node, dict):
+            return True
+        kind = node.get("type")
+        if isinstance(kind, str) and "class" not in node:
+            if "modifiers" in node and kind not in _DUCKDB_QUERY_NODES:
+                return False
+            if ("sample" in node or "table_name" in node) and "modifiers" not in node:
+                if kind not in _DUCKDB_TABLE_REFS:
+                    return False
+            if kind == "BASE_TABLE":
+                name = _duckdb_fold(str(node.get("table_name") or ""))
+                if not name:
+                    return False
+                if node.get("schema_name") or node.get("catalog_name") or name not in visible:
+                    names.add(name)
+        ctes = node.get("cte_map")
+        if ctes is not None:
+            entries = ctes.get("map") if isinstance(ctes, dict) else None
+            if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+                return False
+            keys = [_duckdb_fold(str(e.get("key") or "")) for e in entries]
+            for at, entry in enumerate(entries):
+                scope = (visible | set(keys[:at])) - set(keys[at:])
+                if not walk(entry, frozenset(scope)):
+                    return False
+            visible = visible | frozenset(keys)
+        return all(walk(value, visible) for key, value in node.items() if key != "cte_map")
+
+    return names if walk(tree.get("statements"), frozenset()) else None
+
+
+def _ungranted(named: set[str] | None, grantable: set[str]) -> str | None:
+    """The grant refusal for a read set, or None when every name is granted."""
+    if named is None:
+        return "ungranted"
+    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    if missing:
+        return f"ungranted:{','.join(sorted(missing))}"
+    return None
+
+
 def validate_compiled_sql(
     sql: str,
     *,
@@ -684,10 +854,14 @@ def validate_compiled_sql(
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
-    if missing:
-        return f"ungranted:{','.join(sorted(missing))}"
+    named = _serving_relation_names(sql)
+    if named is None:
+        # Still refused. A statement that is not one SELECT keeps the
+        # statement gate's own reason, as on main; anything else is ungranted.
+        return _statement_shape_refusal(sql, warehouse) or "ungranted"
+    refused = _ungranted(named, grantable)
+    if refused:
+        return refused
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
@@ -697,12 +871,32 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
+        # The read set in DuckDB's own parse must be granted too, not only the
+        # one sqlglot saw. json_serialize_sql parses the text and runs none of it.
+        refused = _ungranted(_duckdb_read_names(con, sql), grantable)
+        if refused:
+            return refused
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
     return None
+
+
+def _statement_shape_refusal(sql: str, warehouse: Path | None) -> str | None:
+    """``multi_statement`` or ``statement_not_allowed`` from the statement gate, else None.
+
+    Splits the SQL on the serving cursor; nothing is executed.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    con = connect_serving(Path(warehouse))
+    try:
+        gate = _refusal_before_explain(con, sql)
+    finally:
+        con.close()
+    return gate if gate in {"multi_statement", "statement_not_allowed"} else None
 
 
 def _refusal_before_explain(con: Any, sql: str) -> str | None:
