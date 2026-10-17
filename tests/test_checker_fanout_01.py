@@ -2565,3 +2565,149 @@ def test_a_grant_that_names_an_upload_and_a_dotted_lake_table_opens_neither(
     ), sql
     lake = "SELECT sku, quantity_kg FROM inventory"
     assert validate_compiled_sql(lake, grantable=grant, warehouse=db) is None
+
+
+# --- Round 9: names checked as DuckDB binds them; every BOOLEAN factor is a flag ---
+
+
+_ODD_NAMES = {
+    "dotted": ('"secret.inventory"', {"inventory"}),
+    "leading_space": ('" inventory"', {"inventory"}),
+    "brackets": ('"[inventory]"', {"inventory"}),
+    "trailing_dot": ('"secret."', {"inventory", "secret"}),
+    "blank": ('" "', {"inventory"}),
+    "kelvin": ('"stocK"', {"stock"}),
+    "other_dotted": ('"eur.book"', {"usd.book"}),
+    "bare_upload_name": ("sheet1", {"bronze.sheet1"}),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_ODD_NAMES))
+@pytest.mark.parametrize("shape", ["COUNT(*) AS n", "MAX(n) AS m"])
+def test_a_statistics_answer_checks_the_exact_table_name(
+    tmp_path: Path, name: str, shape: str
+) -> None:
+    """The bare-name check strips quotes, spaces and brackets and keeps the last
+    dot part; DuckDB answers these from statistics, so its plan scans nothing."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(
+        tmp_path,
+        "odd.duckdb",
+        'CREATE TABLE "secret.inventory" AS SELECT 1 AS n FROM range(11)',
+        'CREATE TABLE " inventory" AS SELECT 1 AS n',
+        'CREATE TABLE "[inventory]" AS SELECT 1 AS n',
+        'CREATE TABLE "secret." AS SELECT 1 AS n',
+        'CREATE TABLE " " AS SELECT 1 AS n',
+        'CREATE TABLE "stocK" AS SELECT 1 AS n',
+        'CREATE TABLE "eur.book" AS SELECT 2 AS n',
+        "CREATE SCHEMA bronze",
+        "CREATE TABLE bronze.sheet1 AS SELECT 1 AS n",
+        "CREATE TABLE sheet1 AS SELECT 9 AS n",
+    )
+    cited, grant = _ODD_NAMES[name]
+    why = validate_compiled_sql(f"SELECT {shape} FROM {cited}", grantable=grant, warehouse=db)
+    assert why is not None and why.startswith("ungranted"), (name, why)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        'SELECT COUNT(*) AS n FROM main."bronze.sheet1"',
+        'SELECT COUNT(*) AS n FROM "MAIN"."BRONZE.SHEET1"',
+        'SELECT * FROM (SELECT MAX(n) AS m FROM main."bronze.sheet1")',
+        'SELECT COUNT(*) AS n FROM lake.main."bronze.sheet1"',
+    ],
+)
+def test_a_main_qualified_name_does_not_skip_the_ambiguity_guard(tmp_path: Path, sql: str) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(
+        tmp_path,
+        "lake.duckdb",
+        "CREATE SCHEMA bronze",
+        "CREATE TABLE bronze.sheet1 AS SELECT 1 AS n FROM range(3)",
+        'CREATE TABLE "bronze.sheet1" AS SELECT 1 AS n FROM range(7)',
+    )
+    why = validate_compiled_sql(sql, grantable={"bronze.sheet1"}, warehouse=db)
+    assert why == "ungranted:bronze.sheet1", (sql, why)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COUNT(*) AS n FROM inventory",
+        "SELECT COUNT(*) AS n FROM INVENTORY",
+        'SELECT COUNT(*) AS n FROM "Inventory"',
+        "SELECT COUNT(*) AS n FROM main.inventory",
+        "SELECT COUNT(*) AS n FROM lake.main.inventory",
+        "SELECT COUNT(*) AS n FROM lake.inventory",
+        'SELECT COUNT(*) AS n FROM "warehouse"."inventory"',
+        "SELECT COUNT(*) AS n FROM warehouse_inventory",
+        "WITH c AS (SELECT sku FROM inventory) SELECT COUNT(*) AS n FROM c",
+        "WITH inventory AS (SELECT sku FROM inventory) SELECT COUNT(*) AS n FROM inventory",
+        "SELECT category, SUM(quantity_kg) AS kg FROM inventory GROUP BY category",
+    ],
+)
+def test_a_granted_lake_table_passes_however_it_is_written(tmp_path: Path, sql: str) -> None:
+    """lake.inventory names the catalog (the lake file is lake.duckdb); the
+    warehouse schema and warehouse_ prefix are Cortex's names for lake tables."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(tmp_path, "lake.duckdb")
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db) is None, sql
+
+
+_BOOLEAN_FLAG_FANOUT = {
+    "contains": f"SELECT i.category, SUM(i.quantity_kg * contains(t.txn_type, 'out')::INT) {_JOIN}",
+    "starts_with": (
+        f"SELECT i.category, SUM(i.quantity_kg * starts_with(t.txn_type, 'o')::INT) {_JOIN}"
+    ),
+    "ends_with": f"SELECT i.category, SUM(i.quantity_kg * ends_with(t.txn_type, 'd')::INT) {_JOIN}",
+    "regexp_matches": (
+        f"SELECT i.category, SUM(i.quantity_kg * regexp_matches(t.txn_type, 'o')::INT) {_JOIN}"
+    ),
+    "list_contains": (
+        "SELECT i.category, "
+        f"SUM(i.quantity_kg * list_contains([t.txn_type], 'outbound')::INT) {_JOIN}"
+    ),
+    "boolean_cast": (
+        f"SELECT i.category, SUM(i.quantity_kg * CAST(t.quantity_kg AS BOOLEAN)::INT) {_JOIN}"
+    ),
+    "boolean_column": f"SELECT i.category, SUM(i.quantity_kg * t.is_out::INT) {_JOIN}",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_BOOLEAN_FLAG_FANOUT))
+def test_a_boolean_factor_does_not_hide_a_parent_measure(tmp_path: Path, name: str) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    db = _lake_with(
+        tmp_path,
+        "flags.duckdb",
+        "ALTER TABLE transactions ADD COLUMN is_out BOOLEAN",
+        "UPDATE transactions SET is_out = (txn_type = 'outbound')",
+    )
+    why = served_result_reason(
+        _BOOLEAN_FLAG_FANOUT[name], warehouse=db, as_of="2026-10-16T00:00:00Z"
+    )
+    assert why == "fanout_subject_keys", name
+
+
+def test_a_child_boolean_count_is_kept(tmp_path: Path) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    db = _lake_with(
+        tmp_path,
+        "flags.duckdb",
+        "ALTER TABLE transactions ADD COLUMN is_out BOOLEAN",
+        "UPDATE transactions SET is_out = (txn_type = 'outbound')",
+    )
+    for sql in (
+        f"SELECT i.category, SUM(contains(t.txn_type, 'out')::INT) {_JOIN}",
+        f"SELECT i.category, COUNT_IF(starts_with(t.txn_type, 'o')) {_JOIN}",
+        f"SELECT i.category, SUM(t.is_out::INT) {_JOIN}",
+        f"SELECT i.category, SUM(t.quantity_kg * i.unit_cost_myr) {_JOIN}",
+    ):
+        why = served_result_reason(sql, warehouse=db, as_of="2026-10-16T00:00:00Z")
+        assert why is None, (sql, why)
