@@ -86,7 +86,8 @@ DMS UI → DMS API → HTTP → Cortex (cortex-contract 1.x)
 11. **`DMS_DEMO_FALLBACK=1` is a lying affordance** unless the UI shows a permanent, unmissable banner. Prefer `DMS_DEMO_FALLBACK=0` for any customer-facing or demo-ready run. Silent fallback that still returns 200 with demo numbers is forbidden for ship gates.
 12. **Value normalization** — filter values must match the column's actual encoding (`BETA` vs `SKU-BETA`, `KL` vs `Kuala Lumpur`, case/whitespace). A filter that parses, validates, executes, and matches nothing is the most dangerous single failure: plausible number + green badge.
 13. **0 confidently wrong** — abstain over invent.
-14. **Secrets via OpenVault / env** — never commit keys.
+14. **Secrets via OpenVault / env** - never commit keys. DMS never holds or routes provider keys. Routing lives in OpenVault.
+15. **AI-first text-to-SQL.** DB-GPT/Genie style. The model writes the SQL from ontology, schema, and verified-example context, then executes, checks, and retries. Escalation ladder: plan-then-solve, error-fed self-correct, stronger model via an OpenVault tier, then reconfirm with the closest answerable question and a Yes button. Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules.
 
 ## Version lines (independent — do not renumber backward)
 
@@ -124,7 +125,7 @@ INVARIANT-CHANGE: <reason>
 |-------------|--------|
 | Migrations, RLS, schema | UI components, Studio ingest UX |
 | Cross-file refactors | Chat surface, diff/confirm screens |
-| CI/CD, release pipelines | Prompt / vocabulary tuning |
+| CI/CD, release pipelines | Prompt and context (ontology, schema, verified examples) |
 | Test suites (hostile SQL, invariants) | Exploratory spikes you watch |
 | Terminal + git heavy work | Single-file focused edits |
 
