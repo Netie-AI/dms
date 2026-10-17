@@ -336,6 +336,8 @@ _NUMERIC_TYPES = frozenset(
         "UHUGEINT",
         "FLOAT",
         "DOUBLE",
+        # DuckDB 1.5's arbitrary-precision integer (VARINT before).
+        "BIGNUM",
     }
 )
 #: The lineage walk's budget. Past either, the SQL is not analyzable and is

@@ -1025,3 +1025,27 @@ def test_a_main_qualified_name_does_not_skip_the_ambiguity_guard(tmp_path: Path,
     grant = {"sheet1", "bronze.sheet1", "inventory"}
     why = validate_compiled_sql(sql, grantable=grant, warehouse=db)
     assert why is not None and why.startswith(("ungranted", "hostile_sql")), (sql, why)
+
+
+@pytest.mark.parametrize("mark", ["\u0085", " ", " ", " "])
+def test_a_separator_duckdb_keeps_in_a_name_cannot_hide_a_table(tmp_path: Path, mark: str) -> None:
+    """sqlglot splits zz<mark> into the granted zz; DuckDB reads the table zz<mark>."""
+    import duckdb
+
+    db = tmp_path / "split.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE zz AS SELECT 1 AS n")
+        con.execute(f'CREATE TABLE "zz{mark}" AS SELECT 1 AS n FROM range(9)')
+    finally:
+        con.close()
+    for sql in (f"SELECT COUNT(*) AS n FROM zz{mark} t", f"SELECT * FROM zz{mark} LIMIT 0"):
+        why = validate_compiled_sql(sql, grantable={"zz", "inventory"}, warehouse=db)
+        assert why == "hostile_sql:sql_not_analyzable", (repr(sql), why)
+
+
+def test_an_arbitrary_precision_literal_is_not_a_figure(lake: Path) -> None:
+    sql = "SELECT sku, 4242::BIGNUM AS revenue FROM inventory"
+    why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=lake)
+    assert why is not None, why
