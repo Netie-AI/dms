@@ -767,7 +767,9 @@ def validate_compiled_sql(
         return f"hostile_sql:{exc.code}"
     named = _serving_relation_names(sql)
     if named is None:
-        return "ungranted"
+        # Still refused. A statement that is not one SELECT keeps the
+        # statement gate's own reason, as on main; anything else is ungranted.
+        return _statement_shape_refusal(sql, warehouse) or "ungranted"
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
@@ -786,6 +788,21 @@ def validate_compiled_sql(
     finally:
         con.close()
     return None
+
+
+def _statement_shape_refusal(sql: str, warehouse: Path | None) -> str | None:
+    """``multi_statement`` or ``statement_not_allowed`` from the statement gate, else None.
+
+    Splits the SQL on the serving cursor; nothing is executed.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    con = connect_serving(Path(warehouse))
+    try:
+        gate = _refusal_before_explain(con, sql)
+    finally:
+        con.close()
+    return gate if gate in {"multi_statement", "statement_not_allowed"} else None
 
 
 def _refusal_before_explain(con: Any, sql: str) -> str | None:
