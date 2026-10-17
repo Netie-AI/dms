@@ -290,20 +290,61 @@ def _select_fanout(select: exp.Select, path: Path) -> str | None:
             ):
                 return "outer_join_count"
             continue
-        read = _arg_sources(agg, sources)
         if joined and any(not str(c.table or "") for c in columns) and len(sources) > 1:
             # Which source a bare column reads cannot be told: not certified.
             raise _Unprobed("unattributed_column")
-        verdicts: list[bool] = []
-        for alias, names in read.items():
-            kind, body = sources[alias]
-            verdict = joined and repeats(alias)
-            if kind == "body" and not verdict:
-                verdict = bool(_body_repeats(path, body, names, 0))
-            verdicts.append(verdict)
-        if verdicts and all(verdicts):
-            return "fanout_subject_keys"
+        # Each additive term of each argument; a conditional count (SUM(CASE
+        # WHEN i.low THEN 1 ELSE 0 END)) carries no column, so it is judged
+        # by every column it reads, as a count of joined rows of that source.
+        terms = [t for arg in agg.iter_expressions() for t in _value_terms(arg)] or [agg]
+        for term in terms:
+            verdicts: list[bool] = []
+            for alias, names in _arg_sources(term, sources).items():
+                kind, body = sources[alias]
+                verdict = joined and repeats(alias)
+                if kind == "body" and not verdict:
+                    verdict = bool(_body_repeats(path, body, names, 0))
+                verdicts.append(verdict)
+            if verdicts and all(verdicts):
+                return "fanout_subject_keys"
     return None
+
+
+def _value_terms(node: exp.Expression) -> list[exp.Expression]:
+    """The parts of an aggregate's argument that carry the value it adds up.
+
+    A sum distributes over + and -, so SUM(i.q - t.q) is inflated when the
+    i.q term's source repeats, whatever t does. A CASE or IF condition picks
+    a branch and adds nothing: in SUM(CASE WHEN t.x THEN i.q END) only i.q is
+    summed. A product is one term: t.qty * i.price is per transaction while
+    t stays unique, but i.q * (CASE WHEN t.x THEN 1 ELSE 0 END) carries only
+    i.q. ORDER BY inside an aggregate orders and states nothing.
+    """
+    if isinstance(node, exp.Column):
+        return [node]
+    if isinstance(node, (exp.Add, exp.Sub)):
+        return _value_terms(node.this) + _value_terms(node.expression)
+    if isinstance(node, (exp.Paren, exp.Neg, exp.Cast, exp.TryCast, exp.Order, exp.Round)):
+        # ROUND(i.q - t.q, 2) sums like its first argument.
+        return _value_terms(node.this)
+    if isinstance(node, exp.Case):
+        branches = [branch.args.get("true") for branch in node.args.get("ifs") or []]
+        branches.append(node.args.get("default"))
+        return [t for b in branches if b is not None for t in _value_terms(b)]
+    if isinstance(node, exp.If):
+        branches = [node.args.get("true"), node.args.get("false")]
+        return [t for b in branches if b is not None for t in _value_terms(b)]
+    if isinstance(node, exp.Coalesce):
+        return [t for arg in (node.this, *node.expressions) for t in _value_terms(arg)]
+    parts: list[exp.Expression] = []
+    for child in node.iter_expressions():
+        parts.extend(_value_terms(child))
+    if not parts:
+        return []
+    if len(parts) == 1:
+        return parts
+    # A product or any other function of several parts is one value.
+    return [exp.Tuple(expressions=[part.copy() for part in parts])]
 
 
 #: Aggregates whose value does not change when a row repeats.

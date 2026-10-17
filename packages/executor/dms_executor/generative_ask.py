@@ -815,6 +815,87 @@ def _lake_granted(name: str, grantable: set[str]) -> bool:
     return bool({name, bare, f"{prefix}{bare}"} & grantable)
 
 
+def _invisible_format_char(sql: str) -> bool:
+    """A Unicode format character (category Cf) anywhere in the SQL.
+
+    DuckDB skips U+200B, U+2060 and U+FEFF as whitespace; sqlglot reads them
+    as part of a name, so ``FROM<U+200B>alerts`` is a column alias to every
+    sqlglot-based check while DuckDB reads the table.
+    """
+    import unicodedata
+
+    return any(unicodedata.category(ch) == "Cf" for ch in sql)
+
+
+#: Plan names of the table functions that only generate rows.
+_PLAN_GENERATORS = frozenset({"RANGE", "GENERATE_SERIES", "UNNEST"})
+
+
+def _plan_names(part: str) -> tuple[str, str]:
+    """A catalog, schema or table name as a plan may print it: bare or quoted."""
+    return part, '"' + part.replace('"', '""') + '"'
+
+
+def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | None:
+    """Grant-check the tables DuckDB itself scans for this SQL.
+
+    sqlglot reads names and DuckDB binds them. Where the two disagree (a
+    character one skips and the other keeps, a schema a label drops), the
+    plan is what runs: every base table it scans must be granted, a lake
+    table by its name or warehouse_ alias and any other schema's table
+    (an upload) by its qualified name. Every table function must be a pure
+    generator. A scan this cannot name is not granted.
+    """
+    import json
+
+    known: dict[str, tuple[str, str]] = {}
+    for db, schema, name in con.execute(
+        "SELECT database_name, schema_name, table_name FROM duckdb_tables()"
+    ).fetchall():
+        for d in _plan_names(str(db)):
+            for sc in _plan_names(str(schema)):
+                for n in _plan_names(str(name)):
+                    known[f"{d}.{sc}.{n}"] = (str(schema), str(name))
+    folded = {_ident_fold(str(g).strip()) for g in grantable}
+    lake = {
+        g[len("main.") :] if g.startswith("main.") else g
+        for g in folded
+        if "." not in g or g.startswith("main.")
+    }
+    missing: set[str] = set()
+    stack: list[Any] = [json.loads(plan_json)]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        stack.extend(node.get("children") or [])
+        info = node.get("extra_info")
+        if not isinstance(info, dict):
+            continue
+        function = info.get("Function")
+        if function is not None and str(function).upper() not in _PLAN_GENERATORS:
+            return "hostile_sql:file_reader"
+        table = info.get("Table")
+        if table is None:
+            continue
+        found = known.get(str(table))
+        if found is None:
+            return "hostile_sql:sql_not_analyzable"
+        schema, name = (_ident_fold(part) for part in found)
+        if schema == "main":
+            # A lake table may itself be named with a dot ("usd.book").
+            if name not in folded and not _lake_granted(name, lake):
+                missing.add(name)
+        elif f"{schema}.{name}" not in folded:
+            missing.add(f"{schema}.{name}")
+    if missing:
+        return f"ungranted:{','.join(sorted(missing))}"
+    return None
+
+
 def _reads_files(sql: str, grantable: set[str]) -> bool:
     """True when a FROM/JOIN source is a table function or a path, not a table.
 
@@ -873,6 +954,8 @@ def validate_compiled_sql(
     """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
+    if _invisible_format_char(sql):
+        return "hostile_sql:sql_not_analyzable"
     try:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
@@ -935,12 +1018,17 @@ def validate_compiled_sql(
         return "warehouse_missing"
     con = connect_serving(Path(warehouse))
     try:
-        con.execute(f"EXPLAIN {lake_alias_sql(sql)}")
-    except Exception as exc:  # noqa: BLE001
-        return f"explain:{type(exc).__name__}"
+        try:
+            plan = con.execute(f"EXPLAIN (FORMAT JSON) {lake_alias_sql(sql)}").fetchall()
+        except Exception as exc:  # noqa: BLE001
+            return f"explain:{type(exc).__name__}"
+        try:
+            # The tables the engine reads, checked against the grant.
+            return _plan_scan_reason(str(plan[0][1]), con, grantable)
+        except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
     finally:
         con.close()
-    return None
 
 
 def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:

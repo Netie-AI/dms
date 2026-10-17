@@ -2225,3 +2225,164 @@ def test_a_lineage_too_deep_to_trace_does_not_pass(gate_lake: Path) -> None:
     )
     why = served_result_reason(sql, warehouse=gate_lake, as_of="2026-10-16T00:00:00Z")
     assert why in {"fanout_subject_keys", "grain_unprobed"}, why
+
+
+# --- Round 7: DuckDB's own plan decides what is read; value terms decide fan-out ---
+
+_INVISIBLE = ("​", "⁠", "﻿")
+
+
+@pytest.mark.parametrize("mark", _INVISIBLE, ids=["zwsp", "word_joiner", "bom"])
+def test_an_invisible_character_cannot_hide_a_table_from_the_grant(
+    gate_lake: Path, mark: str
+) -> None:
+    """DuckDB skips U+200B, U+2060 and U+FEFF; sqlglot reads them into a name."""
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    for sql in (
+        f"SELECT sku FROM inventory UNION ALL SELECT message FROM{mark}alerts",
+        f"SELECT sku, (SELECT COUNT(*) FROM{mark}alerts) AS n FROM inventory",
+        f"SELECT sku FROM inventory WHERE EXISTS (SELECT 1 FROM{mark}alerts)",
+    ):
+        why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake)
+        assert why is not None and why.startswith("hostile_sql:"), (sql, why)
+
+
+def test_the_engine_plan_grant_checks_what_sqlglot_cannot_see(
+    gate_lake: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the character check off, DuckDB's own scan list still refuses the table."""
+    import dms_executor.generative_ask as ga
+
+    monkeypatch.setattr(ga, "_invisible_format_char", lambda _sql: False)
+    sql = "SELECT sku FROM inventory UNION ALL SELECT message FROM​alerts"
+    assert ga.validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake) == (
+        "ungranted:alerts"
+    )
+    granted = ga.validate_compiled_sql(sql, grantable={"inventory", "alerts"}, warehouse=gate_lake)
+    assert granted is None
+
+
+def test_an_upload_named_like_a_lake_table_is_not_opened_by_the_lake_grant(
+    tmp_path: Path,
+) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(
+        tmp_path,
+        "collide.duckdb",
+        "CREATE SCHEMA bronze",
+        "CREATE TABLE bronze.inventory AS SELECT 'OTHER-SPACE' AS sku, 'X' AS category",
+    )
+    upload = "SELECT sku, category FROM bronze.inventory"
+    assert (
+        validate_compiled_sql(upload, grantable={"inventory"}, warehouse=db)
+        == "ungranted:bronze.inventory"
+    )
+    lake = "SELECT sku, category FROM inventory"
+    assert validate_compiled_sql(lake, grantable={"inventory"}, warehouse=db) is None
+    assert validate_compiled_sql(lake, grantable={"warehouse_inventory"}, warehouse=db) is None
+    # The upload's own qualified grant does not open the lake table either.
+    assert validate_compiled_sql(lake, grantable={"bronze.inventory"}, warehouse=db) is not None
+
+
+def test_a_lake_table_named_with_a_dot_is_granted_by_its_own_name(tmp_path: Path) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(tmp_path, "dotted.duckdb", 'CREATE TABLE "usd.book" (amount DOUBLE)')
+    sql = 'SELECT SUM(amount) AS total FROM "usd.book"'
+    assert validate_compiled_sql(sql, grantable={"usd.book"}, warehouse=db) is None
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db) is not None
+
+
+@pytest.mark.parametrize("route", ["flag_off", "cloop_b", "generated"])
+def test_an_invisible_character_bypass_is_refused_on_every_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    route: str,
+) -> None:
+    db = tmp_path / "zw.duckdb"
+    ensure_demo_warehouse(db)
+    sql = "SELECT sku FROM inventory UNION ALL SELECT message FROM​alerts"
+    env, _ = _prod_post(
+        db,
+        sql,
+        monkeypatch,
+        minter,
+        route=route,
+        pass_warehouse=True,
+        rows_sql="SELECT sku FROM inventory UNION ALL SELECT message FROM alerts",
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, route
+    assert env["badge"] == "ABSTAIN", route
+    assert env.get("rows") in (None, []), route
+    assert "Load near capacity" not in str(env.get("text") or ""), route
+
+
+_JOIN = "FROM inventory i JOIN transactions t ON t.sku = i.sku GROUP BY i.category"
+
+#: A parent measure the join repeats, carried through a CASE branch, an IF, a
+#: flag multiplier or one term of a difference. The child column only picks
+#: rows or sits in another term.
+_VALUE_TERM_FANOUT = {
+    "case_branch": (
+        "SELECT i.category, SUM(CASE WHEN t.txn_type = 'outbound' THEN i.quantity_kg "
+        f"ELSE 0 END) {_JOIN}"
+    ),
+    "if_branch": (f"SELECT i.category, SUM(IF(t.txn_type = 'outbound', i.quantity_kg, 0)) {_JOIN}"),
+    "flag_multiplier": (
+        "SELECT i.category, SUM(i.quantity_kg * CASE WHEN t.txn_type = 'outbound' "
+        f"THEN 1 ELSE 0 END) {_JOIN}"
+    ),
+    "difference": f"SELECT i.category, SUM(i.quantity_kg - t.quantity_kg) {_JOIN}",
+    "rounded_difference": (
+        f"SELECT i.category, SUM(ROUND(i.quantity_kg - t.quantity_kg, 2)) {_JOIN}"
+    ),
+    "avg_case": (
+        "SELECT i.category, AVG(CASE WHEN t.txn_type = 'outbound' THEN i.unit_cost_myr END) "
+        f"{_JOIN}"
+    ),
+    "cte_case": (
+        "WITH j AS (SELECT i.category, CASE WHEN t.txn_type = 'outbound' THEN i.quantity_kg "
+        "ELSE 0 END AS kg FROM inventory i JOIN transactions t ON t.sku = i.sku) "
+        "SELECT category, SUM(kg) FROM j GROUP BY category"
+    ),
+    "conditional_count_of_parent_rows": (
+        "SELECT i.category, SUM(CASE WHEN i.quantity_kg < i.reorder_level_kg THEN 1 "
+        f"ELSE 0 END) {_JOIN}"
+    ),
+}
+
+#: Per transaction: the child row stays unique, the parent is a lookup.
+_VALUE_TERM_KEPT = {
+    "revenue": f"SELECT i.category, SUM(t.quantity_kg * i.unit_cost_myr) {_JOIN}",
+    "child_measure_by_parent_flag": (
+        "SELECT i.category, SUM(CASE WHEN i.quantity_kg < i.reorder_level_kg "
+        f"THEN t.quantity_kg ELSE 0 END) {_JOIN}"
+    ),
+    "count_child_rows_by_child_flag": (
+        f"SELECT i.category, COUNT(CASE WHEN t.txn_type = 'outbound' THEN 1 END) {_JOIN}"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_VALUE_TERM_FANOUT))
+def test_a_parent_measure_in_any_value_term_is_fanout(gate_lake: Path, name: str) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    why = served_result_reason(
+        _VALUE_TERM_FANOUT[name], warehouse=gate_lake, as_of="2026-10-16T00:00:00Z"
+    )
+    assert why == "fanout_subject_keys", name
+
+
+@pytest.mark.parametrize("name", sorted(_VALUE_TERM_KEPT))
+def test_a_child_measure_with_parent_lookups_is_kept(gate_lake: Path, name: str) -> None:
+    from dms_executor.served_gate import served_result_reason
+
+    why = served_result_reason(
+        _VALUE_TERM_KEPT[name], warehouse=gate_lake, as_of="2026-10-16T00:00:00Z"
+    )
+    assert why is None, name
