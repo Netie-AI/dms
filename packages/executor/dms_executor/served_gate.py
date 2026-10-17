@@ -400,7 +400,7 @@ def _boolean_functions() -> frozenset[str]:
     some (list_contains reads as ARRAY), so the engine's own catalog decides."""
     import duckdb
 
-    con = duckdb.connect()
+    con = duckdb.connect(":memory:")
     try:
         rows = con.execute(
             "SELECT function_name FROM duckdb_functions() WHERE function_type = 'scalar' "

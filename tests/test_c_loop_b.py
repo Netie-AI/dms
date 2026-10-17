@@ -160,6 +160,29 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     assert env["ov_key_id"] == _KEY
 
 
+def test_syntax_error_retry_gets_the_error_and_the_repair_is_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A model typo inside a SELECT is repaired by the loop, not refused (R-0005)."""
+    _loop(monkeypatch)
+    seen: list[Any] = []
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        seen.append(ctx.get("sql_loop_feedback"))
+        if len(seen) == 1:
+            return _names(query_sql="SELECT COUNT(*) AS n FROM inventory GROUP")
+        return _names(query_sql="SELECT COUNT(*) AS n FROM inventory")
+
+    env = _ask(tmp_path, "How many inventory rows are there?", compute)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["rows"]
+    assert len(seen) == 2
+    assert "ParserException" in str((seen[1] or {}).get("reason") or "")
+    assert env["loop"][1]["outcome"] == "served"
+
+
 def test_checker_flag_retry_gets_the_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -216,9 +239,7 @@ def test_empty_result_abstains_unverified_and_does_not_retry(
         calls["n"] += 1
         return _names(query_sql=_EMPTY_SQL)
 
-    env = _assert_abstain(
-        _ask(tmp_path, "Which chemicals are expiring this month?", compute)
-    )
+    env = _assert_abstain(_ask(tmp_path, "Which chemicals are expiring this month?", compute))
     assert calls["n"] == 1
     assert "empty_result_unverified:value_exists_pending" in env["text"]
     assert env["rows"] == []
@@ -269,9 +290,7 @@ _DESC_STOCK = (
 )
 
 
-def test_lowest_ask_still_serves_desc_sql(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lowest_ask_still_serves_desc_sql(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Known gap, INTENT-SPEC-01. Direction is not checked, so DESC is served."""
     _loop(monkeypatch)
 
@@ -488,9 +507,7 @@ def test_hostile_file_read_and_ungranted_do_not_retry(
         assert "previous_sql" not in json.dumps(seen)
 
 
-def test_missing_extract_does_not_retry(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_missing_extract_does_not_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _loop(monkeypatch)
     calls = {"n": 0}
 
