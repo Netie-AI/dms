@@ -881,7 +881,8 @@ def _plan_scan_reason(plan_json: str, con: Any, grantable: set[str]) -> str | No
             return "hostile_sql:sql_not_analyzable"
         schema, name = (_ident_fold(part) for part in found)
         if schema == "main":
-            if not _lake_granted(name, lake):
+            # A lake table may itself be named with a dot ("usd.book").
+            if name not in folded and not _lake_granted(name, lake):
                 missing.add(name)
         elif f"{schema}.{name}" not in folded:
             missing.add(f"{schema}.{name}")

@@ -2278,6 +2278,15 @@ def test_an_upload_named_like_a_lake_table_is_not_opened_by_the_lake_grant(
     assert validate_compiled_sql(lake, grantable={"bronze.inventory"}, warehouse=db) is not None
 
 
+def test_a_lake_table_named_with_a_dot_is_granted_by_its_own_name(tmp_path: Path) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _lake_with(tmp_path, "dotted.duckdb", 'CREATE TABLE "usd.book" (amount DOUBLE)')
+    sql = 'SELECT SUM(amount) AS total FROM "usd.book"'
+    assert validate_compiled_sql(sql, grantable={"usd.book"}, warehouse=db) is None
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db) is not None
+
+
 @pytest.mark.parametrize("route", ["flag_off", "cloop_b", "generated"])
 def test_an_invisible_character_bypass_is_refused_on_every_route(
     tmp_path: Path,
