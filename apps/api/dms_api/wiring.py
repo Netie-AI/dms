@@ -43,6 +43,16 @@ def warehouse_tables(*, space_id: str | None = None):
     return dms_executor.list_warehouse_tables(space_id=space_id)
 
 
+def sql_tables_read(sql: str | None) -> tuple[str, ...]:
+    """BANK-02 - tables an executed statement reads, via the executor's one parser."""
+    return dms_executor.tables_read_by_sql(sql)
+
+
+def sql_tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
+    """BANK-02 - ``(tables, approximate)``. Never parses an unbounded statement."""
+    return dms_executor.tables_read_checked_by_sql(sql)
+
+
 def reveal_origin_uri(path: str) -> dict[str, Any]:
     """REVEAL-01 — Explorer reveal for an allowlisted filesystem origin_uri."""
     return dms_executor.reveal_path(path)
