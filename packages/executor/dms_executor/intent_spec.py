@@ -13,10 +13,17 @@ module does not log a ticket and does not mint an id. ``DMS_INTENT_SPEC``
 defaults off; callers skip this module entirely when it is off.
 
 Span check is case and whitespace only. A field whose spans are not
-substrings of the question is dropped and logged. A kept filter span
+substrings of the question is dropped and logged. An offset is kept only
+when a cited span also holds the offset's own digits. A kept filter span
 must sit entirely inside one SQL filter literal; a shorter literal is
 a narrowed span and the ask is not served. Nothing is guessed from
 question words.
+
+``approved_offset`` is the one offset the spec may lift main's
+``unrequested_offset`` refusal for: positive, tied to the question, and
+the only OFFSET in both the writer's first SQL and the served SQL, on the
+outer query. An offset that appears only after spec feedback is not
+approved.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from dms_core.pii import fail_closed_mask_payload
+from sqlglot import exp, parse
 
 from dms_executor.sql_grounds import RankBound, SqlGrounds, sql_grounds
 
@@ -112,7 +120,7 @@ class IntentDecision:
     payload: dict[str, Any] | None
     abstain_reason: str | None
     attempt: dict[str, Any]
-    offset_approved: bool = False
+    approved_offset: int | None = None
     retries: int = 0
     rejected_sql: str | None = None
 
@@ -271,6 +279,29 @@ def _keep_spans(spans: list[str], question: str) -> bool:
     return any(_span_ok(span, question) for span in spans)
 
 
+def _digit_runs(text: str) -> list[int]:
+    """Whole ASCII digit runs in ``text``. ``2024`` is one run, not a ``2``."""
+    runs: list[int] = []
+    current = ""
+    for char in text:
+        if char in "0123456789":
+            current += char
+            continue
+        if current:
+            runs.append(int(current))
+            current = ""
+    if current:
+        runs.append(int(current))
+    return runs
+
+
+def _span_holds(spans: list[str], question: str, number: int) -> bool:
+    """A cited span that is in the question and holds ``number`` as its own digits."""
+    return any(
+        _span_ok(span, question) and number in _digit_runs(span) for span in spans
+    )
+
+
 def _drop(dropped: list[dict[str, str]], field: str, reason: str) -> None:
     dropped.append({"field": field, "reason": reason})
     _log.info("intent_spec dropped_field field=%s reason=%s", field, reason)
@@ -331,6 +362,12 @@ def _parse_fields(
             continue
         if not _keep_spans(spans, question):
             _drop(dropped, target, "span_not_in_question")
+            continue
+        # The offset can lift main's unrequested_offset refusal, so its span
+        # must hold the number itself. Being somewhere in the question is not
+        # a tie to the value.
+        if name == "offset" and not _span_holds(spans, question, number):
+            _drop(dropped, target, "value_not_in_span")
             continue
         if name == "n":
             limit = number
@@ -576,6 +613,71 @@ def check_sql_against_spec(
     return "; ".join(reasons)
 
 
+def _outer_offset_tree(sql: str, dialect: str) -> tuple[exp.Expression, int] | None:
+    try:
+        trees = [tree for tree in parse(sql or "", read=dialect) if tree is not None]
+    except Exception:  # noqa: BLE001 — unparseable SQL has no provable offset
+        return None
+    if len(trees) != 1:
+        return None
+    root = trees[0]
+    outer = root.args.get("offset")
+    offsets = list(root.find_all(exp.Offset))
+    if outer is None or len(offsets) != 1 or offsets[0] is not outer:
+        return None
+    value = outer.args.get("expression")
+    if not isinstance(value, exp.Literal) or value.is_string:
+        return None
+    try:
+        number = int(str(value.this))
+    except ValueError:
+        return None
+    if number <= 0:
+        return None
+    return root, number
+
+
+def sole_outer_offset(sql: str, *, dialect: str = "duckdb") -> int | None:
+    """The SQL's only OFFSET when it is on the outer query and a positive integer.
+
+    No OFFSET, a nested OFFSET, more than one OFFSET, or a non-literal is None.
+    """
+    found = _outer_offset_tree(sql, dialect)
+    return None if found is None else found[1]
+
+
+def without_outer_offset(sql: str, offset: int, *, dialect: str = "duckdb") -> str | None:
+    """``sql`` without its outer OFFSET when that is its only one and equals ``offset``.
+
+    Used to check the other qualifiers once an approved offset is lifted.
+    """
+    found = _outer_offset_tree(sql, dialect)
+    if found is None or found[1] != offset:
+        return None
+    root, _number = found
+    stripped = root.copy()
+    stripped.set("offset", None)
+    return str(stripped.sql(dialect=dialect))
+
+
+def _approved_offset(
+    spec: AnswerSpec, *, first_sql: str, served_sql: str, dialect: str
+) -> int | None:
+    """The spec offset when two routes agree on it on their own, else None.
+
+    The writer's first, unsteered SQL and the served SQL must each carry it
+    as their only OFFSET, on the outer query. Offset 0 never lifts anything.
+    """
+    want = spec.offset
+    if want is None or want <= 0:
+        return None
+    if sole_outer_offset(first_sql, dialect=dialect) != want:
+        return None
+    if sole_outer_offset(served_sql, dialect=dialect) != want:
+        return None
+    return want
+
+
 def _sql_of(payload: Mapping[str, Any] | None) -> str | None:
     if not isinstance(payload, Mapping):
         return None
@@ -626,7 +728,7 @@ def apply_intent_spec(
             None,
             reason,
             _attempt(parsed, reason),
-            False,
+            None,
             retries=0,
             rejected_sql=sql,
         )
@@ -654,7 +756,7 @@ def apply_intent_spec(
             dict(current_payload or {}),
             named,
             _attempt(parsed, named),
-            False,
+            None,
             retries=retries,
             rejected_sql=current_sql,
         )
@@ -664,6 +766,8 @@ def apply_intent_spec(
         payload_out,
         None,
         _attempt(parsed, "checked"),
-        parsed.spec.offset is not None,
+        _approved_offset(
+            parsed.spec, first_sql=sql, served_sql=current_sql, dialect=dialect
+        ),
         retries=retries,
     )

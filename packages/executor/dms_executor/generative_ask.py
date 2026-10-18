@@ -78,6 +78,7 @@ from dms_executor.intent_spec import (
     ROLE_SQL_WRITER,
     apply_intent_spec,
     intent_spec_enabled,
+    without_outer_offset,
 )
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import (
@@ -888,7 +889,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
-    spec_allows_offset: bool = False,
+    spec_offset: int | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -900,9 +901,15 @@ def _submit_validated(
             notes=notes,
         )
     gap = unhonored_qualifier_reason(question, sql=sql)
-    # A spec that cited the offset is the authority for that offset. The
-    # word-grammar unrequested_offset check stays when the spec is off.
-    if gap and not (spec_allows_offset and str(gap).startswith("unrequested_offset:")):
+    # The spec lifts unrequested_offset only for the offset it approved, and
+    # only when this SQL's sole OFFSET is that one, on the outer query. The
+    # other qualifiers are then checked on the SQL without that OFFSET, so
+    # the lift covers the offset and nothing else. Spec off: never lifted.
+    if gap and spec_offset is not None and gap == f"unrequested_offset:{spec_offset}":
+        stripped = without_outer_offset(sql, spec_offset)
+        if stripped is not None:
+            gap = unhonored_qualifier_reason(question, sql=stripped)
+    if gap:
         return _abstain(
             question,
             gap,
@@ -1779,7 +1786,7 @@ def maybe_generative_ask(
             ]
         else:
             serve_sql = sql
-            offset_ok = False
+            spec_offset: int | None = None
             attempt: dict[str, Any] | None = None
             # INTENT-SPEC-01. Off by default: this block does not run, and the
             # submit below is the pre-spec path. The named abstain is
@@ -1809,7 +1816,7 @@ def maybe_generative_ask(
                     env["intent_spec_attempt"] = attempt
                     return _stamp(env)
                 serve_sql = decision.sql or sql
-                offset_ok = decision.offset_approved
+                spec_offset = decision.approved_offset
                 if serve_sql != sql:
                     retry_why = validate_compiled_sql(
                         serve_sql, grantable=allowed, warehouse=lake
@@ -1851,7 +1858,7 @@ def maybe_generative_ask(
                 coverage=coverage_from_sql_path(sql=serve_sql),
                 warehouse=lake,
                 plan_origin=origin,
-                spec_allows_offset=offset_ok,
+                spec_offset=spec_offset,
             )
             if attempt is not None and isinstance(env, dict):
                 env["intent_spec_attempt"] = attempt

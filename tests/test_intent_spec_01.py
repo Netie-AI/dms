@@ -253,14 +253,6 @@ def test_ascending_spec_never_serves_descending_sql(
             None,
             ["a", "b", "c"],
         ),
-        (
-            "third-lowest category by stock value",
-            "third-lowest",
-            _ASC_ONE,
-            1,
-            2,
-            ["c"],
-        ),
     ],
 )
 def test_ascending_sql_serves_the_low_rows(
@@ -319,6 +311,276 @@ def test_top3_descending_spec_serves_the_high_rows(harness: _Harness) -> None:
     assert _categories(env) == ["f", "e", "d"]
     assert "f" in env["text"]
     assert harness.submits == [_DESC3]
+
+
+# --- The spec may lift ``unrequested_offset`` only for an offset it can prove ---
+#
+# Main refuses any OFFSET when the question has no rank window. The spec lifts
+# that refusal only when (1) a cited span holds the offset number itself,
+# (2) the writer's first, unsteered SQL already had that offset, and (3) the
+# served SQL has exactly one OFFSET, on the outer query, equal to it. Lifting
+# the offset lifts nothing else: the other qualifiers are still checked.
+
+_NESTED_OFFSET = (
+    "SELECT category, total FROM (SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 3 OFFSET 2) t ORDER BY total ASC"
+)
+_DOUBLE_OFFSET = (
+    "SELECT category, total FROM (SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 5 OFFSET 2) t "
+    "ORDER BY total ASC LIMIT 3 OFFSET 2"
+)
+_ASC3_SKIP2 = (
+    "SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 3 OFFSET 2"
+)
+
+
+def _assert_offset_refused(
+    env: dict[str, Any] | None, harness: _Harness, offset: int
+) -> None:
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert f"unrequested_offset:{offset}" in env["text"]
+    assert "category=" not in env["text"]
+    assert harness.submits == []
+
+
+@pytest.mark.parametrize(
+    ("question", "offset_span"),
+    [
+        # #444 review finding 1, verbatim: offset 0 cited as "lowest 3".
+        ("lowest 3 categories by stock value", "lowest 3"),
+        # The same SQL with an offset-0 span that does hold the number.
+        ("lowest 3 categories by stock value from offset 0", "offset 0"),
+    ],
+)
+def test_spec_offset_zero_never_lifts_a_nested_offset(
+    harness: _Harness, question: str, offset_span: str
+) -> None:
+    """The outer check sees offset 0; the gate sees the nested OFFSET 2.
+
+    Before the fix: L2_VALIDATED, rows c, d, e (ranks 3 to 5). Flag off abstains.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=0,
+        offset_span=offset_span,
+    )
+    harness.writer_sql = _NESTED_OFFSET
+    harness.retry_sql = _NESTED_OFFSET
+    env = harness.ask(question)
+    _assert_offset_refused(env, harness, 2)
+
+
+def test_spec_offset_never_lifts_a_second_offset(harness: _Harness) -> None:
+    """Outer OFFSET 2 matches the spec, a nested OFFSET 2 skips two more rows.
+
+    Before the fix: L2_VALIDATED, rows e, f. The asked window is c, d, e.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = _DOUBLE_OFFSET
+    harness.retry_sql = _DOUBLE_OFFSET
+    env = harness.ask("lowest 3 categories by stock value skipping 2")
+    _assert_offset_refused(env, harness, 2)
+
+
+def test_offset_span_without_the_number_is_dropped(harness: _Harness) -> None:
+    """#444 review finding 2, verbatim: offset 2 cited as "categories".
+
+    Before the fix the spec steered the retry to OFFSET 2 and served c, d, e
+    green. Now the untied offset is dropped and the writer's SQL serves a, b, c.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=2,
+        offset_span="categories",
+    )
+    harness.writer_sql = _ASC3
+    harness.retry_sql = _ASC3_SKIP2
+    env = harness.ask("lowest 3 categories by stock value")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert _categories(env) == ["a", "b", "c"]
+    assert "category=a" in env["text"]
+    assert "category=d" not in env["text"]
+    assert harness.submits == [_ASC3]
+    assert harness.calls == ["sql_writer", ROLE_INTENT_SPEC]
+
+
+def test_offset_steered_into_the_retry_keeps_the_refusal(harness: _Harness) -> None:
+    """The span "3" holds the number, but the writer's own SQL had no offset.
+
+    An OFFSET that appears only after "spec says offset 3" feedback is not two
+    routes agreeing. Before the fix: L2_VALIDATED, rows d, e, f.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=3,
+        offset_span="3",
+    )
+    harness.writer_sql = _ASC3
+    harness.retry_sql = _ASC3 + " OFFSET 3"
+    env = harness.ask("lowest 3 categories by stock value")
+    _assert_offset_refused(env, harness, 3)
+    assert harness.calls == ["sql_writer", ROLE_INTENT_SPEC, "sql_writer"]
+
+
+def test_ordinal_word_does_not_tie_an_offset(harness: _Harness) -> None:
+    """"third-lowest" holds no digit, so offset 2 is not tied and main's refusal stands.
+
+    Reading "third" as 2 would need a word list. Before the fix: served c.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="third-lowest",
+        offset=2,
+        offset_span="third-lowest",
+    )
+    harness.writer_sql = _ASC_ONE
+    harness.retry_sql = _ASC_ONE
+    env = harness.ask("third-lowest category by stock value")
+    _assert_offset_refused(env, harness, 2)
+
+
+def test_approved_offset_still_checks_the_other_qualifiers(harness: _Harness) -> None:
+    """The lift covers the offset only. The named filter is still required.
+
+    Before the fix the lift skipped every other qualifier and served c with
+    no warehouse filter. Flag off abstains.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = _ASC_ONE
+    harness.retry_sql = _ASC_ONE
+    env = harness.ask("lowest category by stock value skipping 2 for warehouse A")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "unhonored_qualifier:named_filter=warehouse a" in env["text"]
+    assert "category=" not in env["text"]
+    assert harness.submits == []
+
+
+@pytest.mark.parametrize(
+    ("question", "sql", "want"),
+    [
+        ("lowest category by stock value skipping 2", _ASC_ONE, ["c"]),
+        ("lowest 3 categories by stock value skipping 2", _ASC3_SKIP2, ["c", "d", "e"]),
+    ],
+)
+def test_tied_offset_the_writer_chose_is_served(
+    harness: _Harness, question: str, sql: str, want: list[str]
+) -> None:
+    """Span holds the number, the writer's own SQL has it once, on the outer query."""
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert _categories(env) == want
+    for name in want:
+        assert f"category={name}" in env["text"]
+    assert "category=a" not in env["text"]
+    assert harness.submits == [sql]
+
+
+def test_tied_offset_retry_keeping_the_writer_offset_is_served(harness: _Harness) -> None:
+    """The writer had OFFSET 2 but ordered DESC. The retry fixes the order only."""
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = _DESC_ONE
+    harness.retry_sql = _ASC_ONE
+    env = harness.ask("lowest category by stock value skipping 2")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert _categories(env) == ["c"]
+    assert "category=c" in env["text"]
+    assert harness.submits == [_ASC_ONE]
+
+
+@pytest.mark.parametrize(
+    ("span", "kept"),
+    [
+        ("skipping 2", True),
+        ("2", True),
+        ("categories", False),
+        ("lowest 3", False),
+        ("2024", False),
+        ("12", False),
+    ],
+)
+def test_offset_span_must_hold_the_number(span: str, kept: bool) -> None:
+    question = "lowest 3 categories in 2024 skipping 2 of 12"
+    parsed = parse_spec_payload(
+        _cited(offset=2, offset_span=span),
+        question,
+        writer_payload=_writer("SELECT 1"),
+    )
+    assert parsed.unverified is None
+    if kept:
+        assert parsed.spec.offset == 2
+        assert parsed.dropped == ()
+    else:
+        assert parsed.spec.offset is None
+        assert parsed.dropped == ({"field": "offset", "reason": "value_not_in_span"},)
+
+
+def test_spec_offset_zero_does_not_lift_at_submit(harness: _Harness) -> None:
+    """``_submit_validated`` re-checks the SQL it submits, not a flag."""
+    env = _submit_validated(
+        _NESTED_OFFSET,
+        question="lowest 3 categories by stock value",
+        space_id=None,
+        session_id=None,
+        submit=harness.submit,
+        ledger_append=lambda _payload: SimpleNamespace(entry_id="led_spec", hash="hash_spec"),
+        notes=(),
+        plan_source="ontology_plan",
+        coverage=coverage_from_sql_path(sql=_NESTED_OFFSET),
+        warehouse=harness.lake,
+        spec_offset=2,
+    )
+    _assert_offset_refused(env, harness, 2)
 
 
 def test_span_outside_the_question_is_dropped_and_logged(
