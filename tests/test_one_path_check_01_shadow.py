@@ -2,7 +2,8 @@
 
 The 52-question replay is the existing flag-off fixture
 (``tests/fixtures/ask_guide``). ``as_of`` is the wall clock, so both sides
-replace it. The only other allowed difference is ``served_check_shadow``.
+replace it. The other allowed differences are ``served_check_shadow`` and
+the two keys ROUTE-STAMP-01 adds (``served_route`` and ``ladder_rung``).
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
 def _stable(env: dict[str, Any]) -> dict[str, Any]:
     out = dict(env)
     out.pop(_SHADOW, None)
+    for key in ("served_route", "ladder_rung"):
+        out.pop(key, None)
     if "as_of" in out:
         out["as_of"] = _AS_OF
     return out

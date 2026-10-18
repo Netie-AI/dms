@@ -479,6 +479,17 @@ def maybe_uncertified_refuse_ask(
         ),
     )
     assert_envelope_valid(env)
+    return _stamp_l1(env)
+
+
+def _stamp_l1(env: dict[str, Any]) -> dict[str, Any]:
+    """L1 only when this path executed SQL. A no-SQL abstain keeps abstain:<stage>."""
+    from dms_executor.route_stamp import ROUTE_L1, stamp_route
+
+    sql_used = env.get("sql_used")
+    if not isinstance(sql_used, str) or not sql_used.strip():
+        return env
+    stamp_route(env, ROUTE_L1)
     return env
 
 
@@ -608,7 +619,7 @@ def curated_pack_metric_miss(
         route="abstain",
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
 
 
 def _curated_step_refusal(
@@ -646,7 +657,7 @@ def _curated_step_refusal(
         route="abstain",
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
 
 
 def envelope_from_pack_submit(
@@ -689,7 +700,7 @@ def envelope_from_pack_submit(
         grounded_tables=list(metric.tables),
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
 
 
 def maybe_pack_ask(

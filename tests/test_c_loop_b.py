@@ -344,6 +344,7 @@ def test_credit_is_missing_when_ranking_serves_after_a_model_call(
     assert env is not None
     assert_envelope_valid(env)
     assert env["plan_origin"] == "ontology_ranking"
+    assert env["served_route"] == "ontology_compile"
     assert env["badge"] == "L2_VALIDATED"
     assert env["sql_used"] != rejected
     assert env["served_attribution"] == "missing"
