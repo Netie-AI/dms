@@ -56,6 +56,13 @@ def compliance_gate(
     key = getattr(client, "api_key", None)
     if key:
         headers["X-API-Key"] = str(key)
+    unavailable = ComplianceDecision(
+        allowed=False, reason="gate_unavailable", action=action, event_id=event_id
+    )
+    # Every way of reaching the gate and reading its answer that is not an answer fails closed
+    # as gate_unavailable: a base_url httpx rejects (InvalidURL is not an HTTPError), a transport
+    # error, and a body that is not JSON. The gate is shared by every mutation route, so none of
+    # these may escape as a bare 500.
     try:
         with httpx.Client(base_url=str(base).rstrip("/"), timeout=10.0) as http:
             r = http.post(
@@ -63,15 +70,11 @@ def compliance_gate(
                 json=payload,
                 headers=headers or None,
             )
-    except httpx.HTTPError:
-        return ComplianceDecision(
-            allowed=False, reason="gate_unavailable", action=action, event_id=event_id
-        )
+    except Exception:  # noqa: BLE001 - fail closed on any failure to reach the gate
+        return unavailable
 
     if r.status_code >= 500:
-        return ComplianceDecision(
-            allowed=False, reason="gate_unavailable", action=action, event_id=event_id
-        )
+        return unavailable
     if r.status_code == 404:
         # Task catalog miss — fail closed for mutations; chat.ask may soft-fallback
         return ComplianceDecision(
@@ -82,7 +85,12 @@ def compliance_gate(
             allowed=False, reason="gate_refused", action=action, event_id=event_id
         )
 
-    body = r.json() if r.content else {}
+    try:
+        body = r.json() if r.content else {}
+    except ValueError:  # a 2xx that is not JSON is not an answer the gate gave
+        return unavailable
+    if not isinstance(body, dict):  # a JSON list or scalar is not a decision either
+        return unavailable
     status = str(body.get("status") or "").lower()
     executable = body.get("executable")
     allowed = executable is True or status in {"ok", "allowed", "pass", "passed"}
