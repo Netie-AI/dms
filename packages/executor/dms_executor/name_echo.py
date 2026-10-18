@@ -83,9 +83,14 @@ def _dialect() -> str:
     return EXTRACT_DIALECT
 
 
+# An apostrophe between two letters is English ("There's", "plant's"), not a
+# string quote. A same-length space keeps every offset on the original text.
+_PROSE_APOSTROPHE = re.compile(r"(?<=[A-Za-z])'(?=[A-Za-z])")
+
+
 def _tokenize(text: str) -> list[Token] | None:
     try:
-        return list(tokenize(text, read=_dialect()))
+        return list(tokenize(_PROSE_APOSTROPHE.sub(" ", text), read=_dialect()))
     except SqlglotError:
         return None
 
@@ -618,20 +623,47 @@ def _sql_grant_names(env: dict[str, Any], warehouse: Path | None = None) -> set[
     return names
 
 
-def _sql_parts(env: dict[str, Any], warehouse: Path | None) -> list[tuple[str, ...]]:
-    sources = _sql_sources(env)
-    if not sources:
-        return []
+def _sql_tables(env: dict[str, Any]) -> list[tuple[str, ...]]:
     parsed: list[tuple[str, ...]] = []
     seen: set[str] = set()
-    for sql in sources:
+    for sql in _sql_sources(env):
         for parts in _tables_in_sql(sql):
             key = ".".join(parts).casefold()
             if key in seen:
                 continue
             seen.add(key)
             parsed.append(parts)
-    return _ungranted(parsed, _sql_grant_names(env, warehouse))
+    return parsed
+
+
+def _sql_parts(
+    env: dict[str, Any], warehouse: Path | None, grants: set[str] | None = None
+) -> list[tuple[str, ...]]:
+    """Relations the SQL reads that ``grants`` (or the derived set) does not hold."""
+    sql_grants = grants if grants is not None else _sql_grant_names(env, warehouse)
+    return _ungranted(_sql_tables(env), sql_grants)
+
+
+def _abstain_on_breach(env: dict[str, Any], breach: list[tuple[str, ...]]) -> dict[str, Any]:
+    """An answer whose SQL reads a relation the turn does not grant is not served.
+
+    Erasing the name would leave a validated number with its real source
+    removed, so the envelope becomes an abstain. The ticket keeps the name.
+    """
+    from dms_executor.abstain import build_abstain
+    from dms_executor.gen_path_refuse import customer_abstain_text
+
+    sql = env.get("sql_used")
+    reason = "ungranted:" + ",".join(".".join(parts) for parts in breach)
+    logger.warning("name_echo_ungranted_answer: %d relation(s), answer withheld", len(breach))
+    return build_abstain(
+        reason=reason,
+        question=str(env.get("question") or ""),
+        sql=sql if isinstance(sql, str) else None,
+        stage="name_echo",
+        demote=env,
+        text=customer_abstain_text(""),
+    )
 
 
 def _scrub_field(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
@@ -646,15 +678,30 @@ def hide_echo(
     reason: str,
     *,
     warehouse: Path | None = None,
+    grants: set[str] | None = None,
 ) -> dict[str, Any]:
     """Scrub name-carrying fields. Id fields, loop SQL, and raw replies stay.
 
     Called at the HTTP boundary, after a loop has been re-attached.
     ``sql_used`` is included. ``loop[].sql`` and ``raw_reply`` are not.
+
+    ``grants`` is the turn's own grant set (``Executor.grantable_tables``).
+    An answered envelope never has names from its SQL removed: the SQL is
+    its source. When ``grants`` is known and that SQL reads a relation
+    outside it, the answer becomes an abstain instead. Without ``grants``
+    an answered envelope's SQL is left to the validator that admitted it.
     """
+    if env.get("abstained") is False:
+        breach = _sql_parts(env, warehouse, grants) if grants is not None else []
+        if breach:
+            return _abstain_on_breach(env, breach)
+        sql_parts: list[tuple[str, ...]] = []
+    else:
+        sql_parts = _sql_parts(env, warehouse, grants)
+    tail_grants = grants if grants is not None else _grant_names(env, warehouse)
     parts_list = _merge_parts(
-        _ungranted(_collect_parts(reason, env), _grant_names(env, warehouse)),
-        _sql_parts(env, warehouse),
+        _ungranted(_collect_parts(reason, env), tail_grants),
+        sql_parts,
     )
     for key in _NAME_KEYS:
         if key not in env or key in _ID_KEYS:

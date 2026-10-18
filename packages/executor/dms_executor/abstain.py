@@ -95,6 +95,20 @@ def build_abstain(
                     assumptions = []
                     demote["assumptions"] = assumptions
                 assumptions.append(note)
+            if isinstance(demote.get("audit_receipt"), dict):
+                # The receipt described the rows just cleared (E13).
+                from dms_executor.envelope import build_audit_receipt
+
+                kept = demote.get("assumptions")
+                demote["audit_receipt"] = build_audit_receipt(
+                    abstained=True,
+                    badge="ABSTAIN",
+                    rows=[],
+                    sql_used=None,
+                    assumptions=[a for a in kept if isinstance(a, str)]
+                    if isinstance(kept, list)
+                    else [],
+                )
         _stamp_ticket(
             demote,
             reason=reason,

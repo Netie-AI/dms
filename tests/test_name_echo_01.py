@@ -755,6 +755,9 @@ def _post_ask(
     assert res.status_code == 200, res.text
     body = res.json()
     assert isinstance(body, dict)
+    from dms_executor.envelope import assert_envelope_valid
+
+    assert_envelope_valid(body)
     return body
 
 
@@ -815,8 +818,13 @@ def test_p04_full_response_json_hides_hr_payroll(
     leaked = _name_hits(body, name)
     assert leaked == [], leaked
     if lane == "generated":
+        # The answer read a relation the turn does not grant: it is withheld,
+        # not shown with its source erased.
         assert body.get("route") == "generated"
-        assert body.get("abstained") is False
+        assert body.get("abstained") is True
+        assert body.get("badge") == "ABSTAIN"
+        assert body.get("rows") == [] and body.get("values") == []
+        assert body.get("sql_used") is None
         assert not body.get("loop")
         return
     assert body.get("abstained") is True
@@ -870,3 +878,103 @@ def test_the_scrub_keeps_a_computed_answer_when_uploads_cannot_be_listed() -> No
     assert "FROM inventory i JOIN" in str(out["sql_used"])
     assert "secret_sheet" not in str(out["sql_used"])
     assert "secret_sheet" not in str(out["text"])
+
+
+# --- Review at b3a36a1: findings 3, 4 and 5 ---
+
+_SHIPMENTS_COUNT = "SELECT COUNT(*) AS n FROM shipments"
+
+
+def _answered(sql: str, text: str, space_id: str | None = None) -> dict:
+    env: dict = {
+        "badge": "L2_VALIDATED",
+        "abstained": False,
+        "text": text,
+        "sql_used": sql,
+        "assumptions": [],
+        "rows": [{"n": 4}],
+        "values": [],
+    }
+    if space_id is not None:
+        env["space_id"] = space_id
+    return env
+
+
+def test_an_answer_in_a_space_the_seed_does_not_know_keeps_its_source() -> None:
+    """Finding 3: a Space made through POST /v1/spaces is not in the demo seed."""
+    from dms_executor.name_echo import hide_echo
+
+    sql = "SELECT SUM(amount) FROM bronze.q3_po_Sales"
+    text = "Total from bronze.q3_po_Sales: 1,200."
+    for grants in (None, {"bronze.q3_po_Sales"}):
+        env = hide_echo(_answered(sql, text, "sp_user_created_7"), "", grants=grants)
+        assert env["abstained"] is False, grants
+        assert env["text"] == text and env["sql_used"] == sql, grants
+
+
+def test_an_answer_reading_an_ungranted_relation_abstains() -> None:
+    """Finding 4: never a validated number with its real source erased."""
+    from dms_executor.name_echo import hide_echo
+
+    finance = {"inventory", "suppliers", "transactions", "locations"}
+    env = hide_echo(
+        _answered(_SHIPMENTS_COUNT, "There are 4 shipments.", _FINANCE), "", grants=finance
+    )
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == [] and env["values"] == []
+    assert env["sql_used"] is None
+    assert "4" not in env["text"] and "shipments" not in env["text"]
+    granted = hide_echo(
+        _answered(_SHIPMENTS_COUNT, "There are 4 shipments.", _FINANCE),
+        "",
+        grants=finance | {"shipments"},
+    )
+    assert granted["abstained"] is False and granted["text"] == "There are 4 shipments."
+
+
+def test_an_ungranted_answer_abstains_through_the_ask_route(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Finding 4 over HTTP: Finance does not grant shipments."""
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level(logging.WARNING, logger="dms_executor.pipeline_failure")
+    body = _post_ask(
+        monkeypatch, "How many shipments", _SHIPMENTS_COUNT, lane="generated", space_id=_FINANCE
+    )
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert body["rows"] == [] and body["values"] == []
+    assert _name_hits(body, "shipments") == []
+    tickets = [
+        json.loads(rec.getMessage().split("pipeline_failure ", 1)[1])
+        for rec in caplog.records
+        if rec.getMessage().startswith("pipeline_failure ")
+    ]
+    assert any("shipments" in (item.get("names") or []) for item in tickets), tickets
+
+
+def test_an_apostrophe_in_prose_does_not_stop_the_scrub() -> None:
+    """Finding 5: English contractions and possessives are not string quotes."""
+    from dms_executor.name_echo import hide_echo
+
+    env = hide_echo(
+        {
+            "badge": "ABSTAIN",
+            "abstained": True,
+            "text": "There's 4 rows in hr_payroll.",
+            "sql_used": "SELECT 1 FROM hr_payroll",
+        },
+        "",
+        grants={"inventory"},
+    )
+    assert "hr_payroll" not in env["text"] and env["text"].startswith("There's 4 rows in")
+    abstain = build_abstain(
+        reason="ungranted:alerts",
+        question="plant data",
+        stage="followup",
+        answer_id="ans_apostrophe",
+        text="I can't answer this: the plant's data is ungranted:alerts.",
+    )
+    assert abstain["text"] != ""
+    assert "alerts" not in abstain["text"] and "plant's" in abstain["text"]

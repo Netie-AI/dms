@@ -131,6 +131,6 @@ def test_http_generated_ungranted_behind_cte_is_never_named(
 ) -> None:
     body = _post_ask(monkeypatch, "How many staff", _HIDDEN, lane="generated")
     assert _name_hits(body, "hr_payroll") == []
-    sql_used = str(body.get("sql_used"))
-    assert "WITH t AS" in sql_used and sql_used.rstrip().endswith("FROM t")
-    assert "WITH t AS" in str(body.get("text"))
+    # A CTE does not hide the ungranted table it reads: the answer is withheld.
+    assert body.get("abstained") is True
+    assert body.get("rows") == [] and body.get("sql_used") is None

@@ -311,6 +311,10 @@ def test_space_scope_facts_stated_in_the_contract(h) -> None:
     )
     ops_ship = ask("A-052", "ops", "shipments")
     assert env(ops_ship)["badge"] == "L2_VALIDATED"
+    # The reason no longer names the table, so each refusal is pinned by a
+    # control: the same Space serves the same SQL over a table it grants.
+    fin_inv = ask("A-055", "finance", "inventory")
+    assert env(fin_inv)["badge"] == "L2_VALIDATED"
     # no space_id: the whole demo set is grantable, alerts included (observed, see contract)
     co_alerts = ask("A-053", "company", "alerts")
     assert env(co_alerts)["badge"] == "L2_VALIDATED" and env(co_alerts)["rows"] == [{"n": 5}]
