@@ -22,7 +22,6 @@ from cortex_client.compute import (
     cloop_b_enabled,
     generate_model_called,
     insights_call_cap,
-    recorded_model_calls,
 )
 
 from dms_executor.demo_warehouse import SERVING_DIALECT
@@ -467,8 +466,25 @@ def _no_model_retry(why: str, extra: frozenset[str]) -> bool:
     return _refusal_head(why) in _NO_RETRY_HEADS
 
 
-def _can_retry(*, retries: int, used: int, cap: int) -> bool:
-    return retries < MAX_SQL_RETRIES and used < cap
+class AskCallBudget:
+    """One insights cap for the first reading, the second reading, and retries."""
+
+    def __init__(self) -> None:
+        self.cap = insights_call_cap()
+        self.used = 0
+
+    def allow(self) -> bool:
+        return self.used < self.cap
+
+    def take(self) -> bool:
+        if not self.allow():
+            return False
+        self.used += 1
+        return True
+
+
+def _can_retry(*, retries: int, budget: AskCallBudget) -> bool:
+    return retries < MAX_SQL_RETRIES and budget.allow()
 
 
 def _served_outcome(env: dict[str, Any]) -> str:
@@ -533,8 +549,8 @@ def run_model_loop(
     empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
     attempts: list[dict[str, Any]],
     no_retry_reasons: frozenset[str] = frozenset(),
-    fresh_budget: bool = False,
     recover_failures: bool = False,
+    budget: AskCallBudget,
 ) -> dict[str, Any]:
     """Checker, read-only run, feedback retry.
 
@@ -542,22 +558,14 @@ def run_model_loop(
     switches ``empty_result_reason``. Hostile, multi-statement, file-read,
     and ungranted SQL abstain on the first call.
 
-    ``fresh_budget`` starts this reading at one call against the same
-    ``insights_call_cap`` and ``MAX_SQL_RETRIES``. The second reading uses
-    it so the first reading's calls do not eat the retry.
+    ``budget`` is the ask's one cap. The opening compute already took a
+    call. Retries take from what is left. They do not start a new cap.
 
     ``recover_failures`` is the second reading only. It feeds back a reply
     with no SQL, a statement refused before execute, and an empty result.
     The next SQL still goes through ``check``. Hostile SQL does not.
     """
-    cap = insights_call_cap()
     retries = 0
-    if fresh_budget:
-        used = 1
-    else:
-        used = recorded_model_calls()
-        if used <= 0:
-            used = 1
     current = payload if isinstance(payload, dict) else None
     reason: str | None = None
     prev_sql: str | None = None
@@ -576,9 +584,9 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
-            if recover_failures and _can_retry(retries=retries, used=used, cap=cap):
+            if recover_failures and _can_retry(retries=retries, budget=budget):
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = None
                 reason = "pre_run_refusal:no_sql"
                 current = _call(compute, ctx, prompt, reason, None)
@@ -598,11 +606,11 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
-                if not _can_retry(retries=retries, used=used, cap=cap):
+                if not _can_retry(retries=retries, budget=budget):
                     head = f"loop_exhausted:{flag}"
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = sql
                 reason = flag
                 current = _call(compute, ctx, prompt, reason, sql)
@@ -617,11 +625,11 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
-                if not _can_retry(retries=retries, used=used, cap=cap):
+                if not _can_retry(retries=retries, budget=budget):
                     head = "loop_exhausted:filter_dropped"
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = sql
                 reason = "filter_dropped"
                 current = _call(compute, ctx, prompt, reason, sql)
@@ -645,12 +653,12 @@ def run_model_loop(
             blocked = _no_model_retry(why, no_retry_reasons)
             if recover_failures and _refusal_head(why) in _SECOND_RECOVER_HEADS:
                 blocked = False
-            if blocked or not _can_retry(retries=retries, used=used, cap=cap):
+            if blocked or not _can_retry(retries=retries, budget=budget):
                 head = outcome if blocked else f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
             protected_sql = sql
             retries += 1
-            used += 1
+            budget.take()
             prev_sql = sql
             reason = outcome
             current = _call(compute, ctx, prompt, reason, sql)
@@ -678,9 +686,9 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
-            if recover_failures and _can_retry(retries=retries, used=used, cap=cap):
+            if recover_failures and _can_retry(retries=retries, budget=budget):
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = sql
                 reason = f"pre_run_refusal:{exec_err}"
                 current = _call(compute, ctx, prompt, reason, sql)
@@ -695,11 +703,11 @@ def run_model_loop(
                 )
             )
             protected_sql = sql
-            if not _can_retry(retries=retries, used=used, cap=cap):
+            if not _can_retry(retries=retries, budget=budget):
                 head = f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
             retries += 1
-            used += 1
+            budget.take()
             prev_sql = sql
             reason = outcome
             current = _call(compute, ctx, prompt, reason, sql)
@@ -718,9 +726,9 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
-                if recover_failures and _can_retry(retries=retries, used=used, cap=cap):
+                if recover_failures and _can_retry(retries=retries, budget=budget):
                     retries += 1
-                    used += 1
+                    budget.take()
                     prev_sql = sql
                     reason = decision
                     current = _call(compute, ctx, prompt, reason, sql)

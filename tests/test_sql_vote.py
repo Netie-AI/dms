@@ -102,6 +102,7 @@ def test_the_two_prompts_differ_in_instruction_not_by_a_suffix() -> None:
         rows_a=[{"n": 1}],
         rows_b=[{"n": 1}],
         dialect="duckdb",
+        grantable=set(_GRANTS),
     )
     seen: list[str] = []
 
@@ -145,6 +146,7 @@ def test_equivalent_sql_and_equal_rows_agree_only_from_independent_prompts() -> 
         rows_a=rows,
         rows_b=rows,
         dialect="duckdb",
+        grantable={"inventory"},
     )
     assert not readings_agree(
         prompt_a=first,
@@ -154,6 +156,7 @@ def test_equivalent_sql_and_equal_rows_agree_only_from_independent_prompts() -> 
         rows_a=rows,
         rows_b=rows,
         dialect="duckdb",
+        grantable={"inventory"},
     )
 
 
@@ -168,6 +171,48 @@ def test_equivalent_sql_with_different_rows_does_not_agree() -> None:
         rows_a=[{"n": 1}],
         rows_b=[{"n": 2}],
         dialect="duckdb",
+        grantable={"inventory"},
+    )
+
+
+def test_a_literal_select_never_agrees() -> None:
+    """Equal rows are not agreement when one SQL reads no granted table."""
+    question = "How many inventory rows?"
+    rows = [{"n": 3}]
+    counted = "SELECT COUNT(*) AS n FROM inventory"
+    other = "SELECT COUNT(*) AS n FROM inventory WHERE 1 = 1"
+    literal = "SELECT 3 AS n"
+    first = reading_prompt(question, reading=1)
+    second = reading_prompt(question, reading=2, plan=empty_plan())
+    assert readings_agree(
+        prompt_a=first,
+        prompt_b=second,
+        sql_a=counted,
+        sql_b=other,
+        rows_a=rows,
+        rows_b=rows,
+        dialect="duckdb",
+        grantable={"inventory"},
+    )
+    assert not readings_agree(
+        prompt_a=first,
+        prompt_b=second,
+        sql_a=counted,
+        sql_b=literal,
+        rows_a=rows,
+        rows_b=rows,
+        dialect="duckdb",
+        grantable={"inventory"},
+    )
+    assert not readings_agree(
+        prompt_a=first,
+        prompt_b=second,
+        sql_a=literal,
+        sql_b=literal,
+        rows_a=rows,
+        rows_b=rows,
+        dialect="duckdb",
+        grantable={"inventory"},
     )
 
 
@@ -222,7 +267,7 @@ def test_a_retry_still_calls_validate_compiled_sql(
 ) -> None:
     """The second reading's retry is the same checker. A bypass fails this."""
     _loop(monkeypatch)
-    monkeypatch.setattr("dms_executor.sql_loop.recorded_model_calls", lambda: 99)
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "4")
     import dms_executor.generative_ask as generative_ask
 
     seen: list[str] = []
@@ -291,6 +336,7 @@ def test_disagreement_reconfirms_instead_of_serving(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _loop(monkeypatch)
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "3")
 
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
         if ctx.get("sql_vote_kind") == "reconfirm":
@@ -330,6 +376,7 @@ def test_second_reading_retry_recovers_the_failure(
 ) -> None:
     """The 21-case types: the retry SQL still goes through the checker."""
     _loop(monkeypatch)
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "4")
     import dms_executor.generative_ask as generative_ask
 
     checked: list[str] = []
@@ -381,6 +428,49 @@ def test_second_reading_retry_recovers_the_failure(
         assert "explain:" in reasons[0]
     else:
         assert reasons[0].startswith("empty_result_unverified:")
+
+
+def test_select_literal_is_not_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _loop(monkeypatch)
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        if ctx.get("sql_vote_kind") == "reading":
+            return _names(query_sql="SELECT 3 AS n")
+        return _names(query_sql=_COUNT)
+
+    env = _ask(tmp_path, "How many inventory rows are there?", compute)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["sql_used"] is None
+    assert env["rows"] == []
+    assert "SELECT 3" not in env["text"]
+
+
+def test_shared_cap_bounds_both_readings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First reading, second reading, and retries share one cap."""
+    _loop(monkeypatch)
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "2")
+    calls = {"n": 0}
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        calls["n"] += 1
+        if ctx.get("sql_vote_kind") == "reading":
+            return _names(query_sql="SELECT nope FROM locations")
+        return _names(query_sql=_COLD)
+
+    env = _ask(tmp_path, "Which locations are cold storage?", compute)
+    assert calls["n"] <= 2
+    assert calls["n"] == 2
+    assert env is not None
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["sql_used"] is None
 
 
 def test_paired_score_self_check_is_not_the_held_out_split() -> None:

@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-18 - SQL-VOTE: equal rows, one call cap, abstain through the builder
+
+- **Agreement.** Equal rows from two different instructions agree. The SQL does not have to match. Both statements must pass `validate_compiled_sql`, and each must read at least one granted table. `SELECT 3` does not agree.
+- **Cap.** The first reading, the second reading, and every retry share one `insights_call_cap`. A later call is not sent once the cap is spent.
+- **Abstain.** Comparison rows that do not run go through `build_abstain`. Not a raw abstain dict.
+- **Base.** DMS #421 is still open. This branch stays on `cursor/grant-struct-01`, not main. Not PASS.
+
 ## 2026-10-18 - SQL-VOTE: plan-then-solve, not a reading=2 suffix
 
 - **Framing.** Reading 1 asks for one SELECT. Reading 2 asks for a JSON plan of tables, joins, measure, and filters from the ontology, then for SQL that follows that plan. A short suffix is not a second instruction. The insights body still sends `model_preference=free+normal` and has no temperature or seed, so no second model is set.

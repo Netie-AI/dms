@@ -110,6 +110,8 @@ from dms_executor.semantic_retrieve import (
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
+    EMPTY_UNVERIFIED,
+    AskCallBudget,
     apply_sql_credit,
     loop_entry,
     run_model_loop,
@@ -119,13 +121,11 @@ from dms_executor.sql_vote import (
     disagreement_detail,
     empty_plan,
     ontology_json,
-    plan_prompt,
     reading_prompt,
     readings_agree,
     reconfirm_envelope,
     reconfirm_from_payload,
     reconfirm_prompt,
-    vote_plan_from_payload,
 )
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -1245,6 +1245,7 @@ def _run_extract_loop(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
+    budget: AskCallBudget,
 ) -> dict[str, Any]:
     """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
 
@@ -1270,6 +1271,15 @@ def _run_extract_loop(
             if broken:
                 return violation_reason(broken)
         return None
+
+    def vote_rows(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        return _vote_rows(
+            sql,
+            warehouse,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         return _submit_validated(
@@ -1350,11 +1360,12 @@ def _run_extract_loop(
         dialect=dialect,
         model_sql=model_sql,
         check=check,
-        submit_sql=lambda sql, _attempts: _vote_rows(sql, warehouse),
+        submit_sql=vote_rows,
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=attempts,
         no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+        budget=budget,
     )
     if first.get("abstained") or not first.get("rows"):
         return first
@@ -1373,16 +1384,39 @@ def _run_extract_loop(
         attempts=attempts,
         space_id=space_id,
         session_id=session_id,
+        grantable=grantable,
+        budget=budget,
     )
 
 
-def _vote_rows(sql: str, warehouse: Path | None) -> dict[str, Any]:
+def _vote_rows(
+    sql: str,
+    warehouse: Path | None,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
     """Rows for the comparison. The customer submit happens after agreement."""
     if warehouse is None or not Path(warehouse).is_file():
-        return {"abstained": True, "rows": [], "sql_used": sql}
+        return _abstain(
+            question,
+            "warehouse_missing",
+            space_id=space_id,
+            session_id=session_id,
+            sql=sql,
+            stage="sql_vote",
+        )
     rows, err = run_readonly(sql, Path(warehouse))
     if err or not rows:
-        return {"abstained": True, "rows": [], "sql_used": sql}
+        return _abstain(
+            question,
+            err or EMPTY_UNVERIFIED,
+            space_id=space_id,
+            session_id=session_id,
+            sql=sql,
+            stage="sql_vote",
+        )
     return {"abstained": False, "rows": rows, "sql_used": sql}
 
 
@@ -1402,24 +1436,32 @@ def _second_reading(
     attempts: list[dict[str, Any]],
     space_id: str | None,
     session_id: str | None,
+    grantable: set[str],
+    budget: AskCallBudget,
 ) -> dict[str, Any]:
-    """Plan from the ontology, then SQL from that plan. Same checker."""
-    ctx_plan = dict(ctx)
-    ctx_plan.pop("sql_loop_feedback", None)
-    ctx_plan["sql_vote_prompt"] = plan_prompt(question, ontology_json(ctx))
-    ctx_plan["sql_vote_kind"] = "plan"
-    try:
-        plan_payload = compute(ctx_plan)
-    except Exception:  # noqa: BLE001 - no plan object, the SQL prompt says so
-        plan_payload = None
-    plan = vote_plan_from_payload(plan_payload if isinstance(plan_payload, dict) else None)
-    if plan is None:
-        plan = empty_plan()
-    second_prompt = reading_prompt(question, reading=2, plan=plan)
+    """One plan-then-SQL prompt. Same checker. Same call cap as the first reading."""
+    first_sql = str(first.get("sql_used") or "")
+    if not budget.allow():
+        for item in reversed(attempts):
+            if item.get("outcome") == "served":
+                item["outcome"] = f"insights_call_cap:{budget.cap}"
+                break
+        return _abstain(
+            question,
+            f"insights_call_cap:{budget.cap}",
+            space_id=space_id,
+            session_id=session_id,
+            sql=first_sql,
+            stage="sql_vote",
+        )
+    second_prompt = reading_prompt(
+        question, reading=2, plan=empty_plan(), ontology=ontology_json(ctx)
+    )
     ctx2 = dict(ctx)
     ctx2.pop("sql_loop_feedback", None)
     ctx2["sql_vote_prompt"] = second_prompt
     ctx2["sql_vote_kind"] = "reading"
+    budget.take()
     try:
         payload = compute(ctx2)
     except Exception:  # noqa: BLE001 - a missed second reading reconfirms
@@ -1427,7 +1469,13 @@ def _second_reading(
     second_attempts: list[dict[str, Any]] = []
 
     def vote_submit(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
-        return _vote_rows(sql, warehouse)
+        return _vote_rows(
+            sql,
+            warehouse,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
 
     second = run_model_loop(
         question=second_prompt,
@@ -1443,16 +1491,16 @@ def _second_reading(
         empty_answer=empty_answer,
         attempts=second_attempts,
         no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
-        fresh_budget=True,
         recover_failures=True,
+        budget=budget,
     )
-    first_sql = str(first.get("sql_used") or "")
     second_sql = str(second.get("sql_used") or "")
     raw_first = first.get("rows")
     raw_second = second.get("rows")
     first_rows = cast(list[dict[str, Any]], raw_first if isinstance(raw_first, list) else [])
     second_rows = cast(list[dict[str, Any]], raw_second if isinstance(raw_second, list) else [])
-    if readings_agree(
+    checked = check(first_sql) is None and check(second_sql) is None
+    if checked and readings_agree(
         prompt_a=reading_prompt(question, reading=1),
         prompt_b=second_prompt,
         sql_a=first_sql,
@@ -1460,6 +1508,7 @@ def _second_reading(
         rows_a=first_rows,
         rows_b=second_rows,
         dialect=dialect,
+        grantable=grantable,
     ):
         published = publish(first_sql, attempts)
         if published.get("abstained"):
@@ -1470,13 +1519,17 @@ def _second_reading(
         return published
     detail = disagreement_detail(second.get("assumptions") if second.get("abstained") else None)
     why, closest = detail, ""
-    ctx3 = dict(ctx)
-    ctx3["sql_vote_prompt"] = reconfirm_prompt(question, detail)
-    ctx3["sql_vote_kind"] = "reconfirm"
-    try:
-        rec = compute(ctx3)
-    except Exception:  # noqa: BLE001 - the offer still names the disagreement
-        rec = None
+    rec = None
+    if budget.allow():
+        ctx3 = dict(ctx)
+        ctx3.pop("sql_loop_feedback", None)
+        ctx3["sql_vote_prompt"] = reconfirm_prompt(question, detail)
+        ctx3["sql_vote_kind"] = "reconfirm"
+        budget.take()
+        try:
+            rec = compute(ctx3)
+        except Exception:  # noqa: BLE001 - the offer still names the disagreement
+            rec = None
     parsed = reconfirm_from_payload(rec if isinstance(rec, dict) else None)
     if parsed:
         why, closest = parsed
@@ -1640,12 +1693,17 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    vote_budget: AskCallBudget | None = None
     if cloop_b_enabled() and not ontology_ranked_lane_enabled():
-        # Direct SQL. The second reading uses a plan, then a different SQL prompt.
+        # Direct SQL. Reading 2 is a different instruction under the same cap.
         ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
         ctx["sql_vote_kind"] = "direct"
+        vote_budget = AskCallBudget()
     try:
-        payload = compute(ctx)
+        if vote_budget is not None and not vote_budget.take():
+            payload = None
+        else:
+            payload = compute(ctx)
     except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
         from dms_executor.lake_registry import (
             ServingDeadlineExceeded,
@@ -1743,6 +1801,9 @@ def maybe_generative_ask(
                         stage="extract_loop",
                     )
                 )
+            if vote_budget is None:
+                vote_budget = AskCallBudget()
+                vote_budget.take()
             return _stamp(
                 _run_extract_loop(
                     question=q,
@@ -1759,6 +1820,7 @@ def maybe_generative_ask(
                     submit=submit,
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
+                    budget=vote_budget,
                 )
             )
     ranked_slots: dict[str, Any] | None = None

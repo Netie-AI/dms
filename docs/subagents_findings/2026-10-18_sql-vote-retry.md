@@ -2,7 +2,7 @@
 
 Keywords: SQL-VOTE, plan-then-solve, prompt substance, pre_run_refusal, explain_fail, empty_rows, validate_compiled_sql, held-out 348, stub, dms-463
 
-Main idea: "A reading=2 suffix is not a second prompt. Reading 2 writes a plan of tables, joins, measure, and filters, then SQL from that plan. The second reading retries a pre-run refusal, an EXPLAIN failure, and an empty result through validate_compiled_sql. The held-out n=348 split was not run. Not PASS."
+Main idea: "Equal rows from two different instructions agree. The SQL does not have to match. Both statements pass validate_compiled_sql and each reads a granted table, so SELECT 3 does not agree. One insights cap covers both readings and every retry. Abstains go through build_abstain. The held-out n=348 split was not run. Not PASS."
 
 ## Base
 

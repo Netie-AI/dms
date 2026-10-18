@@ -1,4 +1,9 @@
-"""A second SQL reading. Agreement is rows from two different instructions.
+"""A second SQL reading. Agreement is equal rows from two different instructions.
+
+The SQL strings do not have to match. Each one must read a granted table, so a
+literal such as ``SELECT 3`` does not agree. The caller also runs
+``validate_compiled_sql`` on both. One insights cap covers both readings and
+every retry.
 
 Reading 1 asks for SQL. Reading 2 asks for a plan of tables, joins, measure,
 and filters, then for SQL that follows that plan. A hash change or a short
@@ -71,14 +76,18 @@ def plan_prompt(question: str, ontology: str) -> str:
 
 
 def reading_prompt(
-    question: str, *, reading: int, plan: dict[str, Any] | None = None
+    question: str,
+    *,
+    reading: int,
+    plan: dict[str, Any] | None = None,
+    ontology: str = "",
 ) -> str:
-    """SQL instruction for one reading. Reading 2 includes the plan."""
+    """SQL instruction for one reading. Reading 2 includes the ontology and a plan."""
     q = question or ""
     if reading == 1:
         return f"{_DIRECT}{_QUESTION}{q}"
     body = json.dumps(plan if isinstance(plan, dict) else empty_plan(), sort_keys=True)
-    return f"{_FROM_PLAN}\nPlan:\n{body}{_QUESTION}{q}"
+    return f"{_FROM_PLAN}\nOntology:\n{ontology or '{}'}\nPlan:\n{body}{_QUESTION}{q}"
 
 
 def vote_plan_from_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -208,6 +217,16 @@ def rows_equal(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
     return bool(left) and bool(right) and result_key(left) == result_key(right)
 
 
+def _reads_granted(sql: str, grantable: set[str]) -> bool:
+    """True when the SQL cites at least one granted table. A literal does not."""
+    from dms_executor.generative_ask import cited_relations
+
+    granted = {name.strip().lower() for name in grantable if name and str(name).strip()}
+    if not granted:
+        return False
+    return bool(cited_relations(sql) & granted)
+
+
 def readings_agree(
     *,
     prompt_a: str,
@@ -217,13 +236,17 @@ def readings_agree(
     rows_a: list[dict[str, Any]],
     rows_b: list[dict[str, Any]],
     dialect: str,
+    grantable: set[str],
 ) -> bool:
-    """True when the instruction templates differ and the rows match.
+    """True when independent prompts return the same rows.
 
-    Normalized identical SQL with those rows is agreement. The same prompt,
-    or one prompt plus a short suffix, is one reading.
+    The SQL does not have to match. Each statement must read at least one
+    granted table, so ``SELECT 3`` does not agree. The caller also requires
+    ``validate_compiled_sql`` to accept both statements.
     """
     if not prompts_independent(prompt_a, prompt_b):
+        return False
+    if not _reads_granted(sql_a, grantable) or not _reads_granted(sql_b, grantable):
         return False
     same_rows = rows_equal(rows_a, rows_b)
     # Identical SQL with different rows is not agreement. Identical SQL
