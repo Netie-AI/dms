@@ -2887,6 +2887,73 @@ def test_a_table_only_duckdb_parses_is_grant_checked(gate_lake: Path, name: str)
     assert granted is None or not granted.startswith("ungranted"), (name, granted)
 
 
+#: A table read only DuckDB's parser sees, through a relation other than a name.
+_HIDDEN_READERS = {
+    "query_table": "SELECT COUNT(*) FROM query_table('alerts')",
+    "query": "SELECT COUNT(*) FROM query('SELECT * FROM alerts')",
+    "describe": "SELECT COUNT(*) FROM (DESCRIBE alerts)",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_HIDDEN_READERS))
+def test_a_reader_only_duckdb_parses_is_refused(gate_lake: Path, name: str) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    sql = (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        f"OR 1 = ({_HIDDEN_READERS[name]})"
+    )
+    why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake)
+    assert why in {"hostile_sql:file_reader", "ungranted:alerts"}, (name, why)
+
+
+def test_a_cte_shadows_a_table_only_inside_its_own_with(gate_lake: Path) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    def why(sql: str) -> str | None:
+        return validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake)
+
+    # The first COUNT reads the table alerts; the WITH below names its own.
+    assert why(
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR 1 = (SELECT COUNT(*) FROM alerts) "
+        "OR 2 = (WITH alerts AS (SELECT 1 AS n) SELECT COUNT(*) FROM alerts)"
+    ) == "ungranted:alerts"
+    # A recursive CTE's anchor reads the table of that name.
+    assert why(
+        "SELECT sku FROM inventory WHERE category = e'\\'--' OR 1 = ("
+        "WITH RECURSIVE alerts AS (SELECT COUNT(*) AS n FROM alerts "
+        "UNION ALL SELECT n FROM alerts WHERE false) SELECT MAX(n) FROM alerts)"
+    ) == "ungranted:alerts"
+    assert why(
+        "WITH a AS (SELECT sku FROM inventory), b AS (SELECT sku FROM a) "
+        "SELECT COUNT(*) AS n FROM b WHERE sku <> e'\\'--'"
+    ) is None
+
+
+#: Legit shapes DuckDB's binder cannot bind against placeholder columns
+#: (get_table_names). The parse tree binds nothing.
+_PARSER_ONLY_SHAPES = (
+    "SELECT COUNT(*) AS n FROM inventory JOIN inventory USING (sku)",
+    "SELECT sku, COLUMNS('quantity.*') FROM inventory",
+    "SELECT i.sku, u.v FROM inventory i, unnest([i.quantity_kg]) u(v)",
+    "SELECT w.category, i.sku FROM (VALUES ('RAW', 1.0)) AS w(category, weight) "
+    "JOIN inventory i USING (category)",
+    "SELECT c.category, COUNT(i.sku) AS n FROM (SELECT DISTINCT category FROM inventory) c "
+    "CROSS JOIN (SELECT DISTINCT location_id FROM inventory) l "
+    "LEFT JOIN inventory i ON i.category = c.category AND i.location_id = l.location_id "
+    "GROUP BY c.category",
+)
+
+
+@pytest.mark.parametrize("sql", _PARSER_ONLY_SHAPES)
+def test_the_parser_check_binds_nothing(gate_lake: Path, sql: str) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    why = validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake)
+    assert why is None or not why.startswith(("hostile_sql", "ungranted")), (sql, why)
+
+
 # --- Rounds 10 and 11 through POST /v1/chat/ask (rule 10a: the envelope) ---
 
 

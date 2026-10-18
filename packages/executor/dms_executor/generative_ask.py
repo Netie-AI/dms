@@ -943,64 +943,86 @@ def _cited_names(sql: str) -> set[tuple[str, str, str]]:
     }
 
 
-def _split_qualified(name: str) -> list[str]:
-    """``a."b.c" AS x`` -> ``["a", "b.c"]``: a table reference as DuckDB prints
-    it, quotes undone and its alias dropped."""
-    parts: list[str] = []
-    current: list[str] = []
-    i, n = 0, len(name)
-    quoted = False
-    while i < n:
-        ch = name[i]
-        if quoted:
-            if ch == '"' and name[i + 1 : i + 2] == '"':
-                current.append('"')
-                i += 2
-                continue
-            if ch == '"':
-                quoted = False
-            else:
-                current.append(ch)
-        elif ch == '"':
-            quoted = True
-        elif ch == ".":
-            parts.append("".join(current))
-            current = []
-        elif ch.isspace():
-            # The rest is the alias DuckDB prints after the name: " AS x".
-            if not re.match(r"\s+AS\s+\S", name[i:], re.IGNORECASE):
-                raise ValueError(f"unexpected table reference {name!r}")
-            break
-        else:
-            current.append(ch)
-        i += 1
-    if quoted:
-        raise ValueError(f"unbalanced quote in {name!r}")
-    parts.append("".join(current))
-    return parts
-
-
-def _engine_cited(con: Any, sql: str) -> set[tuple[str, str, str]]:
-    """(catalog, schema, name) of every table DuckDB's own parser says ``sql`` reads.
+def _parsed_relations(con: Any, sql: str) -> tuple[set[tuple[str, str, str]], set[str]]:
+    """The tables and table functions DuckDB's own parser says ``sql`` reads.
 
     sqlglot and DuckDB can split the same text differently: in ``e'\\'--'``
     DuckDB reads an escaped quote and sqlglot ends the string, so a ``--``
     hides from the syntax tree a tail that DuckDB runs. A statistics answer
-    in that tail scans nothing, so the plan check cannot see it either.
-    DuckDB's parser is what runs. Cortex's ``warehouse`` schema names a
-    lake table, as ``lake_alias_sql`` reads it.
+    in that tail scans nothing, and ``query_table`` is replaced by its table
+    before planning, so the plan check cannot see them either. This reads
+    DuckDB's parse tree, which binds nothing: an unqualified name inside the
+    WITH that defines it is that CTE, every other name is a table
+    ``(catalog, schema, name)``. A tree this cannot read raises.
     """
+    import json
+
+    tree = json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0])
+    if not isinstance(tree, dict) or tree.get("error") is not False:
+        raise ValueError("DuckDB could not serialize the statement")
+    tables: set[tuple[str, str, str]] = set()
+    functions: set[str] = set()
+    stack: list[tuple[Any, frozenset[str]]] = [(tree.get("statements"), frozenset())]
+    while stack:
+        node, scope = stack.pop()
+        if isinstance(node, list):
+            stack.extend((item, scope) for item in node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        kind = node.get("type")
+        if kind in ("BASE_TABLE", "SHOW_REF"):
+            catalog, schema, name = (
+                str(node.get(k) or "") for k in ("catalog_name", "schema_name", "table_name")
+            )
+            if kind == "BASE_TABLE" and not name:
+                raise ValueError("a table reference without a name")
+            cte = not catalog and not schema and _ident_fold(name) in scope
+            if name and (kind == "SHOW_REF" or not cte):
+                tables.add((catalog, schema, name))
+        elif kind == "TABLE_FUNCTION":
+            call = node.get("function")
+            if not isinstance(call, dict) or not call.get("function_name"):
+                raise ValueError("a table function without a name")
+            parts = (call.get("catalog"), call.get("schema"), call.get("function_name"))
+            functions.add(".".join(_ident_fold(p) for p in parts if p))
+        cte_map = node.get("cte_map")
+        entries = cte_map.get("map") if isinstance(cte_map, dict) else None
+        if cte_map is not None and not isinstance(entries, list):
+            raise ValueError("a WITH this cannot read")
+        # A CTE sees the ones defined before it; the query sees them all.
+        for entry in entries or []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("key"), str):
+                raise ValueError("a WITH this cannot read")
+            stack.append((entry.get("value"), scope))
+            scope = scope | {_ident_fold(entry["key"])}
+        for key, value in node.items():
+            if kind == "RECURSIVE_CTE_NODE" and key == "right":
+                # Only the recursive side sees the CTE; its anchor reads the table.
+                stack.append((value, scope | {_ident_fold(node.get("cte_name"))}))
+            elif key != "cte_map":
+                stack.append((value, scope))
+    return tables, functions
+
+
+def _engine_cited(con: Any, sql: str) -> tuple[str | None, set[tuple[str, str, str]]]:
+    """``(refusal, tables)`` as DuckDB's own parser reads ``sql``.
+
+    A table function must be a pure generator, as in the plan check. Each
+    table is ``(catalog, schema, name)``; Cortex's ``warehouse`` schema
+    names a lake table, as ``lake_alias_sql`` reads it.
+    """
+    tables, functions = _parsed_relations(con, sql)
+    if functions - {g.lower() for g in _PLAN_GENERATORS}:
+        return "hostile_sql:file_reader", set()
     lake = {_ident_fold(table) for table in DEMO_TABLES}
     out: set[tuple[str, str, str]] = set()
-    for raw in con.get_table_names(sql, qualified=True):
-        parts = [_ident_fold(part) for part in _split_qualified(str(raw))]
-        if not 1 <= len(parts) <= 3:
-            raise ValueError(f"unexpected table name {raw!r}")
-        catalog, schema, name = [""] * (3 - len(parts)) + parts
+    for ref in tables:
+        catalog, schema, name = (_ident_fold(part) for part in ref)
         if not catalog and schema == "warehouse" and name in lake:
             schema = ""
         out.add((catalog, schema, name))
-    return out
+    return None, out
 
 
 def _plan_scan_reason(
@@ -1230,6 +1252,16 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
+        cited: set[tuple[str, str, str]] = set()
+        try:
+            # DuckDB's own parser, on the SQL as written and as run.
+            for text in (sql, lake_alias_sql(sql)):
+                why, names = _engine_cited(con, text)
+                if why:
+                    return why
+                cited |= names
+        except Exception:  # noqa: BLE001 - a name this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
         try:
             plan = con.execute(f"EXPLAIN (FORMAT JSON) {lake_alias_sql(sql)}").fetchall()
         except Exception as exc:  # noqa: BLE001
@@ -1237,9 +1269,7 @@ def validate_compiled_sql(
         try:
             # The tables the engine reads, checked against the grant.
             # Bind the SQL that runs: Cortex's warehouse aliases name lake tables.
-            cited = _cited_names(lake_alias_sql(sql))
-            # And by DuckDB's own parser, on the SQL as written and as run.
-            cited |= _engine_cited(con, sql) | _engine_cited(con, lake_alias_sql(sql))
+            cited |= _cited_names(lake_alias_sql(sql))
             return _plan_scan_reason(str(plan[0][1]), con, grantable, cited)
         except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
             return "hostile_sql:sql_not_analyzable"
