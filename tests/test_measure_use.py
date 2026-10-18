@@ -548,7 +548,7 @@ def test_two_active_versions_with_one_measure_name_exclude_both(env: _Env) -> No
         twin.id,
         to_state="confirmed",
         expected_hash=twin.definition_hash,
-        evidence={"column_type": ""},
+        evidence={"column_type": "", "snapshot_id": "snap_twin"},
         actor=ACTOR,
         ledger=lambda _payload: "led_twin",
     )
@@ -712,7 +712,11 @@ def test_prune_removes_a_measure_whose_column_moved(env: _Env, ddl: str, reason:
 def test_prune_removes_a_measure_with_no_recorded_type(env: _Env) -> None:
     confirmed = _confirm_named(env, "schools_budget_sum")
     idx = next(i for i, m in enumerate(env.store._measures) if str(m.id) == confirmed["id"])
-    env.store._measures[idx] = replace(env.store._measures[idx], evidence={})
+    held = env.store._measures[idx].evidence
+    env.store._measures[idx] = replace(
+        env.store._measures[idx],
+        evidence={k: v for k, v in held.items() if k != "column_type"},
+    )
     onto, violations = _verified(env)
     prov = onto.measures["schools_budget_sum"].provenance
     assert prov is not None and prov.column_type == ""

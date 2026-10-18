@@ -21,7 +21,6 @@ is passed in by the caller from configuration; this module never reads a request
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -57,6 +56,7 @@ from dms_executor.measure_spec import (
     MeasureSpecDraft,
     definition_hash,
     definition_text,
+    has_hidden_character,
     is_numeric_type,
     validate_measure_spec,
 )
@@ -1395,7 +1395,7 @@ def reject_measure(
     no-op ``already``."""
     state = _state(space_id, store)
     text = reason.strip() if isinstance(reason, str) else ""
-    if not (1 <= len(text) <= REASON_MAX) or any(unicodedata.category(ch) == "Cc" for ch in text):
+    if not (1 <= len(text) <= REASON_MAX) or has_hidden_character(text):
         raise MeasureRefusal(422, "reason_invalid", [_f("reason_invalid", "reason")])
     _require_ledger(ledger_append, ledger_verify)
     assert ledger_append is not None and ledger_verify is not None

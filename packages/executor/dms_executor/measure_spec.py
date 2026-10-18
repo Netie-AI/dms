@@ -111,6 +111,20 @@ def definition_text(aggregate: str, column: str, grain: str) -> str:
     return f"{word} of {column} per {grain} row"
 
 
+def has_hidden_character(text: str) -> bool:
+    """A character a steward cannot see in the text they approve.
+
+    Control (Cc), format (Cf: zero-width, bidi override and isolate, word joiner, BOM, soft
+    hyphen, the tag block), surrogate, private-use and unassigned code points, and the line and
+    paragraph separators. The description is sent to Cortex and echoed to customers, so what
+    the steward read must be all there is.
+    """
+    return any(
+        unicodedata.category(ch)[0] == "C" or unicodedata.category(ch) in ("Zl", "Zp")
+        for ch in text
+    )
+
+
 def description_failures(description: str) -> bool:
     """True when the description is not safe to store and send to Cortex (R7)."""
     d = description
@@ -118,12 +132,7 @@ def description_failures(description: str) -> bool:
         return True
     if d.strip() == "":
         return True
-    if any(
-        ord(ch) < 32
-        or 0x7F <= ord(ch) <= 0x9F
-        or unicodedata.category(ch) in ("Cc", "Zl", "Zp")
-        for ch in d
-    ):
+    if has_hidden_character(d):
         return True
     if any(b in d for b in _DESC_BANNED):
         return True
