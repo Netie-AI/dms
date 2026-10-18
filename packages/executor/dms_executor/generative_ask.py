@@ -122,6 +122,7 @@ from dms_executor.sql_loop import (
     loop_entry,
     run_model_loop,
 )
+from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -956,6 +957,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    grantable: set[str] | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -966,7 +968,9 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
-    gap = unhonored_qualifier_reason(question, sql=sql)
+    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
+        question, sql, warehouse, grantable=grantable
+    )
     if gap:
         return _abstain(
             question,
@@ -1192,6 +1196,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        grantable=allowed,
     )
 
 
@@ -1268,6 +1273,7 @@ def rank_window_ask(
         measure=measure,
         coverage=compiled.coverage,
         warehouse=lake,
+        grantable=allowed,
         lead=lead,
     )
 
@@ -1388,6 +1394,7 @@ def _run_extract_loop(
             plan_source=PLAN_SOURCE_ONTOLOGY,
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
+            grantable=grantable,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
         )
 
@@ -1916,6 +1923,7 @@ def maybe_generative_ask(
                     plan_source=source,
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
+                    grantable=allowed,
                     plan_origin=origin,
                 )
             )
@@ -2128,6 +2136,7 @@ def maybe_generative_ask(
             coverage=compiled.coverage,
             where_paths=compiled.where_paths,
             warehouse=lake,
+            grantable=allowed,
             plan_origin=origin,
         )
     )
