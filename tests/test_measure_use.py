@@ -847,7 +847,7 @@ def test_prune_without_measures_does_no_work_and_never_opens_the_lake(
         opened.append(path)
         raise OSError("prune opened the lake with nothing to check")
 
-    monkeypatch.setattr(mu, "connect_file", spy)
+    monkeypatch.setattr(mu, "connect_serving", spy)
     assert prune_unusable_measures([onto, None, onto], [], env.lake, ALLOWED) == {}
     assert prune_unusable_measures([], [], None, set()) == {}
     assert prune_unusable_measures([None], [], None, set()) == {}
@@ -860,13 +860,13 @@ def test_prune_handles_one_ontology_given_twice_and_opens_the_lake_once(
     _confirm_three(env)
     onto, violations = _verified(env)
     opened: list[Path] = []
-    real = mu.connect_file
+    real = mu.connect_serving
 
     def counting(path: Path) -> Any:
         opened.append(path)
         return real(path)
 
-    monkeypatch.setattr(mu, "connect_file", counting)
+    monkeypatch.setattr(mu, "connect_serving", counting)
     # `onto` and `declared` are the same object in the product; the list says so twice
     assert prune_unusable_measures([onto, onto], violations, env.lake, ALLOWED) == {}
     assert len(opened) == 1
@@ -998,7 +998,7 @@ def test_the_probe_is_one_query_per_distinct_literal(
 ) -> None:
     onto = _lake_onto(env)
     seen: list[str] = []
-    real = mu.connect_file
+    real = mu.connect_serving
 
     class _Spy:
         def __init__(self, con: Any) -> None:
@@ -1011,7 +1011,7 @@ def test_the_probe_is_one_query_per_distinct_literal(
         def close(self) -> None:
             self.con.close()
 
-    monkeypatch.setattr(mu, "connect_file", lambda p: _Spy(real(p)))
+    monkeypatch.setattr(mu, "connect_serving", lambda p: _Spy(real(p)))
     plan = _plan(
         (DISTRICTS, "name", "IN", ["North", "South", "North"]),
         (DISTRICTS, "name", "=", "North"),
@@ -1775,3 +1775,24 @@ def test_fit_by_the_measures_own_table_is_not_a_grouping_the_plan_computes() -> 
     )
     assert (bad.ok, bad.reason) == (False, "unbound_constraint")
     assert bad.detail == "'by'"
+
+
+def test_an_ask_time_read_never_waits_behind_its_own_serving_cursor(
+    env: _Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CONN-POOL-01: a write-mode open waits for every serving cursor, the asking request's
+    own included. The confirmed lane's reads must take the serving side, or a confirmed-measure
+    ask stalls for the ingest wait and then abstains "could not be opened"."""
+    from dms_executor.lake_registry import open_lake
+
+    monkeypatch.setenv("DMS_LAKE_INGEST_WAIT_S", "0.5")
+    held = open_lake(env.lake, write=False)  # the ask already holds its serving cursor
+    try:
+        rels = held.execute(
+            "SELECT schema_name, table_name FROM duckdb_tables() WHERE schema_name = 'bronze'"
+        ).fetchall()
+        assert rels, "the rig ingested no bronze table"
+        sql = f'SELECT COUNT(*) FROM "{rels[0][0]}"."{rels[0][1]}"'
+        assert isinstance(mu.count_rows(sql, env.lake), int)
+    finally:
+        held.close()

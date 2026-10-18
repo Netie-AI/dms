@@ -1636,7 +1636,7 @@ def test_view_is_computed_from_the_snapshot_and_never_touches_the_lake(
     def boom(*a: Any, **k: Any) -> Any:
         raise AssertionError("a GET must not read the lake")
 
-    monkeypatch.setattr(mc, "connect_file", boom)
+    monkeypatch.setattr(mc, "connect_serving", boom)
     monkeypatch.setattr(mc, "measure_evidence", boom)
     bad = env.raw("static_bad", aggregate="sum", column="name")
     listed = {m["name"]: m for m in env.view()["measures"]}

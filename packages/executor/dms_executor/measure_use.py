@@ -44,7 +44,7 @@ from dms_core.control_plane.onto_store import OntoMeasure, measure_definition_ha
 from dms_core.measure_line import confirmed_line
 
 from dms_executor.bronze import classify_source_kind
-from dms_executor.demo_warehouse import connect_file
+from dms_executor.demo_warehouse import connect_serving
 from dms_executor.measure_basis import MEASURE_STATUS_CONFIRMED
 from dms_executor.measure_spec import NAME_RE, description_failures
 from dms_executor.ontology import (
@@ -282,7 +282,7 @@ def _read_lake(
     if not wanted or lake is None or not Path(lake).is_file():
         return described, None
     try:
-        con = connect_file(Path(lake))
+        con = connect_serving(Path(lake))
     except Exception:  # noqa: BLE001 - a lake we cannot open proves nothing about a measure
         return described, None
     try:
@@ -361,7 +361,7 @@ def read_source_pulls(
     if lake is None or not Path(lake).is_file():
         return None
     try:
-        con = connect_file(Path(lake))
+        con = connect_serving(Path(lake))
     except Exception:  # noqa: BLE001 - a lake we cannot open proves nothing
         return None
     try:
@@ -377,7 +377,7 @@ def count_rows(sql: str, lake: Path | None) -> int | None:
     if lake is None or not Path(lake).is_file():
         return None
     try:
-        con = connect_file(Path(lake))
+        con = connect_serving(Path(lake))
     except Exception:  # noqa: BLE001 - a lake we cannot open proves nothing
         return None
     try:
@@ -614,7 +614,7 @@ def filter_values_present(
     if lake is None or not Path(lake).is_file():
         return cannot_check("the data could not be read")
     try:
-        con = connect_file(Path(lake))
+        con = connect_serving(Path(lake))
     except Exception:  # noqa: BLE001
         return cannot_check("the data could not be opened")
     try:
