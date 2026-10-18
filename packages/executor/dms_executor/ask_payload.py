@@ -3,8 +3,9 @@
 Cortex runs its plan-then-SQL ladder when an ask carries a payload: the
 tables, columns and joins the question may use. This module builds that
 payload from what the Space may read. It reads the serving catalog (names,
-types, keys), a bounded window of rows per table to classify column values,
-and the ontology, and returns a plain dict shaped as ``AskPayload``, or None.
+types, keys), every distinct value of each candidate column (up to a cap) to
+classify it, and the ontology, and returns a plain dict shaped as
+``AskPayload``, or None.
 Nothing here puts it on the wire; the ask site decides that.
 
 - Tables: only names the signed grant lists (``readable``, the manifest's
@@ -12,18 +13,34 @@ Nothing here puts it on the wire; the ask site decides that.
   ASCII-only case folding as Cortex compares them. A payload can only narrow
   the grant; Cortex refuses a table outside it before any model call. Tables
   are ordered by trigram similarity to the question, catalog order on ties.
-- Columns: Cortex samples distinct values of payload columns and sends them
-  to its model unmasked. Contract 1.5.0 has no per-column mask flag, so a
-  column goes in only when it is positively cleared, and every other column
-  is left out. Cleared means: a boolean (its values are true and false), or a
-  name ``dms_core.pii`` itself treats as non-personal (the metric-skip
-  pattern, a typed date name for a date column, or an ontology
-  ``non_personal`` tag with source and field), and then no read value is
-  classified as personal data. A text column also passes the value-hint
-  probe. A column that is unknown, unread or in doubt is not sent (once the
-  contract carries a per-column mask flag, it can go as masked instead). Text
-  and boolean columns come first, because Cortex samples only the first columns
-  in payload order (ASSUMPTION: this helps value grounding; measure it).
+- Columns: Cortex runs ``SELECT DISTINCT col ... LIMIT n`` over the whole
+  table for payload columns and sends those values to its model unmasked.
+  The contract (1.5.0 to 1.7.0) has no per-column mask or no-sample flag, so a
+  column goes in only when every value Cortex could sample from it is cleared,
+  and every other column is left out. Cleared means:
+
+  - a boolean (its values are true and false); or
+  - a text column (any type ``schema_context`` reads as text, ENUM and STRUCT
+    included) with an ontology ``non_personal`` tag with source and field.
+    This is the house sample rule (``schema_context``: text columns send no
+    sample values without that tag). No value check catches a person's name
+    in capitals or in several words, so a column name is never enough for
+    text. Nothing sets the tag yet, so today no text column is sent; that
+    costs value grounding (more abstains), never a wrong answer; or
+  - a numeric or date column whose name ``dms_core.pii`` itself treats as
+    non-personal (the metric-skip pattern, a typed date name for a date
+    column, or the tag).
+
+  Then the column's distinct non-null values over the whole table are read,
+  as Cortex samples them, and none may be classified as personal data. A
+  tagged text column also passes the value-hint probe. A column with more
+  than ``INDEX_COLUMN_CAP`` distinct values is left out whole, as the value
+  index omits it: Cortex may sample any of them, and DMS has not classified
+  them all. A column that is unknown, unread, over the cap or in doubt is not
+  sent (once the contract carries a per-column mask flag, it can go as masked
+  instead). Text and boolean columns come first, because Cortex samples only
+  the first columns in payload order (ASSUMPTION: this helps value grounding;
+  measure it).
 - Types: a type that carries a quoted literal (an ENUM's labels) or runs past
   ``MAX_TYPE_CHARS`` is sent as its head word only (``ENUM``, ``STRUCT``).
 - Joins: only when the ontology passed ``verify()``, only many-to-one links,
@@ -55,6 +72,7 @@ from sqlglot import exp, parse_one
 from dms_executor.demo_warehouse import connect_serving
 from dms_executor.ontology import Ontology
 from dms_executor.schema_context import (
+    INDEX_COLUMN_CAP,
     _cleared_value_blocked,
     _column_positively_cleared,
     _cosine,
@@ -74,10 +92,12 @@ MAX_COLUMNS = 60
 MAX_PAYLOAD_BYTES = 8192
 MAX_TYPE_CHARS = 64
 _DESCRIPTION_CHARS = 400
-#: Rows read per table to classify column values. Bounded, never a full scan.
-_VALUE_ROWS = 200
-#: Distinct values per column the classifier sees.
-_VALUES_PER_COLUMN = 64
+# ponytail: Cortex samples DISTINCT values over the whole table, so every
+# distinct value is classified, and a column with more than this many is left
+# out whole. Ceiling: a high-cardinality key, measure or timestamp column is
+# not sent. Upgrade: a contract per-column no-sample flag that Cortex honours;
+# then such a column goes with its name and type and no samples.
+_DISTINCT_CAP = INDEX_COLUMN_CAP
 
 #: The only SELECT clauses a row-for-row relation may carry.
 _ROWWISE_SELECT_ARGS = frozenset({"expressions", "from"})
@@ -216,7 +236,7 @@ def _column_cleared(
 ) -> bool:
     """True only when this column is positively cleared to leave DMS with its values.
 
-    ``values`` is None when they could not be read. Doubt is False.
+    ``values`` is None when they could not be read or are over the cap. Doubt is False.
     """
     try:
         if family == "boolean":
@@ -233,35 +253,43 @@ def _column_cleared(
 
 
 def _name_cleared(table: str, column: str, family: str, *, tagged: bool) -> bool:
-    """The name half of the clearance; values are read only for these columns."""
+    """The name half of the clearance; values are read only for these columns.
+
+    Text needs the ontology ``non_personal`` tag, as ``schema_context`` needs it
+    for a text sample: Cortex samples payload columns, and a person's name in
+    capitals or in several words passes every value check.
+    """
     if family == "boolean":
         return True
+    if family == "text":
+        return tagged
     if family == "date" and _typed_date_column(column):
         return True
     return _column_positively_cleared(table, column, tagged=tagged)
 
 
-def _read_values(con: Any, table: str, columns: Sequence[str]) -> dict[str, list[str]] | None:
-    """Distinct non-empty values per column from the first rows. None when unread."""
-    if not columns:
-        return {}
-    try:
-        rows = con.execute(
-            "SELECT "
-            + ", ".join(f"CAST({_quote(c)} AS VARCHAR)" for c in columns)
-            + f" FROM {_quote(table)} LIMIT {_VALUE_ROWS}"
-        ).fetchall()
-    except Exception:  # noqa: BLE001 - unread values clear nothing
-        return None
-    out: dict[str, list[str]] = {c: [] for c in columns}
-    for row in rows:
-        for column, cell in zip(columns, row, strict=False):
-            if cell is None:
-                continue
-            text = " ".join(str(cell).split())
-            seen = out[column]
-            if text and text not in seen and len(seen) < _VALUES_PER_COLUMN:
-                seen.append(text)
+def _read_values(con: Any, table: str, columns: Sequence[str]) -> dict[str, list[str]]:
+    """Every distinct non-null value of each column over the whole table.
+
+    The same set Cortex samples from (``SELECT DISTINCT col ... WHERE col IS
+    NOT NULL``). A column with more than ``_DISTINCT_CAP`` distinct values, or
+    one that could not be read, is absent from the result: it clears nothing.
+    """
+    out: dict[str, list[str]] = {}
+    for column in columns:
+        col = _quote(column)
+        try:
+            rows = con.execute(
+                f"SELECT DISTINCT CAST({col} AS VARCHAR) FROM {_quote(table)} "
+                f"WHERE {col} IS NOT NULL LIMIT {_DISTINCT_CAP + 1}"
+            ).fetchall()
+        except Exception as exc:  # noqa: BLE001 - unread values clear nothing
+            _LOG.info("dms_payload_column_unread %s", type(exc).__name__)
+            continue
+        if len(rows) > _DISTINCT_CAP:
+            continue
+        texts = (" ".join(str(cell).split()) for (cell,) in rows)
+        out[column] = list(dict.fromkeys(text for text in texts if text))
     return out
 
 
@@ -415,7 +443,7 @@ def _build(
                     name,
                     str(col["name"]),
                     family,
-                    None if values is None else values.get(str(col["name"]), []),
+                    values.get(str(col["name"])),
                     tagged=(name, str(col["name"])) in tags,
                 )
             ]

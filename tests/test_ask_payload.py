@@ -10,6 +10,7 @@ import duckdb
 import httpx
 import pytest
 from cortex_contract.answer import AskPayload
+from dms_core.pii import classify_column
 from dms_executor.ask_payload import (
     MAX_PAYLOAD_BYTES,
     MAX_TABLES,
@@ -19,6 +20,27 @@ from dms_executor.ask_payload import (
 )
 from dms_executor.demo_warehouse import DEMO_TABLES, connect_file, ensure_demo_warehouse
 from dms_executor.ontology import LinkType, ObjectType, Ontology, demo_ontology
+from dms_executor.schema_context import INDEX_COLUMN_CAP
+
+#: The demo lake's join keys are text. Text goes in only with a steward's
+#: non_personal tag, so join tests tag their keys.
+_DEMO_KEYS = (
+    ("inventory", "sku"),
+    ("inventory", "location_id"),
+    ("inventory", "supplier_id"),
+    ("locations", "location_id"),
+    ("suppliers", "supplier_id"),
+    ("transactions", "sku"),
+    ("transactions", "location_id"),
+)
+
+
+def _tag(onto: Ontology, *columns: tuple[str, str]) -> Ontology:
+    """Mark ``(table, column)`` pairs non_personal with source and field."""
+    onto.non_personal = [  # type: ignore[attr-defined]
+        {"table": t, "column": c, "source": "steward", "field": c} for t, c in columns
+    ]
+    return onto
 
 
 @pytest.fixture(scope="module")
@@ -46,7 +68,7 @@ def verified(lake: Path) -> Ontology:
     finally:
         con.close()
     assert onto.verified
-    return onto
+    return _tag(onto, *_DEMO_KEYS)
 
 
 def _names(payload: dict[str, Any]) -> set[str]:
@@ -92,14 +114,16 @@ def test_person_columns_never_leave_dms(lake: Path) -> None:
     cols = _cols(payload, "customers")
     assert "full_name" not in cols
     assert "email" not in cols
-    # segment is not a person column by name, and it is not cleared either:
-    # an unsure column is left out, so its values cannot be sampled.
+    # segment and region are text without a non_personal tag: Cortex would
+    # sample their values, so they are left out.
     assert "segment" not in cols
-    assert {"customer_id", "region", "credit_limit_myr"} <= set(cols)
+    assert "region" not in cols
+    assert cols == ["customer_id", "credit_limit_myr"]
 
 
 def test_text_columns_come_first_then_catalog_order(lake: Path) -> None:
-    payload = build_dms_payload("customers", serving=lake, readable={"customers"})
+    onto = _tag(Ontology(), ("customers", "region"))
+    payload = build_dms_payload("customers", serving=lake, readable={"customers"}, ontology=onto)
     assert payload is not None
     assert _cols(payload, "customers") == ["region", "customer_id", "credit_limit_myr"]
 
@@ -216,6 +240,13 @@ def test_a_composite_key_gives_one_join_row_per_key_pair(lake: Path) -> None:
         ("sku", "location_id"),
         "many_to_one",
     )
+    _tag(
+        onto,
+        ("lot_counts", "sku"),
+        ("lot_counts", "location_id"),
+        ("inventory", "sku"),
+        ("inventory", "location_id"),
+    )
     payload = build_dms_payload(
         "q", serving=lake, readable={"lot_counts", "inventory"}, ontology=onto
     )
@@ -303,8 +334,8 @@ _NEUTRAL_PERSON_COLUMNS = (
 )
 
 
-def _lake_with(tmp_path: Path, *statements: str) -> Path:
-    db = tmp_path / "lake.duckdb"
+def _lake_with(tmp_path: Path, *statements: str, name: str = "lake") -> Path:
+    db = tmp_path / f"{name}.duckdb"
     con = duckdb.connect(str(db))
     try:
         for sql in statements:
@@ -316,6 +347,30 @@ def _lake_with(tmp_path: Path, *statements: str) -> Path:
 
 def _all_cols(payload: dict[str, Any]) -> set[str]:
     return {c["name"] for t in payload["tables"] for c in t["columns"]}
+
+
+def _cortex_sample(db: Path, table: str, column: str) -> list[str]:
+    """Every value Cortex's sample SQL can draw from one payload column.
+
+    Cortex runs ``SELECT DISTINCT "col" AS v FROM "t" WHERE "col" IS NOT NULL
+    LIMIT 8`` and sends ``str(v)``; which 8 it gets is not fixed, so all of them.
+    """
+    con = duckdb.connect(str(db), read_only=True)
+    try:
+        rows = con.execute(
+            f'SELECT DISTINCT "{column}" AS v FROM "{table}" WHERE "{column}" IS NOT NULL'
+        ).fetchall()
+    finally:
+        con.close()
+    return [str(v) for (v,) in rows]
+
+
+def _assert_cortex_samples_nothing_personal(db: Path, payload: dict[str, Any]) -> None:
+    for table in payload["tables"]:
+        for column in table["columns"]:
+            for value in _cortex_sample(db, table["name"], column["name"]):
+                found = classify_column(column["name"], [value], table=table["name"])
+                assert found is None, (table["name"], column["name"], value, found)
 
 
 def test_person_columns_under_neutral_names_never_leave_dms(tmp_path: Path) -> None:
@@ -341,7 +396,8 @@ def test_person_columns_under_neutral_names_never_leave_dms(tmp_path: Path) -> N
     payload = build_dms_payload("orders by status", serving=db, readable={"orders"})
     assert payload is not None
     AskPayload.model_validate(payload)
-    assert _cols(payload, "orders") == ["status", "order_id", "total_myr"]
+    # status is untagged text too, so it stays home with the people.
+    assert _cols(payload, "orders") == ["order_id", "total_myr"]
     assert not _all_cols(payload) & set(_NEUTRAL_PERSON_COLUMNS)
 
 
@@ -380,9 +436,10 @@ def test_only_positively_cleared_columns_are_sent(tmp_path: Path) -> None:
     )
     payload = build_dms_payload("members", serving=db, readable={"members"})
     assert payload is not None
-    # Booleans by their values; region, visits_count and created_at by names
-    # dms_core.pii treats as non-personal. The rest is unsure and stays home.
-    assert _cols(payload, "members") == ["is_active", "region", "created_at", "visits_count"]
+    # Booleans by their values; visits_count and created_at by names
+    # dms_core.pii treats as non-personal. region is a cleared name but text
+    # without a tag. The rest is unsure and stays home.
+    assert _cols(payload, "members") == ["is_active", "created_at", "visits_count"]
 
 
 def test_values_that_cannot_be_read_clear_only_booleans(
@@ -390,7 +447,8 @@ def test_values_that_cannot_be_read_clear_only_booleans(
 ) -> None:
     import dms_executor.ask_payload as mod
 
-    monkeypatch.setattr(mod, "_read_values", lambda *_a, **_k: None)
+    # Unread (or over the cap) is absent from the read.
+    monkeypatch.setattr(mod, "_read_values", lambda *_a, **_k: {})
     payload = build_dms_payload("sites", serving=lake, readable={"locations", "inventory"})
     assert payload is not None
     assert _names(payload) == {"locations"}
@@ -413,6 +471,99 @@ def test_a_non_personal_tag_clears_a_neutral_text_column(tmp_path: Path) -> None
     assert tagged is not None and _cols(tagged, "stores") == ["banner", "store_id"]
 
 
+# --- #452 review r2: every value Cortex can sample is classified -----------------
+
+
+@pytest.mark.parametrize(
+    ("column", "kind", "filler", "rare"),
+    [
+        (
+            "contact_code",
+            "VARCHAR",
+            "'WALKIN'",
+            ("'ahmad.ismail@example.com'", "'900101-14-5678'", "'+60 12-345 6789'"),
+        ),
+        ("buyer_ref_id", "BIGINT", "0", ("900101145678", "60123456789")),
+    ],
+)
+def test_a_rare_personal_value_past_the_first_rows_keeps_the_column_home(
+    tmp_path: Path, column: str, kind: str, filler: str, rare: tuple[str, ...]
+) -> None:
+    # A cash-sale code column: 250 rows of one code, then a few rows where the
+    # cashier typed the buyer's email, IC or phone. DISTINCT brings them forward.
+    create = f"CREATE TABLE tickets (ticket_id INTEGER, {column} {kind})"
+    fill = f"INSERT INTO tickets SELECT i, {filler} FROM range(1, 251) t(i)"
+    # Tagged, so the text case tests the value read and not the text rule.
+    onto = _tag(Ontology(), ("tickets", column))
+    clean = _lake_with(tmp_path, create, fill, name="clean")
+    sent = build_dms_payload(
+        "tickets by contact", serving=clean, readable={"tickets"}, ontology=onto
+    )
+    assert sent is not None and column in _cols(sent, "tickets")
+
+    db = _lake_with(
+        tmp_path,
+        create,
+        fill,
+        *(f"INSERT INTO tickets VALUES ({251 + n}, {v})" for n, v in enumerate(rare)),
+    )
+    assert len(_cortex_sample(db, "tickets", column)) == len(rare) + 1
+    payload = build_dms_payload(
+        "tickets by contact", serving=db, readable={"tickets"}, ontology=onto
+    )
+    assert payload is not None
+    assert _cols(payload, "tickets") == ["ticket_id"]
+    _assert_cortex_samples_nothing_personal(db, payload)
+
+
+def test_a_column_with_more_distinct_values_than_the_cap_stays_home(tmp_path: Path) -> None:
+    # Cortex may sample any distinct value; past the cap DMS has not classified
+    # them all, so the column is left out whole, as the value index omits it.
+    db = _lake_with(
+        tmp_path,
+        "CREATE TABLE receipts (receipt_id BIGINT, amount_myr DOUBLE, unit_kg DOUBLE)",
+        f"INSERT INTO receipts SELECT i, i * 1.5, i % {INDEX_COLUMN_CAP} "
+        f"FROM range(0, {INDEX_COLUMN_CAP + 1}) t(i)",
+        # The one IC sits past every row the old window read.
+        "INSERT INTO receipts VALUES (900101145678, 900101145678, 0)",
+    )
+    payload = build_dms_payload("receipts", serving=db, readable={"receipts"})
+    assert payload is not None
+    # unit_kg holds exactly the cap of distinct values, all classified.
+    assert _cols(payload, "receipts") == ["unit_kg"]
+    _assert_cortex_samples_nothing_personal(db, payload)
+
+
+_NAMES_UNDER_CLEARED_NAMES = {
+    "agent_code": ("TAN AH KOW", "AHMAD BIN ISMAIL", "MUTHU A/L RAJAN"),
+    "salesman_id": ("AHMAD", "SITI", "WONG"),
+    "driver_code": ("Muthu a/l Rajan", "Lee Chong Wei", "Lee Chong Wei"),
+    "candidate": ("Ahmad bin Ismail", "Nur Aisyah binti Hassan", "Ahmad bin Ismail"),
+}
+
+
+def test_untagged_text_never_leaves_dms_even_under_a_cleared_name(tmp_path: Path) -> None:
+    # Each name passes the mask's metric-skip suffix (code, id, date), and names
+    # in capitals or several words pass every value check. Cortex would sample
+    # them. The house sample rule sends text only with a non_personal tag.
+    names = list(_NAMES_UNDER_CLEARED_NAMES)
+    rows = ", ".join(
+        "(" + ", ".join([str(i), *(f"'{_NAMES_UNDER_CLEARED_NAMES[c][i]}'" for c in names)]) + ")"
+        for i in range(3)
+    )
+    db = _lake_with(
+        tmp_path,
+        "CREATE TABLE sales (sale_id INTEGER, "
+        + ", ".join(f"{c} VARCHAR" for c in names)
+        + ", amount_myr DOUBLE)",
+        f"INSERT INTO sales (sale_id, {', '.join(names)}) VALUES {rows}",
+    )
+    payload = build_dms_payload("sales by agent", serving=db, readable={"sales"})
+    assert payload is not None
+    assert _cols(payload, "sales") == ["sale_id", "amount_myr"]
+    _assert_cortex_samples_nothing_personal(db, payload)
+
+
 # --- #452 review: payload size is bounded ---------------------------------------
 
 
@@ -425,7 +576,10 @@ def test_an_enum_type_never_carries_its_labels(tmp_path: Path) -> None:
         "CREATE TABLE claims (claim_id INTEGER, status approver, kind_type pair, "
         "amount_myr DOUBLE)",
     )
-    payload = build_dms_payload("claims", serving=db, readable={"claims"})
+    # An ENUM is text: it goes in only tagged. The tag admits the column; the
+    # labels still never ride on its type.
+    onto = _tag(Ontology(), ("claims", "status"), ("claims", "kind_type"))
+    payload = build_dms_payload("claims", serving=db, readable={"claims"}, ontology=onto)
     assert payload is not None
     AskPayload.model_validate(payload)
     types = {c["name"]: c["type"] for c in payload["tables"][0]["columns"]}
@@ -443,7 +597,8 @@ def test_a_long_type_is_cut_to_its_head_word(tmp_path: Path) -> None:
         f"CREATE TABLE wide (wide_id INTEGER, detail_code STRUCT({fields}), "
         "price DECIMAL(18, 3), amount_myr DECIMAL(18, 3))",
     )
-    payload = build_dms_payload("wide", serving=db, readable={"wide"})
+    onto = _tag(Ontology(), ("wide", "detail_code"))
+    payload = build_dms_payload("wide", serving=db, readable={"wide"}, ontology=onto)
     assert payload is not None
     types = {c["name"]: c["type"] for c in payload["tables"][0]["columns"]}
     assert types["detail_code"] == "STRUCT"
@@ -539,6 +694,7 @@ def test_a_row_changing_relation_is_never_joined_on_its_base_table(
         ("location_id",),
         "many_to_one",
     )
+    _tag(onto, *_DEMO_KEYS)
     readable = {"transactions", "inventory", "locations"}
     payload = build_dms_payload("sales by sku", serving=lake, readable=readable, ontology=onto)
     assert payload is not None
@@ -608,6 +764,7 @@ def test_the_payload_on_the_wire_carries_no_person_column_and_the_answer_is_serv
     onto.links["order_at_site"] = LinkType(
         "order_at_site", "order", ("location_id",), "site", ("location_id",), "many_to_one"
     )
+    _tag(onto, ("orders", "location_id"), ("locations", "location_id"))
     question = "open order value by site"
     payload = build_dms_payload(
         question, serving=db, readable={"orders", "locations"}, ontology=onto
@@ -647,12 +804,22 @@ def test_the_payload_on_the_wire_carries_no_person_column_and_the_answer_is_serv
     AskPayload.model_validate(sent)
     assert len(json.dumps(sent).encode()) <= MAX_PAYLOAD_BYTES
     text = raw.decode()
-    for leaked in ("handled_by", "pic", "consignee", "Ahmad", "Tan Wei Ming", "Person Number"):
+    for leaked in (
+        "handled_by",
+        "pic",
+        "consignee",
+        "approval_status",
+        "Ahmad",
+        "Tan Wei Ming",
+        "Person Number",
+    ):
         assert leaked not in text
+    # Text goes only tagged: the two keys. status and the ENUM stay home.
     assert {t["name"]: [c["name"] for c in t["columns"]] for t in sent["tables"]} == {
-        "orders": ["location_id", "status", "approval_status", "order_id", "total_myr"],
+        "orders": ["location_id", "order_id", "total_myr"],
         "locations": ["location_id", "capacity_kg"],
     }
+    _assert_cortex_samples_nothing_personal(db, sent)
     assert [j["relation"] for j in sent["joins"]] == ["order_at_location many_to_one"]
     # What the customer is shown: the served answer text and its rows.
     assert resp.answer == "Open orders at WH-A total RM 10.00."
