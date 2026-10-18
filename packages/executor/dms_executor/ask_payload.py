@@ -39,9 +39,11 @@ envelope through ``assert_envelope_valid``.
     column, or the tag).
 
   Then the column's distinct non-null values over the whole table are read,
-  as Cortex samples them, and none may be classified as personal data. An
-  integer is also classified with a leading zero and, when shorter, at 12
-  digits: CAST drops those, and that is the MyKad and local-phone form. A
+  as Cortex samples them, and none may be classified as personal data. A
+  whole-number column, whatever spelling the catalog stored (``INTEGER``,
+  ``INT``, ``INT4``, ``INT8``, ``BIGINT``, ``HUGEINT``, ``UBIGINT``, and the
+  same names from Postgres or MySQL), is also classified with a leading zero
+  and, when shorter, at 12 digits: CAST drops those. A
   tagged text column also passes the value-hint probe. A column with more
   than ``INDEX_COLUMN_CAP`` distinct values is left out whole, as the value
   index omits it: Cortex may sample any of them, and DMS has not classified
@@ -235,17 +237,73 @@ def physical_table(relation: str) -> str | None:
     return found.table if found is not None else None
 
 
-def _integer_type(type_name: str) -> bool:
-    """True when the type cannot store a leading zero.
-
-    A whole-number type ends in ``int`` or ``serial``, starts with ``uint``,
-    or is ``int`` plus digits (``int4``). ``interval`` is none of these.
-    """
-    raw = str(type_name or "").lower().split("(", 1)[0].strip()
+def _catalog_type_token(type_name: str) -> str:
+    """Head token of a catalog type. Width and schema are not part of it."""
+    raw = str(type_name or "").lower().split("(", 1)[0].strip().strip('"')
     token = raw.split()[0] if raw else ""
-    if token.endswith("int") or token.endswith("serial") or token.startswith("uint"):
-        return True
-    return token == "int" or (token.startswith("int") and token[3:].isdigit())
+    return token.rsplit(".", 1)[-1]
+
+
+# DuckDB information_schema folds INT / INT4 / INT32 to INTEGER and INT8 / INT64
+# to BIGINT. These aliases are the spellings a Postgres or MySQL catalog string
+# can still carry. The folded names are the values.
+_INTEGER_ALIAS = {
+    "int": "integer",
+    "int4": "integer",
+    "int32": "integer",
+    "int8": "bigint",
+    "int64": "bigint",
+    "int128": "hugeint",
+    "int1": "tinyint",
+    "int2": "smallint",
+    "int16": "smallint",
+    "uint8": "utinyint",
+    "uint16": "usmallint",
+    "uint32": "uinteger",
+    "uint64": "ubigint",
+    "uint128": "uhugeint",
+}
+# Whole-number spellings DuckDB stores. ``integer`` does not end in ``int``.
+_INTEGER_CATALOG = frozenset(
+    {
+        "integer",
+        "bigint",
+        "hugeint",
+        "smallint",
+        "tinyint",
+        "ubigint",
+        "uinteger",
+        "uhugeint",
+        "usmallint",
+        "utinyint",
+        "serial",
+        "smallserial",
+        "bigserial",
+    }
+)
+
+
+def _whole_number_token(type_name: str) -> str | None:
+    """The folded catalog spelling, when this type is a whole number."""
+    token = _INTEGER_ALIAS.get(_catalog_type_token(type_name), _catalog_type_token(type_name))
+    if token in _INTEGER_CATALOG:
+        return token
+    return None
+
+
+def _normalize_catalog_type(type_name: str) -> str:
+    """One token. Every whole-number spelling is ``whole``; anything else is itself.
+
+    Padding keys off ``whole`` only. Returning the raw token instead sends the
+    shortened integer form through.
+    """
+    found = _whole_number_token(type_name)
+    return "whole" if found else _catalog_type_token(type_name)
+
+
+def _integer_type(type_name: str) -> bool:
+    """True when the catalog type cannot store a leading zero."""
+    return _normalize_catalog_type(type_name) == "whole"
 
 
 def _forms_to_classify(values: Sequence[str], type_name: str) -> list[str]:
@@ -458,7 +516,8 @@ def _build(
         named = []
         for index, col in enumerate(dataset.get("columns") or []):
             col_name = str(col.get("name") or "")
-            family = _type_family(str(col.get("type") or ""))
+            type_name = str(col.get("type") or "")
+            family = _type_family(type_name)
             if col_name and _name_cleared(
                 name, col_name, family, tagged=(name, col_name) in tags
             ):

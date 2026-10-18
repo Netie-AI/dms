@@ -384,9 +384,21 @@ def _cortex_sample(db: Path, table: str, column: str) -> list[str]:
 
 
 def _sent_type_is_integer(type_name: object) -> bool:
-    """Independent of the builder's type set, so emptying that set stays red."""
+    """Independent of the builder, so a gutted normalizer stays red.
+
+    ``integer`` does not end in ``int``. ``uinteger`` does not start with ``uint``.
+    """
     token = str(type_name or "").lower().split("(", 1)[0].strip().split(" ")[0]
-    return token.endswith("int") or token.endswith("serial") or token.startswith("uint")
+    if "." in token:
+        token = token.rsplit(".", 1)[-1]
+    if token in {"integer", "uinteger"}:
+        return True
+    return (
+        token.endswith("int")
+        or token.endswith("serial")
+        or token.startswith("uint")
+        or (token.startswith("int") and token[3:].isdigit())
+    )
 
 
 def _assert_cortex_samples_nothing_personal(db: Path, payload: dict[str, Any]) -> None:
@@ -774,6 +786,32 @@ def test_an_integer_that_lost_its_leading_zero_stays_home(
         tmp_path,
         "CREATE TABLE loyalty (member_id BIGINT, points_count INTEGER)",
         f"INSERT INTO loyalty VALUES ({values[0]}, 4), ({values[1]}, 9)",
+    )
+    payload = build_dms_payload("loyalty points", serving=db, readable={"loyalty"})
+    assert payload is not None
+    assert _cols(payload, "loyalty") == ["points_count"]
+    _assert_cortex_samples_nothing_personal(db, payload)
+
+
+# Catalog spellings of one whole number. DuckDB stores INT / INT4 as INTEGER
+# and INT8 as BIGINT. Postgres int/int4/int8/bigint and MySQL INT are these.
+_INTEGER_SPELLINGS = (
+    "INTEGER",
+    "INT",
+    "INT4",
+    "INT8",
+    "BIGINT",
+    "HUGEINT",
+    "UBIGINT",
+)
+
+
+@pytest.mark.parametrize("spelling", _INTEGER_SPELLINGS)
+def test_a_phone_under_every_integer_spelling_stays_home(tmp_path: Path, spelling: str) -> None:
+    db = _lake_with(
+        tmp_path,
+        f"CREATE TABLE loyalty (member_id {spelling}, points_count INTEGER)",
+        "INSERT INTO loyalty VALUES (123456789, 4), (1123456789, 9)",
     )
     payload = build_dms_payload("loyalty points", serving=db, readable={"loyalty"})
     assert payload is not None
