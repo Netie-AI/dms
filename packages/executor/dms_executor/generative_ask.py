@@ -1070,9 +1070,13 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
-    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
-        question, sql, warehouse, grantable=grantable
-    )
+    gap = unhonored_qualifier_reason(question, sql=sql)
+    if gap is None and measure_ref is None:
+        # A confirmed measure's answer was already accounted for value by value (account_for_
+        # question, measure_fit, each filter bound to the column the question names), and its
+        # plan resolves a stated name to the key it filters on (district_id IN (1, 2)), which
+        # this SQL-only check cannot see through. measure_ref is set only by that lane.
+        gap = dropped_stated_value_reason(question, sql, warehouse, grantable=grantable)
     if gap:
         return _abstain(
             question,
