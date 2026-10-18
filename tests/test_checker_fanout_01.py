@@ -88,6 +88,33 @@ def _ask(
     return env
 
 
+def _ask_seq(
+    db: Path,
+    question: str,
+    sqls: list[str],
+    calls: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Like _ask, but each compute call returns the next SQL (the last repeats)."""
+    onto = load_verified_ontology(db)
+    assert onto is not None
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(ctx))
+        return {"query_sql": sqls[min(len(calls), len(sqls)) - 1]}
+
+    env = maybe_generative_ask(
+        question,
+        warehouse=db,
+        grantable=set(DEMO_TABLES),
+        compute=compute,
+        submit=_submit(db),
+        ledger_append=_ledger,
+        ontology=onto,
+    )
+    assert env is not None
+    return env
+
+
 @pytest.fixture()
 def minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
     minted = ManifestMinter()
@@ -163,7 +190,8 @@ def test_extra_columns_keep_the_badge(tmp_path: Path) -> None:
         assert_envelope_valid(env)
 
 
-def test_real_fanout_refuses_the_badge(tmp_path: Path) -> None:
+def test_real_fanout_refuses_the_badge(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DMS_CLOOP_B", raising=False)
     db = tmp_path / "fan.duckdb"
     ensure_demo_warehouse(db)
     calls: list[dict[str, Any]] = []
@@ -174,19 +202,12 @@ def test_real_fanout_refuses_the_badge(tmp_path: Path) -> None:
     blob = " ".join(str(item) for item in (env.get("assumptions") or []))
     blob = f"{blob} {env.get('text') or ''}"
     assert "fanout_subject_keys" in blob
-    steps = [
-        str((ctx.get("sql_loop_feedback") or {}).get("step") or "")
-        for ctx in calls
-        if isinstance(ctx.get("sql_loop_feedback"), dict)
-    ]
-    assert steps == ["self_correct", "richer_context", "stronger_tier"]
-    richer = next(
-        ctx for ctx in calls
-        if (ctx.get("sql_loop_feedback") or {}).get("step") == "richer_context"
-    )
-    prompt = str(richer.get("schema_context") or "")
-    assert prompt and prompt != "richer_context"
-    assert "SCHEMA" in prompt
+    assert env.get("rows") in (None, [])
+    # Flag off has no model retry loop: a grain finding abstains. No second
+    # compute call, so nothing is served past the checks the first SQL met.
+    assert len(calls) == 1
+    assert not any(isinstance(ctx.get("sql_loop_feedback"), dict) for ctx in calls)
+    assert "ladder_rung" not in env
     assert_envelope_valid(env)
 
 
@@ -394,41 +415,36 @@ def test_one_to_many_counts_keep_l2_and_wrong_grain_sum_does_not(tmp_path: Path)
     assert _cells(served["rows"]) == _cells(_executed(db, lot.sql))
 
 
-def test_ladder_rung_stamps_the_step_that_served(tmp_path: Path) -> None:
+def test_cloop_b_retries_a_grain_finding_inside_its_own_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The extract loop's checker owns the grain finding, so its retry serves.
+
+    The retry SQL is the one served and named; no second loop stamps a rung.
+    """
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.delenv("DMS_LANE_ONTOLOGY_RANKED", raising=False)
     db = tmp_path / "rung.duckdb"
     ensure_demo_warehouse(db)
-    onto = load_verified_ontology(db)
-    assert onto is not None
+    # Same filters and join key, at the parent's grain: no repeated capacity.
+    good = (
+        "SELECT l.location_id AS location_id, SUM(l.capacity_kg) AS capacity "
+        "FROM locations l WHERE EXISTS (SELECT 1 FROM inventory i "
+        "WHERE i.location_id = l.location_id) GROUP BY l.location_id"
+    )
     calls: list[dict[str, Any]] = []
-    good = "SELECT sku FROM inventory"
-
-    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
-        calls.append(dict(ctx))
-        step = str((ctx.get("sql_loop_feedback") or {}).get("step") or "")
-        if step == "richer_context":
-            return {"query_sql": good}
-        return {"query_sql": _DUP_ROWS_SQL}
-
-    env = maybe_generative_ask(
-        "list product skus",
-        warehouse=db,
-        grantable=set(DEMO_TABLES),
-        compute=compute,
-        submit=_submit(db),
-        ledger_append=_ledger,
-        ontology=onto,
-    )
-    assert env is not None
-    assert env["badge"] == "L2_VALIDATED"
-    assert env.get("ladder_rung") == "richer_context"
-    richer = next(
-        ctx for ctx in calls
-        if (ctx.get("sql_loop_feedback") or {}).get("step") == "richer_context"
-    )
-    prompt = str(richer.get("schema_context") or "")
-    assert prompt and prompt != "richer_context"
-    assert "SCHEMA" in prompt
+    env = _ask_seq(db, "list product skus", [_SUM_CAPACITY, good], calls)
     assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED", env.get("assumptions")
+    assert env["abstained"] is False
+    assert env["sql_used"] == good
+    expected = _executed(db, good)
+    assert _cells(env["rows"]) == _cells(expected)
+    assert f"Found {len(expected)} row(s)" in str(env.get("text") or "")
+    assert "ladder_rung" not in env
+    assert len(calls) == 2
+    feedback = calls[1].get("sql_loop_feedback") or {}
+    assert "reconfirm:fanout_subject_keys" in str(feedback.get("reason") or "")
 
 
 def test_audit_clock_uses_bound_as_of_at_0300_myt(
@@ -586,6 +602,8 @@ def test_http_ask_three_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         monkeypatch.setenv("DMS_ASK_MODE", "live")
         monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
         monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
+        monkeypatch.delenv("CORTEX_WAREHOUSE_DB", raising=False)
+        monkeypatch.delenv("DMS_ORACLE_WAREHOUSE", raising=False)
         if route == "cloop_b":
             monkeypatch.setenv("DMS_CLOOP_B", "1")
         else:
@@ -684,6 +702,7 @@ def _prod_post(
     pass_warehouse: bool = False,
     rows_sql: str | None = None,
     badge: str = "generated",
+    serving: Path | None = None,
 ) -> tuple[dict[str, Any], Any]:
     """POST /v1/chat/ask with the wiring.py shape: no warehouse_path argument.
 
@@ -691,7 +710,8 @@ def _prod_post(
     DMS_WAREHOUSE_DB and the default warehouse_path(). ``pass_warehouse``
     hands the file to the Executor so a test can isolate one concern.
     ``rows_sql`` is what the fake Cortex runs when its cited SQL uses an alias
-    the lake does not hold.
+    the lake does not hold. ``serving`` is a separate file Cortex answers
+    from, named the way Start-DMSStack.ps1 names it (CORTEX_WAREHOUSE_DB).
     """
     from cortex_client.models import (
         AskRequest,
@@ -723,7 +743,7 @@ def _prod_post(
                 answer="served",
                 badge=badge,
                 sql_used=sql,
-                rows=_executed(db, rows_sql or sql),
+                rows=_executed(answered_from, rows_sql or sql),
                 assumptions="recorded",
                 route="generated",
                 audit_id="aud-prod",
@@ -735,7 +755,14 @@ def _prod_post(
 
     monkeypatch.setenv("DMS_ASK_MODE", "live")
     monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    # Cortex answers from the serving file when one exists.
+    answered_from = serving if serving is not None and serving.is_file() else db
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
+    monkeypatch.delenv("DMS_ORACLE_WAREHOUSE", raising=False)
+    if serving is not None:
+        monkeypatch.setenv("CORTEX_WAREHOUSE_DB", str(serving))
+    else:
+        monkeypatch.delenv("CORTEX_WAREHOUSE_DB", raising=False)
     if route == "cloop_b":
         monkeypatch.setenv("DMS_CLOOP_B", "1")
     else:
@@ -2854,3 +2881,267 @@ def test_a_format_character_outside_an_agreed_literal_is_refused(
         _OUTSIDE_MARKS[name], grantable={"inventory"}, warehouse=gate_lake
     )
     assert why == "hostile_sql:sql_not_analyzable", (name, why)
+
+
+# --- #451 review @ 9f7bb43: one retry loop, one call cap, the lake Cortex read ---
+
+#: Outbound kg, one row per transaction. The grain check refuses this shape by
+#: design (fanout_subject_keys); its true value is 6020.
+_DEDUP_OUTBOUND = (
+    "SELECT SUM(kg) AS kg FROM (SELECT t.sku, t.quantity_kg AS kg, ROW_NUMBER() OVER "
+    "(PARTITION BY t.txn_id ORDER BY l.name) AS rn FROM transactions t JOIN inventory i "
+    "ON i.location_id = t.location_id JOIN locations l ON l.location_id = t.location_id "
+    "WHERE t.txn_type = 'outbound') d WHERE rn = 1"
+)
+#: The retry drops the outbound filter: 8520 counts inbound movements too.
+_ALL_MOVEMENTS = "SELECT SUM(quantity_kg) AS kg FROM transactions"
+
+
+def _route_env(monkeypatch: pytest.MonkeyPatch, route: str) -> None:
+    monkeypatch.delenv("DMS_LANE_ONTOLOGY_RANKED", raising=False)
+    monkeypatch.delenv("DMS_INSIGHTS_CALL_CAP", raising=False)
+    if route == "cloop_b":
+        monkeypatch.setenv("DMS_CLOOP_B", "1")
+    else:
+        monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+
+
+@pytest.mark.parametrize("route", ["flag_off", "cloop_b"])
+def test_a_retry_after_a_grain_finding_never_serves_a_dropped_filter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """Red on 9f7bb43: a second retry loop served the retry at L2 as 8520.
+
+    The extract loop's own dropped-filter guard refuses that retry; flag off
+    has no model retry, so the grain finding abstains.
+    """
+    _route_env(monkeypatch, route)
+    db = tmp_path / "dropped.duckdb"
+    ensure_demo_warehouse(db)
+    assert _executed(db, _ALL_MOVEMENTS) == [{"kg": 8520.0}]
+    calls: list[dict[str, Any]] = []
+    env = _ask_seq(db, "Total kg dispatched", [_DEDUP_OUTBOUND, _ALL_MOVEMENTS], calls)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, env.get("text")
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("rows") in (None, [])
+    assert env.get("sql_used") is None
+    text = str(env.get("text") or "")
+    assert "8520" not in text and "8,520" not in text
+    assert "ladder_rung" not in env
+    blob = f"{text} {' '.join(str(a) for a in (env.get('assumptions') or []))}"
+    if route == "cloop_b":
+        assert "filter_dropped" in blob
+        assert len(calls) == 2
+    else:
+        assert "fanout_subject_keys" in blob
+        assert len(calls) == 1
+
+
+def test_a_grain_finding_retry_counts_against_the_one_call_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Red on 9f7bb43: five compute calls (a three-rung ladder) under cap 2."""
+    from cortex_client.compute import insights_call_cap
+
+    _route_env(monkeypatch, "cloop_b")
+    db = tmp_path / "cap.duckdb"
+    ensure_demo_warehouse(db)
+    calls: list[dict[str, Any]] = []
+    broken = "SELECT SUM(no_such_col) AS kg FROM transactions"
+    env = _ask_seq(db, "list product skus", [broken, _FANOUT_SQL], calls)
+    assert_envelope_valid(env)
+    assert len(calls) <= insights_call_cap() == 2
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("rows") in (None, [])
+    text = str(env.get("text") or "")
+    assert "fanout_subject_keys" in text
+    assert "ladder_rung" not in env
+
+
+def _payroll_lake(tmp_path: Path) -> Path:
+    db = tmp_path / "payroll.duckdb"
+    ensure_demo_warehouse(db)
+    con = connect_file(db)
+    try:
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+        con.execute("CREATE TABLE bronze.payroll_2026 AS SELECT 1234567.0 AS amount_myr")
+    finally:
+        con.close()
+    return db
+
+
+class _AnsweringCortex:
+    """Cortex answers the contract ask with fixed SQL, rows and prose."""
+
+    def __init__(self, *, badge: str, sql: str, answer: str, rows: list[dict[str, Any]]) -> None:
+        self.badge = badge
+        self.sql = sql
+        self.answer = answer
+        self.rows = rows
+        self.asks: list[Any] = []
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any] | None:
+        _ = (question, kwargs)
+        return None
+
+    def submit(self, req: Any) -> QueryResult:
+        _ = req
+        return QueryResult(ok=True, status="ok", run_id="run-answer")
+
+    def ask(self, req: Any) -> AskResponse:
+        self.asks.append(req)
+        return AskResponse(
+            answer=self.answer,
+            badge=self.badge,
+            sql_used=self.sql,
+            rows=self.rows,
+            assumptions="recorded",
+            route="generated",
+            audit_id="aud-engine",
+        )
+
+    def ledger_append(self, req: Any) -> Any:
+        _ = req
+        return SimpleNamespace(entry_id="ent-answer", hash="hash-answer")
+
+
+@pytest.mark.parametrize("badge", ["generated", "certified", "governed_metric", "l2_anomalous"])
+def test_a_grant_rejected_answer_never_shows_the_engine_figure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, badge: str
+) -> None:
+    """Red on 9f7bb43 for ``generated``: demoted to ABSTAIN, it kept Cortex's prose.
+
+    Finance does not grant the upload. The rejection is not held outright (not a
+    lake table), so the envelope demotes it; the figure must not survive.
+    """
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    db = _payroll_lake(tmp_path)
+    cortex = _AnsweringCortex(
+        badge=badge,
+        sql="SELECT SUM(amount_myr) AS total_myr FROM bronze.payroll_2026",
+        answer="Total payroll is RM 1,234,567.",
+        rows=[{"total_myr": 1234567.0}],
+    )
+    exe = Executor(cortex=cortex, minter=minter, warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask("What is our total payroll?", space_id=_FINANCE, session_id="ses_pay")
+    assert cortex.asks
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", badge
+    assert env["abstained"] is True
+    assert env.get("rows") in (None, [])
+    assert env.get("values") in (None, [])
+    text = str(env.get("text") or "")
+    assert "1,234,567" not in text and "1234567" not in text, text
+    assert "reconfirm:grant_rejected" in text
+    notes = " ".join(str(a) for a in (env.get("assumptions") or []))
+    assert "GEN-01: reconfirm:grant_rejected" in notes
+
+
+def test_a_held_cortex_answer_keeps_what_ran_in_the_audit_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """Red on 9f7bb43: the grant hold returned before BANK-02 recorded the statement.
+
+    The customer gets a refusal that names nothing; the audit trace keeps the
+    statement Cortex ran and the envelope keeps Cortex's ledger pointer.
+    """
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    db = tmp_path / "held.duckdb"
+    ensure_demo_warehouse(db)
+    rows = _executed(db, _ALERTS_SQL)
+    assert rows
+    cortex = _AnsweringCortex(
+        badge="certified", sql=_ALERTS_SQL, answer=f"{len(rows)} open alerts.", rows=rows
+    )
+    exe = Executor(cortex=cortex, minter=minter, warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask("Which alerts are open?", space_id=_FINANCE, session_id="ses_held")
+    trace = exe.take_executed()
+    assert cortex.asks
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env.get("rows") in (None, [])
+    assert env.get("answer_id") == "ans_gen01_abstain"
+    assert "alerts" not in _visible(env)
+    assert env["audit_id"] == "aud-engine"
+    assert trace.statements == ((_ALERTS_SQL, len(rows)),)
+
+
+_ON_HAND_BY_SKU = (
+    "SELECT i.sku, SUM(i.quantity_kg) AS on_hand_kg FROM inventory i "
+    "JOIN transactions t ON t.sku = i.sku "
+    "WHERE i.location_id IN ('WH-C','WH-D','WH-E') GROUP BY i.sku"
+)
+
+
+def test_the_generated_route_checks_the_file_cortex_answered_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """Red on 9f7bb43: the probe read the ingest lake and served SKU-GAMMA as 300.
+
+    Production construction. Cortex answers from CORTEX_WAREHOUSE_DB, which
+    holds one more SKU-GAMMA movement than the ingest lake, so the join
+    repeats SKU-GAMMA's stock there and only there.
+    """
+    import shutil
+
+    from dms_executor.served_gate import served_result_reason
+
+    ingest = tmp_path / "ingest.duckdb"
+    ensure_demo_warehouse(ingest)
+    serving = tmp_path / "serving.duckdb"
+    shutil.copy(ingest, serving)
+    con = connect_file(serving)
+    try:
+        con.execute(
+            "INSERT INTO transactions SELECT 'T-EXTRA', sku, location_id, txn_type, "
+            "quantity_kg, unit_cost_myr, ts FROM transactions "
+            "WHERE sku = 'SKU-GAMMA' LIMIT 1"
+        )
+        moves = con.execute("SELECT COUNT(*) FROM transactions").fetchone()
+    finally:
+        con.close()
+    bound = "2026-10-18T00:00:00Z"
+    assert served_result_reason(_ON_HAND_BY_SKU, warehouse=ingest, as_of=bound) is None
+    assert (
+        served_result_reason(_ON_HAND_BY_SKU, warehouse=serving, as_of=bound)
+        == "fanout_subject_keys"
+    )
+    served_rows = {r["sku"]: r["on_hand_kg"] for r in _executed(serving, _ON_HAND_BY_SKU)}
+    assert served_rows["SKU-GAMMA"] == 300.0
+
+    env, cortex = _prod_post(ingest, _ON_HAND_BY_SKU, monkeypatch, minter, serving=serving)
+    assert cortex.asks
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, env.get("text")
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("rows") in (None, [])
+    text = str(env.get("text") or "")
+    assert "fanout_subject_keys" in text
+    assert "300" not in text
+    # The serving file is read as it is: never reseeded.
+    con = connect_file(serving, write=False)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM transactions").fetchone() == moves
+    finally:
+        con.close()
+
+
+def test_a_named_serving_file_that_is_missing_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """The checks cannot read the file Cortex ran on, so the answer is not certified."""
+    ingest = tmp_path / "ingest_only.duckdb"
+    ensure_demo_warehouse(ingest)
+    missing = tmp_path / "not_there.duckdb"
+    env, cortex = _prod_post(ingest, _SKU_PER_LOCATION, monkeypatch, minter, serving=missing)
+    assert cortex.asks
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, env.get("text")
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("rows") in (None, [])
+    assert not missing.exists()

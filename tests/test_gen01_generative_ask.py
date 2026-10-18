@@ -517,9 +517,11 @@ def test_live_ask_product_never_consults_compute(minter: ManifestMinter) -> None
     env = exe.live_ask("What is revenue by product category?", session_id="ses_gen01_unsure")
     assert fake.computes == []
     assert len(fake.asks) == 1
+    # The refusal keeps Cortex's ledger pointer for what it ran (BANK-02).
+    assert env["audit_id"] == "aud_gen01_cortex"
     assert_envelope_valid(env)
     # The fixture answers with SELECT 1. The grant check refuses that
-    # directly. E10 never sees the row, and the ladder is not asked.
+    # directly, so E10 never sees the row.
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
     assert env["values"] == []

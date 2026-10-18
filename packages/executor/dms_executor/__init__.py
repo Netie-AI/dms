@@ -156,6 +156,7 @@ from dms_executor.warehouse_browse import (
 )
 from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
+    explicit_engine_warehouse,
     identity_check,
     ingest_warehouse_path,
     serving_warehouse_path,
@@ -1024,8 +1025,12 @@ class Executor:
                 # generative answer is left as-is. None still reaches Cortex ask.
                 # A budget stop keeps its named reason (insights_timeout:<leg>).
                 notes = gen_env.get("assumptions") or []
+                # A grain or grant finding keeps its named reason, also when the
+                # extract loop ran out of retries on it (loop_exhausted:...).
                 gate_hold = any(
-                    isinstance(note, str) and note.startswith("GEN-01: reconfirm:")
+                    isinstance(note, str)
+                    and note.startswith("GEN-01: ")
+                    and "reconfirm:" in note
                     for note in notes
                 )
                 if (
@@ -1091,9 +1096,8 @@ class Executor:
             else:
                 raise AskServiceError(err.code, err.detail) from exc
         grant_set = set(self.grantable_tables(space_id=space_id))
-        # wiring.py builds the Executor without warehouse_path. The default
-        # lake is the one the grant check and the served-result gate read.
-        lake = ensure_demo_warehouse(self._warehouse)
+        # The grant EXPLAIN and the grain probe read the file Cortex ran on.
+        lake = self._cortex_served_lake()
         held = None
         rejected: str | None = None
         # Only SQL is grant-checked. A document answer carries none, and an
@@ -1108,6 +1112,14 @@ class Executor:
                 grantable=grant_set,
             )
         if held is not None:
+            # BANK-02: Cortex ran this statement. The reply refuses it, but the
+            # audit trace records what ran and the envelope keeps Cortex's
+            # ledger pointer, as map_ask_response_to_envelope does.
+            executed_trace.record(resp.sql_used, len(resp.rows or []))
+            cortex_audit = resp.receipt_id or resp.audit_id
+            if cortex_audit:
+                held["audit_id"] = cortex_audit
+            assert_envelope_valid(held)
             env = attach_cascade(held, cascade)
             self._store_turn(session_id, space_id, env)
             return env
@@ -1130,6 +1142,22 @@ class Executor:
         )
         self._store_turn(session_id, space_id, env)
         return env
+
+    def _cortex_served_lake(self) -> Path:
+        """The file the Cortex contract ask executed on, for the checks that read it.
+
+        An Executor given a warehouse treats that file as the one lake. wiring.py
+        gives none: then it is the serving file the operator named
+        (``CORTEX_WAREHOUSE_DB`` / ``DMS_ORACLE_WAREHOUSE``; Start-DMSStack.ps1
+        names it whenever it exists), read as it is and never reseeded. With no
+        serving file named, ingest and serving are one file. A named file that
+        is missing fails closed in the grant check (``warehouse_missing``).
+        """
+        if self._warehouse is None:
+            engine = explicit_engine_warehouse()
+            if engine is not None:
+                return engine
+        return ensure_demo_warehouse(self._warehouse)
 
     def take_executed(self) -> ExecutedTrace:
         """What the last ``live_ask`` on this thread ran: statements with row counts,
@@ -1343,6 +1371,13 @@ def map_ask_response_to_envelope(
         from dms_executor.gen_path_refuse import customer_abstain_text
 
         text = customer_abstain_text(f"reconfirm:{gate_finding}")
+    elif grant_rejected and abstained:
+        # Already ABSTAIN (route "generated" without a gate pass, an abstain
+        # badge). The engine's prose can carry the figure the rejected SQL
+        # computed, so it is never the text of this refusal.
+        from dms_executor.gen_path_refuse import customer_abstain_text
+
+        text = customer_abstain_text("reconfirm:grant_rejected")
     values = list(resp.values or [])
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
@@ -1382,6 +1417,8 @@ def map_ask_response_to_envelope(
     assumptions.append("live Cortex ask")
     if gate_finding:
         assumptions.append(f"GEN-01: reconfirm:{gate_finding}")
+    elif grant_rejected and abstained and not unknown_badge:
+        assumptions.append("GEN-01: reconfirm:grant_rejected")
     sources = normalize_contributing_sources(
         resp.contributing_sources, space_id=space_id
     )
@@ -1427,10 +1464,17 @@ def map_ask_response_to_envelope(
         "exclude_reasons": list(resp.exclude_reasons) if resp.exclude_reasons else None,
     }
     if abstained:
+        held_reason = (
+            f"reconfirm:{gate_finding}"
+            if gate_finding
+            else "reconfirm:grant_rejected"
+            if grant_rejected and not unknown_badge
+            else ""
+        )
         env = build_abstain(
-            reason=f"reconfirm:{gate_finding}" if gate_finding else "abstain",
+            reason=held_reason or "abstain",
             question=question or "",
-            stage="served_gate" if gate_finding else "cortex_ask",
+            stage="served_gate" if held_reason else "cortex_ask",
             **fields,
         )
     else:
