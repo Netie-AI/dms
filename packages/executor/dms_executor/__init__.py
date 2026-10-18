@@ -1283,12 +1283,47 @@ class Executor:
                 dialect=self.dialect,
                 warehouse=self._warehouse,
             )
-            # A relation miss is the served-answer abstain (ticket keeps the
-            # name; a granted lake alias stands). A file or a script still
-            # refuses here, before the envelope is built.
-            from dms_executor.name_echo import served_relation_miss
+            # A relation miss abstains here, before the envelope mapper can
+            # demote it into a different sentence. The ticket keeps the name.
+            # A granted lake alias or a bare grant falls through and stands.
+            # A file or a script uses the structural code.
+            from dms_executor.name_echo import (
+                served_relation_miss,
+                served_relations_covered,
+            )
 
-            if gap and not served_relation_miss(gap, sql_used, set(readable)):
+            if (
+                gap
+                and served_relation_miss(
+                    gap, sql_used, set(readable), dialect=self.dialect
+                )
+                and served_relations_covered(sql_used, set(readable))
+            ):
+                pass
+            elif gap and served_relation_miss(
+                gap, sql_used, set(readable), dialect=self.dialect
+            ):
+                refused = refuse_ungranted_answer(
+                    {
+                        "abstained": False,
+                        "sql_used": sql_used,
+                        "answer_id": "ans_served_ungranted",
+                        "text": "",
+                        "rows": [],
+                        "values": [],
+                    },
+                    question=question,
+                    grants=set(readable),
+                )
+                refused["space_id"] = space_id
+                refused["session_id"] = session_id
+                route = getattr(resp, "route", None)
+                if isinstance(route, str) and route.strip():
+                    refused["route"] = route
+                env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+            elif gap:
                 # One code. The relation name is not part of it.
                 refused = sql_refusal_envelope(
                     reason=gap,

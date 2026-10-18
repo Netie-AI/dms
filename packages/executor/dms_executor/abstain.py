@@ -160,6 +160,22 @@ def refuse_ungranted_answer(
         return env
     sql = env.get("sql_used")
     reason = "ungranted:" + ",".join(_quoted(parts) for parts in names)
+    # The served sentence hides the name. A qualified miss also keeps the
+    # structural code, so a caller that reads the code still sees it.
+    codes = ["ungranted"]
+    if isinstance(sql, str) and sql.strip():
+        from dms_executor.grant_struct import customer_grant_reason, serve_gap
+        from dms_executor.name_echo import _dialect, _granted
+
+        gap = serve_gap(
+            sql,
+            grantable=set(_granted(grants)),
+            dialect=_dialect(),
+            cite_missing=False,
+        )
+        shown = customer_grant_reason(gap) if isinstance(gap, str) else ""
+        if shown and shown not in codes:
+            codes.append(shown)
     out = build_abstain(
         reason=reason,
         question=question,
@@ -172,8 +188,7 @@ def refuse_ungranted_answer(
         sql_used=None,
         assumptions=[
             "served SQL read a relation outside this Space's grant",
-            # The code stays visible. The relation name does not.
-            "ungranted",
+            *codes,
         ],
         abstain_reason="ungranted",
         audit_id=env.get("audit_id"),

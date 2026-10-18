@@ -586,13 +586,31 @@ def _ungranted(
     return out
 
 
-def served_relation_miss(gap: str, sql: str, grants: Collection[str]) -> bool:
+def served_relations_covered(sql: str, grants: Collection[str]) -> bool:
+    """True when every relation the audit parser read is granted.
+
+    A bare grant and a lake alias count. An empty parse is not coverage:
+    ``SELECT 1`` grants nothing.
+    """
+    parts = _sql_parts([sql])
+    return bool(parts) and not _ungranted(parts, set(grants))
+
+
+def served_relation_miss(
+    gap: str,
+    sql: str,
+    grants: Collection[str],
+    *,
+    dialect: str | None = None,
+) -> bool:
     """True when the served-answer check owns this ``serve_gap`` result.
 
     A file, a script, or an unparsed statement stays on the structural
-    refusal. A relation miss does not: the served answer abstains with the
-    name on the ticket, or it stands when the grant or the lake alias covers
-    every table the audit parser read.
+    refusal. So does a statement that names no relation (``SELECT 1``):
+    nothing was granted, and there is no name for the ticket. A relation
+    miss does not: the served answer abstains with the name on the ticket,
+    or it stands when the grant or the lake alias covers every table the
+    audit parser read.
     """
     code = str(gap or "").strip()
     if code.startswith("hostile_sql:") or code in {
@@ -609,12 +627,29 @@ def served_relation_miss(gap: str, sql: str, grants: Collection[str]) -> bool:
     ):
         return False
     # serve_gap can miss a bare grant or a lake alias that this lookup
-    # accepts. That answer stands. A file, a catalog, or any other
-    # relation this lookup also rejects stays on the structural refusal.
+    # accepts. That answer stands.
     parts = _sql_parts([sql])
     if parts and not _ungranted(parts, set(grants)):
         return True
-    return code == "ungranted" or code.startswith("ungranted:")
+    if not parts:
+        return False
+    if code == "ungranted" or code.startswith("ungranted:"):
+        return True
+    # A qualified miss that cites a table is the served abstain. A file
+    # reader cites nothing, so it stays on the structural refusal.
+    from dms_executor.grant_struct import serve_gap
+
+    cited = serve_gap(
+        sql,
+        grantable=set(grants),
+        dialect=dialect if dialect is not None else _dialect(),
+        cite_missing=True,
+    )
+    return (
+        isinstance(cited, str)
+        and cited.startswith("ungranted:")
+        and cited not in {"ungranted:file", "ungranted:unparsed"}
+    )
 
 
 def _sql_parts(sources: list[str]) -> list[tuple[str, ...]]:
