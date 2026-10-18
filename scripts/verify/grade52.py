@@ -24,16 +24,30 @@ are rule/compile, including when ``served_model`` is set. The paths line
 counts AI model SQL, rule-served (L0, L1, compile, oracle), and
 unattributed, once for correct answers and once for every served answer.
 
+The risk line states what a score supports: per route, served answers with
+gold, how many were wrong, and the exact one-sided 95 percent upper bound on
+the wrong-served rate (0 wrong in n is about 3/n). Abstains are not served
+answers and never shrink the bound. Coverage is served over graded.
+
+Several ``--envelopes`` of one commit are graded run by run, then on the
+worst case per question: wrong in any run is wrong, abstained in any run is
+an abstain. ``--gate`` exits 1 on any wrong served answer in that worst case.
+``--baseline`` diffs against an earlier artifact of the same grader version;
+the log gets move counts, the artifact gets the ids.
+
 Usage:
     python scripts/verify/grade52.py --self-test
     python scripts/verify/grade52.py --main
     python scripts/verify/grade52.py --envelopes PATH
+    python scripts/verify/grade52.py --envelopes RUN1 --envelopes RUN2 --envelopes RUN3 --gate
+    python scripts/verify/grade52.py --envelopes PATH --baseline OLD/grade52.json
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -76,6 +90,23 @@ _BUCKET_KEYS = (
     "empty_gold",
     "gold_broken",
 )
+# Bump when a bucket rule or the row comparison changes. A baseline graded by
+# another version is not comparable and is refused.
+GRADER_VERSION = 2
+CONFIDENCE = 0.95
+# Higher is worse. A case's worst-of-runs bucket is the one ranked highest.
+_SEVERITY = {
+    BUCKET_WRONG: 3,
+    BUCKET_REFUSAL_WRONG: 3,
+    BUCKET_ABSTAIN: 2,
+    BUCKET_GOLD_BROKEN: 2,
+    BUCKET_EMPTY: 1,
+    BUCKET_CORRECT: 0,
+    BUCKET_REFUSAL_OK: 0,
+}
+# Served answers that have gold to be judged against. n of the wrong-rate bound.
+_SERVED_GRADED = frozenset({BUCKET_CORRECT, BUCKET_WRONG, BUCKET_REFUSAL_WRONG})
+_RISK_GROUPS = ("all", "ai", "rule", "unattributed")
 _REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
 _CREDENTIAL_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
 # Path claims the envelope may stamp. Anything else is not a path.
@@ -1030,10 +1061,10 @@ def _artifact_dir() -> Path:
     return path
 
 
-def write_report(report: dict[str, Any]) -> Path:
+def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
     """Write the run artifact. Caller prints the path. No SQL, no question text."""
     _require_label(report)
-    dest = _artifact_dir() / "grade52.json"
+    dest = _artifact_dir() / name
     slim_cases = []
     for item in report["cases"]:
         slim_cases.append(
@@ -1048,6 +1079,7 @@ def write_report(report: dict[str, Any]) -> Path:
                 "as_of": item["as_of"],
                 "pack_gold_served": bool(item.get("pack_gold_served")),
                 "served_n": item.get("served_n"),
+                **({"runs": item["runs"]} if "runs" in item else {}),
             }
         )
     without = report["without_pack_gold_served"]
@@ -1072,6 +1104,11 @@ def write_report(report: dict[str, Any]) -> Path:
         "empty_gold_abstained": report["empty_gold_abstained"],
         "empty_gold_served": report["empty_gold_served"],
         "score": True,
+        "grader_version": GRADER_VERSION,
+        "risk": risk_bounds(report["cases"]),
+        "runs": int(report.get("runs") or 1),
+        "unstable": int(report.get("unstable") or 0),
+        "baseline": report.get("baseline"),
         "without_pack_gold_served": without,
         "cases": slim_cases,
     }
@@ -1158,6 +1195,83 @@ def path_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "detail": detail,
         "stamp_contradiction": contradictions,
     }
+
+
+def wrong_rate_upper(wrong: int, served: int, confidence: float = CONFIDENCE) -> float | None:
+    """One-sided exact (Clopper-Pearson) upper bound on the wrong-served rate.
+
+    0 wrong in n served gives ``1 - 0.05 ** (1 / n)``, a little under the rule
+    of three's 3/n. None when nothing was served: no answers, no claim.
+    """
+    if served <= 0:
+        return None
+    if wrong >= served:
+        return 1.0
+    alpha = 1.0 - confidence
+    if wrong == 0:
+        return 1.0 - alpha ** (1.0 / served)
+    low, high = wrong / served, 1.0
+    for _ in range(200):
+        mid = (low + high) / 2
+        if _binom_cdf(wrong, served, mid) > alpha:
+            low = mid
+        else:
+            high = mid
+    return high
+
+
+def _binom_cdf(k: int, n: int, p: float) -> float:
+    log_p, log_q = math.log(p), math.log1p(-p)
+    head = math.lgamma(n + 1)
+    return sum(
+        math.exp(head - math.lgamma(i + 1) - math.lgamma(n - i + 1) + i * log_p + (n - i) * log_q)
+        for i in range(k + 1)
+    )
+
+
+def risk_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """Served answers with gold, and how many were wrong, per route group.
+
+    A trap that was answered is a wrong served answer. Abstains, correct
+    refusals, empty gold and gold-broken abstains were not served, so they
+    never shrink the bound.
+    """
+    out = {group: {"served": 0, "wrong": 0} for group in _RISK_GROUPS}
+    for item in cases:
+        bucket = item.get("bucket")
+        if bucket not in _SERVED_GRADED:
+            continue
+        group = path_group(str(item.get("serve_path") or "unattributed"))
+        for key in ("all", group):
+            out[key]["served"] += 1
+            if bucket != BUCKET_CORRECT:
+                out[key]["wrong"] += 1
+    return out
+
+
+def risk_bounds(cases: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        group: {**block, "wrong_ub95": wrong_rate_upper(block["wrong"], block["served"])}
+        for group, block in risk_counts(cases).items()
+    }
+
+
+def _risk_side(block: Mapping[str, Any]) -> str:
+    bound = block["wrong_ub95"]
+    shown = "none" if bound is None else f"{bound * 100:.1f}%"
+    return f"served={block['served']} wrong={block['wrong']} wrong_ub95={shown}"
+
+
+def risk_line(report: Mapping[str, Any]) -> str:
+    """The claim a score supports: wrong-rate bound per route, and coverage.
+
+    Coverage is served over graded (correct, wrong and abstain on gold cases).
+    """
+    bounds = risk_bounds(report["cases"])
+    answered = int(report["correct"]) + int(report["wrong"])
+    parts = [f"risk {_risk_side(bounds['all'])} coverage={answered}/{int(report['graded'])}"]
+    parts += [f"{group} {_risk_side(bounds[group])}" for group in _RISK_GROUPS[1:]]
+    return " | ".join(parts)
 
 
 def _path_side(block: Mapping[str, int], detail: Mapping[str, int]) -> str:
@@ -1417,6 +1531,10 @@ def _finish(
     mode: str,
     dms_sha: str,
     layout: str | None = None,
+    *,
+    name: str = "grade52.json",
+    prefix: str = "",
+    baseline: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     _labelled(report, mode=mode, included="included", dms_sha=dms_sha)
     if layout:
@@ -1439,11 +1557,17 @@ def _finish(
     rolls = path_counts(report["cases"])
     report["paths_correct"] = rolls["correct"]
     report["paths_served"] = rolls["served"]
-    path = write_report(report)
-    print(summary_line(report))
-    print(summary_line(without))
-    print(paths_line(rolls))
-    print(f"artifact: {path}")
+    if baseline is not None:
+        report["baseline"] = baseline_diff(report, baseline)
+    path = write_report(report, name)
+    report["artifact"] = str(path)
+    print(prefix + summary_line(report))
+    print(prefix + summary_line(without))
+    print(prefix + paths_line(rolls))
+    print(prefix + risk_line(report))
+    if report.get("baseline"):
+        print(prefix + baseline_line(report["baseline"]))
+    print(f"{prefix}artifact: {path}")
     return report
 
 
@@ -1453,6 +1577,7 @@ def grade_loaded(
     mode: str,
     dms_sha: str | None = None,
     layout: str | None = None,
+    **finish: Any,
 ) -> dict[str, Any]:
     """Grade served rows. A submit-stub pack is labelled stub and is not a score."""
     if _is_submit_stub(envelopes):
@@ -1462,7 +1587,7 @@ def grade_loaded(
     if not isinstance(dms_sha, str):
         raise SystemExit("grade52: envelopes commit missing")
     report = grade_envelopes(envelopes, mode=mode)
-    return _finish(report, mode, _commit_sha(dms_sha), layout)
+    return _finish(report, mode, _commit_sha(dms_sha), layout, **finish)
 
 
 def grade_main(mode: str | None = None) -> dict[str, Any]:
@@ -1473,9 +1598,101 @@ def grade_main(mode: str | None = None) -> dict[str, Any]:
     return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC, dms_sha=product_sha())
 
 
-def grade_envelopes_path(path: Path) -> dict[str, Any]:
+def grade_envelopes_path(path: Path, **finish: Any) -> dict[str, Any]:
     rows, sha, layout = load_envelopes(path)
-    return grade_loaded(rows, mode=MODE_SERVED, dms_sha=sha, layout=layout)
+    return grade_loaded(rows, mode=MODE_SERVED, dms_sha=sha, layout=layout, **finish)
+
+
+def worst_case(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Per case, the worst bucket any run gave it. One lucky run is not a score.
+
+    A case correct in one run and wrong in another is wrong; correct in one and
+    abstained in another is an abstain. Runs must grade one commit, layout and
+    as-of date, or the worst case mixes two products.
+    """
+    first = reports[0]
+    for key in ("dms_sha", "layout", "as_of", "mode", "n"):
+        if any(other.get(key) != first.get(key) for other in reports[1:]):
+            raise SystemExit(f"grade52: runs differ on {key}; worst case needs one product")
+    per_run = [{str(item["id"]): item for item in run["cases"]} for run in reports]
+    cases: list[dict[str, Any]] = []
+    unstable = 0
+    for item in first["cases"]:
+        seen = [run[str(item["id"])] for run in per_run]
+        worst = max(seen, key=lambda case: _SEVERITY[str(case["bucket"])])
+        buckets = [str(case["bucket"]) for case in seen]
+        unstable += len(set(buckets)) > 1
+        cases.append({**worst, "runs": buckets})
+    return {
+        "as_of": first["as_of"],
+        "n": len(cases),
+        "pack_gold_served_ids": first["pack_gold_served_ids"],
+        **tally(cases),
+        "cases": cases,
+        "runs": len(reports),
+        "unstable": unstable,
+    }
+
+
+def grade_runs(
+    paths: Sequence[Path], baseline: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Grade each run, then the worst case of all runs. The worst case is the score."""
+    if len(paths) == 1:
+        return grade_envelopes_path(paths[0], baseline=baseline)
+    total = len(paths)
+    runs = [
+        grade_envelopes_path(path, name=f"grade52.run{i}.json", prefix=f"run {i}/{total} ")
+        for i, path in enumerate(paths, start=1)
+    ]
+    report = worst_case(runs)
+    report = _finish(
+        report,
+        str(runs[0]["mode"]),
+        str(runs[0]["dms_sha"]),
+        runs[0].get("layout"),
+        prefix=f"worst of {total} unstable={report['unstable']} ",
+        baseline=baseline,
+    )
+    return report
+
+
+def baseline_diff(report: Mapping[str, Any], baseline: Mapping[str, Any]) -> dict[str, Any]:
+    """Bucket moves since a baseline artifact. Ids stay in the artifact, never the log."""
+    if baseline.get("grader_version") != GRADER_VERSION:
+        raise SystemExit(
+            f"grade52: baseline graded by grader {baseline.get('grader_version')}, "
+            f"this is grader {GRADER_VERSION}; not comparable"
+        )
+    before = {str(item["id"]): str(item["bucket"]) for item in baseline.get("cases") or []}
+    now = {str(item["id"]): str(item["bucket"]) for item in report["cases"]}
+    if set(before) != set(now):
+        raise SystemExit("grade52: baseline graded a different set of cases")
+    moves: dict[str, list[str]] = {}
+    regressed = improved = 0
+    for qid in sorted(now):
+        old, new = before[qid], now[qid]
+        if old == new:
+            continue
+        moves.setdefault(f"{old}->{new}", []).append(qid)
+        if _SEVERITY[new] > _SEVERITY[old]:
+            regressed += 1
+        elif _SEVERITY[new] < _SEVERITY[old]:
+            improved += 1
+    return {
+        "dms_sha": baseline.get("dms_sha"),
+        "regressed": regressed,
+        "improved": improved,
+        "moves": moves,
+    }
+
+
+def baseline_line(diff: Mapping[str, Any]) -> str:
+    counts = " ".join(f"{key}:{len(ids)}" for key, ids in sorted(diff["moves"].items()))
+    return (
+        f"baseline regressed={diff['regressed']} improved={diff['improved']} "
+        f"moves {counts or 'none'} since {str(diff.get('dms_sha') or 'unknown')[:8]}"
+    )
 
 
 def self_test() -> dict[str, str]:
@@ -1847,15 +2064,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--main", action="store_true")
-    parser.add_argument("--envelopes", type=Path)
+    parser.add_argument(
+        "--envelopes",
+        type=Path,
+        action="append",
+        help="captured run; repeat for several runs of one commit, graded on the worst case",
+    )
+    parser.add_argument("--baseline", type=Path, help="an earlier grade52.json to diff against")
+    parser.add_argument("--gate", action="store_true", help="exit 1 on any wrong served answer")
     args = parser.parse_args(argv)
     if args.main and args.envelopes is not None:
         raise SystemExit("grade52: pass --envelopes or --main")
+    if (args.baseline or args.gate) and args.envelopes is None:
+        raise SystemExit("grade52: --baseline and --gate grade --envelopes")
     run_score = args.main or args.envelopes is not None
     if args.self_test or not run_score:
         self_test()
     if args.envelopes is not None:
-        grade_envelopes_path(args.envelopes)
+        baseline = None
+        if args.baseline is not None:
+            baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+        report = grade_runs(args.envelopes, baseline=baseline)
+        if args.gate and int(report["wrong"]) + int(report["refusal_wrong"]) > 0:
+            print(f"gate FAIL wrong={report['wrong']} refusal_wrong={report['refusal_wrong']}")
+            return 1
     elif args.main:
         grade_main()
     return 0
