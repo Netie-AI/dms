@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-18 - SQL-VOTE: merge main after #421
+
+- **Base.** #421 is on main (`89aea317`). This branch merges main's tip `d1f8eeb` (that commit plus #452). `serve_gap` grant checks stay. Equal rows, one call cap, and `build_abstain` stay. Not PASS.
+
 ## 2026-10-18 - SQL-VOTE: equal rows, one call cap, abstain through the builder
 
 - **Agreement.** Equal rows from two different instructions agree. The SQL does not have to match. Both statements must pass `validate_compiled_sql`, and each must read at least one granted table. `SELECT 3` does not agree.

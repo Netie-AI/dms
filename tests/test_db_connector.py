@@ -50,6 +50,13 @@ class _FakeCursor:
             ]
             self._result = list(self._owner.fks)
             return
+        if "INFORMATION_SCHEMA.COLUMNS" in sql:
+            # Declared column types (dms#277 F-e). A fake with none declared
+            # answers nothing, which lands the pull untyped and says so.
+            schema, table = (params or ("", ""))[:2]
+            self.description = [("COLUMN_NAME",), ("DATA_TYPE",), ("P",), ("S",)]
+            self._result = list(self._owner.column_types.get(f"{schema}.{table}", []))
+            return
         if "PRIMARY KEY" in sql or "CONSTRAINT_NAME = 'PRIMARY'" in sql:
             self.description = [
                 ("TABLE_SCHEMA",),
@@ -87,8 +94,10 @@ class _FakeConnection:
         | dict[str, tuple[list[str], list[list[Any]]]],
         pks: list[tuple[Any, ...]] | None = None,
         fks: list[tuple[Any, ...]] | None = None,
+        column_types: dict[str, list[tuple[Any, ...]]] | None = None,
     ) -> None:
         self.catalog = catalog
+        self.column_types = column_types or {}
         self.table_data = table_data
         self.pks = pks or []
         self.fks = fks or []

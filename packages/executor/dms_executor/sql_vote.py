@@ -217,14 +217,18 @@ def rows_equal(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
     return bool(left) and bool(right) and result_key(left) == result_key(right)
 
 
-def _reads_granted(sql: str, grantable: set[str]) -> bool:
-    """True when the SQL cites at least one granted table. A literal does not."""
-    from dms_executor.generative_ask import cited_relations
+def _reads_granted(sql: str, grantable: set[str], dialect: str) -> bool:
+    """True when ``serve_gap`` accepts the statement.
 
-    granted = {name.strip().lower() for name in grantable if name and str(name).strip()}
+    A literal such as ``SELECT 3`` is ungranted. The FROM/JOIN regex misses a
+    Unicode name and a ``TABLE`` form that the grant parser allows.
+    """
+    from dms_executor.grant_struct import serve_gap
+
+    granted = {name for name in grantable if name and str(name).strip()}
     if not granted:
         return False
-    return bool(cited_relations(sql) & granted)
+    return serve_gap(sql, grantable=granted, dialect=dialect or None) is None
 
 
 def readings_agree(
@@ -246,7 +250,9 @@ def readings_agree(
     """
     if not prompts_independent(prompt_a, prompt_b):
         return False
-    if not _reads_granted(sql_a, grantable) or not _reads_granted(sql_b, grantable):
+    if not _reads_granted(sql_a, grantable, dialect) or not _reads_granted(
+        sql_b, grantable, dialect
+    ):
         return False
     same_rows = rows_equal(rows_a, rows_b)
     # Identical SQL with different rows is not agreement. Identical SQL

@@ -103,6 +103,7 @@ def serve_gap(
     grantable: set[str],
     dialect: str | None,
     warehouse: Path | None = None,
+    cite_missing: bool = False,
 ) -> str | None:
     """None when the statement is one granted read.
 
@@ -118,13 +119,19 @@ def serve_gap(
     ``sql_relation_unresolved``. A reader the parser types as a table or
     external-read function, in any position, is ``sql_relation_not_granted``.
     A missing name in the default schema is bare ``ungranted``. The
-    relation is not part of that code. A statement whose only source is a
-    literal, a literal wrapped in a cast, or a union of those selects is the
-    same code. That is the parsed tree: no granted base table on either
-    side. A file or external reader is ``sql_relation_not_granted`` even
-    beside a granted table, and so is any FROM, JOIN or LATERAL item that is
-    not a table name, a subquery or a VALUES list (a table function, a table
-    macro, a generator).
+    relation is not part of that code, unless ``cite_missing`` (the
+    compiled-SQL checker names the table). A ``bronze.<table>`` grant
+    covers that bare name in the default schema. Folding inside the
+    allow-list is ASCII-only, so ``Ä`` and ``ä`` stay two tables; a fold
+    that would invent an ASCII letter stays unsettled. A statement whose
+    only source is a literal, a literal wrapped in a cast, or a union of
+    those selects is bare ``ungranted``: the parsed tree has no granted
+    base table. A file or external reader is ``sql_relation_not_granted``
+    even beside a granted table. A generator is that same code, alone or
+    beside a grant. Any other FROM, JOIN or LATERAL item that is not a
+    table name, a subquery or a VALUES list is bare ``ungranted`` when
+    the statement reads no granted table, and ``sql_relation_not_granted``
+    when it does.
 
     Last, for the serving dialect, DuckDB's own parse of the same text
     (``_duckdb_gap``): one statement, and every base table it reads passes
@@ -142,7 +149,11 @@ def serve_gap(
     # ungranted. A VALUES that does read one falls through to that scanner.
     if isinstance(trees[0], exp.Values):
         gap = _allow(
-            trees[0], grantable, dialect, _catalog_for(trees[0], warehouse, dialect)
+            trees[0],
+            grantable,
+            dialect,
+            _catalog_for(trees[0], warehouse, dialect),
+            cite_missing=cite_missing,
         )
         if gap:
             return gap
@@ -156,10 +167,17 @@ def serve_gap(
     # For the serving dialect "reads a granted base table" is decided on
     # DuckDB's parse: sqlglot does not see ``(TABLE t)`` as a read at all.
     serving = _dialect_name(dialect) == SERVING_DIALECT
-    gap = _allow(trees[0], grantable, dialect, catalog, need_granted=not serving)
+    gap = _allow(
+        trees[0],
+        grantable,
+        dialect,
+        catalog,
+        need_granted=not serving,
+        cite_missing=cite_missing,
+    )
     if gap or not serving:
         return gap
-    return _duckdb_gap(sql, grantable, dialect, catalog)
+    return _duckdb_gap(sql, grantable, dialect, catalog, cite_missing=cite_missing)
 
 
 def relation_gap(name: str, *, grantable: set[str], dialect: str | None) -> str | None:
@@ -352,6 +370,71 @@ def _table_key(table: exp.Table, dialect_name: str, engine: Dialect) -> str | No
     return _relation_key(names)
 
 
+def _fold_adds_ascii(ascii_name: str, folded: str) -> bool:
+    """True when sqlglot's fold invented an ASCII letter the ASCII fold did not.
+
+    ``Ä`` lowercased is still ``ä``, not an ASCII letter, so the original
+    character stands. Kelvin U+212A lowercases to ASCII ``k`` and does not.
+    """
+    if len(folded) != len(ascii_name):
+        return True
+    for src, dst in zip(ascii_name, folded, strict=True):
+        if dst.isascii() and dst.isalpha() and dst != src:
+            return True
+    return False
+
+
+def _grant_ident(node: exp.Expression, engine: Dialect) -> str | None:
+    """Table name for the allow-list. ``normalize_relation`` stays stricter.
+
+    ``_norm_ident`` refuses every name sqlglot's ``str.lower`` changes past
+    an ASCII fold. A letter that stays non-ASCII (``Ä``) is the ASCII-folded
+    original here, not that lower form, and stays distinct from ``ä``.
+    """
+    settled = _norm_ident(node, engine)
+    if settled:
+        return settled
+    if not isinstance(node, exp.Identifier):
+        return None
+    raw = str(node.name or "")
+    if not raw or _slash_path(raw):
+        return None
+    copied = node.copy()
+    engine.normalize_identifier(copied)
+    folded = str(copied.name or "")
+    ascii_name = raw.translate(_ASCII_LOWER)
+    if not ascii_name or _fold_adds_ascii(ascii_name, folded):
+        return None
+    return ascii_name
+
+
+def _bronze_default_key(token: str, dialect: str | None) -> str | None:
+    """``<default>.<table>`` when ``token`` is exactly ``bronze.<table>``.
+
+    A SQL-source Space grants the bronze relation. The bare name in the
+    default schema is that table. A bare grant does not cover ``bronze``.
+    A name ``_norm_ident`` will not settle is not expanded.
+    """
+    found = _engine(dialect)
+    if found is None:
+        return None
+    dialect_name, engine = found
+    table = _parsed_table(token, dialect_name, engine)
+    if table is None or table.args.get("catalog") is not None:
+        return None
+    db = table.args.get("db")
+    this = table.this
+    if not isinstance(db, exp.Identifier) or not isinstance(this, exp.Identifier):
+        return None
+    if _norm_ident(db, engine) != "bronze":
+        return None
+    bare = _norm_ident(this, engine)
+    default = _default_schema(dialect_name, engine)
+    if not bare or not default or default == "bronze":
+        return None
+    return _relation_key([default, bare])
+
+
 def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
     """Exact keys. A dotted token is also the one-identifier table name."""
     keys: set[str] = set()
@@ -368,6 +451,9 @@ def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
         key = normalize_relation(token, dialect=dialect)
         if key:
             keys.add(key)
+            bare = _bronze_default_key(token, dialect)
+            if bare:
+                keys.add(bare)
         if "." in token and quote not in token and end not in token and "`" not in token:
             one = token.replace(end, end + end)
             quoted = normalize_relation(f"{quote}{one}{end}", dialect=dialect)
@@ -393,18 +479,16 @@ def _anon_name(node: exp.Anonymous) -> str:
 
 
 def _catalog_row_reads_a_file(params: Any, ptypes: Any) -> bool:
-    """True when this ``duckdb_functions()`` row is a path reader.
+    """True when this ``duckdb_functions()`` row names a path parameter.
 
-    DuckDB names that parameter ``filename``, or exposes one ``col0``
-    argument of type VARCHAR / VARCHAR[]. This only sharpens the reason
-    code for a reader outside a relation slot: in a relation slot every
-    table function that sqlglot does not type as a generator refuses.
+    The parameter is ``filename``. A single ``col0 VARCHAR`` argument is
+    not enough: ``query`` and ``query_table`` have that shape and read a
+    table, not a file. A path-shaped argument on the call is decided in
+    ``_allow``.
     """
+    del ptypes
     names = [str(param).lower() for param in (params or ())]
-    types = [str(kind).upper() for kind in (ptypes or ())]
-    if "filename" in names:
-        return True
-    return names == ["col0"] and types in (["VARCHAR"], ["VARCHAR[]"])
+    return "filename" in names
 
 
 _CATALOG_READERS: frozenset[str] | None = None
@@ -503,6 +587,67 @@ def _cte_in_scope(table: exp.Table, name: str, engine: Dialect) -> bool:
 _RELATION_ITEMS = (exp.Table, exp.Subquery, exp.Values, exp.Lateral)
 
 
+def _literal_path(node: exp.Literal) -> bool:
+    """A string argument that is a path. A bare table name has no dot or slash."""
+    if not node.is_string:
+        return False
+    text = str(node.this or "")
+    return "/" in text or "\\" in text or "." in text
+
+
+def _arg_names_a_relation(node: exp.Expression) -> bool:
+    """True when this argument names a relation or a path, not a plain literal."""
+    if isinstance(node, exp.Literal):
+        return _literal_path(node)
+    if isinstance(node, exp.Paren) and node.this is not None:
+        return _arg_names_a_relation(node.this)
+    if isinstance(node, (exp.Column, exp.Identifier, exp.Table)):
+        return True
+    if isinstance(node, (exp.Array, exp.Tuple)):
+        return any(_arg_names_a_relation(item) for item in node.expressions)
+    named = node.find_all(exp.Column, exp.Identifier, exp.Table)
+    if next(named, None) is not None:
+        return True
+    for item in node.find_all(exp.Literal):
+        if _literal_path(item):
+            return True
+    return False
+
+
+def _call_is_closed(node: exp.Expression) -> bool:
+    """True when a table call is ``sql_relation_not_granted`` even with no grant.
+
+    An unclassified call whose arguments are plain literals (or absent)
+    does not prove a base table. A column argument or a path-shaped string
+    does.
+    """
+    if not isinstance(node, exp.Anonymous):
+        return True
+    return any(_arg_names_a_relation(arg) for arg in node.expressions)
+
+
+def _is_generator(node: exp.Expression | None) -> bool:
+    """A typed generator in a relation slot. Not a list of function names.
+
+    sqlglot types ``generate_series`` and ``range`` as ``GenerateSeries``
+    (often the ``this`` of a Table) and ``unnest`` in FROM as ``Unnest``.
+    """
+    if isinstance(node, (exp.GenerateSeries, exp.Unnest)):
+        return True
+    return isinstance(node, exp.Table) and isinstance(node.this, (exp.GenerateSeries, exp.Unnest))
+
+
+def _cite_label(names: list[str], *, catalog: bool) -> str:
+    """What ``cite_missing`` puts after ``ungranted:``.
+
+    Three parts, or a catalog qualifier, keep the whole key (a cross-catalog
+    read must still show the other database). Two parts cite the table only.
+    """
+    if catalog or len(names) >= 3:
+        return ".".join(names)
+    return names[-1]
+
+
 def _allow(
     tree: exp.Expression,
     grantable: set[str],
@@ -510,11 +655,14 @@ def _allow(
     catalog: _Catalog | None = None,
     *,
     need_granted: bool = True,
+    cite_missing: bool = False,
 ) -> str | None:
     """None when every relation in ``tree`` is granted.
 
     ``need_granted`` also asks for at least one granted base table. The
     serving dialect leaves that to DuckDB's parse (``_duckdb_gap``).
+    ``cite_missing`` names a default-schema or qualified miss. Callers that
+    must not echo a table leave it false, and the code stays bare.
     """
     found = _engine(dialect)
     if found is None:
@@ -528,26 +676,50 @@ def _allow(
     not_relation = False
     qualified_miss = False
     unsettled = False
+    bad_ident = False
+    generator = False
+    closed = False
+    unclassified = False
     saw_granted = False
     missing: set[str] = set()
+    cited: set[str] = set()
     # Every relation slot, not only the ones sqlglot types as a Table.
     # ``LATERAL f(...)`` is a Lateral over a function (or a Dot), with no
     # Table node at all, and ``unnest(...)`` in FROM is an Unnest.
     for clause in tree.find_all(exp.From, exp.Join, exp.Lateral):
         item = clause.this
+        if _is_generator(item):
+            generator = True
+            continue
+        anon = item if isinstance(item, exp.Anonymous) else None
+        if anon is None and isinstance(item, exp.Table) and isinstance(item.this, exp.Anonymous):
+            anon = item.this
+        if anon is not None:
+            if _call_is_closed(anon):
+                closed = True
+            else:
+                unclassified = True
+            continue
         if isinstance(clause, exp.Lateral):
             if not isinstance(item, exp.Subquery):
-                not_relation = True
+                closed = True
         elif not isinstance(item, _RELATION_ITEMS):
-            not_relation = True
+            closed = True
     for table in tree.find_all(exp.Table):
         this = table.this
         if not isinstance(this, exp.Identifier):
-            # A table function is not a relation, generator or not. A table
-            # macro can read a named table (``histogram_values(t, c)`` is
-            # ``query_table``), a file, the settings or the secrets.
-            if isinstance(this, exp.Func):
-                not_relation = True
+            # A typed generator is never a relation. Any other function in
+            # the table slot is unclassified: a table macro can read a named
+            # table, a file, the settings or the secrets.
+            if _is_generator(this) or _is_generator(table):
+                generator = True
+            elif isinstance(this, exp.Anonymous):
+                if _call_is_closed(this):
+                    closed = True
+                else:
+                    unclassified = True
+            elif isinstance(this, exp.Func):
+                closed = True
             else:
                 unsettled = True
             continue
@@ -562,18 +734,19 @@ def _allow(
         names: list[str] = []
         broken = False
         for node in nodes:
-            text = _norm_ident(node, engine)
+            text = _grant_ident(node, engine)
             if not text:
                 broken = True
                 break
             names.append(text)
         if broken or not names:
-            not_relation = True
+            bad_ident = True
             continue
         if len(names) == 1 and _cte_in_scope(table, names[0], engine):
             continue
-        had_qualifier = bool(table.args.get("db") or table.args.get("catalog"))
-        cited = list(names)
+        had_catalog = table.args.get("catalog") is not None
+        had_qualifier = bool(table.args.get("db") or had_catalog)
+        cited_parts = list(names)
         if len(names) == 1 and default:
             names = [default, names[0]]
         key = _relation_key(names)
@@ -584,14 +757,16 @@ def _allow(
             # Same catalog row as a grant is granted. A different row is not.
             # A qualifier that is not a schema and not this database is
             # unresolved. A known schema with no such table keeps the old miss.
-            bound = _bind(cited, catalog)
+            bound = _bind(cited_parts, catalog)
             if bound is not None:
                 if bound in granted_rows:
                     saw_granted = True
                     continue
                 qualified_miss = True
+                if cite_missing:
+                    cited.add(_cite_label(cited_parts, catalog=had_catalog))
                 continue
-            if not _qualifier_known(cited, catalog):
+            if not _qualifier_known(cited_parts, catalog):
                 unsettled = True
                 continue
         # One identifier that contains '.' is a path or a stored name
@@ -602,14 +777,31 @@ def _allow(
             continue
         schema = names[0] if len(names) > 1 else ""
         non_default = had_qualifier and (
-            not default or schema != default or bool(table.args.get("catalog"))
+            not default or schema != default or had_catalog
         )
         if non_default:
             qualified_miss = True
+            if cite_missing:
+                cited.add(_cite_label(cited_parts, catalog=had_catalog))
             continue
         missing.add(names[-1])
-    if unsettled:
+    named = set(cited)
+    if cite_missing:
+        named |= missing
+    # A name we could not settle, a generator, or a reader beats a citation.
+    # An unclassified function beside a grant is the same refusal. Alone,
+    # with no granted base table, it is bare ungranted (the name is an
+    # argument, not a relation the parser proved).
+    if bad_ident or generator or closed:
+        return "sql_relation_not_granted"
+    if unclassified and saw_granted:
+        return "sql_relation_not_granted"
+    if unclassified and not saw_granted:
+        return "ungranted"
+    if unsettled and not named:
         return "sql_relation_unresolved"
+    if named:
+        return "ungranted:" + ",".join(sorted(named))
     if not_relation or qualified_miss:
         return "sql_relation_not_granted"
     if missing or (need_granted and not saw_granted):
@@ -756,7 +948,12 @@ def duckdb_read_relations(statements: Any) -> list[tuple[str, ...]] | None:
 
 
 def _duckdb_gap(
-    sql: str, grantable: set[str], dialect: str | None, catalog: _Catalog | None
+    sql: str,
+    grantable: set[str],
+    dialect: str | None,
+    catalog: _Catalog | None,
+    *,
+    cite_missing: bool = False,
 ) -> str | None:
     """None when DuckDB's own parse reads a granted table and nothing else.
 
@@ -779,7 +976,9 @@ def _duckdb_gap(
     trees = _trees(f"SELECT 1 FROM {cited}", dialect)
     if trees is None or len(trees) != 1:
         return "sql_relation_unresolved"
-    return _allow(trees[0], grantable, dialect, catalog)
+    return _allow(
+        trees[0], grantable, dialect, catalog, cite_missing=cite_missing
+    )
 
 
 def _quote_part(part: str) -> str:
