@@ -117,11 +117,15 @@ from dms_executor.sql_loop import (
 )
 from dms_executor.sql_vote import (
     disagreement_detail,
+    empty_plan,
+    ontology_json,
+    plan_prompt,
     reading_prompt,
     readings_agree,
     reconfirm_envelope,
     reconfirm_from_payload,
     reconfirm_prompt,
+    vote_plan_from_payload,
 )
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -1336,8 +1340,9 @@ def _run_extract_loop(
 
     # Rows only. The customer submit waits until the second reading agrees,
     # so a split does not ledger a number the envelope does not serve.
+    direct = reading_prompt(question, reading=1)
     first = run_model_loop(
-        question=question,
+        question=direct,
         ctx=ctx,
         payload=payload,
         compute=compute,
@@ -1398,9 +1403,21 @@ def _second_reading(
     space_id: str | None,
     session_id: str | None,
 ) -> dict[str, Any]:
-    """Same ladder, same checker, a prompt whose hash is not the first's."""
-    second_prompt = reading_prompt(question, reading=2)
+    """Plan from the ontology, then SQL from that plan. Same checker."""
+    ctx_plan = dict(ctx)
+    ctx_plan.pop("sql_loop_feedback", None)
+    ctx_plan["sql_vote_prompt"] = plan_prompt(question, ontology_json(ctx))
+    ctx_plan["sql_vote_kind"] = "plan"
+    try:
+        plan_payload = compute(ctx_plan)
+    except Exception:  # noqa: BLE001 - no plan object, the SQL prompt says so
+        plan_payload = None
+    plan = vote_plan_from_payload(plan_payload if isinstance(plan_payload, dict) else None)
+    if plan is None:
+        plan = empty_plan()
+    second_prompt = reading_prompt(question, reading=2, plan=plan)
     ctx2 = dict(ctx)
+    ctx2.pop("sql_loop_feedback", None)
     ctx2["sql_vote_prompt"] = second_prompt
     ctx2["sql_vote_kind"] = "reading"
     try:
@@ -1427,6 +1444,7 @@ def _second_reading(
         attempts=second_attempts,
         no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
         fresh_budget=True,
+        recover_failures=True,
     )
     first_sql = str(first.get("sql_used") or "")
     second_sql = str(second.get("sql_used") or "")
@@ -1622,6 +1640,10 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    if cloop_b_enabled() and not ontology_ranked_lane_enabled():
+        # Direct SQL. The second reading uses a plan, then a different SQL prompt.
+        ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
+        ctx["sql_vote_kind"] = "direct"
     try:
         payload = compute(ctx)
     except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward

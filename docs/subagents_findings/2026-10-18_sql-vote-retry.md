@@ -1,25 +1,25 @@
-# SQL-VOTE: the second reading retries through the same checker
+# SQL-VOTE: the second reading is a plan, then SQL
 
-Keywords: SQL-VOTE, second reading, prompt hash, validate_compiled_sql, reconfirm, equivalent SQL, held-out 348, stub, dms-421
+Keywords: SQL-VOTE, plan-then-solve, prompt substance, pre_run_refusal, explain_fail, empty_rows, validate_compiled_sql, held-out 348, stub, dms-463
 
-Main idea: "The second SQL reading uses the extract loop's error-fed retry and validate_compiled_sql. Equivalent SQL agrees only when the prompt hashes differ. A split is a reconfirm, not a served number. The held-out n=348 split was not run. Not PASS."
+Main idea: "A reading=2 suffix is not a second prompt. Reading 2 writes a plan of tables, joins, measure, and filters, then SQL from that plan. The second reading retries a pre-run refusal, an EXPLAIN failure, and an empty result through validate_compiled_sql. The held-out n=348 split was not run. Not PASS."
 
 ## Base
 
-DMS #421 (`cursor/grant-struct-01`, GRANT-STRUCT-01) is open. This change is branched from that head (`8f5ce7f`), not from main.
+DMS #421 (`cursor/grant-struct-01`, GRANT-STRUCT-01) is open. This change is branched from that head, not from main. PR #463.
 
 ## What the code does
 
-1. A model SQL that runs with rows is a candidate. A second reading asks the same model with `reading=2` prepended, so the prompt hash differs.
-2. The second reading calls `run_model_loop` with `fresh_budget=True`: its own count against `insights_call_cap` and `MAX_SQL_RETRIES`. Every attempt, including a retry, goes through the same `check`, which calls `validate_compiled_sql`.
-3. Agreement is equal result rows from those two prompts. Normalized identical SQL is included. The same prompt is not a second reading.
-4. The customer submit and the ledger wait until the readings agree. A split returns `reconfirm` (`why`, `closest_question`, `reconfirm_yes=yes`) and does not serve the rows.
+1. Reading 1 asks for one SELECT. Reading 2 first asks for a JSON plan from the ontology already on the ask context, then for one SELECT that follows that plan. Agreement requires those instruction templates to differ. A short prefix or suffix does not agree.
+2. The insights body has `model_preference=free+normal` and no temperature or seed field. No second model is configured.
+3. The second reading uses `run_model_loop` with `fresh_budget` and `recover_failures`. A reply with no SQL, a statement refused before execute, an EXPLAIN failure, and an empty result are fed back. The next SQL still goes through `validate_compiled_sql`. Hostile SQL is not pasted into the retry.
+4. The customer submit and the ledger wait until the readings agree. A split returns `reconfirm` and does not serve the rows.
 
 ## Measure
 
-`scripts/score_sql_vote.py --self-check` scores a four-row fixture: correct 2, wrong 1, reconfirm 1, precision 0.667, reconfirm rate 0.250, recovered `q2`, new wrong `q3`, both sign-test p-values 1. That fixture is not the held-out split.
+`scripts/score_sql_vote.py --self-check` scores a four-row movement fixture and a 21-row recovery fixture: 10 `pre_run_refusal`, 7 `explain_fail`, 4 `empty_rows`, each `before_retry=failed` and `after_retry=recovered`. That fixture is not the held-out split.
 
-The held-out BIRD split (n=348) was not run. This environment has no Mini-Dev databases and no model route. No question-level comparison against main. Not PASS.
+`scripts/verify/sql_vote_heldout.py --live` is the n=348 comparison against main. It does not start unless `BIRD_MINIDEV_DIR`, `BIRD_HELD_OUT`, `DMS_API_BASE`, `DMS_API_BASE_MAIN`, `CORTEX_FREEROUTE_LEARN=0`, and an empty `CORTEX_ROUTE_STORE` are set. They are not set here. Not PASS.
 
 ## Not claimed
 

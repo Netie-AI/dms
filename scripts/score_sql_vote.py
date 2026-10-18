@@ -3,9 +3,13 @@
 Each case is one question: ``id``, ``main``, ``new``. A verdict is
 ``correct``, ``wrong``, ``reconfirm``, or ``abstain``.
 
+The 21-case fixture is the three failure types the second reading retries:
+10 pre-run refusals, 7 EXPLAIN failures, 4 empty results. Each row records
+``before_retry=failed`` and ``after_retry=recovered``. That fixture is not
+the held-out split.
+
 The held-out BIRD split (n=348) is not in this repo. With no ``--cases``
-file this script prints STUB and does not score that split. A self-check
-on a four-row fixture is not that split and is not PASS.
+file this script prints STUB and does not score that split. Not PASS.
 """
 
 from __future__ import annotations
@@ -25,6 +29,43 @@ _FIXTURE: list[dict[str, str]] = [
     {"id": "q3", "main": "correct", "new": "wrong"},
     {"id": "q4", "main": "correct", "new": "reconfirm"},
 ]
+
+# The measured miss was 10 + 7 + 4. This stub says the retry recovered each
+# one. It is not a live run of those questions.
+_FAILURE_COUNTS = (
+    ("pre_run_refusal", 10),
+    ("explain_fail", 7),
+    ("empty_rows", 4),
+)
+
+
+def failure_fixture() -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for name, count in _FAILURE_COUNTS:
+        for index in range(1, count + 1):
+            rows.append(
+                {
+                    "id": f"{name}_{index:02d}",
+                    "failure": name,
+                    "before_retry": "failed",
+                    "after_retry": "recovered",
+                    "main": "correct",
+                    "new": "correct",
+                }
+            )
+    return rows
+
+
+def retry_recovery(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    """Ids whose second reading failed and the retry recovered."""
+    counts: dict[str, int] = {}
+    recovered: list[str] = []
+    for case in cases:
+        kind = str(case.get("failure") or "")
+        counts[kind] = counts.get(kind, 0) + 1
+        if case.get("before_retry") == "failed" and case.get("after_retry") == "recovered":
+            recovered.append(str(case.get("id") or ""))
+    return {"counts": counts, "recovered": recovered, "live": False}
 
 
 def sign_p(wins: int, losses: int) -> float:
@@ -121,8 +162,20 @@ def self_check() -> int:
         if report[key] != value:
             print(f"self-check mismatch {key}: {report[key]!r} != {value!r}")
             return 1
+    recovered = retry_recovery(failure_fixture())
+    expect_counts = {name: count for name, count in _FAILURE_COUNTS}
+    if recovered["counts"] != expect_counts or len(recovered["recovered"]) != 21:
+        print(f"self-check mismatch recovery: {recovered!r}")
+        return 1
     _print_report(report, label="STUB self-check")
-    print("STUB: four-row fixture. Not the held-out split. Not PASS.")
+    print(
+        "STUB recovery "
+        f"pre_run_refusal={expect_counts['pre_run_refusal']} "
+        f"explain_fail={expect_counts['explain_fail']} "
+        f"empty_rows={expect_counts['empty_rows']} "
+        f"recovered={len(recovered['recovered'])}"
+    )
+    print("STUB: four-row score plus 21 recovered failures. Not the held-out split. Not PASS.")
     return 0
 
 

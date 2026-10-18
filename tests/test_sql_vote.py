@@ -1,6 +1,6 @@
-"""Second reading: independent prompt, same checker, reconfirm on a split.
+"""Second reading: a different instruction, same checker, reconfirm on a split.
 
-Must fail when the second prompt hashes like the first, when a retry skips
+Must fail when the second prompt is the first plus a suffix, when a retry skips
 ``validate_compiled_sql``, or when the vote module grows a regex or a phrase list.
 """
 
@@ -19,7 +19,9 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
 from dms_executor.ontology import demo_ontology
 from dms_executor.sql_vote import (
+    empty_plan,
     prompt_hash,
+    prompts_differ_in_substance,
     reading_prompt,
     readings_agree,
     sql_equivalent,
@@ -79,10 +81,28 @@ def _ask(tmp_path: Path, question: str, compute) -> dict[str, Any] | None:
     )
 
 
-def test_second_reading_prompt_hash_differs_from_the_first() -> None:
+def test_the_two_prompts_differ_in_instruction_not_by_a_suffix() -> None:
+    """A different hash is not enough. A marker glued on the first prompt fails."""
     from dms_executor import _insights_compute_seam
 
     question = "How many locations are cold storage?"
+    direct = reading_prompt(question, reading=1)
+    planned = reading_prompt(question, reading=2, plan=empty_plan())
+    suffix = "reading=2\n" + direct
+    prefix = direct + "\nreading=2"
+    assert prompts_differ_in_substance(direct, planned)
+    assert prompt_hash(direct) != prompt_hash(suffix)
+    assert not prompts_differ_in_substance(direct, suffix)
+    assert not prompts_differ_in_substance(direct, prefix)
+    assert not readings_agree(
+        prompt_a=direct,
+        prompt_b=suffix,
+        sql_a=_COUNT,
+        sql_b=_COUNT,
+        rows_a=[{"n": 1}],
+        rows_b=[{"n": 1}],
+        dialect="duckdb",
+    )
     seen: list[str] = []
 
     class _Cortex:
@@ -91,18 +111,23 @@ def test_second_reading_prompt_hash_differs_from_the_first() -> None:
             return {}
 
     _insights_compute_seam(
-        _Cortex(), question, session_id=None, space_id=None, ontology={}
+        _Cortex(),
+        question,
+        session_id=None,
+        space_id=None,
+        ontology={"sql_vote_prompt": direct, "sql_vote_kind": "direct"},
     )
     _insights_compute_seam(
         _Cortex(),
         question,
         session_id=None,
         space_id=None,
-        ontology={"sql_vote_prompt": reading_prompt(question, reading=2)},
+        ontology={"sql_vote_prompt": planned, "sql_vote_kind": "reading"},
     )
-    assert seen[0] == reading_prompt(question, reading=1)
-    assert prompt_hash(seen[0]) != prompt_hash(seen[1])
-    assert seen[1] == reading_prompt(question, reading=2)
+    assert seen[0] == direct
+    assert seen[1] == planned
+    assert prompts_differ_in_substance(seen[0], seen[1])
+    assert seen[0].split("\nQuestion:\n", 1)[0] != seen[1].split("\nQuestion:\n", 1)[0]
 
 
 def test_equivalent_sql_and_equal_rows_agree_only_from_independent_prompts() -> None:
@@ -187,8 +212,9 @@ def test_identical_sql_from_the_second_reading_still_serves(
     assert env["badge"] == "L2_VALIDATED"
     assert env["abstained"] is False
     assert env["rows"]
-    assert prompts
-    assert prompt_hash(prompts[0]) != prompt_hash("Which locations are cold storage?")
+    assert len(prompts) >= 2
+    assert prompts_differ_in_substance(prompts[0], prompts[-1])
+    assert not prompts_differ_in_substance(prompts[0], "reading=2\n" + prompts[0])
 
 
 def test_a_retry_still_calls_validate_compiled_sql(
@@ -295,6 +321,68 @@ def test_disagreement_reconfirms_instead_of_serving(
     assert "I cannot certify an ontology-grounded query" not in env["text"]
 
 
+@pytest.mark.parametrize(
+    "failure",
+    ["pre_run_refusal", "explain_fail", "empty_rows"],
+)
+def test_second_reading_retry_recovers_the_failure(
+    failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 21-case types: the retry SQL still goes through the checker."""
+    _loop(monkeypatch)
+    import dms_executor.generative_ask as generative_ask
+
+    checked: list[str] = []
+    real = generative_ask.validate_compiled_sql
+
+    def spy(sql: str, **kwargs: Any) -> str | None:
+        checked.append(sql)
+        return real(sql, **kwargs)
+
+    monkeypatch.setattr(generative_ask, "validate_compiled_sql", spy)
+    reasons: list[str] = []
+    empty_sql = "SELECT location_code FROM locations WHERE location_code = 'NO_SUCH'"
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        kind = ctx.get("sql_vote_kind")
+        if kind == "plan":
+            return {
+                "vote_plan": {
+                    "tables": ["locations"],
+                    "joins": [],
+                    "measure": "location_code",
+                    "filters": ["is_cold_storage"],
+                }
+            }
+        if kind != "reading":
+            return _names(query_sql=_COLD)
+        feedback = ctx.get("sql_loop_feedback")
+        if isinstance(feedback, dict):
+            reasons.append(str(feedback.get("reason") or ""))
+            return _names(query_sql=_COLD)
+        if failure == "pre_run_refusal":
+            return _names()
+        if failure == "explain_fail":
+            return _names(query_sql="SELECT nope FROM locations")
+        return _names(query_sql=empty_sql)
+
+    env = _ask(tmp_path, "Which locations are cold storage?", compute)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["badge"] == "L2_VALIDATED"
+    assert env["abstained"] is False
+    assert env["rows"]
+    assert _COLD in checked
+    assert reasons
+    if failure == "pre_run_refusal":
+        assert reasons[0].startswith("pre_run_refusal:")
+    elif failure == "explain_fail":
+        assert reasons[0].startswith("checker:")
+        assert "explain:" in reasons[0]
+    else:
+        assert reasons[0].startswith("empty_result_unverified:")
+
+
 def test_paired_score_self_check_is_not_the_held_out_split() -> None:
     spec = importlib.util.spec_from_file_location(
         "score_sql_vote", ROOT / "scripts" / "score_sql_vote.py"
@@ -308,5 +396,22 @@ def test_paired_score_self_check_is_not_the_held_out_split() -> None:
     assert report["correct"] == 2 and report["wrong"] == 1
     assert report["recovered"] == ["q2"]
     assert report["new_wrongs"] == ["q3"]
+    recovered = module.retry_recovery(module.failure_fixture())
+    assert recovered["counts"] == {
+        "pre_run_refusal": 10,
+        "explain_fail": 7,
+        "empty_rows": 4,
+    }
+    assert len(recovered["recovered"]) == 21
+    assert recovered["live"] is False
     stub = module.main([])
     assert stub == 0
+    harness_spec = importlib.util.spec_from_file_location(
+        "sql_vote_heldout", ROOT / "scripts" / "verify" / "sql_vote_heldout.py"
+    )
+    assert harness_spec and harness_spec.loader
+    harness = importlib.util.module_from_spec(harness_spec)
+    harness_spec.loader.exec_module(harness)
+    assert harness.self_check() == 0
+    assert harness.live_blockers({})
+    assert harness.main(["--live"]) == 2

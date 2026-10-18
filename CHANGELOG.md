@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-18 - SQL-VOTE: plan-then-solve, not a reading=2 suffix
+
+- **Framing.** Reading 1 asks for one SELECT. Reading 2 asks for a JSON plan of tables, joins, measure, and filters from the ontology, then for SQL that follows that plan. A short suffix is not a second instruction. The insights body still sends `model_preference=free+normal` and has no temperature or seed, so no second model is set.
+- **Retry.** The second reading feeds back a pre-run refusal, an EXPLAIN failure, and an empty result. The next SQL still goes through `validate_compiled_sql`. Hostile SQL is not fed back.
+- **Stub.** `scripts/score_sql_vote.py --self-check` covers 10 pre-run refusals, 7 EXPLAIN failures, and 4 empty results, all marked recovered. That is not the held-out split.
+- **Harness.** `scripts/verify/sql_vote_heldout.py --live` compares n=348 against main when the Mini-Dev DBs and the route env vars are set. They are not set here. Not PASS.
+
 ## 2026-10-18 - SQL-VOTE: second reading retries, equivalent SQL can agree
 
 - **Base.** DMS #421 is open. This change sits on `cursor/grant-struct-01`, not on main.
