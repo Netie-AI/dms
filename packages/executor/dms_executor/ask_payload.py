@@ -6,7 +6,14 @@ payload from what the Space may read. It reads the serving catalog (names,
 types, keys), every distinct value of each candidate column (up to a cap) to
 classify it, and the ontology, and returns a plain dict shaped as
 ``AskPayload``, or None.
-Nothing here puts it on the wire; the ask site decides that.
+``serving`` must be the file Cortex samples (``CORTEX_WAREHOUSE_DB`` or
+``DMS_ORACLE_WAREHOUSE``). Classifying a different file misses the values
+Cortex reads.
+Nothing here puts it on the wire. Before WIRE-01c attaches it: open only
+that file and build nothing when it cannot be opened; grade the 52 with the
+payload on first (on a real lake few columns remain, and that cost is
+unmeasured); give the per-column DISTINCT a time budget; assert the DMS
+envelope through ``assert_envelope_valid``.
 
 - Tables: only names the signed grant lists (``readable``, the manifest's
   ``row_predicates`` keys) that the serving catalog holds, compared with
@@ -32,7 +39,9 @@ Nothing here puts it on the wire; the ask site decides that.
     column, or the tag).
 
   Then the column's distinct non-null values over the whole table are read,
-  as Cortex samples them, and none may be classified as personal data. A
+  as Cortex samples them, and none may be classified as personal data. An
+  integer is also classified with a leading zero and, when shorter, at 12
+  digits: CAST drops those, and that is the MyKad and local-phone form. A
   tagged text column also passes the value-hint probe. A column with more
   than ``INDEX_COLUMN_CAP`` distinct values is left out whole, as the value
   index omits it: Cortex may sample any of them, and DMS has not classified
@@ -226,6 +235,37 @@ def physical_table(relation: str) -> str | None:
     return found.table if found is not None else None
 
 
+def _integer_type(type_name: str) -> bool:
+    """True when the type cannot store a leading zero.
+
+    A whole-number type ends in ``int`` or ``serial``, starts with ``uint``,
+    or is ``int`` plus digits (``int4``). ``interval`` is none of these.
+    """
+    raw = str(type_name or "").lower().split("(", 1)[0].strip()
+    token = raw.split()[0] if raw else ""
+    if token.endswith("int") or token.endswith("serial") or token.startswith("uint"):
+        return True
+    return token == "int" or (token.startswith("int") and token[3:].isdigit())
+
+
+def _forms_to_classify(values: Sequence[str], type_name: str) -> list[str]:
+    """The strings ``classify_column`` sees.
+
+    For an integer, also the one-zero and 12-digit forms. Those are the MyKad
+    and local-phone spellings the CAST drops. The classifier is unchanged.
+    """
+    forms = list(values)
+    if not _integer_type(type_name):
+        return forms
+    for value in values:
+        if not value.isdigit():
+            continue
+        forms.append("0" + value)
+        if len(value) < 12:
+            forms.append(value.zfill(12))
+    return forms
+
+
 def _column_cleared(
     table: str,
     column: str,
@@ -233,6 +273,7 @@ def _column_cleared(
     values: Sequence[str] | None,
     *,
     tagged: bool,
+    type_name: str,
 ) -> bool:
     """True only when this column is positively cleared to leave DMS with its values.
 
@@ -243,7 +284,7 @@ def _column_cleared(
             return classify_column(column, (), table=table) is None
         if values is None or not _name_cleared(table, column, family, tagged=tagged):
             return False
-        if classify_column(column, list(values), table=table) is not None:
+        if classify_column(column, _forms_to_classify(values, type_name), table=table) is not None:
             return False
         if family == "text":
             return not any(_cleared_value_blocked(value) for value in values)
@@ -385,7 +426,10 @@ def build_dms_payload(
     readable: Iterable[str],
     ontology: Ontology | None = None,
 ) -> dict[str, Any] | None:
-    """``AskPayload`` for this question, or None when no readable table survives."""
+    """``AskPayload`` for this question, or None when no readable table survives.
+
+    ``serving`` must be the file Cortex samples.
+    """
     try:
         return _build(question, serving=serving, readable=readable, ontology=ontology)
     except Exception as exc:  # noqa: BLE001 - the ask must not fail on its payload
@@ -445,6 +489,7 @@ def _build(
                     family,
                     values.get(str(col["name"])),
                     tagged=(name, str(col["name"])) in tags,
+                    type_name=str(col.get("type") or ""),
                 )
             ]
             if not kept:

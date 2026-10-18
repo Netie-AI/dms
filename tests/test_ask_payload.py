@@ -9,7 +9,6 @@ from typing import Any
 import duckdb
 import httpx
 import pytest
-from cortex_contract.answer import AskPayload
 from dms_core.pii import classify_column
 from dms_executor.ask_payload import (
     MAX_PAYLOAD_BYTES,
@@ -71,6 +70,25 @@ def verified(lake: Path) -> Ontology:
     return _tag(onto, *_DEMO_KEYS)
 
 
+def _accepts(payload: dict[str, Any]) -> Any:
+    """The payload is an AskPayload the vendored client can send.
+
+    ``cortex_contract.answer.AskPayload`` exists from 1.5.0. The pin floor is
+    1.2.0, where that import fails at collection, so it is not imported here.
+    When this install has it, that check runs too.
+    """
+    from cortex_client.generated.models.ask_payload import AskPayload as ClientAsk
+
+    model = ClientAsk.from_dict(payload)
+    assert model.to_dict() == payload
+    try:
+        from cortex_contract.answer import AskPayload as ContractAsk
+    except ImportError:
+        return model
+    ContractAsk.model_validate(payload)
+    return model
+
+
 def _names(payload: dict[str, Any]) -> set[str]:
     return {t["name"] for t in payload["tables"]}
 
@@ -87,7 +105,7 @@ def test_tables_are_exactly_the_readable_tables_the_lake_holds(lake: Path) -> No
     payload = build_dms_payload("stock by site", serving=lake, readable=readable)
     assert payload is not None
     assert _names(payload) == {"inventory", "locations", "orders"}
-    AskPayload.model_validate(payload)
+    _accepts(payload)
 
 
 def test_a_table_outside_the_grant_never_appears(lake: Path) -> None:
@@ -136,7 +154,7 @@ def test_verified_many_to_one_links_between_physical_tables_become_joins(
         "stock value by site", serving=lake, readable=readable, ontology=verified
     )
     assert payload is not None
-    AskPayload.model_validate(payload)
+    _accepts(payload)
     joins = {
         (j["left_table"], j["left_column"], j["right_table"], j["right_column"])
         for j in payload["joins"]
@@ -251,7 +269,7 @@ def test_a_composite_key_gives_one_join_row_per_key_pair(lake: Path) -> None:
         "q", serving=lake, readable={"lot_counts", "inventory"}, ontology=onto
     )
     assert payload is not None
-    AskPayload.model_validate(payload)
+    _accepts(payload)
     assert [(j["left_column"], j["right_column"]) for j in payload["joins"]] == [
         ("sku", "sku"),
         ("location_id", "location_id"),
@@ -316,7 +334,7 @@ def test_demo_lake_payload_validates_against_the_contract(lake: Path, verified: 
         "anything", serving=lake, readable=set(DEMO_TABLES), ontology=verified
     )
     assert payload is not None
-    model = AskPayload.model_validate(payload)
+    model = _accepts(payload)
     assert {t.name for t in model.tables} == set(DEMO_TABLES)
 
 
@@ -365,12 +383,27 @@ def _cortex_sample(db: Path, table: str, column: str) -> list[str]:
     return [str(v) for (v,) in rows]
 
 
+def _sent_type_is_integer(type_name: object) -> bool:
+    """Independent of the builder's type set, so emptying that set stays red."""
+    token = str(type_name or "").lower().split("(", 1)[0].strip().split(" ")[0]
+    return token.endswith("int") or token.endswith("serial") or token.startswith("uint")
+
+
 def _assert_cortex_samples_nothing_personal(db: Path, payload: dict[str, Any]) -> None:
     for table in payload["tables"]:
         for column in table["columns"]:
+            integer = _sent_type_is_integer(column.get("type"))
             for value in _cortex_sample(db, table["name"], column["name"]):
-                found = classify_column(column["name"], [value], table=table["name"])
-                assert found is None, (table["name"], column["name"], value, found)
+                forms = [value]
+                # An integer sample lost any leading zero. The padded spellings
+                # are what a MyKad or a local phone looks like.
+                if integer and value.isdigit():
+                    forms.append("0" + value)
+                    if len(value) < 12:
+                        forms.append(value.zfill(12))
+                for form in forms:
+                    found = classify_column(column["name"], [form], table=table["name"])
+                    assert found is None, (table["name"], column["name"], value, form, found)
 
 
 def test_person_columns_under_neutral_names_never_leave_dms(tmp_path: Path) -> None:
@@ -395,7 +428,7 @@ def test_person_columns_under_neutral_names_never_leave_dms(tmp_path: Path) -> N
     )
     payload = build_dms_payload("orders by status", serving=db, readable={"orders"})
     assert payload is not None
-    AskPayload.model_validate(payload)
+    _accepts(payload)
     # status is untagged text too, so it stays home with the people.
     assert _cols(payload, "orders") == ["order_id", "total_myr"]
     assert not _all_cols(payload) & set(_NEUTRAL_PERSON_COLUMNS)
@@ -581,7 +614,7 @@ def test_an_enum_type_never_carries_its_labels(tmp_path: Path) -> None:
     onto = _tag(Ontology(), ("claims", "status"), ("claims", "kind_type"))
     payload = build_dms_payload("claims", serving=db, readable={"claims"}, ontology=onto)
     assert payload is not None
-    AskPayload.model_validate(payload)
+    _accepts(payload)
     types = {c["name"]: c["type"] for c in payload["tables"][0]["columns"]}
     assert types["status"] == "ENUM"
     assert types["kind_type"] == "ENUM"
@@ -616,7 +649,7 @@ def test_the_payload_never_passes_the_byte_cap(tmp_path: Path) -> None:
     readable = {f"ledger_{t:02d}" for t in range(MAX_TABLES + 6)} | {"freight_invoices"}
     payload = build_dms_payload("freight invoices this month", serving=db, readable=readable)
     assert payload is not None
-    AskPayload.model_validate(payload)
+    _accepts(payload)
     assert len(json.dumps(payload).encode()) <= MAX_PAYLOAD_BYTES
     # Over the cap the least similar tables go first.
     assert payload["tables"][0]["name"] == "freight_invoices"
@@ -627,7 +660,7 @@ def test_one_table_wider_than_the_cap_keeps_its_leading_columns(tmp_path: Path) 
     db = _lake_with(tmp_path, f"CREATE TABLE huge (huge_id INTEGER, {cols})")
     payload = build_dms_payload("huge", serving=db, readable={"huge"})
     assert payload is not None
-    AskPayload.model_validate(payload)
+    _accepts(payload)
     assert len(json.dumps(payload).encode()) <= MAX_PAYLOAD_BYTES
     names = _cols(payload, "huge")
     assert names[0] == "huge_id" and 1 < len(names) < 61
@@ -711,11 +744,41 @@ def test_a_renamed_key_is_never_joined_on_its_base_table(lake: Path) -> None:
     onto.links["txn_of_lot"] = LinkType(
         "txn_of_lot", "transaction", ("sku",), "lot", ("sku",), "many_to_one"
     )
+    # sku is text. Untagged, it never enters the payload, and the membership
+    # check drops the join before the rename guard runs.
+    _tag(onto, ("transactions", "sku"), ("inventory", "sku"))
     payload = build_dms_payload(
         "q", serving=lake, readable={"transactions", "inventory"}, ontology=onto
     )
     assert payload is not None
+    assert "sku" in _cols(payload, "transactions")
+    assert "sku" in _cols(payload, "inventory")
     assert "joins" not in payload
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        (123456789, 1123456789),
+        (10203145678, 50607085432),
+    ],
+)
+def test_an_integer_that_lost_its_leading_zero_stays_home(
+    tmp_path: Path, values: tuple[int, int]
+) -> None:
+    # member_id is a cleared name. Stored as BIGINT, 012/011 mobiles and
+    # MyKad years 2001 and 2005 lose the leading 0, and the classifier misses
+    # the shortened form. The zero-padded form is classified, so the column
+    # stays home. points_count has no such value and is sent.
+    db = _lake_with(
+        tmp_path,
+        "CREATE TABLE loyalty (member_id BIGINT, points_count INTEGER)",
+        f"INSERT INTO loyalty VALUES ({values[0]}, 4), ({values[1]}, 9)",
+    )
+    payload = build_dms_payload("loyalty points", serving=db, readable={"loyalty"})
+    assert payload is not None
+    assert _cols(payload, "loyalty") == ["points_count"]
+    _assert_cortex_samples_nothing_personal(db, payload)
 
 
 def test_grant_names_fold_ascii_only(tmp_path: Path) -> None:
@@ -801,7 +864,7 @@ def test_the_payload_on_the_wire_carries_no_person_column_and_the_answer_is_serv
     body = json.loads(raw)
     sent = body["dms_payload"]
     assert sent == payload
-    AskPayload.model_validate(sent)
+    _accepts(sent)
     assert len(json.dumps(sent).encode()) <= MAX_PAYLOAD_BYTES
     text = raw.decode()
     for leaked in (
