@@ -517,18 +517,26 @@ def run_model_loop(
     empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
     attempts: list[dict[str, Any]],
     no_retry_reasons: frozenset[str] = frozenset(),
+    fresh_budget: bool = False,
 ) -> dict[str, Any]:
     """Checker, read-only run, feedback retry.
 
     An empty result does not retry. It abstains until VALUE-EXISTS-01
     switches ``empty_result_reason``. Hostile, multi-statement, file-read,
     and ungranted SQL abstain on the first call.
+
+    ``fresh_budget`` starts this reading at one call against the same
+    ``insights_call_cap`` and ``MAX_SQL_RETRIES``. The second reading uses
+    it so the first reading's calls do not eat the retry.
     """
     cap = insights_call_cap()
     retries = 0
-    used = recorded_model_calls()
-    if used <= 0:
+    if fresh_budget:
         used = 1
+    else:
+        used = recorded_model_calls()
+        if used <= 0:
+            used = 1
     current = payload if isinstance(payload, dict) else None
     reason: str | None = None
     prev_sql: str | None = None

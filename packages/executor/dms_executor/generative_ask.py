@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from cortex_client.compute import (
     PLAN_ORIGIN_GENERATE_SQL,
@@ -113,6 +113,15 @@ from dms_executor.sql_loop import (
     apply_sql_credit,
     loop_entry,
     run_model_loop,
+    run_readonly,
+)
+from dms_executor.sql_vote import (
+    disagreement_detail,
+    reading_prompt,
+    readings_agree,
+    reconfirm_envelope,
+    reconfirm_from_payload,
+    reconfirm_prompt,
 )
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -1325,7 +1334,9 @@ def _run_extract_loop(
             PLAN_ORIGIN_GENERATE_SQL,
         )
 
-    return run_model_loop(
+    # Rows only. The customer submit waits until the second reading agrees,
+    # so a split does not ledger a number the envelope does not serve.
+    first = run_model_loop(
         question=question,
         ctx=ctx,
         payload=payload,
@@ -1334,11 +1345,129 @@ def _run_extract_loop(
         dialect=dialect,
         model_sql=model_sql,
         check=check,
-        submit_sql=submit_sql,
+        submit_sql=lambda sql, _attempts: _vote_rows(sql, warehouse),
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=attempts,
         no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+    )
+    if first.get("abstained") or not first.get("rows"):
+        return first
+    return _second_reading(
+        first,
+        question=question,
+        ctx=ctx,
+        compute=compute,
+        warehouse=warehouse,
+        dialect=dialect,
+        model_sql=model_sql,
+        check=check,
+        abstain=abstain,
+        empty_answer=empty_answer,
+        publish=submit_sql,
+        attempts=attempts,
+        space_id=space_id,
+        session_id=session_id,
+    )
+
+
+def _vote_rows(sql: str, warehouse: Path | None) -> dict[str, Any]:
+    """Rows for the comparison. The customer submit happens after agreement."""
+    if warehouse is None or not Path(warehouse).is_file():
+        return {"abstained": True, "rows": [], "sql_used": sql}
+    rows, err = run_readonly(sql, Path(warehouse))
+    if err or not rows:
+        return {"abstained": True, "rows": [], "sql_used": sql}
+    return {"abstained": False, "rows": rows, "sql_used": sql}
+
+
+def _second_reading(
+    first: dict[str, Any],
+    *,
+    question: str,
+    ctx: dict[str, Any],
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    dialect: str,
+    model_sql: Callable[[dict[str, Any] | None], str | None],
+    check: Callable[[str], str | None],
+    abstain: Callable[..., dict[str, Any]],
+    empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    publish: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Same ladder, same checker, a prompt whose hash is not the first's."""
+    second_prompt = reading_prompt(question, reading=2)
+    ctx2 = dict(ctx)
+    ctx2["sql_vote_prompt"] = second_prompt
+    ctx2["sql_vote_kind"] = "reading"
+    try:
+        payload = compute(ctx2)
+    except Exception:  # noqa: BLE001 - a missed second reading reconfirms
+        payload = None
+    second_attempts: list[dict[str, Any]] = []
+
+    def vote_submit(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        return _vote_rows(sql, warehouse)
+
+    second = run_model_loop(
+        question=second_prompt,
+        ctx=ctx2,
+        payload=payload if isinstance(payload, dict) else None,
+        compute=compute,
+        warehouse=warehouse,
+        dialect=dialect,
+        model_sql=model_sql,
+        check=check,
+        submit_sql=vote_submit,
+        abstain=abstain,
+        empty_answer=empty_answer,
+        attempts=second_attempts,
+        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+        fresh_budget=True,
+    )
+    first_sql = str(first.get("sql_used") or "")
+    second_sql = str(second.get("sql_used") or "")
+    raw_first = first.get("rows")
+    raw_second = second.get("rows")
+    first_rows = cast(list[dict[str, Any]], raw_first if isinstance(raw_first, list) else [])
+    second_rows = cast(list[dict[str, Any]], raw_second if isinstance(raw_second, list) else [])
+    if readings_agree(
+        prompt_a=reading_prompt(question, reading=1),
+        prompt_b=second_prompt,
+        sql_a=first_sql,
+        sql_b=second_sql,
+        rows_a=first_rows,
+        rows_b=second_rows,
+        dialect=dialect,
+    ):
+        published = publish(first_sql, attempts)
+        if published.get("abstained"):
+            for item in reversed(attempts):
+                if item.get("outcome") == "served":
+                    item["outcome"] = disagreement_detail(published.get("assumptions"))
+                    break
+        return published
+    detail = disagreement_detail(second.get("assumptions") if second.get("abstained") else None)
+    why, closest = detail, ""
+    ctx3 = dict(ctx)
+    ctx3["sql_vote_prompt"] = reconfirm_prompt(question, detail)
+    ctx3["sql_vote_kind"] = "reconfirm"
+    try:
+        rec = compute(ctx3)
+    except Exception:  # noqa: BLE001 - the offer still names the disagreement
+        rec = None
+    parsed = reconfirm_from_payload(rec if isinstance(rec, dict) else None)
+    if parsed:
+        why, closest = parsed
+    return reconfirm_envelope(
+        question=question,
+        why=why,
+        closest_question=closest,
+        space_id=space_id,
+        session_id=session_id,
     )
 
 

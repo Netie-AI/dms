@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-18 - SQL-VOTE: second reading retries, equivalent SQL can agree
+
+- **Base.** DMS #421 is open. This change sits on `cursor/grant-struct-01`, not on main.
+- **Second reading.** A served model SQL is not the answer until a second reading, with a different prompt hash, returns the same rows. That reading uses the extract loop's retry budget (`MAX_SQL_RETRIES`, `insights_call_cap`) and `validate_compiled_sql`. A retry does not skip the checker.
+- **Agreement.** Normalized identical SQL plus equal rows counts, when the prompts differ. The same prompt does not count.
+- **Split.** Disagreement is a reconfirm: why, closest question, and Yes. It does not serve the number and it does not ledger it.
+- **Measure.** Held-out n=348 was not run here. No BIRD databases and no model route. `scripts/score_sql_vote.py --self-check` is a four-row stub. Not PASS.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.

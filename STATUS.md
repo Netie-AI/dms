@@ -35,6 +35,7 @@ GitHub issues are the source of truth. This table holds links only.
 
 | Item | Issue |
 |------|-------|
+| SQL-VOTE second reading | On open #421 (`cursor/grant-struct-01`), not main. Held-out n=348 not run. Not PASS. |
 | **This tick** | **STUDIO-RESULT-01** (#365) renders the ask envelope in Studio. UI only. No payload (#364), no mint (#362), no prove pin. Nothing PASS. Prove owner stays vault / OV mint 401. |
 | PROVE-SUBMIT-01 - live BLOCKED, vault / OV mint 401 | [#359](https://github.com/Netie-AI/dms/issues/359), [#362](https://github.com/Netie-AI/dms/issues/362), [#363](https://github.com/Netie-AI/dms/pull/363) |
 | ORACLE-FIX-01 | [#301](https://github.com/Netie-AI/dms/issues/301) |

@@ -175,7 +175,7 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     assert_envelope_valid(env)
     assert env["badge"] == "L2_VALIDATED"
     assert env["rows"]
-    assert len(seen) == 2
+    assert len(seen) == 3
     reason = str((seen[1] or {}).get("reason") or "")
     assert reason.startswith("db_error:")
     assert "boom" in reason
@@ -226,7 +226,7 @@ def test_syntax_error_retry_gets_the_error_and_the_repair_is_served(
     assert_envelope_valid(env)
     assert env["badge"] == "L2_VALIDATED"
     assert env["rows"]
-    assert len(seen) == 2
+    assert len(seen) == 3
     assert "ParserException" in str((seen[1] or {}).get("reason") or "")
     assert env["loop"][1]["outcome"] == "served"
 
@@ -247,7 +247,7 @@ def test_checker_flag_retry_gets_the_reason(
     env = _ask(tmp_path, "Which locations are cold storage?", compute)
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
-    assert len(seen) == 2
+    assert len(seen) == 3
     reason = str((seen[1] or {}).get("reason") or "")
     assert reason.startswith("checker:")
     assert "nope" in reason
@@ -325,7 +325,7 @@ def test_submit_abstain_is_not_logged_as_served(
             dialect=SERVING_DIALECT,
         )
     )
-    assert calls["n"] == 1
+    assert calls["n"] == 2
     assert env["loop"][0]["sql"] == _COLD_SQL
     assert env["loop"][0]["outcome"] == "submit_failed"
     assert env["loop"][0]["outcome"] != "served"
