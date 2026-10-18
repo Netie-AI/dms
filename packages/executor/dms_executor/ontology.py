@@ -395,17 +395,22 @@ def relation_tables(relation: str) -> frozenset[str]:
     return frozenset({bare} if bare else ())
 
 
-def table_is_granted(table: str, grantable: set[str]) -> bool:
-    """True when the Space grant names the table or a Cortex warehouse_ alias."""
-    t = _bare_table(table)
-    if not t:
-        return False
-    allowed = {_bare_table(x) for x in grantable}
-    return t in allowed or f"warehouse_{t}" in allowed
+def ungranted_tables(
+    tables: set[str], grantable: set[str], *, dialect: str | None
+) -> tuple[str, ...]:
+    """Tables ``relation_gap`` does not grant.
 
+    The dialect is the caller's. A missing dialect grants nothing.
+    """
+    from dms_executor.grant_struct import relation_gap
 
-def ungranted_tables(tables: set[str], grantable: set[str]) -> tuple[str, ...]:
-    return tuple(sorted(t for t in tables if t and not table_is_granted(t, grantable)))
+    blocked: list[str] = []
+    for table in tables:
+        if not table:
+            continue
+        if relation_gap(str(table), grantable=set(grantable), dialect=dialect):
+            blocked.append(str(table))
+    return tuple(sorted(set(blocked)))
 
 
 def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
@@ -415,15 +420,21 @@ def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
     ``validate:ungranted:shipments`` without naming ``missing_join`` / plant.
     """
     head = str(why or "").strip()
-    if not head.startswith("ungranted:"):
+    named_table = head.startswith("ungranted:") and head not in {
+        "ungranted:file",
+        "ungranted:unparsed",
+    }
+    if head != "ungranted" and not named_table:
         return None
     named = [g for g in grains if g in SUPPLY_CHAIN_GRAINS]
     focus = [g for g in named if g != "sku"] or list(named)
     label = ", ".join(focus) if focus else "join"
-    tables = head.split(":", 1)[-1]
+    # The grant code is bare ``ungranted``. A legacy ``ungranted:<table>``
+    # still names the table. The customer sentence does not have to.
+    detail = f" (ungranted {head.split(':', 1)[-1]})" if named_table else ""
     return (
-        f"missing_join: no granted join path for grain {label} "
-        f"(ungranted {tables}). Declare the link on a granted table, "
+        f"missing_join: no granted join path for grain {label}{detail}. "
+        "Declare the link on a granted table, "
         "or ask for a measure defined at that grain."
     )
 
@@ -1284,6 +1295,8 @@ class Ontology:
         ranked: Sequence[WherePath],
         grain: str,
         grantable: set[str] | None,
+        *,
+        dialect: str | None = None,
     ) -> list[WherePath]:
         pool = [p for p in ranked if p.grain == grain]
         if grantable is None:
@@ -1291,7 +1304,9 @@ class Ontology:
         return [
             p
             for p in pool
-            if not ungranted_tables(set(self.steps_tables(p.steps)), grantable)
+            if not ungranted_tables(
+                set(self.steps_tables(p.steps)), grantable, dialect=dialect
+            )
         ]
 
     def _ranked_where_paths_for(
@@ -1604,6 +1619,7 @@ class Ontology:
         order_desc: bool = True,
         limit: int | None = None,
         grantable: set[str] | None = None,
+        dialect: str | None = None,
     ) -> CompiledQuery | Refusal:
         """Locate + rank supply-chain grains, then compile. Not bind_plan.
 
@@ -1667,11 +1683,18 @@ class Ontology:
             m.grain, [(g, obj) for g, obj, _c in specs], via=via
         )
         if grantable is not None:
+            from dms_executor.grant_struct import sqlglot_dialect
+
+            if sqlglot_dialect(dialect) is None:
+                return Refusal(
+                    "sql_dialect_unknown",
+                    "the connection did not name a SQL dialect",
+                )
             grant_miss: list[str] = []
             for grain, obj, _c in specs:
                 if obj == m.grain:
                     blocked = ungranted_tables(
-                        set(self.object_tables(obj)), grantable
+                        set(self.object_tables(obj)), grantable, dialect=dialect
                     )
                     if blocked:
                         grant_miss.append(
@@ -1679,7 +1702,9 @@ class Ontology:
                             f"{', '.join(blocked)})"
                         )
                     continue
-                if self.granted_where_paths(ranked, grain, grantable):
+                if self.granted_where_paths(
+                    ranked, grain, grantable, dialect=dialect
+                ):
                     continue
                 cited = set(self.object_tables(m.grain)) | set(
                     self.object_tables(obj)
@@ -1687,7 +1712,7 @@ class Ontology:
                 for path in ranked:
                     if path.grain == grain:
                         cited |= set(self.steps_tables(path.steps))
-                blocked = ungranted_tables(cited, grantable)
+                blocked = ungranted_tables(cited, grantable, dialect=dialect)
                 extra = f" (ungranted {', '.join(blocked)})" if blocked else ""
                 grant_miss.append(
                     f"join {m.grain}->{obj} for grain {grain}{extra}"
@@ -1700,7 +1725,9 @@ class Ontology:
                     "measure defined at that grain.",
                 )
         for grain, obj, _c in specs:
-            pool = self.granted_where_paths(ranked, grain, grantable)
+            pool = self.granted_where_paths(
+                ranked, grain, grantable, dialect=dialect
+            )
             best = min((p.importance for p in pool), default=None)
             tops = [p for p in pool if p.importance == best] if best is not None else []
             hopsets = {p.hops for p in tops}
@@ -1756,6 +1783,7 @@ def try_compile_multi_grain(
     *,
     via: dict[str, str] | None = None,
     grantable: set[str] | None = None,
+    dialect: str | None = None,
 ) -> CompiledQuery | Refusal | None:
     """≥2 named supply-chain grains → compile_grains. Else None (not bind_plan).
 
@@ -1765,7 +1793,9 @@ def try_compile_multi_grain(
     grains = detect_supply_chain_grains(question)
     if onto is None or not onto.verified or len(grains) < 2:
         return None
-    return onto.compile_grains(measure, grains, via=via, grantable=grantable)
+    return onto.compile_grains(
+        measure, grains, via=via, grantable=grantable, dialect=dialect
+    )
 
 
 def _render(op: str, value: Any) -> str:

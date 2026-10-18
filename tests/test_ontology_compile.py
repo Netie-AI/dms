@@ -287,6 +287,7 @@ def _ask(
         ),
         ontology=onto,
         bind_on_miss=bind_on_miss,
+        dialect="duckdb",
     )
     assert env is not None
     env["_submits"] = submits
@@ -329,6 +330,7 @@ def test_ask_multi_join_is_ontology_plan_not_bind_plan(tmp_path: Path) -> None:
         ),
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -362,6 +364,7 @@ def test_ask_missing_join_abstains_naming_day(tmp_path: Path) -> None:
         ledger_append=lambda _b: (_ for _ in ()).throw(AssertionError("must not append")),
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -389,6 +392,7 @@ def test_ask_missing_metric_abstains_naming_metric(tmp_path: Path) -> None:
         ledger_append=lambda _b: (_ for _ in ()).throw(AssertionError("must not append")),
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -511,6 +515,9 @@ def test_relation_tables_bare_and_subquery() -> None:
     gap = missing_join_for_ungranted("ungranted:shipments", ("sku", "plant")) or ""
     assert "missing_join" in gap and "plant" in gap
     assert not gap.startswith("validate:")
+    bare = missing_join_for_ungranted("ungranted", ("sku", "plant")) or ""
+    assert "missing_join" in bare and "plant" in bare
+    assert "shipments" not in bare
     assert missing_join_for_ungranted("explain:BinderException", ("sku", "plant")) is None
 
 
@@ -527,7 +534,8 @@ def test_compile_finance_shipping_sku_plant_names_missing_join_plant(
 ) -> None:
     _db, onto = _demo_onto(tmp_path)
     got = onto.compile_grains(
-        "shipping_cost_myr", ["sku", "plant"], grantable=FINANCE_GRANT
+        "shipping_cost_myr", ["sku", "plant"], grantable=FINANCE_GRANT,
+        dialect="duckdb",
     )
     assert isinstance(got, Refusal)
     assert got.reason == "missing_join"
@@ -540,7 +548,8 @@ def test_compile_finance_shipping_sku_plant_names_missing_join_plant(
 def test_compile_ops_shipping_sku_plant_is_granted_path(tmp_path: Path) -> None:
     _db, onto = _demo_onto(tmp_path)
     got = onto.compile_grains(
-        "shipping_cost_myr", ["sku", "plant"], grantable=OPS_GRANT
+        "shipping_cost_myr", ["sku", "plant"], grantable=OPS_GRANT,
+        dialect="duckdb",
     )
     assert isinstance(got, CompiledQuery)
     assert {p.grain for p in got.where_paths} == {"sku", "plant"}
@@ -549,7 +558,8 @@ def test_compile_ops_shipping_sku_plant_is_granted_path(tmp_path: Path) -> None:
     assert "sku" in sql
 
 
-def test_compile_warehouse_alias_counts_as_granted_plant_path(tmp_path: Path) -> None:
+def test_compile_prefixed_names_are_not_the_plant_path(tmp_path: Path) -> None:
+    """A prefixed grant is a different relation. The plant path stays ungranted."""
     _db, onto = _demo_onto(tmp_path)
     got = onto.compile_grains(
         "shipping_cost_myr",
@@ -559,16 +569,18 @@ def test_compile_warehouse_alias_counts_as_granted_plant_path(tmp_path: Path) ->
             "warehouse_inventory",
             "warehouse_locations",
         },
+        dialect="duckdb",
     )
-    assert isinstance(got, CompiledQuery)
-    assert {p.grain for p in got.where_paths} >= {"sku", "plant"}
+    assert isinstance(got, Refusal)
+    assert got.reason == "missing_join"
 
 
 def test_compile_finance_stock_sku_plant_is_granted_path(tmp_path: Path) -> None:
     """Finance can group stock_value by SKU+plant through inventory+locations."""
     _db, onto = _demo_onto(tmp_path)
     got = onto.compile_grains(
-        "stock_value_myr", ["sku", "plant"], grantable=FINANCE_GRANT
+        "stock_value_myr", ["sku", "plant"], grantable=FINANCE_GRANT,
+        dialect="duckdb",
     )
     assert isinstance(got, CompiledQuery)
     assert {p.grain for p in got.where_paths} == {"sku", "plant"}
@@ -616,6 +628,7 @@ def _demo_ask(
         ),
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     env["_submits"] = submits

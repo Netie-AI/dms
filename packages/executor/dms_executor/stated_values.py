@@ -51,7 +51,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from dms_executor.bronze import quote_ident
-from dms_executor.demo_warehouse import DEMO_TABLES, connect_serving
+from dms_executor.demo_warehouse import DEMO_TABLES, SERVING_DIALECT, connect_serving
 
 _MAX_WORDS = 64
 _MAX_TABLES = 256
@@ -340,7 +340,7 @@ def _joined_to(
 def _literals(nodes: list[exp.Expression]) -> list[str] | None:
     if not nodes or not all(isinstance(n, exp.Literal) for n in nodes):
         return None
-    return [n.sql(dialect="duckdb") for n in nodes]
+    return [n.sql(dialect=SERVING_DIALECT) for n in nodes]
 
 
 def _filter_shape(conj: exp.Expression, polarity: str) -> tuple[exp.Expression, list[str]] | None:
@@ -529,7 +529,7 @@ def dropped_stated_value_reason(
     if warehouse is None or not Path(warehouse).is_file():
         return None
     try:
-        roots = [r for r in sqlglot.parse(sql, read="duckdb") if r is not None]
+        roots = [r for r in sqlglot.parse(sql, read=SERVING_DIALECT) if r is not None]
         scopes = [s for r in roots for s in traverse_scope(r)]
     except Exception:  # noqa: BLE001 - SQL we cannot analyse proves nothing about its filters
         return qualifier_reason(KIND_NAMED_FILTER, "unparsed")

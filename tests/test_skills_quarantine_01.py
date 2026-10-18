@@ -44,7 +44,7 @@ SPACE = "space-quarantine-01"
 KEEPER = "ordinary steward item"
 SCORED_Q = "synthetic scored item"
 SAME_WORDING = "shared wording synthetic"
-SQL = "SELECT 1"
+SQL = "SELECT 1 AS n FROM inventory"
 BASE_SQL = "SELECT a AS b FROM t WHERE a > 1 ORDER BY b LIMIT 2"
 LISTED = "ab" * 32
 OTHER = "cd" * 32
@@ -86,7 +86,8 @@ def _store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Keeper row plus a row whose pack hash is listed in the env."""
     monkeypatch.setenv("DMS_SCORED_PACK_HASHES", LISTED)
     path = tmp_path / "store.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path)
+    _grant_inventory(monkeypatch, path)
+    register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path, dialect="duckdb")
     _insert(path, asset_id="vq_scored", question=SCORED_Q, pack_hash=LISTED)
     return path
 
@@ -99,6 +100,31 @@ def _clear_hash_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "DMS_SCORED_RESULT_HASHES",
     ):
         monkeypatch.delenv(name, raising=False)
+
+
+def _grant_names(monkeypatch: pytest.MonkeyPatch, *tables: str) -> None:
+    """The allow-list only serves a table the Space grant names."""
+    import dms_executor.verified_queries as vq
+
+    extra = set(tables)
+    real = vq._grantable
+
+    def _wrapped(space_id: str | None, warehouse: Path | None) -> set[str]:
+        return set(real(space_id, warehouse)) | extra
+
+    monkeypatch.setattr(vq, "_grantable", _wrapped)
+
+
+def _grant_inventory(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """A constant select is ungranted. The keeper reads a granted table."""
+    import duckdb
+
+    _grant_names(monkeypatch, "inventory")
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS inventory (n INTEGER)")
+    finally:
+        con.close()
 
 
 class _Submit:
@@ -179,8 +205,8 @@ def test_lookup_verified_query_excludes_listed_pack(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _store(tmp_path, monkeypatch)
-    assert lookup_verified_query(SCORED_Q, space_id=SPACE, warehouse=path) is None
-    hit = lookup_verified_query(KEEPER, space_id=SPACE, warehouse=path)
+    assert lookup_verified_query(SCORED_Q, space_id=SPACE, warehouse=path, dialect="duckdb") is None
+    hit = lookup_verified_query(KEEPER, space_id=SPACE, warehouse=path, dialect="duckdb")
     assert hit is not None
     assert hit["sql"] == SQL
 
@@ -196,6 +222,7 @@ def test_maybe_verified_ask_excludes_listed_pack(
         warehouse=path,
         submit=submit,
         ledger_append=_Ledger(),
+        dialect="duckdb",
     )
     assert missed is None
     assert submit.calls == []
@@ -205,6 +232,7 @@ def test_maybe_verified_ask_excludes_listed_pack(
         warehouse=path,
         submit=submit,
         ledger_append=_Ledger(),
+        dialect="duckdb",
     )
     assert env is not None
     assert env["abstained"] is False
@@ -219,10 +247,12 @@ def test_reworded_question_same_sql_is_excluded(
 ) -> None:
     """Must-pass: different question text, same SQL, is excluded."""
     _clear_hash_env(monkeypatch)
+    _grant_names(monkeypatch, "t_kept")
     scored_sql = "SELECT a FROM t_scored"
     monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(scored_sql))
     path = tmp_path / "reword.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT a FROM t_kept", path=path)
+    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT a FROM t_kept", path=path,
+        dialect="duckdb")
     _insert(
         path,
         asset_id="vq_reword",
@@ -233,7 +263,8 @@ def test_reworded_question_same_sql_is_excluded(
     questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
     assert questions == {KEEPER}
     assert lookup_verified_query(
-        "reworded copy of a scored item", space_id=SPACE, warehouse=path
+        "reworded copy of a scored item", space_id=SPACE, warehouse=path,
+        dialect="duckdb",
     ) is None
 
 
@@ -277,7 +308,11 @@ def test_equivalent_sql_same_rows_excluded_by_result_hash(
     assert [row["question"] for row in in_memory] == [KEEPER]
 
     path = tmp_path / "result.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n", path=path)
+    _grant_inventory(monkeypatch, path)
+    register_verified_query(
+        space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n FROM inventory", path=path,
+        dialect="duckdb",
+    )
     _insert(
         path,
         asset_id="vq_equiv",
@@ -287,7 +322,8 @@ def test_equivalent_sql_same_rows_excluded_by_result_hash(
     )
     questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
     assert questions == {KEEPER}
-    assert lookup_verified_query("stored equivalent sql", space_id=SPACE, warehouse=path) is None
+    assert lookup_verified_query("stored equivalent sql", space_id=SPACE, warehouse=path,
+        dialect="duckdb") is None
 
 
 def test_different_result_is_not_excluded(
@@ -302,7 +338,11 @@ def test_different_result_is_not_excluded(
     assert [row["question"] for row in kept] == [KEEPER]
 
     path = tmp_path / "other-result.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 2 AS n", path=path)
+    _grant_inventory(monkeypatch, path)
+    register_verified_query(
+        space_id=SPACE, question=KEEPER, sql="SELECT 2 AS n FROM inventory", path=path,
+        dialect="duckdb",
+    )
     questions = {row["question"] for row in list_verified_queries(space_id=SPACE, path=path)}
     assert questions == {KEEPER}
 
@@ -311,6 +351,7 @@ def test_every_reader_returns_no_scored_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _clear_hash_env(monkeypatch)
+    _grant_names(monkeypatch, "t_normal")
     scored = [(f"scored question {i}", f"SELECT {i} AS n FROM t_scored") for i in range(3)]
     normal = [(f"normal question {i}", f"SELECT {i} AS n FROM t_normal") for i in range(2)]
     monkeypatch.setenv(
@@ -319,7 +360,8 @@ def test_every_reader_returns_no_scored_rows(
     )
     path = tmp_path / "many.duckdb"
     for question, sql in normal:
-        register_verified_query(space_id=SPACE, question=question, sql=sql, path=path)
+        register_verified_query(space_id=SPACE, question=question, sql=sql, path=path,
+            dialect="duckdb")
     for index, (question, sql) in enumerate(scored):
         _insert(path, asset_id=f"vq_scored_{index}", question=question, pack_hash=None, sql=sql)
 
@@ -327,7 +369,8 @@ def test_every_reader_returns_no_scored_rows(
     assert {row["question"] for row in listed} == {question for question, _ in normal}
     submit = _Submit()
     for question, _sql in scored:
-        assert lookup_verified_query(question, space_id=SPACE, warehouse=path) is None
+        assert lookup_verified_query(question, space_id=SPACE, warehouse=path,
+            dialect="duckdb") is None
         assert (
             maybe_verified_ask(
                 question,
@@ -335,12 +378,13 @@ def test_every_reader_returns_no_scored_rows(
                 warehouse=path,
                 submit=submit,
                 ledger_append=_Ledger(),
+                dialect="duckdb",
             )
             is None
         )
     assert submit.calls == []
     for question, sql in normal:
-        hit = lookup_verified_query(question, space_id=SPACE, warehouse=path)
+        hit = lookup_verified_query(question, space_id=SPACE, warehouse=path, dialect="duckdb")
         assert hit is not None
         assert hit["sql"] == sql
         env = maybe_verified_ask(
@@ -349,6 +393,7 @@ def test_every_reader_returns_no_scored_rows(
             warehouse=path,
             submit=submit,
             ledger_append=_Ledger(),
+            dialect="duckdb",
         )
         assert env is not None
         assert env["abstained"] is False
@@ -361,7 +406,8 @@ def test_scored_pack_write_blocked(
     path = tmp_path / "write.duckdb"
     _clear_hash_env(monkeypatch)
     monkeypatch.setenv("DMS_SCORED_PACK_HASHES", LISTED)
-    register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path)
+    _grant_inventory(monkeypatch, path)
+    register_verified_query(space_id=SPACE, question=KEEPER, sql=SQL, path=path, dialect="duckdb")
     _insert(path, asset_id="vq_old", question=SCORED_Q, pack_hash=LISTED)
     with caplog.at_level("WARNING"):
         with pytest.raises(ValueError, match=WRITE_BLOCKED):
@@ -371,6 +417,7 @@ def test_scored_pack_write_blocked(
                 sql=SQL,
                 pack_hash=LISTED,
                 path=path,
+                dialect="duckdb",
             )
     assert WRITE_BLOCKED in caplog.text
     assert SCORED_Q not in caplog.text
@@ -386,9 +433,14 @@ def test_scored_pack_write_blocked(
     monkeypatch.delenv("DMS_SCORED_PACK_HASHES", raising=False)
     monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(SQL))
     with pytest.raises(ValueError, match=WRITE_BLOCKED):
-        register_verified_query(space_id=SPACE, question=SCORED_Q, sql=SQL, path=path)
+        register_verified_query(space_id=SPACE, question=SCORED_Q, sql=SQL, path=path,
+            dialect="duckdb")
     kept = register_verified_query(
-        space_id=SPACE, question="second steward item", sql="SELECT 3 AS n", path=path
+        space_id=SPACE,
+        question="second steward item",
+        sql="SELECT 3 AS n FROM inventory",
+        path=path,
+        dialect="duckdb",
     )
     assert kept["question"] == "second steward item"
 
@@ -517,7 +569,11 @@ def test_uncomputable_result_hash_excludes_row(
     _clear_hash_env(monkeypatch)
     monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 1}]))
     path = tmp_path / "bad.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n", path=path)
+    _grant_inventory(monkeypatch, path)
+    register_verified_query(
+        space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n FROM inventory", path=path,
+        dialect="duckdb",
+    )
     bad_sql = "SELECT * FROM t_missing_quarantine"
     _insert(path, asset_id="vq_bad", question="bad sql", pack_hash=None, sql=bad_sql)
     with caplog.at_level("WARNING"):
@@ -534,7 +590,11 @@ def test_result_hash_timeout_excludes_row(
     _clear_hash_env(monkeypatch)
     monkeypatch.setenv("DMS_SCORED_RESULT_HASHES", item_result_hash([{"n": 1}]))
     path = tmp_path / "slow.duckdb"
-    register_verified_query(space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n", path=path)
+    _grant_inventory(monkeypatch, path)
+    register_verified_query(
+        space_id=SPACE, question=KEEPER, sql="SELECT 0 AS n FROM inventory", path=path,
+        dialect="duckdb",
+    )
     _insert(
         path,
         asset_id="vq_slow",
@@ -712,11 +772,13 @@ def test_invalid_config_write_stores_nothing(
         monkeypatch.setenv(env_name, raw)
     with caplog.at_level("WARNING"):
         with pytest.raises(ValueError, match=CONFIG_STAMP):
+            _grant_inventory(monkeypatch, path)
             register_verified_query(
                 space_id=SPACE,
                 question=KEEPER,
-                sql="SELECT 4 AS n",
+                sql="SELECT 4 AS n FROM inventory",
                 path=path,
+                dialect="duckdb",
             )
     assert CONFIG_STAMP in caplog.text
     assert KEEPER not in caplog.text
@@ -729,16 +791,19 @@ def test_valid_config_still_stores_unlisted_sql(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _clear_hash_env(monkeypatch)
-    listed = "SELECT 9 AS n"
+    listed = "SELECT 9 AS n FROM inventory"
     monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(listed))
     path = tmp_path / "valid.duckdb"
+    _grant_inventory(monkeypatch, path)
     kept = register_verified_query(
-        space_id=SPACE, question=KEEPER, sql="SELECT 8 AS n", path=path
+        space_id=SPACE, question=KEEPER, sql="SELECT 8 AS n FROM inventory", path=path,
+        dialect="duckdb",
     )
-    assert kept["sql"] == "SELECT 8 AS n"
+    assert kept["sql"] == "SELECT 8 AS n FROM inventory"
     with pytest.raises(ValueError, match=WRITE_BLOCKED):
         register_verified_query(
-            space_id=SPACE, question=SCORED_Q, sql=listed, path=path
+            space_id=SPACE, question=SCORED_Q, sql=listed, path=path,
+            dialect="duckdb",
         )
     stored = list_verified_queries(space_id=SPACE, path=path)
     assert [row["question"] for row in stored] == [KEEPER]
@@ -755,6 +820,7 @@ def test_studio_post_refuses_invalid_config(
     _clear_hash_env(monkeypatch)
     monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", "not-a-hash")
     warehouse = tmp_path / "studio.duckdb"
+    _grant_inventory(monkeypatch, warehouse)
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
 
     def allow(*, action: str, actor: str | None = None, **_: Any) -> ComplianceDecision:
@@ -764,7 +830,11 @@ def test_studio_post_refuses_invalid_config(
     client = TestClient(create_app())
     response = client.post(
         "/v1/studio/verified-queries",
-        json={"space_id": SPACE, "question": KEEPER, "sql": "SELECT 4 AS n"},
+        json={
+            "space_id": SPACE,
+            "question": KEEPER,
+            "sql": "SELECT 4 AS n FROM inventory",
+        },
     )
     assert response.status_code == 400
     assert response.status_code not in {200, 500, 503}

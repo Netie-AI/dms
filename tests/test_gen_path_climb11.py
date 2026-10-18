@@ -135,6 +135,7 @@ def _env(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
 
 
