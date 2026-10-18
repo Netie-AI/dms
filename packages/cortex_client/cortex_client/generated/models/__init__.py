@@ -1,8 +1,14 @@
 """ Contains all the data models used in inputs/outputs """
 
 from .answer import Answer
+from .answer_model_calls_type_0 import AnswerModelCallsType0
 from .answer_rows_type_0_item import AnswerRowsType0Item
+from .ask_payload import AskPayload
+from .ask_payload_column import AskPayloadColumn
+from .ask_payload_join import AskPayloadJoin
+from .ask_payload_table import AskPayloadTable
 from .ask_request import AskRequest
+from .ask_request_plan_sql_confirm_type_0 import AskRequestPlanSqlConfirmType0
 from .badge import Badge
 from .chain_verification import ChainVerification
 from .contributing_source import ContributingSource
@@ -17,6 +23,8 @@ from .ledger_entry_payload import LedgerEntryPayload
 from .ledger_verify_request import LedgerVerifyRequest
 from .manifest import Manifest
 from .manifest_row_predicates import ManifestRowPredicates
+from .memory_read import MemoryRead
+from .plan_sql_reconfirm import PlanSqlReconfirm
 from .pool_spec import PoolSpec
 from .provenance import Provenance
 from .query_result import QueryResult
@@ -31,8 +39,14 @@ from .validation_error_context import ValidationErrorContext
 
 __all__ = (
     "Answer",
+    "AnswerModelCallsType0",
     "AnswerRowsType0Item",
+    "AskPayload",
+    "AskPayloadColumn",
+    "AskPayloadJoin",
+    "AskPayloadTable",
     "AskRequest",
+    "AskRequestPlanSqlConfirmType0",
     "Badge",
     "ChainVerification",
     "ContributingSource",
@@ -47,6 +61,8 @@ __all__ = (
     "LedgerVerifyRequest",
     "Manifest",
     "ManifestRowPredicates",
+    "MemoryRead",
+    "PlanSqlReconfirm",
     "PoolSpec",
     "Provenance",
     "QueryResult",
