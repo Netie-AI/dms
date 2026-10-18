@@ -828,6 +828,105 @@ def _cited_names(sql: str) -> set[str]:
     return out
 
 
+def _parsed_relations(con: Any, sql: str) -> tuple[set[tuple[str, str, str]], set[str]]:
+    """The tables and table functions DuckDB's own parser says ``sql`` reads.
+
+    sqlglot and DuckDB can split the same text differently: in ``e'\\'--'``
+    DuckDB reads an escaped quote and sqlglot ends the string, so a ``--``
+    hides from the syntax tree a tail that DuckDB runs. A statistics answer
+    in that tail scans nothing, and ``query_table`` is replaced by its table
+    before planning, so the plan check cannot see them either. This reads
+    DuckDB's parse tree, which binds nothing: an unqualified name inside the
+    WITH that defines it is that CTE, every other name is a table
+    ``(catalog, schema, name)``. A tree this cannot read raises.
+    """
+    import json
+
+    tree = json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0])
+    if not isinstance(tree, dict) or tree.get("error") is not False:
+        raise ValueError("DuckDB could not serialize the statement")
+    tables: set[tuple[str, str, str]] = set()
+    functions: set[str] = set()
+    stack: list[tuple[Any, frozenset[str]]] = [(tree.get("statements"), frozenset())]
+    while stack:
+        node, scope = stack.pop()
+        if isinstance(node, list):
+            stack.extend((item, scope) for item in node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        kind = node.get("type")
+        if kind in ("BASE_TABLE", "SHOW_REF"):
+            catalog, schema, name = (
+                str(node.get(k) or "") for k in ("catalog_name", "schema_name", "table_name")
+            )
+            if kind == "BASE_TABLE" and not name:
+                raise ValueError("a table reference without a name")
+            cte = not catalog and not schema and name.translate(_ASCII_FOLD) in scope
+            if name and (kind == "SHOW_REF" or not cte):
+                tables.add((catalog, schema, name))
+        elif kind == "TABLE_FUNCTION":
+            call = node.get("function")
+            if not isinstance(call, dict) or not call.get("function_name"):
+                raise ValueError("a table function without a name")
+            parts = (call.get("catalog"), call.get("schema"), call.get("function_name"))
+            functions.add(".".join(str(p).translate(_ASCII_FOLD) for p in parts if p))
+        cte_map = node.get("cte_map")
+        entries = cte_map.get("map") if isinstance(cte_map, dict) else None
+        if cte_map is not None and not isinstance(entries, list):
+            raise ValueError("a WITH this cannot read")
+        # A CTE sees the ones defined before it; the query sees them all.
+        for entry in entries or []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("key"), str):
+                raise ValueError("a WITH this cannot read")
+            stack.append((entry.get("value"), scope))
+            scope = scope | {entry["key"].translate(_ASCII_FOLD)}
+        for key, value in node.items():
+            if kind == "RECURSIVE_CTE_NODE" and key == "right":
+                # Only the recursive side sees the CTE; its anchor reads the table.
+                stack.append((value, scope | {str(node.get("cte_name")).translate(_ASCII_FOLD)}))
+            elif key != "cte_map":
+                stack.append((value, scope))
+    return tables, functions
+
+
+def _engine_tables(con: Any, sql: str, grantable: set[str]) -> tuple[str | None, set[str]]:
+    """Grant-check every relation DuckDB's own parser says ``sql`` reads.
+
+    Each table is granted as the syntax tree's names are: a lake table
+    (main or Cortex's ``warehouse``) by its name or warehouse_ alias,
+    another schema's table by ``schema.name``, another catalog's never.
+    A table function must be a pure generator, as in the plan check.
+    Returns the refusal, if any, and the table names spelled as
+    ``_cited_names`` spells them.
+    """
+    tables, functions = _parsed_relations(con, sql)
+    if functions - {g.lower() for g in _PLAN_GENERATORS}:
+        return "hostile_sql:file_reader", set()
+    folded = {str(g).strip().translate(_ASCII_FOLD) for g in grantable}
+    current = str(con.execute("SELECT current_database()").fetchone()[0]).translate(_ASCII_FOLD)
+    missing: list[list[str]] = []
+    cited: set[str] = set()
+    for ref in tables:
+        catalog, schema, name = (part.translate(_ASCII_FOLD) for part in ref)
+        if catalog and catalog != current:
+            missing.append([catalog, schema, name])
+            continue
+        cited.add(name if schema in {"", "main"} else f"{schema}.{name}")
+        if schema in {"", "main", "warehouse"}:
+            bare = name[len("warehouse_") :] if name.startswith("warehouse_") else name
+            if not {name, bare, f"warehouse_{bare}", f"main.{name}"} & folded:
+                missing.append([name])
+        elif f"{schema}.{name}" not in folded:
+            missing.append([schema, name])
+    if any(_PATH_CHARS.search(part) for parts in missing for part in parts):
+        # A quoted path or URL used as a table name. Say the code, not the path.
+        return "hostile_sql:path_not_allowed", cited
+    if missing:
+        return f"ungranted:{','.join(sorted('.'.join(parts) for parts in missing))}", cited
+    return None, cited
+
+
 def _plan_scan_reason(
     plan_json: str, con: Any, grantable: set[str], cited: set[str] | None = None
 ) -> str | None:
@@ -955,10 +1054,17 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
+        try:
+            engine_why, engine_cited = _engine_tables(con, sql, grantable)
+        except Exception:  # noqa: BLE001 - a name this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
+        if engine_why:
+            return engine_why
         plan = con.execute(f"EXPLAIN (FORMAT JSON) {sql}").fetchall()
         try:
             # The tables the engine reads, checked against the grant.
-            scanned = _plan_scan_reason(str(plan[0][1]), con, grantable, _cited_names(sql))
+            cited = _cited_names(sql) | engine_cited
+            scanned = _plan_scan_reason(str(plan[0][1]), con, grantable, cited)
         except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
             return "hostile_sql:sql_not_analyzable"
         if scanned:

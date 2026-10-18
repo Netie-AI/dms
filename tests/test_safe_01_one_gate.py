@@ -685,7 +685,9 @@ def _minter(monkeypatch: pytest.MonkeyPatch) -> Any:
     return m
 
 
-def _ask(minter: Any, cortex: _PlantedSqlCortex, session: str) -> dict[str, Any]:
+def _ask(
+    minter: Any, cortex: _PlantedSqlCortex, session: str, space_id: str | None = None
+) -> dict[str, Any]:
     from dms_api.app import create_app
     from dms_api.settings import Settings, get_settings
     from dms_executor import Executor
@@ -702,7 +704,10 @@ def _ask(minter: Any, cortex: _PlantedSqlCortex, session: str) -> dict[str, Any]
         dms_demo_fallback=False,
     )
     app.dependency_overrides[get_settings] = lambda: settings
-    r = TestClient(app).post("/v1/chat/ask", json={"question": _QUESTION, "session_id": session})
+    body = {"question": _QUESTION, "session_id": session}
+    if space_id:
+        body["space_id"] = space_id
+    r = TestClient(app).post("/v1/chat/ask", json=body)
     assert r.status_code == 200, r.text
     env = r.json()
     assert_envelope_valid(env)
@@ -1094,3 +1099,122 @@ _OUTSIDE_MARKS = {
 def test_a_format_character_outside_an_agreed_literal_is_refused(lake: Path, name: str) -> None:
     why = validate_compiled_sql(_OUTSIDE_MARKS[name], grantable={"inventory"}, warehouse=lake)
     assert why == "hostile_sql:sql_not_analyzable", (name, why)
+
+
+# --- Round 9: a table only DuckDB's parser sees ---
+#
+# In e'\'--' DuckDB reads an escaped quote and sqlglot ends the string, so
+# the -- hides the rest from the syntax tree. A statistics answer there
+# scans nothing, so the plan names no table either.
+
+_TOKENIZER_SPLITS = {
+    "e_string_count": (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR 1 = (SELECT COUNT(*) FROM alerts)"
+    ),
+    "upper_e_string_max": (
+        "SELECT sku FROM inventory WHERE category = E'\\'--' "
+        "OR 1 = (SELECT MAX(alert_id) FROM alerts)"
+    ),
+    "e_string_limit_zero": (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR EXISTS (SELECT * FROM alerts LIMIT 0)"
+    ),
+}
+
+
+#: A table read only DuckDB's parser sees, through a relation other than a name.
+_HIDDEN_READERS = {
+    "query_table": "SELECT COUNT(*) FROM query_table('alerts')",
+    "query": "SELECT COUNT(*) FROM query('SELECT * FROM alerts')",
+    "describe": "SELECT COUNT(*) FROM (DESCRIBE alerts)",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_HIDDEN_READERS))
+def test_a_reader_only_duckdb_parses_is_refused(lake: Path, name: str) -> None:
+    sql = (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        f"OR 1 = ({_HIDDEN_READERS[name]})"
+    )
+    why = _why(sql, lake)
+    assert why in {"hostile_sql:file_reader", "ungranted:alerts"}, (name, why)
+
+
+def test_a_cte_shadows_a_table_only_inside_its_own_with(lake: Path) -> None:
+    """The first COUNT reads the table alerts; the WITH below names its own."""
+    sql = (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR 1 = (SELECT COUNT(*) FROM alerts) "
+        "OR 2 = (WITH alerts AS (SELECT 1 AS n) SELECT COUNT(*) FROM alerts)"
+    )
+    assert _why(sql, lake) == "ungranted:alerts"
+    # A recursive CTE's anchor reads the table of that name; only its
+    # recursive side reads the CTE.
+    anchored = (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' OR 1 = ("
+        "WITH RECURSIVE alerts AS (SELECT COUNT(*) AS n FROM alerts "
+        "UNION ALL SELECT n FROM alerts WHERE false) SELECT MAX(n) FROM alerts)"
+    )
+    assert _why(anchored, lake) == "ungranted:alerts"
+    chained = (
+        "WITH a AS (SELECT sku FROM inventory), b AS (SELECT sku FROM a) "
+        "SELECT COUNT(*) AS n FROM b WHERE sku <> e'\\'--'"
+    )
+    assert _why(chained, lake) is None
+
+
+@pytest.mark.parametrize("name", sorted(_TOKENIZER_SPLITS))
+def test_a_table_only_duckdb_parses_is_grant_checked(lake: Path, name: str) -> None:
+    sql = _TOKENIZER_SPLITS[name]
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=lake) == (
+        "ungranted:alerts"
+    ), name
+    granted = validate_compiled_sql(sql, grantable={"inventory", "alerts"}, warehouse=lake)
+    assert granted is None or not granted.startswith("ungranted"), (name, granted)
+
+
+def test_an_upload_only_duckdb_parses_needs_its_own_grant(tmp_path: Path) -> None:
+    db = _stats_lake(tmp_path)
+    sql = (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR 1 = (SELECT COUNT(*) FROM bronze.inventory)"
+    )
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=db) == (
+        "ungranted:bronze.inventory"
+    )
+    granted = validate_compiled_sql(sql, grantable={"inventory", "bronze.inventory"}, warehouse=db)
+    assert granted is None or not granted.startswith("ungranted"), granted
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT i.sku FROM inventory AS i JOIN suppliers s ON s.supplier_id = i.supplier_id",
+        'SELECT "I".sku FROM main.inventory "I"',
+        "SELECT COUNT(*) AS n FROM inventory i WHERE i.category = e'RAW'",
+    ],
+)
+def test_aliased_tables_duckdb_names_are_still_granted(lake: Path, sql: str) -> None:
+    """DuckDB prints a reference with its alias (``inventory AS i``)."""
+    assert _why(sql, lake) is None, sql
+
+
+def test_a_table_only_duckdb_parses_abstains_through_the_ask_route(_minter: Any) -> None:
+    sql = _TOKENIZER_SPLITS["e_string_count"]
+    cortex = _PlantedSqlCortex(sql=sql)
+    # Finance does not grant alerts.
+    env = _ask(_minter, cortex, "ses_safe01_estring", "cccccccc-cccc-cccc-cccc-cccccccccccc")
+    assert cortex.query_submits() == []
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert "alerts" not in env["text"]
+
+
+def test_a_path_only_duckdb_parses_is_refused_by_code(lake: Path) -> None:
+    sql = (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR 1 = (SELECT COUNT(*) FROM '/etc/passwd')"
+    )
+    assert _why(sql, lake) == "hostile_sql:path_not_allowed"
