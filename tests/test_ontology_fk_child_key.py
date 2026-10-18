@@ -213,6 +213,7 @@ def _ask(tmp_path: Path, line_fk: str, line_key: str = "line_id") -> dict[str, A
         submit=_submitter(lake),
         ledger_append=lambda _p: SimpleNamespace(entry_id="led_a203", hash="h"),
         ontology=_ontology(line_fk, line_key),
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)

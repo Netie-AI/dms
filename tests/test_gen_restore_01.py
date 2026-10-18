@@ -154,6 +154,7 @@ def _ask(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=bind_on_miss,
+        dialect="duckdb",
     )
 
 

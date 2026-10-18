@@ -425,6 +425,7 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
         maybe_pack_ask(
             "How many SKUs do we have in inventory?",
             grantable={"inventory"},
+            dialect="duckdb",
         )
         is None
     )

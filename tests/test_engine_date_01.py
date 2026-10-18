@@ -754,6 +754,7 @@ def test_followup_sql_reserved_as_of_abstains(tmp_path: Path) -> None:
         question="average of them",
         why="follow-up sql",
         text="should not run",
+        dialect="duckdb",
     )
     assert_envelope_valid(env)
     assert env["abstain_reason"] == RESERVED_PARAM_AS_OF
@@ -783,11 +784,15 @@ def test_executor_literal_and_comment_as_of_unchanged(
 
     bound = _bound_as_of(monkeypatch)
     exe = Executor(warehouse_path=tmp_path / "lit.duckdb")
-    literal = exe.answer_user_sql("SELECT '$as_of' AS x", session_id="ses_lit")
+    literal = exe.answer_user_sql(
+        "SELECT '$as_of' AS x FROM inventory LIMIT 1", session_id="ses_lit"
+    )
     assert literal["rows"] == [{"x": "$as_of"}]
     assert literal.get("abstain_reason") != "reserved_param:as_of"
     assert "$as_of" in str(literal.get("sql_used"))
-    commented = exe.answer_user_sql("SELECT 1 AS n -- $as_of", session_id="ses_c")
+    commented = exe.answer_user_sql(
+        "SELECT 1 AS n FROM inventory LIMIT 1 -- $as_of", session_id="ses_c"
+    )
     assert commented["rows"] == [{"n": 1}]
     assert commented.get("abstain_reason") != "reserved_param:as_of"
     assert bound == []
@@ -802,24 +807,28 @@ def test_followup_literal_and_comment_as_of_unchanged(
     bound = _bound_as_of(monkeypatch)
     db = ensure_demo_warehouse(tmp_path / "follow_lit.duckdb")
     literal = run_followup_sql(
-        "SELECT '$as_of' AS x",
+        "SELECT '$as_of' AS x FROM inventory LIMIT 1",
         warehouse=db,
         space_id=None,
         session_id="ses_lit",
         question="average of them",
         why="literal",
         text="literal stays",
+        grantable={"inventory"},
+        dialect="duckdb",
     )
     assert literal["rows"] == [{"x": "$as_of"}]
     assert literal.get("abstain_reason") != "reserved_param:as_of"
     commented = run_followup_sql(
-        "SELECT 1 AS n -- $as_of",
+        "SELECT 1 AS n FROM inventory LIMIT 1 -- $as_of",
         warehouse=db,
         space_id=None,
         session_id="ses_c",
         question="average of them",
         why="comment",
         text="comment stays",
+        grantable={"inventory"},
+        dialect="duckdb",
     )
     assert commented["rows"] == [{"n": 1}]
     assert commented.get("abstain_reason") != "reserved_param:as_of"

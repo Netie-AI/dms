@@ -424,20 +424,23 @@ def test_grade52_stub_exec_main() -> None:
     assert report["correct"] == 43
     assert report["wrong"] == 0
     assert report["abstain"] == 0
-    assert report["refusal_ok"] == 6
-    assert report["refusal_wrong"] == 2
+    # GRANT-STRUCT-01 (#421): trap_alerts_ungranted and trap_high_risk_pending
+    # served L0 ``SELECT 1``-style rows on main. A statement with no granted
+    # base table is now refused, so both are REFUSAL_OK. No correct answer moved.
+    assert report["refusal_ok"] == 8
+    assert report["refusal_wrong"] == 0
     assert report["empty_gold"] == 0
     assert report["gold_broken"] == 1
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
     line = summary_line(report)
     assert line.endswith(
-        "52: correct=43 wrong=0 abstain=0 refusal_ok=6 refusal_wrong=2 "
+        "52: correct=43 wrong=0 abstain=0 refusal_ok=8 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=stub-exec"
     )
     assert "not a score" not in line
     assert paths_line(path_counts(report["cases"])) == (
         "paths correct ai=0 rule=43 L1=23 compile=20 unattributed=0 "
-        "served ai=0 rule=45 L0=2 L1=23 compile=20 unattributed=0 "
+        "served ai=0 rule=43 L1=23 compile=20 unattributed=0 "
         "stamp_contradiction=0"
     )
     without = report["without_pack_gold_served"]
@@ -447,8 +450,8 @@ def test_grade52_stub_exec_main() -> None:
     assert without["correct"] == 36
     assert without["wrong"] == 0
     assert without["abstain"] == 0
-    assert without["refusal_ok"] == 6
-    assert without["refusal_wrong"] == 2
+    assert without["refusal_ok"] == 8
+    assert without["refusal_wrong"] == 0
     assert without["gold_broken"] == 1
 
 
