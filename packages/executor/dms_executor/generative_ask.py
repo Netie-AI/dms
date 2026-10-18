@@ -106,11 +106,11 @@ from dms_executor.sql_loop import (
     EMPTY_NOTE,
     EXTRACT_DIALECT,
     apply_sql_credit,
-    cited_columns,
     extract_dialect,
     loop_entry,
     run_model_loop,
     typed_db_error,
+    written_names,
 )
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -723,11 +723,11 @@ def _refusal_before_explain(con: Any, sql: str) -> str | None:
 
 
 def _explain_error_code(sql: str, warehouse: Path | None) -> str | None:
-    """Typed code for an EXPLAIN error: ``Class`` or ``Class:column``.
+    """Typed code for an EXPLAIN error: ``Class`` or ``Class:name``.
 
     Never the DuckDB message. A binder error prints an ENUM column's member
     list, and a PIVOT binds on its column's distinct values, so the message
-    can carry cell values. The column, when named, is one the SQL wrote.
+    can carry cell values. A name, when given, is one the SQL wrote.
     """
     if warehouse is None or not Path(warehouse).is_file():
         return None
@@ -735,7 +735,7 @@ def _explain_error_code(sql: str, warehouse: Path | None) -> str | None:
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
-        return typed_db_error(exc, cited_columns(con, sql))
+        return typed_db_error(exc, written_names(con, sql))
     finally:
         con.close()
     return None

@@ -298,12 +298,13 @@ def test_run_readonly_returns_a_typed_code_not_the_message(lake: Path) -> None:
     assert rows and rows[0]["supplier_id"] == "SUP-01"
 
 
-def test_run_readonly_does_not_name_a_column_outside_the_cited_tables(lake: Path) -> None:
-    # sku lives on inventory. A message that mentions it must not name it when
-    # the statement cites only suppliers.
+def test_run_readonly_names_the_sql_reference_not_the_candidate_list(lake: Path) -> None:
+    # sku lives on inventory, not suppliers. The code names the reference the
+    # SQL wrote, so the retry hears which name was wrong. The binder candidate
+    # list (the suppliers columns) is message text, and none of it is named.
     rows, err = run_readonly("SELECT sku FROM suppliers", lake)
     assert rows is None
-    assert err == "BinderException"
+    assert err == "BinderException:sku"
 
 
 def test_a_missing_file_error_does_not_echo_the_path(tmp_path: Path) -> None:
@@ -468,23 +469,27 @@ def test_a_value_that_spells_a_column_the_sql_did_not_write_is_not_named(lake: P
     assert err == "ConversionException:contact_name"
 
 
-def test_cited_columns_are_written_by_the_sql_on_the_tables_it_cites(lake: Path) -> None:
-    from dms_executor.sql_loop import cited_columns
+def test_written_names_are_only_names_the_sql_wrote(lake: Path) -> None:
+    from dms_executor.sql_loop import written_names
 
     _add_column(lake, "contact_name", "VARCHAR", "Tan Wei Ming")
     con = duckdb.connect(str(lake), read_only=True)
     try:
-        got = cited_columns(con, "SELECT CAST(contact_name AS INTEGER) FROM suppliers")
+        got = written_names(con, "SELECT CAST(contact_name AS INTEGER) FROM suppliers")
         assert got == ["contact_name"]
-        assert cited_columns(con, "SELECT country FROM main.suppliers") == ["country"]
-        # Another schema of the same table name is not this table.
-        assert cited_columns(con, "SELECT country FROM other.suppliers") == []
-        # A CTE named like a table is not that table.
-        assert cited_columns(
-            con, "WITH suppliers AS (SELECT 1 AS country) SELECT country FROM suppliers"
-        ) == []
+        # A column of a cited table comes back in schema spelling.
+        assert written_names(con, "SELECT COUNTRY FROM main.suppliers") == ["country"]
+        # Another schema, or a CTE named like the table, is not that table:
+        # the name comes back as the SQL spelled it.
+        assert written_names(con, "SELECT COUNTRY FROM other.suppliers") == ["COUNTRY"]
+        assert written_names(
+            con, "WITH suppliers AS (SELECT 1 AS country) SELECT COUNTRY FROM suppliers"
+        ) == ["COUNTRY"]
+        # A misspelt name is still offered, so the retry hears which one.
+        assert written_names(con, "SELECT nope FROM suppliers") == ["nope"]
         # A column of the table that the SQL never wrote is not offered.
-        assert "supplier_name" not in cited_columns(con, "SELECT country FROM suppliers")
-        assert cited_columns(con, "SELEC nope FROM") == []
+        assert "supplier_name" not in written_names(con, "SELECT country FROM suppliers")
+        assert written_names(con, "SELECT count(*) FROM suppliers") == []
+        assert written_names(con, "SELEC nope FROM") == []
     finally:
         con.close()

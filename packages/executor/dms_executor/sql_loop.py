@@ -120,11 +120,11 @@ def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
     DuckDB echoes the offending cell value in cast and constraint errors, an
     ENUM member list in binder errors, and a file error echoes a path. The
     message body therefore never leaves the run. ``columns`` come from
-    ``cited_columns``: names the statement itself wrote, on the tables it
-    cites. The column is named only when exactly one of them appears in the
-    message, and the name written is the schema spelling, not text copied
-    from the message. A message that names none, or several (a binder
-    candidate list), names none.
+    ``written_names``: column names the statement itself wrote. The column is
+    named only when exactly one of them appears in the message, and the name
+    written is the schema or SQL spelling, never text copied from the
+    message. A message that names none, or several (a binder candidate
+    list), names none.
     """
     name = type(exc).__name__
     code = name if _CODE_NAME.fullmatch(name) else "Error"
@@ -141,11 +141,14 @@ def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
     return code
 
 
-def cited_columns(con: Any, sql: str) -> list[str]:
-    """Columns ``sql`` itself writes, on the tables it cites, in schema spelling.
+def written_names(con: Any, sql: str) -> list[str]:
+    """Column names ``sql`` itself writes, the only names a db error code may carry.
 
-    A cell value can spell a column name. Offering only names the statement
-    wrote keeps such a value from riding out of ``typed_db_error`` as a name.
+    A name that is a column of a table the statement cites comes back in
+    schema spelling. Any other written name (a misspelt column, an alias the
+    statement refers to) comes back as the SQL spelled it, so the retry still
+    hears which name was wrong. No name is taken from the database message,
+    so a cell value that spells some other column cannot ride out as a name.
     A CTE name is not a table, and a schema-qualified table matches only its
     own schema. Anything that does not parse offers nothing.
     """
@@ -153,34 +156,37 @@ def cited_columns(con: Any, sql: str) -> list[str]:
         from sqlglot import exp, parse_one
 
         tree = parse_one(sql, read=EXTRACT_DIALECT)
+        written: dict[str, str] = {}
+        for col in tree.find_all(exp.Column):
+            if col.name:
+                written.setdefault(col.name.lower(), col.name)
+        if not written:
+            return []
         ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
-        written = {c.name.lower() for c in tree.find_all(exp.Column) if c.name}
         cited = {
             (t.db.lower(), t.name.lower())
             for t in tree.find_all(exp.Table)
             if t.name and (t.db or t.name.lower() not in ctes)
         }
-        if not cited or not written:
-            return []
-        names = sorted({name for _, name in cited})
-        marks = ",".join("?" for _ in names)
-        got = con.execute(
-            "SELECT table_schema, table_name, column_name FROM information_schema.columns "
-            f"WHERE lower(table_name) IN ({marks})",
-            names,
-        ).fetchall()
-        out = {
-            str(column)
-            for schema, table, column in got
-            if str(column).lower() in written
-            and (
-                (str(schema).lower(), str(table).lower()) in cited
-                or ("", str(table).lower()) in cited
-            )
-        }
-        return sorted(out)
     except Exception:
         return []
+    names = sorted({name for _, name in cited})
+    if names:
+        try:
+            marks = ",".join("?" for _ in names)
+            got = con.execute(
+                "SELECT table_schema, table_name, column_name FROM information_schema.columns "
+                f"WHERE lower(table_name) IN ({marks})",
+                names,
+            ).fetchall()
+        except Exception:
+            got = []
+        for schema, table, column in got:
+            key = str(column).lower()
+            here = (str(schema).lower(), str(table).lower())
+            if key in written and (here in cited or ("", here[1]) in cited):
+                written[key] = str(column)
+    return sorted(written.values())
 
 
 #: Refusals for SQL that is not exactly one SELECT. Nothing executed.
@@ -225,7 +231,7 @@ def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]
         raise
     except Exception as exc:  # noqa: BLE001 — engine error is the extract result
         # A typed code: DuckDB echoes cell values and paths in its messages.
-        return None, typed_db_error(exc, cited_columns(con, sql))
+        return None, typed_db_error(exc, written_names(con, sql))
 
 
 def run_readonly(
@@ -692,8 +698,10 @@ def run_model_loop(
             )
             return abstain(exec_err, attempts, sql=sql, retries=retries)
         if exec_err:
-            # A typed code from run_readonly. The database message never gets here.
-            outcome = f"db_error:{exec_err}"
+            # A typed code from run_readonly. The database message never gets
+            # here. The name in it is one the SQL wrote, so it is masked like
+            # the SQL itself.
+            outcome = f"db_error:{mask_feedback_text(exec_err)}"
             attempts.append(
                 loop_entry(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
