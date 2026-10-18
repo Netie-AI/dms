@@ -6,7 +6,6 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
-import re
 import time
 from pathlib import Path
 from typing import Any
@@ -187,13 +186,24 @@ from dms_executor.xlsx_orch import run_crosscheck, run_extract, run_golden
 
 logger = logging.getLogger(__name__)
 
-# Cortex ``cortex_row_predicates`` accepts one or two identifier parts.
-_GRANT_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
 
 def _grant_name_ok(name: str) -> bool:
+    """One or two identifier parts. A digit-first part is not granted.
+
+    ``bronze.2024_sales`` made Cortex refuse the whole Space manifest. Unicode
+    letters stay: DuckDB keeps "Ä" and "ä" as two tables, and a grant check
+    that drops them cannot serve a granted Unicode table.
+    """
     parts = str(name).split(".")
-    return 1 <= len(parts) <= 2 and all(_GRANT_IDENT.fullmatch(p) for p in parts)
+    if not 1 <= len(parts) <= 2:
+        return False
+    for part in parts:
+        if not part or not (part[0].isalpha() or part[0] == "_"):
+            return False
+        if any(not (c.isalnum() or c == "_") for c in part):
+            return False
+    return True
+
 
 #: The demo tenant and its single steward. Real multi-tenancy arrives with the
 #: Postgres control plane (P-DMS-2); until then every session is this user.
