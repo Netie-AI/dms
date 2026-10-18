@@ -55,6 +55,12 @@ GAP_REASONS = frozenset(
         "no_sql",
         "multi_statement",
         "warehouse_missing",
+        "reconfirm",
+        "fanout_subject_keys",
+        "fanout_many_to_many",
+        "outer_join_count",
+        "grain_unprobed",
+        "as_of_window",
     }
 )
 

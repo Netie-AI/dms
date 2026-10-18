@@ -98,8 +98,10 @@ class LedgerCortex:
     _bound: dict[str, set[str]] = field(default_factory=dict)
     verify_raises: bool = False
     #: "normal"; "abstain_after_sql" (the engine runs SQL, then abstains); "no_sql"
-    #: (an answer that reports no SQL at all).
+    #: (an answer that reports no SQL at all); "ungranted_sql" (a certified answer
+    #: on ``sql``, a table the Space does not grant).
     mode: str = "normal"
+    sql: str = ""
 
     def _append(self, body: dict[str, Any]) -> str:
         prev = self.chain[-1]["hash"] if self.chain else ""
@@ -141,7 +143,22 @@ class LedgerCortex:
                     "answer": "Done.",
                     "abstained": False,
                     "badge": "certified",
-                    "sql_used": "SELECT name FROM customers WHERE email = 'alice.tan@example.com'",
+                    # A granted lake table: the one grant function refuses SQL on
+                    # a table the Space does not hold, whatever the badge.
+                    "sql_used": "SELECT sku FROM inventory WHERE sku = 'alice.tan@example.com'",
+                    "rows": [{"orders": 2}],
+                    "audit_id": entry,
+                    "route": "sql",
+                }
+            )
+        if self.mode == "ungranted_sql":
+            entry = self._append({"event": "ask.executed", "sql": self.sql})
+            return AskResponse.model_validate(
+                {
+                    "answer": "Alice has 2 open orders.",
+                    "abstained": False,
+                    "badge": "certified",
+                    "sql_used": self.sql,
                     "rows": [{"orders": 2}],
                     "audit_id": entry,
                     "route": "sql",
@@ -1449,9 +1466,51 @@ def test_the_export_holds_no_personal_data_the_envelope_masks(minter: ManifestMi
         assert "alice.tan@example.com" not in row[field_name], field_name
         assert "DMSMASK_email" in row[field_name], field_name
     # Table and column names are intact.
-    assert row["tables_read"] == "customers"
-    assert "FROM customers WHERE email = " in row["executed_sql"]
+    assert row["tables_read"] == "inventory"
+    assert "FROM inventory WHERE sku = " in row["executed_sql"]
     assert int(row["redactions"]) >= 2
+
+
+@pytest.mark.parametrize(
+    ("sql", "table"),
+    [
+        # #342's own fixture SQL: a table this Space does not grant and the lake
+        # does not hold. The envelope demotes it (reconfirm:grant_rejected).
+        ("SELECT name FROM customers WHERE email = 'alice.tan@example.com'", "customers"),
+        # A lake table Finance does not grant: refused before the envelope mapping.
+        ("SELECT alert_id FROM alerts WHERE resolved = FALSE", "alerts"),
+    ],
+    ids=["unheld_table", "held_lake_table"],
+)
+def test_an_answer_the_grant_refuses_still_exports_what_ran(
+    minter: ManifestMinter, sql: str, table: str
+) -> None:
+    """The customer gets a refusal with no SQL; the auditor gets what Cortex ran.
+
+    Red on 9f7bb43 for the held lake table: the grant hold returned before the
+    statement was recorded, so the row had no SQL and no ledger pointer.
+    """
+    client, _app, cortex = _real_stack(minter)
+    cortex.mode = "ungranted_sql"
+    cortex.sql = sql
+
+    answer = _ask(
+        client, "Does alice.tan@example.com have any open orders?", session_id="ses_refused"
+    ).json()
+    assert answer["abstained"] is True
+    assert answer["badge"] == "ABSTAIN"
+    assert answer["sql_used"] is None
+    assert answer["rows"] == []
+    assert "2 open orders" not in answer["text"]
+    assert table not in answer["text"]
+    assert "alice.tan@example.com" not in json.dumps(answer)
+
+    row = _csv_rows(_export(client).text)[0]
+    assert row["tables_read"] == table
+    assert f"FROM {table} WHERE " in row["executed_sql"]
+    for field_name in ("question", "executed_sql"):
+        assert "alice.tan@example.com" not in row[field_name], field_name
+    assert row["cortex_entry_id"] == answer["audit_id"] == "led_1"
 
 
 def test_a_url_password_is_removed_whichever_order_the_masker_ran() -> None:

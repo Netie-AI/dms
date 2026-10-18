@@ -61,6 +61,7 @@ from dms_executor.demo_warehouse import (
 )
 from dms_executor.envelope import (
     RESERVED_PARAM_AS_OF,
+    _is_demo_lake_relation,
     _relation_bare,
     _sql_cited_labels,
     asked_calendar_years,
@@ -87,6 +88,7 @@ from dms_executor.ontology import (
     demo_ontology,
     detect_supply_chain_grains,
     missing_join_for_ungranted,
+    table_is_granted,
     try_compile_multi_grain,
 )
 from dms_executor.schema_context import (
@@ -101,6 +103,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.served_gate import lake_alias_sql, served_result_reason
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
@@ -668,7 +671,503 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
 
 
 def cited_relations(sql: str) -> set[str]:
+    """Bare names of the real tables a query reads. A CTE alias is not one.
+
+    sqlglot scopes decide it. When a query cannot be scoped, every FROM/JOIN
+    name counts, which can only reject more.
+    """
+    scoped = _scoped_tables(sql)
+    if scoped is not None:
+        return scoped
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
+
+
+def _scoped_tables(sql: str) -> set[str] | None:
+    """Bare names of the real tables by scope, or None when the SQL cannot be scoped."""
+    real = _real_tables(sql)
+    if real is None:
+        return None
+    named = {_table_label(t) for t in real}
+    named.discard("")
+    return named
+
+
+def _real_tables(sql: str) -> list[Any] | None:
+    """Table nodes that read a real table, or None when the SQL cannot be scoped.
+
+    A name is a CTE only where an enclosing WITH defines it and the name has
+    no schema. The same name used as a table elsewhere is still that table:
+    inside its own CTE body, in a scope the WITH does not reach, or as
+    ``main.<name>``. A table node no scope claims counts as real.
+    """
+    from sqlglot import exp, parse
+    from sqlglot.optimizer.scope import traverse_scope
+
+    try:
+        trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+        if not all(isinstance(t, exp.Query) for t in trees):
+            return None
+        real: list[Any] = []
+        for tree in trees:
+            claimed: set[int] = set()
+            for scope in traverse_scope(tree):
+                ctes = {_ident_fold(name) for name in scope.cte_sources}
+                for table in scope.tables:
+                    claimed.add(id(table))
+                    name = _ident_fold(table.name)
+                    if not (table.db or table.catalog) and name in ctes:
+                        if not _names_real_table(table, name):
+                            continue
+                    real.append(table)
+            real.extend(t for t in tree.find_all(exp.Table) if id(t) not in claimed)
+    except Exception:  # noqa: BLE001 - an unscoped query falls back to the strict read
+        return None
+    return real
+
+
+#: DuckDB folds identifier case for ASCII letters only and never trims.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _ident_fold(name: Any) -> str:
+    """An identifier as DuckDB compares it. Python's lower() also folds non-ASCII
+    letters (the Kelvin sign becomes k), which would let a CTE stand for a table."""
+    return str(name or "").translate(_ASCII_LOWER)
+
+
+def _names_real_table(table: Any, name: str) -> bool:
+    """True when a CTE-named reference inside that CTE's own body reads the real table.
+
+    DuckDB binds a CTE's own name inside its body to the table of that name,
+    except in the recursive term of a WITH RECURSIVE, which reads the CTE's
+    working rows. The recursive term is the arm right of the last UNION;
+    everything left of it is the base. Only a plain UNION [ALL] recurses.
+    Outside its body the name is the CTE, and so is a same-named CTE of a
+    WITH nested inside that body.
+    """
+    from sqlglot import exp
+
+    child: Any = table
+    node = table.parent
+    while node is not None:
+        holder = node.args.get("with") if isinstance(node, exp.Expression) else None
+        if (
+            isinstance(holder, exp.With)
+            and child is not holder
+            and any(_ident_fold(c.alias) == name for c in holder.expressions)
+        ):
+            return False
+        if isinstance(node, exp.CTE) and _ident_fold(node.alias) == name:
+            holder = node.parent
+            recursive = isinstance(holder, exp.With) and bool(holder.args.get("recursive"))
+            body = node.this
+            # Only a plain UNION [ALL] recurses. Under EXCEPT, INTERSECT or
+            # UNION BY NAME, DuckDB binds the name to the table in every arm.
+            if not (
+                recursive and isinstance(body, exp.Union) and not body.args.get("by_name")
+            ):
+                return True
+            ancestor = table.parent
+            while ancestor is not None and ancestor is not body.expression:
+                ancestor = ancestor.parent
+            return ancestor is None
+        child = node
+        node = node.parent
+    return False
+
+
+def _table_label(table: Any) -> str:
+    """The bare name a plain table reference cites. A table function has none."""
+    from sqlglot import exp
+
+    if not isinstance(table.this, exp.Identifier):
+        return ""
+    parts = [str(p) for p in (table.catalog, table.db, table.name) if p]
+    return _relation_bare(".".join(parts))
+
+
+#: Pure row generators. They read no file and no table, so they are not a
+#: reader. Any other table function is one: read_csv, read_text, glob,
+#: duckdb_settings(), pragma_table_info(), ...
+_GENERATORS = frozenset({"range", "generate_series", "unnest"})
+
+
+def _is_generator(node: Any) -> bool:
+    from sqlglot import exp
+
+    if isinstance(node, (exp.GenerateSeries, exp.Unnest)):
+        return True
+    return isinstance(node, exp.Anonymous) and str(node.name).lower() in _GENERATORS
+
+
+_PATH_CHARS = re.compile(r"[/\\:*?]")
+_FILE_EXT = re.compile(r"\.(csv|tsv|txt|json|jsonl|ndjson|parquet|xlsx?|db|duckdb)$", re.I)
+
+
+def _lake_granted(name: str, grantable: set[str]) -> bool:
+    """A demo-lake table is granted by its exact name or its warehouse_ alias.
+
+    The alias runs both ways: the Space grants ``inventory`` and Cortex cites
+    ``warehouse_inventory``, or the grant carries the alias and the SQL the
+    bare name. A qualified upload grant (bronze.alerts) is neither.
+    """
+    prefix = "warehouse_"
+    bare = name[len(prefix) :] if name.startswith(prefix) else name
+    return bool({name, bare, f"{prefix}{bare}"} & grantable)
+
+
+#: sqlglot splits names at these; DuckDB keeps them inside a name, so
+#: ``zz<U+2028>`` reads as granted ``zz`` to the syntax tree only.
+_SPLIT_DIFFERENTLY = frozenset({"\u0085", "\u1680", "\u2028", "\u2029"})
+
+
+def _invisible_format_char(sql: str) -> bool:
+    """A character the syntax tree and DuckDB read differently, outside a literal.
+
+    DuckDB skips U+200B, U+2060 and U+FEFF (category Cf) as whitespace;
+    sqlglot reads them as part of a name, so ``FROM<U+200B>alerts`` is a
+    column alias to every sqlglot-based check while DuckDB reads the table. Four
+    separators go the other way (_SPLIT_DIFFERENTLY). Inside a plain
+    ``'...'`` literal that both read as the same one string, the character
+    is text (ZWJ and ZWNJ in Indic and Persian words, emoji sequences).
+    """
+    import unicodedata
+
+    def odd(ch: str) -> bool:
+        return unicodedata.category(ch) == "Cf" or ch in _SPLIT_DIFFERENTLY
+
+    if not any(odd(ch) for ch in sql):
+        return False
+    inside: set[int] = set()
+    for start, end in _agreed_literal_spans(sql):
+        inside.update(range(start + 1, end - 1))
+    return any(odd(ch) and index not in inside for index, ch in enumerate(sql))
+
+
+def _agreed_literal_spans(sql: str) -> list[tuple[int, int]]:
+    """``[start, end)`` of each plain ``'...'`` literal DuckDB and sqlglot both
+    tokenize as one string at exactly that span. A comment, an E'' or a
+    dollar-quoted string ends the scan: nothing after it is exempt."""
+    import duckdb
+    from sqlglot import tokenize
+    from sqlglot.tokens import TokenType
+
+    try:
+        # DuckDB reports UTF-8 byte offsets; map them back to characters.
+        char_at: dict[int, int] = {}
+        offset = 0
+        for index, ch in enumerate(sql):
+            char_at[offset] = index
+            offset += len(ch.encode("utf-8"))
+        duck_starts = {
+            char_at.get(int(pos), -1)
+            for pos, kind in duckdb.tokenize(sql)
+            if str(kind).lower().endswith("string_const")
+        }
+        glot = {
+            (tok.start, tok.end + 1)
+            for tok in tokenize(sql, read="duckdb")
+            if tok.token_type == TokenType.STRING
+        }
+    except Exception:  # noqa: BLE001 - no agreed literal, nothing is exempt
+        return []
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(sql)
+    while i < n:
+        if sql.startswith(("--", "/*"), i) or sql[i] == "$":
+            return spans
+        if sql[i] == '"':
+            j = i + 1
+            while j < n and not (sql[j] == '"' and sql[j + 1 : j + 2] != '"'):
+                j += 2 if sql[j] == '"' else 1
+            i = j + 1
+        elif sql[i] == "'":
+            j = i + 1
+            while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
+                j += 2 if sql[j] == "'" else 1
+            end = j + 1
+            prefixed = i > 0 and (sql[i - 1].isalnum() or sql[i - 1] in "_$")
+            if not prefixed and i in duck_starts and (i, end) in glot:
+                spans.append((i, end))
+            i = end
+        else:
+            i += 1
+    return spans
+
+
+#: Plan names of the table functions that only generate rows.
+_PLAN_GENERATORS = frozenset({"RANGE", "GENERATE_SERIES", "UNNEST"})
+#: Plan operators that scan something other than a table: a VALUES list (with
+#: or without expressions), a CTE, a recursive CTE, a delim join's side, a
+#: positional join, a dummy row, an in-memory chunk.
+_PLAN_NON_TABLE_SCANS = frozenset(
+    {
+        "CHUNK_SCAN",
+        "COLUMN_DATA_SCAN",
+        "CTE_SCAN",
+        "DELIM_SCAN",
+        "DUMMY_SCAN",
+        "EXPRESSION_SCAN",
+        "POSITIONAL_SCAN",
+        "REC_CTE_SCAN",
+        "REC_REC_CTE_SCAN",
+        "RECURSIVE_CTE_SCAN",
+        "RECURSIVE_RECURRING_CTE_SCAN",
+    }
+)
+
+
+def _plan_names(part: str) -> tuple[str, str]:
+    """A catalog, schema or table name as a plan may print it: bare or quoted."""
+    return part, '"' + part.replace('"', '""') + '"'
+
+
+def _cited_names(sql: str) -> set[tuple[str, str, str]]:
+    """(catalog, schema, name) of every real table the SQL writes, exactly as
+    DuckDB compares them: no quote, space or bracket stripped, no dot split."""
+    from sqlglot import exp, parse
+
+    real = _real_tables(sql)
+    if real is None:
+        # Unscoped: every table node counts, a CTE name too, which can only refuse more.
+        try:
+            trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+        except Exception:  # noqa: BLE001 - select_shape owns unparseable SQL
+            return set()
+        real = [t for tree in trees for t in tree.find_all(exp.Table)]
+    return {
+        (_ident_fold(t.catalog), _ident_fold(t.db), _ident_fold(t.name))
+        for t in real
+        if isinstance(t.this, exp.Identifier)
+    }
+
+
+def _parsed_relations(con: Any, sql: str) -> tuple[set[tuple[str, str, str]], set[str]]:
+    """The tables and table functions DuckDB's own parser says ``sql`` reads.
+
+    sqlglot and DuckDB can split the same text differently: in ``e'\\'--'``
+    DuckDB reads an escaped quote and sqlglot ends the string, so a ``--``
+    hides from the syntax tree a tail that DuckDB runs. A statistics answer
+    in that tail scans nothing, and ``query_table`` is replaced by its table
+    before planning, so the plan check cannot see them either. This reads
+    DuckDB's parse tree, which binds nothing: an unqualified name inside the
+    WITH that defines it is that CTE, every other name is a table
+    ``(catalog, schema, name)``. A tree this cannot read raises.
+    """
+    import json
+
+    tree = json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0])
+    if not isinstance(tree, dict) or tree.get("error") is not False:
+        raise ValueError("DuckDB could not serialize the statement")
+    tables: set[tuple[str, str, str]] = set()
+    functions: set[str] = set()
+    stack: list[tuple[Any, frozenset[str]]] = [(tree.get("statements"), frozenset())]
+    while stack:
+        node, scope = stack.pop()
+        if isinstance(node, list):
+            stack.extend((item, scope) for item in node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        kind = node.get("type")
+        if kind in ("BASE_TABLE", "SHOW_REF"):
+            catalog, schema, name = (
+                str(node.get(k) or "") for k in ("catalog_name", "schema_name", "table_name")
+            )
+            if kind == "BASE_TABLE" and not name:
+                raise ValueError("a table reference without a name")
+            cte = not catalog and not schema and _ident_fold(name) in scope
+            if name and (kind == "SHOW_REF" or not cte):
+                tables.add((catalog, schema, name))
+        elif kind == "TABLE_FUNCTION":
+            call = node.get("function")
+            if not isinstance(call, dict) or not call.get("function_name"):
+                raise ValueError("a table function without a name")
+            parts = (call.get("catalog"), call.get("schema"), call.get("function_name"))
+            functions.add(".".join(_ident_fold(p) for p in parts if p))
+        cte_map = node.get("cte_map")
+        entries = cte_map.get("map") if isinstance(cte_map, dict) else None
+        if cte_map is not None and not isinstance(entries, list):
+            raise ValueError("a WITH this cannot read")
+        # A CTE sees the ones defined before it; the query sees them all.
+        for entry in entries or []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("key"), str):
+                raise ValueError("a WITH this cannot read")
+            stack.append((entry.get("value"), scope))
+            scope = scope | {_ident_fold(entry["key"])}
+        for key, value in node.items():
+            if kind == "RECURSIVE_CTE_NODE" and key == "right":
+                # Only the recursive side sees the CTE; its anchor reads the table.
+                stack.append((value, scope | {_ident_fold(node.get("cte_name"))}))
+            elif key != "cte_map":
+                stack.append((value, scope))
+    return tables, functions
+
+
+def _engine_cited(con: Any, sql: str) -> tuple[str | None, set[tuple[str, str, str]]]:
+    """``(refusal, tables)`` as DuckDB's own parser reads ``sql``.
+
+    A table function must be a pure generator, as in the plan check. Each
+    table is ``(catalog, schema, name)``; Cortex's ``warehouse`` schema
+    names a lake table, as ``lake_alias_sql`` reads it.
+    """
+    tables, functions = _parsed_relations(con, sql)
+    if functions - {g.lower() for g in _PLAN_GENERATORS}:
+        return "hostile_sql:file_reader", set()
+    lake = {_ident_fold(table) for table in DEMO_TABLES}
+    out: set[tuple[str, str, str]] = set()
+    for ref in tables:
+        catalog, schema, name = (_ident_fold(part) for part in ref)
+        if not catalog and schema == "warehouse" and name in lake:
+            schema = ""
+        out.add((catalog, schema, name))
+    return None, out
+
+
+def _plan_scan_reason(
+    plan_json: str,
+    con: Any,
+    grantable: set[str],
+    cited: set[tuple[str, str, str]] | None = None,
+) -> str | None:
+    """Grant-check the tables DuckDB itself scans for this SQL.
+
+    sqlglot reads names and DuckDB binds them. Where the two disagree (a
+    character one skips and the other keeps, a schema a label drops), the
+    plan is what runs: every base table it scans must be granted, a lake
+    table by its name or warehouse_ alias and any other schema's table
+    (an upload) by its qualified name. Every table function must be a pure
+    generator. A scan this cannot name is not granted.
+
+    DuckDB answers COUNT(*), numeric MIN/MAX, LIMIT 0 and WHERE false
+    without a scan, so every table the SQL cites is also bound the way
+    DuckDB binds it and checked by the same rule, by its exact name.
+    """
+    import json
+
+    known: dict[str, tuple[str, str]] = {}
+    for db, schema, name in con.execute(
+        "SELECT database_name, schema_name, table_name FROM duckdb_tables()"
+    ).fetchall():
+        for d in _plan_names(str(db)):
+            for sc in _plan_names(str(schema)):
+                for n in _plan_names(str(name)):
+                    known[f"{d}.{sc}.{n}"] = (str(schema), str(name))
+    # A grant "x.y" names an upload x.y and a lake table called "x.y" alike.
+    # When the lake holds both, that grant opens neither.
+    tables = {(_ident_fold(s), _ident_fold(n)) for s, n in known.values()}
+    ambiguous = {n for s, n in tables if s == "main" and "." in n} & {
+        f"{s}.{n}" for s, n in tables if s != "main"
+    }
+    folded = {_ident_fold(str(g).strip()) for g in grantable}
+    lake = {
+        g[len("main.") :] if g.startswith("main.") else g
+        for g in folded
+        if "." not in g or g.startswith("main.")
+    }
+    missing: set[str] = set()
+
+    def judge(schema: str, name: str) -> None:
+        if schema == "main":
+            # A lake table may itself be named with a dot ("usd.book").
+            if not _lake_granted(name, lake) and (name not in folded or name in ambiguous):
+                missing.add(name)
+        elif f"{schema}.{name}" not in folded or f"{schema}.{name}" in ambiguous:
+            missing.add(f"{schema}.{name}")
+
+    stack: list[Any] = [json.loads(plan_json)]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        stack.extend(node.get("children") or [])
+        info = node.get("extra_info")
+        if not isinstance(info, dict):
+            continue
+        function = info.get("Function")
+        if function is not None and str(function).upper() not in _PLAN_GENERATORS:
+            return "hostile_sql:file_reader"
+        table = info.get("Table")
+        if table is None:
+            name_op = str(node.get("name") or "").strip().upper()
+            if function is None and "SCAN" in name_op and name_op not in _PLAN_NON_TABLE_SCANS:
+                # A scan whose table this cannot read (another DuckDB plan format).
+                return "hostile_sql:sql_not_analyzable"
+            continue
+        found = known.get(str(table))
+        if found is None:
+            return "hostile_sql:sql_not_analyzable"
+        judge(*(_ident_fold(part) for part in found))
+    # A statistics answer scans nothing, so the tables the SQL writes count too.
+    default_db = _ident_fold(con.execute("SELECT current_database()").fetchone()[0])
+    rows = con.execute("SELECT database_name, schema_name FROM duckdb_schemas()").fetchall()
+    schemas = {(_ident_fold(d), _ident_fold(sc)) for d, sc in rows}
+    for catalog, schema, name in cited or set():
+        if not schema:
+            catalog, schema = default_db, "main"
+        elif not catalog:
+            # DuckDB reads a.b as schema a, else as catalog a's main schema.
+            if (default_db, schema) not in schemas and any(d == schema for d, _ in schemas):
+                catalog, schema = schema, "main"
+            else:
+                catalog = default_db
+        # Another catalog (system, temp) is granted only by its full name.
+        judge(schema if catalog == default_db else f"{catalog}.{schema}", name)
+    if missing:
+        return f"ungranted:{','.join(sorted(missing))}"
+    return None
+
+
+def _reads_files(sql: str, grantable: set[str]) -> bool:
+    """True when a FROM/JOIN source is a table function or a path, not a table.
+
+    Every DuckDB file reader (read_text, read_blob, sniff_csv, read_ndjson,
+    glob, ...) is a table function, and ``FROM 'x.csv'`` is a replacement scan.
+    One structural test replaces a name list that has to grow with DuckDB.
+    A source that is not a plain identifier is never a granted table, unless
+    it is a pure generator (range, generate_series, unnest): a date spine
+    reads nothing. A granted upload may carry its file name as its table
+    name, so an extension alone refuses only when the Space does not grant
+    that exact name.
+    """
+    from sqlglot import exp, parse
+
+    granted = {str(g).strip().lower() for g in grantable}
+    try:
+        trees = parse(sql, read="duckdb")
+    except Exception:  # noqa: BLE001 - the EXPLAIN step owns unparseable SQL
+        return False
+    for tree in trees:
+        if tree is None:
+            continue
+        if any(
+            not ident.quoted and str(ident.this).upper() == "TABLE"
+            for ident in tree.find_all(exp.Identifier)
+        ) or any(not isinstance(cte.this, exp.Query) for cte in tree.find_all(exp.CTE)):
+            # DuckDB's TABLE <name> shorthand reads the table; sqlglot parses it
+            # as a column named TABLE, so no table node would carry the name.
+            return True
+        for lateral in tree.find_all(exp.Lateral):
+            # JOIN LATERAL f(...) and ", LATERAL f(...)" put the function on a
+            # Lateral node, not a Table: query_table('t'), sniff_csv, catalog
+            # functions. A subquery there is read like any other.
+            inner = lateral.this
+            if not isinstance(inner, (exp.Subquery, exp.Select)) and not _is_generator(inner):
+                return True
+        for table in tree.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier):
+                if _is_generator(table.this):
+                    continue
+                return True
+            name = table.name
+            if _PATH_CHARS.search(name):
+                return True
+            if _FILE_EXT.search(name) and name.lower() not in granted:
+                return True
+    return False
 
 
 def validate_compiled_sql(
@@ -680,14 +1179,69 @@ def validate_compiled_sql(
     """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
+    if _invisible_format_char(sql):
+        return "hostile_sql:sql_not_analyzable"
     try:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
+    if _reads_files(sql, grantable):
+        return "hostile_sql:file_reader"
+    if _scoped_tables(sql) is None:
+        # sqlglot cannot read it, so the tables it reads are not known (TABLE t
+        # in a UNION arm, EXISTS (PIVOT t ...)). A syntax error still reaches
+        # the repair loop as the engine's own; anything the engine accepts is
+        # not granted on a guess.
+        if warehouse is None or not Path(warehouse).is_file():
+            return "warehouse_missing"
+        con = connect_serving(Path(warehouse))
+        try:
+            gate = _refusal_before_explain(con, sql)
+            if gate:
+                return gate
+            con.execute(f"EXPLAIN {lake_alias_sql(sql)}")
+        except Exception as exc:  # noqa: BLE001
+            return f"explain:{type(exc).__name__}"
+        finally:
+            con.close()
+        return "hostile_sql:sql_not_analyzable"
     named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    # A qualified upload grant (bronze.sheet) matches the bare cited sheet
+    # name. A demo-lake table keeps the exact match: bronze.alerts is an
+    # upload and does not open the lake table alerts.
+    missing = {
+        t
+        for t in named
+        if not (
+            _lake_granted(t, grantable)
+            if _is_demo_lake_relation(t)
+            else table_is_granted(t, grantable)
+        )
+    }
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
+    # No cited relation. A literal select is the same grant outcome, bare
+    # code. A missing warehouse file stays warehouse_missing. A function
+    # call is not this outcome.
+    if not named and (warehouse is None or Path(warehouse).is_file()):
+        from sqlglot import exp, parse_one
+
+        try:
+            tree = parse_one(sql, read="duckdb")
+        except Exception:  # noqa: BLE001
+            tree = None
+        tables = tree.find_all(exp.Table) if tree is not None else ()
+        funcs = tree.find_all(exp.Func) if tree is not None else ()
+        no_table = isinstance(tree, exp.Select) and not any(
+            isinstance(node, exp.Table) and node.name for node in tables
+        )
+        # A generator over no table is constants too (a spine of dates).
+        generated = tree is not None and any(
+            _is_generator(node)
+            for node in tree.find_all(exp.GenerateSeries, exp.Unnest, exp.Anonymous)
+        )
+        if no_table and (generated or not any(isinstance(node, exp.Func) for node in funcs)):
+            return "ungranted"
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
@@ -697,12 +1251,29 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
-        con.execute(f"EXPLAIN {sql}")
-    except Exception as exc:  # noqa: BLE001
-        return f"explain:{type(exc).__name__}"
+        cited: set[tuple[str, str, str]] = set()
+        try:
+            # DuckDB's own parser, on the SQL as written and as run.
+            for text in (sql, lake_alias_sql(sql)):
+                why, names = _engine_cited(con, text)
+                if why:
+                    return why
+                cited |= names
+        except Exception:  # noqa: BLE001 - a name this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
+        try:
+            plan = con.execute(f"EXPLAIN (FORMAT JSON) {lake_alias_sql(sql)}").fetchall()
+        except Exception as exc:  # noqa: BLE001
+            return f"explain:{type(exc).__name__}"
+        try:
+            # The tables the engine reads, checked against the grant.
+            # Bind the SQL that runs: Cortex's warehouse aliases name lake tables.
+            cited |= _cited_names(lake_alias_sql(sql))
+            return _plan_scan_reason(str(plan[0][1]), con, grantable, cited)
+        except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
     finally:
         con.close()
-    return None
 
 
 def _refusal_before_explain(con: Any, sql: str) -> str | None:
@@ -859,6 +1430,86 @@ def _l2_envelope(
     return env
 
 
+def _cited_ungranted(why: str | None) -> bool:
+    """True for bare ``ungranted`` and for ``ungranted:<demo-lake names>``.
+
+    A bronze sheet name is not this refusal. Scope conflict still owns that
+    SQL, and a qualified upload grant is not a demo-lake miss.
+    """
+    if not isinstance(why, str) or why.split(":", 1)[0] != "ungranted":
+        return False
+    rest = why.split(":", 1)[1] if ":" in why else ""
+    names = [n.strip() for n in rest.split(",") if n.strip()]
+    if not names:
+        return True
+    return any(_is_demo_lake_relation(n) for n in names)
+
+
+def hold_ungrounded_sql(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+) -> dict[str, Any] | None:
+    """Direct refusal for an ungranted or hostile outcome of the one grant check.
+
+    Bare ``ungranted`` and ``ungranted:<names>`` both abstain when a missing
+    name is a demo-lake table. The names stay in the grant function and are
+    not copied onto the reply. A bronze sheet label is not this refusal.
+    None means the SQL may keep its badge. #421 replaces that call.
+    This is not a reconfirm and not a second grant check.
+    """
+    return grant_hold(
+        sql,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+        warehouse=warehouse,
+        grantable=grantable,
+    )[0]
+
+
+def grant_hold(
+    sql: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The refusal (or None) and the one grant function's reason for this SQL.
+
+    A reason that is not None and not refused here (a bronze sheet label, an
+    EXPLAIN miss on a table the lake does not hold) still means the SQL was
+    rejected: the caller must not hand it to a probe that executes SQL.
+    """
+    why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+    # Hostile SQL (file readers, multi-statement, any non-SELECT) is refused
+    # here too, so the served-result probe never runs it in this process.
+    # An EXPLAIN permission denial is the engine saying the SQL reaches for
+    # something outside the lake: the same refusal.
+    hostile = isinstance(why, str) and (
+        why.startswith("hostile_sql:") or why.startswith("explain:PermissionException")
+    )
+    if not hostile and not _cited_ungranted(why):
+        return None, why
+    return (
+        _abstain(
+            question,
+            "hostile_sql" if hostile else "ungranted",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=PLAN_SOURCE_OTHER,
+            stage="grant",
+        ),
+        why,
+    )
+
+
 def _submit_validated(
     sql: str,
     *,
@@ -876,7 +1527,34 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    ontology: Ontology | None = None,
+    grain_checked: bool = False,
 ) -> dict[str, Any]:
+    """Grain check, then the shared serve checks, submit and ledger. Never retries.
+
+    A grain finding abstains here. The only model retry for it is the extract
+    loop's own (``_run_extract_loop``), which runs this check as a checker
+    reason, so a retry passes every guard the first SQL did and counts
+    against the one per-ask call cap. ``grain_checked`` is True only from
+    that loop, for the exact SQL its checker just cleared.
+    """
+    finding = None
+    if not grain_checked:
+        finding = served_result_reason(
+            sql,
+            warehouse=warehouse,
+            as_of=_as_of(),
+            ontology=ontology,
+        )
+    if finding:
+        return _abstain(
+            question,
+            f"reconfirm:{finding}",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
     if not coverage_valid(coverage):
         return _abstain(
             question,
@@ -1102,6 +1780,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        ontology=onto,
     )
 
 
@@ -1179,6 +1858,7 @@ def rank_window_ask(
         coverage=compiled.coverage,
         warehouse=lake,
         lead=lead,
+        ontology=onto,
     )
 
 
@@ -1212,6 +1892,7 @@ def _run_extract_loop(
     dialect: str,
     grantable: set[str],
     declared: Ontology | None,
+    ontology: Ontology | None,
     declared_violations: list[Violation],
     space_id: str | None,
     session_id: str | None,
@@ -1219,7 +1900,14 @@ def _run_extract_loop(
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
+    """Read-only extract loop. Empty rows do not retry. Ranking does not serve.
+
+    The grain check is one of this loop's checker reasons, so a model retry
+    after a grain finding goes through the same guards as any other retry
+    (dropped filters, ontology violations, the empty-result abstain) and the
+    same per-ask call cap. There is no second retry loop.
+    """
+    grain_cleared: set[str] = set()
 
     def model_sql(body: dict[str, Any] | None) -> str | None:
         if not isinstance(body, dict):
@@ -1240,6 +1928,15 @@ def _run_extract_loop(
             broken = violations_cited_by_sql(sql, declared, declared_violations)
             if broken:
                 return violation_reason(broken)
+        # Only SQL the grant function accepted reaches the probe. The grain
+        # check reads the lake, so it runs with or without a verified
+        # ontology (which adds the many-to-many check).
+        finding = served_result_reason(
+            sql, warehouse=warehouse, as_of=_as_of(), ontology=ontology
+        )
+        if finding:
+            return f"reconfirm:{finding}"
+        grain_cleared.add(sql)
         return None
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1255,6 +1952,8 @@ def _run_extract_loop(
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            ontology=ontology,
+            grain_checked=sql in grain_cleared,
         )
 
     def abstain(
@@ -1396,6 +2095,7 @@ def maybe_generative_ask(
         )
 
     lake: Path | None
+    given_warehouse = Path(warehouse) if warehouse is not None else None
     if warehouse is not None:
         lake = Path(warehouse)
     else:
@@ -1573,10 +2273,11 @@ def maybe_generative_ask(
                     ctx=ctx,
                     payload=payload,
                     compute=compute,
-                    warehouse=lake,
+                    warehouse=given_warehouse if given_warehouse is not None else lake,
                     dialect=dialect,
                     grantable=allowed,
                     declared=declared,
+                    ontology=onto,
                     declared_violations=declared_violations,
                     space_id=space_id,
                     session_id=session_id,
@@ -1739,6 +2440,7 @@ def maybe_generative_ask(
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
                     plan_origin=origin,
+                    ontology=onto,
                 )
             )
     if kind != "plan":
@@ -1921,5 +2623,6 @@ def maybe_generative_ask(
             where_paths=compiled.where_paths,
             warehouse=lake,
             plan_origin=origin,
+            ontology=onto,
         )
     )

@@ -82,6 +82,8 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    grant_hold,
+    load_verified_ontology,
     maybe_generative_ask,
     path_miss_envelope,
     with_served_attribution,
@@ -154,6 +156,7 @@ from dms_executor.warehouse_browse import (
 )
 from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
+    explicit_engine_warehouse,
     identity_check,
     ingest_warehouse_path,
     serving_warehouse_path,
@@ -1021,8 +1024,18 @@ class Executor:
                 # hides that exact-match / pack-metric miss. A confident
                 # generative answer is left as-is. None still reaches Cortex ask.
                 # A budget stop keeps its named reason (insights_timeout:<leg>).
+                notes = gen_env.get("assumptions") or []
+                # A grain or grant finding keeps its named reason, also when the
+                # extract loop ran out of retries on it (loop_exhausted:...).
+                gate_hold = any(
+                    isinstance(note, str)
+                    and note.startswith("GEN-01: ")
+                    and "reconfirm:" in note
+                    for note in notes
+                )
                 if (
                     gen_env.get("abstained")
+                    and not gate_hold
                     and not insights_budget_stop(gen_env)
                     and is_curated_l0_without_pack_metric(asked)
                 ):
@@ -1082,6 +1095,35 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        grant_set = set(self.grantable_tables(space_id=space_id))
+        # The grant EXPLAIN and the grain probe read the file Cortex ran on.
+        lake = self._cortex_served_lake()
+        held = None
+        rejected: str | None = None
+        # Only SQL is grant-checked. A document answer carries none, and an
+        # empty string is not a rejected query.
+        if not resp.abstained and str(resp.sql_used or "").strip():
+            held, rejected = grant_hold(
+                str(resp.sql_used or ""),
+                question=question,
+                space_id=space_id,
+                session_id=acl.session_id,
+                warehouse=lake,
+                grantable=grant_set,
+            )
+        if held is not None:
+            # BANK-02: Cortex ran this statement. The reply refuses it, but the
+            # audit trace records what ran and the envelope keeps Cortex's
+            # ledger pointer, as map_ask_response_to_envelope does.
+            executed_trace.record(resp.sql_used, len(resp.rows or []))
+            cortex_audit = resp.receipt_id or resp.audit_id
+            if cortex_audit:
+                held["audit_id"] = cortex_audit
+            assert_envelope_valid(held)
+            env = attach_cascade(held, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
+        gate_warehouse, gate_ontology = _served_check_inputs(lake)
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -1091,11 +1133,31 @@ class Executor:
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                warehouse=gate_warehouse,
+                ontology=gate_ontology,
+                as_of=datetime_now(),
+                grant_rejected=rejected is not None,
             ),
             cascade,
         )
         self._store_turn(session_id, space_id, env)
         return env
+
+    def _cortex_served_lake(self) -> Path:
+        """The file the Cortex contract ask executed on, for the checks that read it.
+
+        An Executor given a warehouse treats that file as the one lake. wiring.py
+        gives none: then it is the serving file the operator named
+        (``CORTEX_WAREHOUSE_DB`` / ``DMS_ORACLE_WAREHOUSE``; Start-DMSStack.ps1
+        names it whenever it exists), read as it is and never reseeded. With no
+        serving file named, ingest and serving are one file. A named file that
+        is missing fails closed in the grant check (``warehouse_missing``).
+        """
+        if self._warehouse is None:
+            engine = explicit_engine_warehouse()
+            if engine is not None:
+                return engine
+        return ensure_demo_warehouse(self._warehouse)
 
     def take_executed(self) -> ExecutedTrace:
         """What the last ``live_ask`` on this thread ran: statements with row counts,
@@ -1189,6 +1251,17 @@ def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | Non
 _chart_from_rows = chart_from_rows
 
 
+def _served_check_inputs(warehouse: Path | None) -> tuple[Path | None, Any]:
+    """Warehouse file and its verified ontology (None when it does not verify).
+
+    A missing warehouse does not pass. The grain check reads the lake itself,
+    so a lake the demo ontology does not describe is still checked.
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None, None
+    return warehouse, load_verified_ontology(warehouse)
+
+
 def map_ask_response_to_envelope(
     resp: AskResponse,
     *,
@@ -1197,8 +1270,18 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    warehouse: Path | None = None,
+    ontology: Any | None = None,
+    as_of: str | None = None,
+    grant_rejected: bool = False,
 ) -> dict[str, Any]:
-    """Map contract Answer-shaped AskResponse into UI envelope."""
+    """Map contract Answer-shaped AskResponse into UI envelope.
+
+    ``grant_rejected`` is SQL the one grant function rejected that the ask
+    route did not refuse outright (a bronze label, an EXPLAIN miss). Nothing
+    probes it, so nothing certifies it: it takes no confident badge. The envelope's own,
+    more specific demotions (scope conflict, shape mismatch) run first.
+    """
     # BANK-02: the engine's own SQL and rows, taken before anything below drops
     # them for an abstain or swaps in a placeholder. This is what ran.
     executed_trace.record(resp.sql_used, len(resp.rows or []))
@@ -1244,8 +1327,32 @@ def map_ask_response_to_envelope(
     # Go through envelope.py rather than this module's own _BADGE_MAP copy.
     # Two maps for one vocabulary is a drift waiting to happen, and the drift
     # would be invisible: both sides would still produce a legal badge.
+    # Route "generated" does not grant L2. The served-result gate has to pass.
+    gate_passed = False
+    gate_finding: str | None = None
+    if not refused and not engine_unsure and not resp.abstained:
+        raw_name = (badge_raw or "").strip().lower()
+        if raw_name == "generated" and not grant_rejected:
+            from dms_executor.served_gate import served_result_reason
+
+            # A missing warehouse or as_of is not a pass and not L2. The
+            # ontology is optional: it adds the many-to-many link check.
+            if warehouse is None or not as_of:
+                gate_finding = "inputs_missing"
+            else:
+                gate_finding = served_result_reason(
+                    str(resp.sql_used or ""),
+                    warehouse=warehouse,
+                    ontology=ontology,
+                    as_of=as_of,
+                )
+            gate_passed = gate_finding is None
     unknown_badge = unmapped_badge(badge_raw, abstained=bool(resp.abstained))
-    badge = normalize_badge(badge_raw, abstained=bool(resp.abstained))
+    badge = normalize_badge(
+        badge_raw,
+        abstained=bool(resp.abstained),
+        gate_passed=gate_passed,
+    )
     abstained = bool(resp.abstained) or badge == "ABSTAIN"
     if abstained:
         badge = "ABSTAIN"
@@ -1260,6 +1367,17 @@ def map_ask_response_to_envelope(
             f"Rather than show you a number under a badge I cannot stand behind, "
             f"I'm abstaining. This usually means DMS is older than the engine."
         )
+    elif gate_finding:
+        from dms_executor.gen_path_refuse import customer_abstain_text
+
+        text = customer_abstain_text(f"reconfirm:{gate_finding}")
+    elif grant_rejected and abstained:
+        # Already ABSTAIN (route "generated" without a gate pass, an abstain
+        # badge). The engine's prose can carry the figure the rejected SQL
+        # computed, so it is never the text of this refusal.
+        from dms_executor.gen_path_refuse import customer_abstain_text
+
+        text = customer_abstain_text("reconfirm:grant_rejected")
     values = list(resp.values or [])
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
@@ -1297,6 +1415,10 @@ def map_ask_response_to_envelope(
         else:
             assumptions = list(resp.assumptions)
     assumptions.append("live Cortex ask")
+    if gate_finding:
+        assumptions.append(f"GEN-01: reconfirm:{gate_finding}")
+    elif grant_rejected and abstained and not unknown_badge:
+        assumptions.append("GEN-01: reconfirm:grant_rejected")
     sources = normalize_contributing_sources(
         resp.contributing_sources, space_id=space_id
     )
@@ -1342,14 +1464,37 @@ def map_ask_response_to_envelope(
         "exclude_reasons": list(resp.exclude_reasons) if resp.exclude_reasons else None,
     }
     if abstained:
+        held_reason = (
+            f"reconfirm:{gate_finding}"
+            if gate_finding
+            else "reconfirm:grant_rejected"
+            if grant_rejected and not unknown_badge
+            else ""
+        )
         env = build_abstain(
-            reason="abstain",
+            reason=held_reason or "abstain",
             question=question or "",
-            stage="cortex_ask",
+            stage="served_gate" if held_reason else "cortex_ask",
             **fields,
         )
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
+        if grant_rejected and env.get("badge") != "ABSTAIN":
+            # Fail closed. SQL the one grant function rejected was never probed,
+            # so an answer on it carries no confident badge (L0, L1, L2 or
+            # anomalous). Runs after the envelope's own demotions so a scope
+            # conflict or shape mismatch keeps its more specific reason.
+            from dms_executor.gen_path_refuse import customer_abstain_text
+
+            fields["text"] = customer_abstain_text("reconfirm:grant_rejected")
+            fields["assumptions"] = [*assumptions, "GEN-01: reconfirm:grant_rejected"]
+            fields.update(rows=[], chart=None, sql_used=None, drillthrough_token=None)
+            env = build_abstain(
+                reason="reconfirm:grant_rejected",
+                question=question or "",
+                stage="served_gate",
+                **fields,
+            )
     assert_envelope_valid(env)
     return env
 

@@ -24,6 +24,7 @@ from cortex_client.compute import (
 )
 
 from dms_executor.lake_registry import SERVING_ERRORS
+from dms_executor.served_gate import lake_alias_sql
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
 #: sqlglot dialect for a connector kind. The extract engine is separate.
@@ -601,7 +602,8 @@ def run_model_loop(
             )
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
-        rows, exec_err = run_readonly(sql, Path(warehouse))
+        # The checker grants warehouse_<table>; the lake holds <table>.
+        rows, exec_err = run_readonly(lake_alias_sql(sql), Path(warehouse))
         if exec_err in _REFUSED_SHAPES:
             # Not one SELECT. Refused before execute, no model retry.
             attempts.append(

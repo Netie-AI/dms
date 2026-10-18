@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from cortex_client.models import AskResponse
 from dms_executor import map_ask_response_to_envelope
+from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
+from dms_executor.generative_ask import load_verified_ontology
 
 
 def test_ask_response_flattens_provenance():
@@ -317,12 +321,15 @@ def test_unknown_engine_badge_abstains_instead_of_certifying():
     assert_envelope_valid(env)
 
 
-def test_known_engine_badges_still_certify():
-    """R-0005 — hardening must not refuse work that was always legitimate."""
+def test_known_engine_badges_still_certify(tmp_path: Path):
+    """R-0005 — hardening must not refuse work that was always legitimate.
+
+    Route ``generated`` is not that work until the served-result check has a
+    warehouse, an ontology, and an as_of. Missing inputs stay ABSTAIN.
+    """
     for engine_badge, expected in (
         ("certified", "L0_CERTIFIED"),
         ("governed_metric", "L1_GOVERNED_METRIC"),
-        ("generated", "L2_VALIDATED"),
         ("l2_anomalous", "L2_ANOMALOUS"),
     ):
         resp = AskResponse.model_validate(
@@ -339,6 +346,45 @@ def test_known_engine_badges_still_certify():
         assert env["badge"] == expected, f"{engine_badge} should map to {expected}"
         assert env["abstained"] is False
         assert_envelope_valid(env)
+    bare = AskResponse.model_validate(
+        {
+            "answer": "Revenue was 100.",
+            "audit_id": "aud_generated_bare",
+            "route": "generated",
+            "provenance": {"badge": "generated"},
+            "sql_used": "SELECT 1",
+            "rows": [{"revenue_myr": 100.0}],
+        }
+    )
+    refused = map_ask_response_to_envelope(bare, space_id="sp_x", session_id="ses_k")
+    assert refused["badge"] == "ABSTAIN"
+    assert refused["abstained"] is True
+    assert_envelope_valid(refused)
+    db = tmp_path / "map.duckdb"
+    ensure_demo_warehouse(db)
+    onto = load_verified_ontology(db)
+    assert onto is not None
+    checked = AskResponse.model_validate(
+        {
+            "answer": "There are 5 locations.",
+            "audit_id": "aud_generated_checked",
+            "route": "generated",
+            "provenance": {"badge": "generated"},
+            "sql_used": "SELECT COUNT(*) AS n FROM locations",
+            "rows": [{"n": 5}],
+        }
+    )
+    passed = map_ask_response_to_envelope(
+        checked,
+        space_id="sp_x",
+        session_id="ses_k",
+        warehouse=db,
+        ontology=onto,
+        as_of="2026-10-09T00:00:00Z",
+    )
+    assert passed["badge"] == "L2_VALIDATED"
+    assert passed["abstained"] is False
+    assert_envelope_valid(passed)
 
 
 def test_a_refusal_never_arrives_as_a_validated_answer():
