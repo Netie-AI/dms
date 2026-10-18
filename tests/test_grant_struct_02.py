@@ -1090,8 +1090,6 @@ def test_scalar_functions_serve_and_readers_refuse() -> None:
         "SELECT CAST(42 AS INTEGER)",
         "SELECT 5 UNION ALL SELECT 6",
         "SELECT date_trunc('day', DATE '2020-01-01')",
-        "SELECT * FROM generate_series(1, 3)",
-        "SELECT * FROM unnest([1, 2, 3])",
     )
     assert (
         serve_gap(
@@ -1111,6 +1109,9 @@ def test_scalar_functions_serve_and_readers_refuse() -> None:
     )
     for sql in no_table:
         assert serve_gap(sql, grantable=grants, dialect="duckdb") == "ungranted", sql
+    # A generator in FROM is a table function: not a relation (round 3).
+    for sql in ("SELECT * FROM generate_series(1, 3)", "SELECT * FROM unnest([1, 2, 3])"):
+        assert serve_gap(sql, grantable=grants, dialect="duckdb") == "sql_relation_not_granted"
     refuse = (
         "SELECT * FROM read_csv('x.csv')",
         "SELECT * FROM read_parquet('x.parquet')",
@@ -1216,32 +1217,34 @@ def test_ungranted_name_stays_out_of_both_envelopes(
     assert all(planted not in str(item) for item in reasons)
 
 
+# (sql, code). A generator in FROM is a table function, so it is not a
+# relation at all (round 3); the literal shapes cite no base table.
 _NO_TABLE = (
-    "SELECT 1",
-    "SELECT 'literal'",
-    "SELECT CAST(42 AS INTEGER)",
-    "SELECT 5 UNION ALL SELECT 6",
-    "VALUES (1), (2)",
-    "SELECT * FROM generate_series(1, 3)",
-    "SELECT * FROM range(3)",
-    "SELECT * FROM unnest([1, 2, 3])",
+    ("SELECT 1", "ungranted"),
+    ("SELECT 'literal'", "ungranted"),
+    ("SELECT CAST(42 AS INTEGER)", "ungranted"),
+    ("SELECT 5 UNION ALL SELECT 6", "ungranted"),
+    ("VALUES (1), (2)", "ungranted"),
+    ("SELECT * FROM generate_series(1, 3)", "sql_relation_not_granted"),
+    ("SELECT * FROM range(3)", "sql_relation_not_granted"),
+    ("SELECT * FROM unnest([1, 2, 3])", "sql_relation_not_granted"),
 )
 
 
-@pytest.mark.parametrize("sql", _NO_TABLE)
+@pytest.mark.parametrize(("sql", "code"), _NO_TABLE)
 def test_no_granted_base_table_is_a_direct_http_refusal(
-    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    sql: str, code: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Each no-source shape is bare ungranted, before EXPLAIN, over HTTP.
+    """Each no-source shape is a named refusal, before EXPLAIN, over HTTP.
 
-    A cast around a literal and a union of literal selects are the same
-    outcome. The parsed tree cites no base table.
+    A cast around a literal and a union of literal selects are bare
+    ungranted: the parse cites no base table. A generator is not a relation.
     """
     from dms_api.app import create_app
     from dms_api.settings import Settings, get_settings
     from fastapi.testclient import TestClient
 
-    assert serve_gap(sql, grantable={"orders"}, dialect="duckdb") == "ungranted"
+    assert serve_gap(sql, grantable={"orders"}, dialect="duckdb") == code
     db = ensure_demo_warehouse(tmp_path / "notable.duckdb")
 
     class _Plant:
@@ -1286,24 +1289,32 @@ def test_no_granted_base_table_is_a_direct_http_refusal(
     assert env["rows"] == [], sql
     assert env["answer_id"] == "ans_gen01_abstain", sql
     blob = json.dumps(env)
-    assert "ungranted" in blob, sql
+    assert code in blob, sql
     assert "explain:" not in blob, sql
     assert plant.submits == [], sql
 
 
-def test_generators_serve_only_beside_a_granted_table(
+def test_generators_are_not_relations_but_a_scalar_unnest_serves(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A generator alone is ungranted. Beside a grant it serves. A reader does not."""
+    """A generator in FROM is a table function, alone or beside a grant.
+
+    Round 3 (fail closed): only a table name, a subquery or VALUES is a FROM
+    item. ``unnest`` as a scalar over a granted table still serves. A reader
+    does not.
+    """
     from dms_executor.generative_ask import validate_compiled_sql
 
     grants = {"orders"}
     assert (
         serve_gap("SELECT * FROM generate_series(1, 3)", grantable=grants, dialect="duckdb")
-        == "ungranted"
+        == "sql_relation_not_granted"
     )
     series_join = "SELECT COUNT(*) AS n FROM orders JOIN generate_series(1, 3) g ON TRUE"
-    assert serve_gap(series_join, grantable=grants, dialect="duckdb") is None
+    assert (
+        serve_gap(series_join, grantable=grants, dialect="duckdb")
+        == "sql_relation_not_granted"
+    )
     joined_reader = "SELECT * FROM orders JOIN read_csv('x.csv') t ON TRUE"
     gap = serve_gap(joined_reader, grantable=grants, dialect="duckdb")
     assert gap
@@ -1341,12 +1352,14 @@ def test_generators_serve_only_beside_a_granted_table(
     )
     assert alone["abstained"] is True
     assert alone["sql_used"] is None
-    assert "ungranted" in _reason(alone)
+    assert "sql_relation_not_granted" in _reason(alone)
     assert "explain:" not in json.dumps(alone)
     series = exe.answer_user_sql(series_join, space_id=OPS, session_id="ses_series_join")
     assert_envelope_valid(series)
-    assert series["abstained"] is False
-    assert series["rows"] == [{"n": 3}]
+    assert series["abstained"] is True
+    assert series["rows"] == []
+    assert series["sql_used"] is None
+    assert "sql_relation_not_granted" in _reason(series)
     unnest = exe.answer_user_sql(unnest_sql, space_id=OPS, session_id="ses_unnest")
     assert_envelope_valid(unnest)
     assert unnest["abstained"] is False
@@ -1770,6 +1783,7 @@ def _refused_everywhere(
     assert user["text"] == customer_abstain_text(code), name
     assert f"validate:{code}" in _reason(user), name
     assert str(_SECRET) not in json.dumps(user), name
+    assert "bank_accounts" not in json.dumps(user), name
 
     copy = tmp_path / f"{name}_plant.duckdb"
     shutil.copy(db, copy)
@@ -1782,6 +1796,7 @@ def _refused_everywhere(
     assert env["text"] == customer_abstain_text(code), name
     assert f"validate:{code}" in _reason(env), name
     assert str(_SECRET) not in json.dumps(env), name
+    assert "bank_accounts" not in json.dumps(env), name
     assert plant.submits == [], name
 
 
@@ -1840,9 +1855,8 @@ def test_table_function_beside_a_grant_is_not_a_generator(
 
     ``histogram_values`` and ``histogram`` are table macros over
     ``query_table``: they read the named table and return 424242. The others
-    read a file, change logging, or expose settings and secrets. Only the
-    generators sqlglot types (``generate_series`` / ``range``, ``unnest``)
-    serve beside a grant.
+    read a file, change logging, or expose settings and secrets. Since round
+    3 no table function is a FROM item, generators included.
     """
     if reads_secret:
         con = duckdb.connect(str(_secret_warehouse(tmp_path / f"{name}_proof.duckdb")))
@@ -1853,22 +1867,353 @@ def test_table_function_beside_a_grant_is_not_a_generator(
     _refused_everywhere(sql, "sql_relation_not_granted", name, tmp_path, monkeypatch)
 
 
-def test_typed_generators_still_serve_beside_a_grant(tmp_path: Path) -> None:
-    db = ensure_demo_warehouse(tmp_path / "gen_ok.duckdb")
+# --- Round 3: every relation slot, and DuckDB's own parse ---
+#
+# On cb84d84 ``_allow`` looked only at ``exp.Table`` nodes. sqlglot parses
+# ``LATERAL f(...)`` as a Lateral over a function (or a Dot for
+# ``main.f(...)``) with no Table node, and it reads DuckDB's ``(TABLE t)`` as a
+# column, so neither read was checked. Each statement below also reads the
+# granted ``inventory`` (or ``locations``), so "no granted base table" is not
+# what refuses it. ``proof`` is text DuckDB itself returns for the statement
+# on the planted file: the secret, the ungranted table's name, or (for a
+# predicate) the 7 inventory rows that only match when it reads 424242.
+#
+# (name, sql, code, proof, served on cb84d84)
+_ROUND3_HOLES = (
+    # LATERAL table function.
+    (
+        "lateral_table_function_generate_series",
+        "SELECT g.n AS n FROM inventory i, "
+        "LATERAL generate_series((TABLE bank_accounts), 424242) AS g(n)",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_table_function_duckdb_tables",
+        "SELECT t.table_name AS n FROM inventory i, LATERAL duckdb_tables() t",
+        "sql_relation_not_granted",
+        "bank_accounts",
+        True,
+    ),
+    # LATERAL table macro, in every join form and position.
+    (
+        "lateral_macro_comma",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_cross_join",
+        "SELECT h.bin AS n FROM inventory i "
+        "CROSS JOIN LATERAL histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_join_on_true",
+        "SELECT h.bin AS n FROM inventory i "
+        "JOIN LATERAL histogram_values(bank_accounts, balance_myr) h ON TRUE",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_left_join",
+        "SELECT h.bin AS n FROM inventory i "
+        "LEFT JOIN LATERAL histogram_values(bank_accounts, balance_myr) h ON TRUE",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_first_item",
+        "SELECT h.bin AS n FROM LATERAL histogram_values(bank_accounts, balance_myr) h, "
+        "inventory i",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_schema_dot",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL main.histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_catalog_dot",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL system.main.histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_in_cte",
+        "WITH c AS (SELECT h.bin AS n FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h) SELECT n FROM c",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_scalar_subquery",
+        "SELECT (SELECT max(h.bin) FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h) AS n "
+        "FROM inventory LIMIT 1",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_in_subquery",
+        "SELECT COUNT(*) AS n FROM inventory WHERE 424242 IN "
+        "(SELECT h.bin FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h)",
+        "sql_relation_not_granted",
+        "(7,)",
+        True,
+    ),
+    (
+        "lateral_macro_union_branch",
+        "SELECT COUNT(*) AS n FROM inventory UNION ALL SELECT h.bin FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_histogram",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL histogram('bank_accounts', balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    # LATERAL query() / query_table(): refused on cb84d84 too; kept as guards.
+    (
+        "lateral_query_table",
+        "SELECT q.balance_myr AS n FROM inventory i, LATERAL query_table('bank_accounts') q",
+        "sql_relation_not_granted",
+        "424242",
+        False,
+    ),
+    (
+        "lateral_query_table_list",
+        "SELECT q.balance_myr AS n FROM inventory i, "
+        "LATERAL query_table(['bank_accounts'], true) q",
+        "sql_relation_not_granted",
+        "424242",
+        False,
+    ),
+    (
+        "lateral_query",
+        "SELECT q.balance_myr AS n FROM inventory i, "
+        "LATERAL query('SELECT * FROM bank_accounts') q",
+        "sql_relation_not_granted",
+        "424242",
+        False,
+    ),
+    # DuckDB's ``TABLE t`` form: sqlglot reads it as a column.
+    (
+        "table_form_cte",
+        "WITH c AS (TABLE bank_accounts) SELECT c.balance_myr AS n FROM inventory i, c",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "table_form_scalar",
+        "SELECT (TABLE bank_accounts) AS n FROM inventory LIMIT 1",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "table_form_predicate",
+        "SELECT COUNT(*) AS n FROM inventory WHERE (TABLE bank_accounts) = 424242",
+        "ungranted",
+        "(7,)",
+        True,
+    ),
+    (
+        "table_form_from",
+        "SELECT x.balance_myr AS n FROM inventory i, (TABLE bank_accounts) x",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    # Alias shadowing: a name that hides what the item really reads.
+    (
+        "alias_shadow_cte_named_table",
+        'WITH "table" AS (SELECT 0 AS balance_myr) '
+        "SELECT x.balance_myr AS n FROM inventory i, (TABLE bank_accounts) AS x",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "alias_shadow_macro_as_granted_name",
+        "SELECT inventory.bin AS n FROM locations l, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) AS inventory",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "alias_shadow_table_as_granted_name",
+        "SELECT inventory.balance_myr AS n FROM locations l, bank_accounts AS inventory",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    (
+        "alias_shadow_derived_table",
+        "SELECT balance_myr AS n FROM bank_accounts, (SELECT 1 AS z) AS bank_accounts, "
+        "inventory LIMIT 1",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    # A recursive CTE named after a real table.
+    (
+        "recursive_cte_named_ungranted_table",
+        "WITH RECURSIVE bank_accounts AS (SELECT balance_myr FROM bank_accounts "
+        "UNION ALL SELECT 1 WHERE false) "
+        "SELECT b.balance_myr AS n FROM bank_accounts b, inventory i LIMIT 1",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    (
+        "recursive_cte_named_granted_table",
+        "WITH RECURSIVE inventory(n) AS ((TABLE bank_accounts) "
+        "UNION ALL SELECT n FROM inventory WHERE false) SELECT n FROM inventory",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "recursive_cte_named_granted_table_scalar",
+        "WITH RECURSIVE inventory(n) AS (SELECT (TABLE bank_accounts) "
+        "UNION ALL SELECT n FROM inventory WHERE false) SELECT n FROM inventory",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "recursive_cte_named_granted_table_lateral",
+        "WITH RECURSIVE inventory(n) AS (SELECT h.bin FROM locations l, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h "
+        "UNION ALL SELECT n FROM inventory WHERE false) SELECT n FROM inventory",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "sql", "code", "proof", "served_before"),
+    _ROUND3_HOLES,
+    ids=[hole[0] for hole in _ROUND3_HOLES],
+)
+def test_every_relation_slot_and_duckdb_parse_is_grant_checked(
+    name: str,
+    sql: str,
+    code: str,
+    proof: str,
+    served_before: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Must-fail on cb84d84 for every ``served_before`` shape (it served them).
+
+    DuckDB proves the read first. Then ``serve_gap`` and
+    ``validate_compiled_sql`` refuse, ``answer_user_sql`` and
+    ``POST /v1/chat/ask`` ABSTAIN with no rows, no values, no SQL and no
+    submit, and neither the secret nor the ungranted table's name is in the
+    envelope.
+    """
+    del served_before
+    con = duckdb.connect(str(_secret_warehouse(tmp_path / f"{name}_proof.duckdb")))
+    try:
+        assert proof in str(con.execute(sql).fetchall()), name
+    finally:
+        con.close()
+    _refused_everywhere(sql, code, name, tmp_path, monkeypatch)
+
+
+def test_duckdb_parse_alone_refuses_what_sqlglot_cannot_see() -> None:
+    """The second net decides on its own: DuckDB's parse, not sqlglot's."""
+    from dms_executor.grant_struct import _duckdb_gap, duckdb_read_relations
+
+    grants = {"inventory", "locations", "shipments"}
+    for name, sql, code, _proof, _before in _ROUND3_HOLES:
+        assert _duckdb_gap(sql, grants, "duckdb", None) == code, name
+    # Parts as written; an enclosing CTE covers a bare name, not a qualified one.
+    parsed = duckdb.sql(
+        "SELECT json_serialize_sql("
+        "'WITH c AS (SELECT 1) SELECT * FROM c, main.c, \"Inventory\", lake.main.t')"
+    ).fetchone()
+    assert parsed is not None
+    tree = json.loads(parsed[0])["statements"]
+    assert duckdb_read_relations(tree) == [("main", "c"), ("Inventory",), ("lake", "main", "t")]
+    # One statement to sqlglot is one statement to DuckDB, or it refuses.
+    assert _duckdb_gap("SELECT 1 FROM inventory; SELECT 2", grants, "duckdb", None) == (
+        "multi_statement"
+    )
+
+
+# Granted reads keep serving, with the exact rows and answer text. The TABLE
+# form and LATERAL subquery forms over a granted table are decided by grant,
+# not by form (cb84d84 refused the TABLE form: sqlglot saw no table in it).
+_ROUND3_SERVE = (
+    "SELECT COUNT(*) AS n FROM inventory",
+    "SELECT COUNT(*) AS n FROM inventory i, LATERAL (SELECT 1 AS one) s",
+    "SELECT COUNT(*) AS n FROM inventory i CROSS JOIN LATERAL (SELECT i.sku) s",
+    "WITH c AS (TABLE inventory) SELECT COUNT(*) AS n FROM c",
+    "SELECT (SELECT COUNT(*) FROM inventory) AS n",
+)
+
+
+@pytest.mark.parametrize("sql", _ROUND3_SERVE)
+def test_granted_reads_still_serve_exact_rows(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _secret_warehouse(tmp_path / "r3_ok.duckdb")
     grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
-    for sql, rows in (
-        ("SELECT COUNT(*) AS n FROM inventory, range(2) r(x)", [{"n": 14}]),
-        ("SELECT COUNT(*) AS n FROM inventory JOIN generate_series(1, 3) g ON TRUE", [{"n": 21}]),
-        ("SELECT COUNT(*) AS n FROM inventory, unnest([1, 2]) u(v)", [{"n": 14}]),
-    ):
-        assert serve_gap(sql, grantable=grants, dialect="duckdb") is None, sql
-        env = Executor(warehouse_path=db).answer_user_sql(
-            sql, space_id=OPS, session_id="ses_gen_ok"
-        )
-        assert_envelope_valid(env)
-        assert env["abstained"] is False, sql
-        assert env["text"] == "Query result.", sql
-        assert env["rows"] == rows, sql
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") is None, sql
+    assert (
+        validate_compiled_sql(sql, grantable=grants, warehouse=db, dialect="duckdb") is None
+    ), sql
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id="ses_r3_ok_user"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is False, sql
+    assert user["rows"] == [{"n": 7}], sql
+    assert user["text"] == "Query result.", sql
+
+    copy = tmp_path / "r3_ok_plant.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is False, sql
+    assert env["badge"] != "ABSTAIN", sql
+    assert env["rows"] == [{"n": 7}], sql
+    assert env["text"] == "Found 1 row(s).\n  - n=7", sql
+    assert _sql_submits(plant.submits), sql
+    assert str(_SECRET) not in json.dumps(env), sql
 
 
 @pytest.mark.parametrize(

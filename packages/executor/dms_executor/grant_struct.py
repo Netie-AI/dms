@@ -8,19 +8,28 @@ subqueries, must be a granted qualified name. A one-part name is a CTE
 reference only where a WITH enclosing it defines that name (scope, not
 spelling); anywhere else it is a relation and the grant decides. A self or
 forward reference inside a CTE body is a relation. A file or external reader
-anywhere in the tree is refused. A generator sqlglot types as one
-(``generate_series`` / ``range``, ``unnest``) is not itself a grant; it is
-served only beside a granted base table. Any other table function is not a
-relation and refuses. A name whose case fold is not ASCII-only is not
-settled: sqlglot folds with Python ``str.lower``, the engine folds ASCII. The
-default schema is part of the comparison, so a different schema is not the
-granted table. More than one statement refuses, and so does one that is not a
-query. A parse failure refuses. No function-name list and no split on ``;``.
+anywhere in the tree is refused. Every FROM, JOIN and LATERAL item is a plain
+table name, a subquery or a VALUES list; anything else (a table function, a
+table macro, a generator, ``LATERAL f(...)``) is not a relation and refuses.
+A name whose case fold is not ASCII-only is not settled: sqlglot folds with
+Python ``str.lower``, the engine folds ASCII. The default schema is part of
+the comparison, so a different schema is not the granted table. More than one
+statement refuses, and so does one that is not a query. A parse failure
+refuses. No function-name list and no split on ``;``.
+
+sqlglot does not parse every statement the way DuckDB binds it (``(TABLE t)``
+is a column to sqlglot and ``SELECT * FROM t`` to DuckDB). For the serving
+dialect the statement is therefore also grant-checked on DuckDB's own parse
+(``json_serialize_sql``, parse only, nothing runs): every base table there
+goes through the same allow-list, and any other table reference refuses.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import string
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -109,14 +118,17 @@ def serve_gap(
     ``sql_relation_unresolved``. A reader the parser types as a table or
     external-read function, in any position, is ``sql_relation_not_granted``.
     A missing name in the default schema is bare ``ungranted``. The
-    relation is not part of that code.     A statement whose only source is a
-    generator, a literal, a literal wrapped in a cast, or a union of
-    those selects is the same code. That is the parsed tree: no granted
-    base table on either side. A file or external reader is
-    ``sql_relation_not_granted`` even beside a granted table. A pure
-    generator is served only when the statement also reads a granted base
-    table. sqlglot's node type decides what a generator is; any other table
-    function in a relation slot is ``sql_relation_not_granted``.
+    relation is not part of that code. A statement whose only source is a
+    literal, a literal wrapped in a cast, or a union of those selects is the
+    same code. That is the parsed tree: no granted base table on either
+    side. A file or external reader is ``sql_relation_not_granted`` even
+    beside a granted table, and so is any FROM, JOIN or LATERAL item that is
+    not a table name, a subquery or a VALUES list (a table function, a table
+    macro, a generator).
+
+    Last, for the serving dialect, DuckDB's own parse of the same text
+    (``_duckdb_gap``): one statement, and every base table it reads passes
+    the same allow-list. That is where sqlglot and DuckDB disagree.
     """
     if _engine(dialect) is None:
         return "sql_dialect_unknown"
@@ -141,7 +153,13 @@ def serve_gap(
     if not isinstance(trees[0], (exp.Query, exp.Values)):
         return "statement_not_allowed"
     catalog = _catalog_for(trees[0], warehouse, dialect)
-    return _allow(trees[0], grantable, dialect, catalog)
+    # For the serving dialect "reads a granted base table" is decided on
+    # DuckDB's parse: sqlglot does not see ``(TABLE t)`` as a read at all.
+    serving = _dialect_name(dialect) == SERVING_DIALECT
+    gap = _allow(trees[0], grantable, dialect, catalog, need_granted=not serving)
+    if gap or not serving:
+        return gap
+    return _duckdb_gap(sql, grantable, dialect, catalog)
 
 
 def relation_gap(name: str, *, grantable: set[str], dialect: str | None) -> str | None:
@@ -480,12 +498,24 @@ def _cte_in_scope(table: exp.Table, name: str, engine: Dialect) -> bool:
     return False
 
 
+# What a FROM or JOIN item may be. A Lateral is checked on its own: only
+# ``LATERAL (subquery)``.
+_RELATION_ITEMS = (exp.Table, exp.Subquery, exp.Values, exp.Lateral)
+
+
 def _allow(
     tree: exp.Expression,
     grantable: set[str],
     dialect: str | None,
     catalog: _Catalog | None = None,
+    *,
+    need_granted: bool = True,
 ) -> str | None:
+    """None when every relation in ``tree`` is granted.
+
+    ``need_granted`` also asks for at least one granted base table. The
+    serving dialect leaves that to DuckDB's parse (``_duckdb_gap``).
+    """
     found = _engine(dialect)
     if found is None:
         return "sql_dialect_unknown"
@@ -500,17 +530,22 @@ def _allow(
     unsettled = False
     saw_granted = False
     missing: set[str] = set()
+    # Every relation slot, not only the ones sqlglot types as a Table.
+    # ``LATERAL f(...)`` is a Lateral over a function (or a Dot), with no
+    # Table node at all, and ``unnest(...)`` in FROM is an Unnest.
+    for clause in tree.find_all(exp.From, exp.Join, exp.Lateral):
+        item = clause.this
+        if isinstance(clause, exp.Lateral):
+            if not isinstance(item, exp.Subquery):
+                not_relation = True
+        elif not isinstance(item, _RELATION_ITEMS):
+            not_relation = True
     for table in tree.find_all(exp.Table):
         this = table.this
         if not isinstance(this, exp.Identifier):
-            # A generator sqlglot types as one is not a granted base table.
-            # It is served only when some other relation in this statement
-            # is granted. Any other table function is not a relation, even
-            # one the catalog would list as a table function: a table macro
-            # can read a named table (``histogram_values(t, c)`` is
+            # A table function is not a relation, generator or not. A table
+            # macro can read a named table (``histogram_values(t, c)`` is
             # ``query_table``), a file, the settings or the secrets.
-            if isinstance(this, (exp.GenerateSeries, exp.Unnest)):
-                continue
             if isinstance(this, exp.Func):
                 not_relation = True
             else:
@@ -577,9 +612,178 @@ def _allow(
         return "sql_relation_unresolved"
     if not_relation or qualified_miss:
         return "sql_relation_not_granted"
-    if missing or not saw_granted:
+    if missing or (need_granted and not saw_granted):
         return "ungranted"
     return None
+
+
+# DuckDB's own parse, as ``json_serialize_sql`` gives it. A query node carries
+# "modifiers", a table reference carries "sample", an expression "class".
+# Same walk as GRANT-UNICODE-01 (#438, ``_duckdb_read_names``), returning the
+# qualified name so the allow-list above decides, not a bare-name match.
+_DUCKDB_QUERY_NODES = frozenset(
+    {"SELECT_NODE", "SET_OPERATION_NODE", "RECURSIVE_CTE_NODE", "CTE_NODE"}
+)
+_DUCKDB_TABLE_REFS = frozenset(
+    {"BASE_TABLE", "JOIN", "SUBQUERY", "EXPRESSION_LIST", "EMPTY", "EMPTY_FROM", "PIVOT"}
+)
+
+_PARSER: tuple[int, Any] | None = None
+_PARSER_LOCK = threading.Lock()
+
+
+def _duckdb_fold(name: str) -> str:
+    """Fold a name the way DuckDB matches it: ASCII letters only."""
+    return name.translate(_ASCII_LOWER)
+
+
+def _duckdb_cursor() -> Any:
+    """A cursor on one in-memory DuckDB used only to parse. No file, no access.
+
+    One database per process (a forked worker opens its own); each call
+    takes its own cursor, so threads do not share one.
+    """
+    global _PARSER
+    import duckdb
+
+    with _PARSER_LOCK:
+        if _PARSER is None or _PARSER[0] != os.getpid():
+            con = duckdb.connect(
+                ":memory:",
+                config={
+                    "enable_external_access": False,
+                    "autoload_known_extensions": False,
+                    "autoinstall_known_extensions": False,
+                },
+            )
+            _PARSER = (os.getpid(), con)
+        return _PARSER[1].cursor()
+
+
+def _duckdb_statements(sql: str) -> list[Any] | str:
+    """DuckDB's parse of ``sql`` (one statement), or the refusal.
+
+    ``json_serialize_sql`` parses and runs nothing. A syntax error DuckDB
+    reports is ``explain:ParserException``, the code EXPLAIN gives for it,
+    so the model ladder still feeds the parser error back. A statement
+    DuckDB will not serialize (not a SELECT) is ``statement_not_allowed``.
+    Two statements where sqlglot saw one is ``multi_statement``.
+    """
+    import duckdb
+
+    try:
+        cur = _duckdb_cursor()
+    except duckdb.Error:
+        return "sql_relation_unresolved"
+    try:
+        row = cur.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
+        tree = json.loads(row[0]) if row else None
+    except (duckdb.Error, TypeError, ValueError, RecursionError):
+        return "sql_relation_unresolved"
+    finally:
+        cur.close()
+    if not isinstance(tree, dict):
+        return "sql_relation_unresolved"
+    if tree.get("error") is not False:
+        kind = str(tree.get("error_type") or "")
+        if kind == "parser":
+            return "explain:ParserException"
+        if kind == "not implemented":
+            return "statement_not_allowed"
+        return "sql_relation_unresolved"
+    statements = tree.get("statements")
+    if not isinstance(statements, list) or not statements:
+        return "sql_relation_unresolved"
+    if len(statements) != 1:
+        return "multi_statement"
+    return statements
+
+
+def duckdb_read_relations(statements: Any) -> list[tuple[str, ...]] | None:
+    """Every base table DuckDB's parse reads, as its written name parts.
+
+    Wherever a BASE_TABLE sits (FROM, a CTE body, any expression) it counts.
+    An unqualified name is skipped only when an enclosing WITH certainly
+    binds it: a CTE body sees the CTEs before it, the query body sees all of
+    them, names compare by DuckDB's ASCII fold. A self or forward reference
+    and the recursive term of a WITH RECURSIVE count as a read (fails closed).
+
+    None means the parse holds something that is not a plain table: a table
+    function or macro (``histogram_values``, ``query_table``, ``range``,
+    ``unnest`` in FROM), a SHOW / DESCRIBE / SUMMARIZE reference, or a node
+    type this walk does not know.
+    """
+    reads: list[tuple[str, ...]] = []
+
+    def walk(node: Any, visible: frozenset[str]) -> bool:
+        if isinstance(node, list):
+            return all(walk(item, visible) for item in node)
+        if not isinstance(node, dict):
+            return True
+        kind = node.get("type")
+        if isinstance(kind, str) and "class" not in node:
+            if "modifiers" in node and kind not in _DUCKDB_QUERY_NODES:
+                return False
+            if ("sample" in node or "table_name" in node) and "modifiers" not in node:
+                if kind not in _DUCKDB_TABLE_REFS:
+                    return False
+            if kind == "BASE_TABLE":
+                table = str(node.get("table_name") or "")
+                schema = str(node.get("schema_name") or "")
+                catalog = str(node.get("catalog_name") or "")
+                if not table or (catalog and not schema):
+                    return False
+                if schema or _duckdb_fold(table) not in visible:
+                    reads.append(tuple(part for part in (catalog, schema, table) if part))
+        ctes = node.get("cte_map")
+        if ctes is not None:
+            entries = ctes.get("map") if isinstance(ctes, dict) else None
+            if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+                return False
+            keys = [_duckdb_fold(str(e.get("key") or "")) for e in entries]
+            for at, entry in enumerate(entries):
+                scope = (visible | set(keys[:at])) - set(keys[at:])
+                if not walk(entry, frozenset(scope)):
+                    return False
+            visible = visible | frozenset(keys)
+        return all(walk(value, visible) for key, value in node.items() if key != "cte_map")
+
+    try:
+        ok = walk(statements, frozenset())
+    except RecursionError:
+        return None
+    return reads if ok else None
+
+
+def _duckdb_gap(
+    sql: str, grantable: set[str], dialect: str | None, catalog: _Catalog | None
+) -> str | None:
+    """None when DuckDB's own parse reads a granted table and nothing else.
+
+    The serving dialect only: that is the engine that runs the text. Each
+    base table DuckDB reads is quoted exactly as written and goes through
+    ``_allow`` with the same grants and the catalog the sqlglot pass already
+    read (no second lease). A qualified name only DuckDB sees has no catalog
+    then, so it binds only by its exact grant key (fails closed). A
+    statement that reads no base table at all is bare ``ungranted``.
+    """
+    parsed = _duckdb_statements(sql)
+    if isinstance(parsed, str):
+        return parsed
+    reads = duckdb_read_relations(parsed)
+    if reads is None:
+        return "sql_relation_not_granted"
+    if not reads:
+        return "ungranted"
+    cited = ", ".join(".".join(_quote_part(part) for part in parts) for parts in reads)
+    trees = _trees(f"SELECT 1 FROM {cited}", dialect)
+    if trees is None or len(trees) != 1:
+        return "sql_relation_unresolved"
+    return _allow(trees[0], grantable, dialect, catalog)
+
+
+def _quote_part(part: str) -> str:
+    return '"' + part.replace('"', '""') + '"'
 
 
 def _parsed_table(text: str, dialect_name: str, engine: Dialect) -> exp.Table | None:
