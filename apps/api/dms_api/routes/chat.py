@@ -188,22 +188,11 @@ def _space_refusal_envelope(
     )
 
 
-def _release(env: dict[str, Any], ask: Any, space_id: str | None) -> dict[str, Any]:
-    """Scrub ungranted names immediately before FastAPI serialises the body.
-
-    The turn's grant set comes from the executor, as the manifest's does. If
-    it cannot be read, an answered body is left to the validator.
-    """
+def _release(env: dict[str, Any], ask: Any) -> dict[str, Any]:
+    """Scrub ungranted names immediately before FastAPI serialises the body."""
     from dms_api.wiring import scrub_ask_envelope
 
-    grants: set[str] | None = None
-    lookup = getattr(ask, "grantable_tables", None)
-    if callable(lookup):
-        try:
-            grants = set(lookup(space_id=space_id))
-        except Exception as exc:  # noqa: BLE001 - the scrub must not fail the ask
-            logger.warning("name_echo_grants_unread: %s", type(exc).__name__)
-    return scrub_ask_envelope(env, warehouse=getattr(ask, "_warehouse", None), grants=grants)
+    return scrub_ask_envelope(env, warehouse=getattr(ask, "_warehouse", None))
 
 
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
@@ -374,7 +363,7 @@ def _answer_ask(
             raise HTTPException(status_code=403, detail=decision.reason)
         env = ask.demo_ask(body.question, space_id=body.space_id)
         env["ask_mode"] = "demo"
-        return _release(env, ask, body.space_id)
+        return _release(env, ask)
 
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
@@ -383,9 +372,7 @@ def _answer_ask(
         if settings.dms_demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
             return _release(
-                _stamp_demo_fallback(env, "fallback — Cortex client missing"),
-                ask,
-                body.space_id,
+                _stamp_demo_fallback(env, "fallback — Cortex client missing"), ask
             )
         raise HTTPException(
             status_code=503,
@@ -406,7 +393,6 @@ def _answer_ask(
                     ask_path=body.ask_path,
                 ),
                 ask,
-                body.space_id,
             )
         except GroundingRefused as exc:
             # Refusing is the fix, not the failure: this used to widen the manifest
@@ -459,7 +445,6 @@ def _answer_ask(
                         session_id=body.session_id,
                     ),
                     ask,
-                    body.space_id,
                 )
 
             # Never mask policy refusals with demo numbers (0 confidently wrong).
@@ -467,9 +452,7 @@ def _answer_ask(
                 logger.warning("live ask failed (%s); demo fallback", exc.code)
                 env = ask.demo_ask(body.question, space_id=body.space_id)
                 return _release(
-                    _stamp_demo_fallback(env, f"fallback after live error: {exc.code}"),
-                    ask,
-                    body.space_id,
+                    _stamp_demo_fallback(env, f"fallback after live error: {exc.code}"), ask
                 )
             raise HTTPException(
                 status_code=_status_for(exc.code, exc.detail),
@@ -480,9 +463,7 @@ def _answer_ask(
                 logger.warning("live ask failed: %s; demo fallback", exc)
                 env = ask.demo_ask(body.question, space_id=body.space_id)
                 return _release(
-                    _stamp_demo_fallback(env, "fallback — live ask failed"),
-                    ask,
-                    body.space_id,
+                    _stamp_demo_fallback(env, "fallback — live ask failed"), ask
                 )
             # A slow engine and a broken one are different answers. 504 tells the
             # caller to try again; 503 says the dependency is out. The launcher

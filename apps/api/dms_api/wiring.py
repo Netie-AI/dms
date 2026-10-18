@@ -132,18 +132,15 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     return env
 
 
-def scrub_ask_envelope(
-    env: dict[str, Any], *, warehouse: Any = None, grants: set[str] | None = None
-) -> dict[str, Any]:
+def scrub_ask_envelope(env: dict[str, Any], *, warehouse: Any = None) -> dict[str, Any]:
     """Last step before an ask body is serialised.
 
     Routes stay off ``dms_executor``. The re-attached loop is already on
-    ``env``. Loop SQL and ``raw_reply`` are not rewritten. ``grants`` is
-    the turn's own grant set, when the route has it.
+    ``env``. Loop SQL and ``raw_reply`` are not rewritten.
     """
     if not isinstance(env, dict):
         return env
-    return dms_executor.hide_echo(env, "", warehouse=warehouse, grants=grants)
+    return dms_executor.hide_echo(env, "", warehouse=warehouse)
 
 
 def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:

@@ -735,11 +735,7 @@ class Executor:
             # this executor's warehouse, not DMS_WAREHOUSE_DB. Chat ask scrubs
             # again as the last step before serialisation.
             if isinstance(masked, dict):
-                try:
-                    grants: set[str] | None = set(self.grantable_tables(space_id=space_id))
-                except Exception:  # noqa: BLE001 - the scrub must not fail the ask
-                    grants = None
-                hide_echo(masked, "", warehouse=getattr(self, "_warehouse", None), grants=grants)
+                hide_echo(masked, "", warehouse=getattr(self, "_warehouse", None))
             return masked
         finally:
             if own_control and control_token is not None:

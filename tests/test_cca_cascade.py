@@ -203,7 +203,9 @@ class _MarkerCortex:
         return AskResponse(
             answer="Lease revenue is 350.0 MYR.",
             badge="certified",
-            sql_used="SELECT SUM(amount) AS total FROM deals",
+            # A table the turn grants: an answer whose SQL reads an ungranted
+            # relation is withheld at the boundary (NAME-ECHO-01).
+            sql_used="SELECT SUM(quantity_kg) AS total FROM transactions",
             rows=[{"total": 350.0}],
             assumptions="cca-e2e",
             audit_id="aud_cca",

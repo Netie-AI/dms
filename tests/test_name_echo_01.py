@@ -978,3 +978,16 @@ def test_an_apostrophe_in_prose_does_not_stop_the_scrub() -> None:
     )
     assert abstain["text"] != ""
     assert "alerts" not in abstain["text"] and "plant's" in abstain["text"]
+
+
+def test_an_answer_over_a_warehouse_alias_of_a_granted_table_is_served() -> None:
+    """Cortex names a lake table by its warehouse_ alias; that is the granted table."""
+    from dms_executor.name_echo import hide_echo
+
+    sql = (
+        "SELECT COUNT(*) AS n FROM warehouse_inventory "
+        'JOIN "warehouse"."locations" USING (location_id)'
+    )
+    env = hide_echo(_answered(sql, "There are 4 items."), "", grants={"inventory", "locations"})
+    assert env["abstained"] is False
+    assert env["sql_used"] == sql and env["text"] == "There are 4 items."

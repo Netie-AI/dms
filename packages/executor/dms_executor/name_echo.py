@@ -595,6 +595,12 @@ def _ungranted(
         name = ".".join(parts)
         if name.casefold() in _CODE_TAILS or table_is_granted(name, grants):
             continue
+        # Cortex names a lake table by its warehouse_ alias.
+        bare = parts[-1]
+        if bare.casefold().startswith("warehouse_") and table_is_granted(
+            bare[len("warehouse_") :], grants
+        ):
+            continue
         out.append(parts)
     return out
 
@@ -639,9 +645,16 @@ def _sql_tables(env: dict[str, Any]) -> list[tuple[str, ...]]:
 def _sql_parts(
     env: dict[str, Any], warehouse: Path | None, grants: set[str] | None = None
 ) -> list[tuple[str, ...]]:
-    """Relations the SQL reads that ``grants`` (or the derived set) does not hold."""
+    """Relations the SQL reads that ``grants`` (or the derived set) does not hold.
+
+    The derived set lists uploads, which opens a serving connection, so it is
+    read only when there is a name to judge.
+    """
+    tables = _sql_tables(env)
+    if not tables:
+        return []
     sql_grants = grants if grants is not None else _sql_grant_names(env, warehouse)
-    return _ungranted(_sql_tables(env), sql_grants)
+    return _ungranted(tables, sql_grants)
 
 
 def _abstain_on_breach(env: dict[str, Any], breach: list[tuple[str, ...]]) -> dict[str, Any]:
@@ -673,6 +686,19 @@ def _scrub_field(value: Any, parts_list: list[tuple[str, ...]]) -> Any:
     return _scrub_value(cleared, parts_list)
 
 
+def _turn_grants(env: dict[str, Any]) -> set[str] | None:
+    """What the manifest granted this turn, as the envelope records it.
+
+    ``grounded_tables`` is filled from the minted manifest. Absent or empty,
+    there is nothing here to judge an answer by.
+    """
+    raw = env.get("grounded_tables")
+    if not isinstance(raw, list):
+        return None
+    names = {item.strip() for item in raw if isinstance(item, str) and item.strip()}
+    return names or None
+
+
 def hide_echo(
     env: dict[str, Any],
     reason: str,
@@ -685,24 +711,24 @@ def hide_echo(
     Called at the HTTP boundary, after a loop has been re-attached.
     ``sql_used`` is included. ``loop[].sql`` and ``raw_reply`` are not.
 
-    ``grants`` is the turn's own grant set (``Executor.grantable_tables``).
     An answered envelope never has names from its SQL removed: the SQL is
-    its source. When ``grants`` is known and that SQL reads a relation
-    outside it, the answer becomes an abstain instead. Without ``grants``
-    an answered envelope's SQL is left to the validator that admitted it.
+    its source. It is judged by ``grants`` when given, else by the tables
+    the manifest granted this turn (``grounded_tables``). When its SQL reads
+    a relation outside that set, the answer becomes an abstain instead.
+    With neither, the answer is left to the validator that admitted it.
     """
     if env.get("abstained") is False:
-        breach = _sql_parts(env, warehouse, grants) if grants is not None else []
+        judge = grants if grants is not None else _turn_grants(env)
+        breach = _sql_parts(env, warehouse, judge) if judge is not None else []
         if breach:
             return _abstain_on_breach(env, breach)
         sql_parts: list[tuple[str, ...]] = []
     else:
         sql_parts = _sql_parts(env, warehouse, grants)
-    tail_grants = grants if grants is not None else _grant_names(env, warehouse)
-    parts_list = _merge_parts(
-        _ungranted(_collect_parts(reason, env), tail_grants),
-        sql_parts,
-    )
+    tails = _collect_parts(reason, env)
+    if tails:
+        tails = _ungranted(tails, grants if grants is not None else _grant_names(env, warehouse))
+    parts_list = _merge_parts(tails, sql_parts)
     for key in _NAME_KEYS:
         if key not in env or key in _ID_KEYS:
             continue
