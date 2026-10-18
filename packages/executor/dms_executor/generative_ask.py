@@ -17,6 +17,7 @@ Does not expand certified exact-match packs. Does not invent provider keys.
 from __future__ import annotations
 
 import copy
+import json
 import re
 import string
 from collections.abc import Callable, Sequence
@@ -26,6 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import sqlglot
 from cortex_client.compute import (
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
@@ -50,6 +52,7 @@ from cortex_client.qualifiers import (
     unhonored_qualifier_reason,
 )
 from dms_core.pii import mask_unknown_keys
+from sqlglot import exp
 
 from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
@@ -103,6 +106,14 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.space_ontology import (
+    REASON_NO_DECLARED_MEASURE,
+    REASON_UNVERIFIED_JOIN,
+    budget_space_block,
+    relation_columns,
+    space_catalog,
+    unverified_join_reason,
+)
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
@@ -112,6 +123,7 @@ from dms_executor.sql_loop import (
     loop_entry,
     run_model_loop,
 )
+from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -685,6 +697,50 @@ def _duckdb_fold(name: str) -> str:
     return name.translate(_ASCII_FOLD)
 
 
+def _sql_ident(node: Any) -> str:
+    if node is None:
+        return ""
+    name = getattr(node, "name", None)
+    return name if isinstance(name, str) else str(node)
+
+
+def _catalog_token(name: str, catalog: str, schema: str) -> str | None:
+    """``catalog.schema.name`` when the read names a catalog, else None.
+
+    A bronze grant matches the bare table. It must not match another database
+    spelled in front of that table.
+    """
+    cat = _duckdb_fold(catalog)
+    if not cat:
+        return None
+    parts = (cat, _duckdb_fold(schema), _duckdb_fold(name))
+    return ".".join(part for part in parts if part)
+
+
+def _cross_catalog_key(
+    name: str,
+    catalog: str,
+    schema: str,
+    *,
+    current: str,
+    databases: set[str],
+) -> str | None:
+    """The grant key of a read DuckDB would serve from another database.
+
+    Three-part ``catalog.schema.name`` is cross-catalog when the catalog is
+    not the one this connection has open. Two-part ``db.table`` is the same
+    thing when ``db`` is an attached database (DuckDB records it as the schema).
+    The current database, and a schema of it, stay the bare table name.
+    """
+    explicit = _catalog_token(name, catalog, schema)
+    if explicit is not None and _duckdb_fold(catalog) != current:
+        return explicit
+    sch = _duckdb_fold(schema)
+    if explicit is None and sch and sch in databases and sch != current:
+        return f"{sch}.{_duckdb_fold(name)}"
+    return None
+
+
 def _binds_to_cte(table: Any, name: str) -> bool:
     """True only when DuckDB binds this unqualified table name to a CTE.
 
@@ -751,9 +807,10 @@ def _serving_relation_names(sql: str) -> set[str] | None:
             if not isinstance(table.this, exp.Identifier):
                 return None
             name = _duckdb_fold(table.name)
-            qualified = table.args.get("db") or table.args.get("catalog")
-            if qualified or not _binds_to_cte(table, name):
-                names.add(name)
+            catalog = _sql_ident(table.args.get("catalog"))
+            schema = _sql_ident(table.args.get("db"))
+            if catalog or schema or not _binds_to_cte(table, name):
+                names.add(_catalog_token(name, catalog, schema) or name)
     return names
 
 
@@ -795,6 +852,14 @@ def _duckdb_read_names(con: Any, sql: str) -> set[str] | None:
         return None
     if not isinstance(tree, dict) or tree.get("error") is not False:
         return None
+    try:
+        current = _duckdb_fold(str(con.execute("SELECT current_database()").fetchone()[0]))
+        databases = {
+            _duckdb_fold(str(row[0]))
+            for row in con.execute("SELECT database_name FROM duckdb_databases()").fetchall()
+        }
+    except (duckdb.Error, TypeError, ValueError, IndexError, AttributeError):
+        return None
     names: set[str] = set()
 
     def walk(node: Any, visible: frozenset[str]) -> bool:
@@ -810,11 +875,16 @@ def _duckdb_read_names(con: Any, sql: str) -> set[str] | None:
                 if kind not in _DUCKDB_TABLE_REFS:
                     return False
             if kind == "BASE_TABLE":
+                catalog = str(node.get("catalog_name") or "")
+                schema = str(node.get("schema_name") or "")
                 name = _duckdb_fold(str(node.get("table_name") or ""))
                 if not name:
                     return False
-                if node.get("schema_name") or node.get("catalog_name") or name not in visible:
-                    names.add(name)
+                if catalog or schema or name not in visible:
+                    crossed = _cross_catalog_key(
+                        name, catalog, schema, current=current, databases=databases
+                    )
+                    names.add(crossed if crossed is not None else name)
         ctes = node.get("cte_map")
         if ctes is not None:
             entries = ctes.get("map") if isinstance(ctes, dict) else None
@@ -831,14 +901,55 @@ def _duckdb_read_names(con: Any, sql: str) -> set[str] | None:
     return names if walk(tree.get("statements"), frozenset()) else None
 
 
+def _grant_keys(name: str) -> set[str]:
+    """Names a grant covers, folded the way DuckDB folds, not with ``str.lower``.
+
+    ``table_is_granted`` accepts the table, ``warehouse_<table>``, and the
+    last identifier of a qualified grant. ``bronze.<name>`` is that last
+    identifier. The grant is also kept whole, so a table whose name contains
+    a dot (``usd.book``) still matches. ``str.lower`` would treat "Ä" and
+    "ä" as one table.
+    """
+    text = _duckdb_fold(str(name or "").strip().strip('"').strip("`").strip("[]"))
+    if not text:
+        return set()
+    bare = text.rsplit(".", 1)[-1]
+    return {text, bare} if bare else {text}
+
+
 def _ungranted(named: set[str] | None, grantable: set[str]) -> str | None:
-    """The grant refusal for a read set, or None when every name is granted."""
+    """The grant refusal for a read set, or None when every name is granted.
+
+    A DuckDB-folded bare name passes when the grant is that name,
+    ``warehouse_<name>``, or ``bronze.<name>``. A cross-catalog read keeps
+    its catalog, so it does not pass on the bronze grant.
+    """
     if named is None:
         return "ungranted"
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    allowed: set[str] = set()
+    for raw in grantable:
+        allowed.update(_grant_keys(raw))
+    missing = {t for t in named if t not in allowed and f"warehouse_{t}" not in allowed}
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
     return None
+
+
+def _cte_aliases(sql: str) -> set[str]:
+    """CTE names are not tables. A grant check must not refuse ``JOIN t``."""
+    try:
+        roots = sqlglot.parse(sql, read="duckdb")
+    except Exception:  # noqa: BLE001
+        return set()
+    out: set[str] = set()
+    for root in roots:
+        if root is None:
+            continue
+        for cte in root.find_all(exp.CTE):
+            name = _duckdb_fold(str(cte.alias or ""))
+            if name:
+                out.add(name)
+    return out
 
 
 def validate_compiled_sql(
@@ -897,6 +1008,52 @@ def _statement_shape_refusal(sql: str, warehouse: Path | None) -> str | None:
     finally:
         con.close()
     return gate if gate in {"multi_statement", "statement_not_allowed"} else None
+
+
+REASON_UNTYPED_NUMERIC = "untyped_numeric"
+
+
+def untyped_numeric_reason(sql: str, warehouse: Path | None) -> str | None:
+    """``untyped_numeric:<table>.<col>`` when the SQL reads a declared-numeric text column.
+
+    dms#277 F-e: a column the source declared numeric that could not land typed
+    (bare ``money`` with a currency symbol, a value that would not fit) is
+    VARCHAR, and text orders ``'9.50'`` above ``'100.25'``. MAX, ORDER BY, a
+    comparison or a SUM over it would be a confident wrong figure, so any SQL
+    naming it is refused, named, until the column is re-typed at the source.
+    A registry that cannot be read refuses too (fail closed).
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    labels = _sql_cited_labels(sql) or []
+    read: set[str] = set()
+    for label in dict.fromkeys(str(x).strip().lower() for x in labels):
+        schema, _, bare = label.rpartition(".")
+        if schema == "bronze" or (not schema and bare not in DEMO_TABLES):
+            read.add(f"bronze.{bare}")
+    if not read:
+        return None
+    from dms_executor.bronze import untyped_numeric_columns
+
+    try:
+        flagged = untyped_numeric_columns(read, path=Path(warehouse))
+    except Exception:  # noqa: BLE001 - cannot vouch for the columns: refuse
+        return f"{REASON_UNTYPED_NUMERIC}:registry_unreadable"
+    if not flagged:
+        return None
+    try:
+        named = {
+            c.name.lower()
+            for root in sqlglot.parse(sql, read="duckdb")
+            if root is not None
+            for c in root.find_all(exp.Column)
+        }
+    except Exception:  # noqa: BLE001
+        return f"{REASON_UNTYPED_NUMERIC}:unparsed"
+    hits = sorted(f"{t}.{c}" for t, cols in flagged.items() for c in cols if c in named)
+    if not hits:
+        return None
+    return f"{REASON_UNTYPED_NUMERIC}:{','.join(hits)}"
 
 
 def _refusal_before_explain(con: Any, sql: str) -> str | None:
@@ -1070,6 +1227,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    grantable: set[str] | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -1080,7 +1238,9 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
-    gap = unhonored_qualifier_reason(question, sql=sql)
+    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
+        question, sql, warehouse, grantable=grantable
+    )
     if gap:
         return _abstain(
             question,
@@ -1105,6 +1265,16 @@ def _submit_validated(
             session_id=session_id,
             route="generated",
             question=question,
+        )
+    num_why = untyped_numeric_reason(sql, warehouse)
+    if num_why:
+        return _abstain(
+            question,
+            num_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
         )
     try:
         result = submit(sql)
@@ -1296,6 +1466,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        grantable=allowed,
     )
 
 
@@ -1372,6 +1543,7 @@ def rank_window_ask(
         measure=measure,
         coverage=compiled.coverage,
         warehouse=lake,
+        grantable=allowed,
         lead=lead,
     )
 
@@ -1396,6 +1568,37 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
     )
 
 
+_SPACE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _space_table_ok(name: str) -> bool:
+    parts = str(name).split(".")
+    return len(parts) in (1, 2) and all(_SPACE_IDENT.fullmatch(p) for p in parts)
+
+
+def _space_insights_body(
+    allowed: set[str], space: dict[str, Any], schema_context: str | None = None
+) -> dict[str, Any]:
+    """Insights body for a Space that has its own ontology.
+
+    ``source`` is ``space``. Objects, verified links and declared measures come
+    from the stored ontology. Demo retrieve context is not mixed in. The
+    granted-schema prompt (``DMS_SCHEMA_CONTEXT``) is carried when one was built,
+    and counted in the budget below.
+    """
+    tables = sorted(t for t in allowed if _space_table_ok(t))
+    out: dict[str, Any] = {
+        "source": "space",
+        "tables": tables,
+        "schema": [{"table": t} for t in tables],
+    }
+    if schema_context:
+        out[SCHEMA_CONTEXT_FIELD] = schema_context
+    # Budgeted inside Cortex's caller-ontology limits. A cut is marked.
+    out.update(budget_space_block(space, used=len(json.dumps(out, default=str))))
+    return out
+
+
 def _run_extract_loop(
     *,
     question: str,
@@ -1407,6 +1610,7 @@ def _run_extract_loop(
     grantable: set[str],
     declared: Ontology | None,
     declared_violations: list[Violation],
+    space_onto: Ontology | None = None,
     space_id: str | None,
     session_id: str | None,
     submit: Callable[[str], Any],
@@ -1423,6 +1627,18 @@ def _run_extract_loop(
     def check(sql: str) -> str | None:
         if is_multi_statement(sql, dialect):
             return "multi_statement"
+        if space_onto is not None:
+            # ONTO-DERIVE-01: the Space join rule is the named refusal, and it
+            # runs before EXPLAIN so a grant or syntax miss cannot hide it.
+            try:
+                cols = relation_columns(space_onto, warehouse, sorted(grantable))
+            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+                return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            join_why = unverified_join_reason(
+                sql, space_onto, declared_violations, columns_of=cols
+            )
+            if join_why:
+                return join_why
         why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
         if why and why.startswith("explain:"):
             detail = _explain_error_text(sql, warehouse)
@@ -1448,6 +1664,7 @@ def _run_extract_loop(
             plan_source=PLAN_SOURCE_ONTOLOGY,
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
+            grantable=grantable,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
         )
 
@@ -1533,6 +1750,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    demo_ontology_allowed: bool = True,
     dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
@@ -1660,8 +1878,24 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
+    # generated SQL must follow. Measured just above, against the lake as it is.
+    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    space_block = (
+        space_catalog(space_onto, declared_violations, allowed)
+        if space_onto is not None
+        else None
+    )
+    # What Insights is asked with. A Space asks with its own ontology, and so does
+    # every retry of the extract loop: a retry on the demo context would put the
+    # model on another ontology than the one the join rule checks against.
+    insights_ctx = (
+        _space_insights_body(allowed, space_block, ctx.get(SCHEMA_CONTEXT_FIELD))
+        if space_block is not None
+        else ctx
+    )
     try:
-        payload = compute(ctx)
+        payload = compute(insights_ctx)
     except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
         from dms_executor.lake_registry import (
             ServingDeadlineExceeded,
@@ -1764,7 +1998,7 @@ def maybe_generative_ask(
             return _stamp(
                 _run_extract_loop(
                     question=q,
-                    ctx=ctx,
+                    ctx=insights_ctx,
                     payload=payload,
                     compute=compute,
                     warehouse=lake,
@@ -1772,6 +2006,7 @@ def maybe_generative_ask(
                     grantable=allowed,
                     declared=declared,
                     declared_violations=declared_violations,
+                    space_onto=space_onto,
                     space_id=space_id,
                     session_id=session_id,
                     submit=submit,
@@ -1889,6 +2124,32 @@ def maybe_generative_ask(
                     question=q,
                 )
             )
+        join_why: str | None = None
+        # The join rule is the named refusal. An EXPLAIN or grant miss must
+        # not hide it behind a generic validate reason.
+        if space_onto is not None:
+            try:
+                cols = relation_columns(space_onto, lake, sorted(allowed))
+            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+                join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            else:
+                join_why = unverified_join_reason(
+                    sql, space_onto, declared_violations, columns_of=cols
+                )
+        if join_why:
+            # No guessed joins: on a Space with a derived ontology, generated
+            # SQL may join two relations only over a link the source declared
+            # and verify() measured. A confident join on anything else is the
+            # plausible wrong number this layer exists to refuse.
+            return _stamp(
+                _abstain(
+                    q,
+                    join_why,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                )
+            )
         if why:
             if cloop_b_enabled():
                 loop_attempts.append(
@@ -1932,6 +2193,7 @@ def maybe_generative_ask(
                     plan_source=source,
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
+                    grantable=allowed,
                     plan_origin=origin,
                 )
             )
@@ -2015,6 +2277,36 @@ def maybe_generative_ask(
             _abstain(
                 q,
                 gap,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    if (
+        space_onto is not None
+        and plan.measure
+        and plan.measure not in space_onto.measures
+    ):
+        # Measures are never derived for a SQL-source Space (NEEDS_FOUNDER):
+        # a plan that needs one the Space has not declared is a named gap.
+        return _stamp(
+            _abstain(
+                q,
+                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not a measure this "
+                "Space declares",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    if onto is None and not demo_ontology_allowed and declared is None:
+        return _stamp(
+            _abstain(
+                q,
+                "missing_ontology: this Space has no verified ontology, so a "
+                "typed plan cannot compile; only validated generated SQL can answer",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,
@@ -2114,6 +2406,7 @@ def maybe_generative_ask(
             coverage=compiled.coverage,
             where_paths=compiled.where_paths,
             warehouse=lake,
+            grantable=allowed,
             plan_origin=origin,
         )
     )

@@ -569,3 +569,75 @@ def test_names_the_check_cannot_prove_are_refused(tmp_path: Path) -> None:
     )
     for sql in served:
         assert validate_compiled_sql(sql, grantable=grants, warehouse=db) is None, sql
+
+
+def _plant_sql_source(db: Path) -> None:
+    """Bronze tables a SQL-source Space grants, plus the same bare names in main.
+
+    ``Ä`` holds 777 so a fold that treats it as ``ä`` would serve the wrong row.
+    """
+    con = connect_file(db)
+    try:
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+        con.execute('CREATE TABLE bronze."ä" (n INTEGER)')
+        con.execute('INSERT INTO bronze."ä" VALUES (1)')
+        con.execute('CREATE TABLE main."ä" (n INTEGER)')
+        con.execute('INSERT INTO main."ä" VALUES (1)')
+        con.execute('CREATE TABLE bronze."Ä" (n INTEGER)')
+        con.execute('INSERT INTO bronze."Ä" VALUES (777)')
+        con.execute('CREATE TABLE main."Ä" (n INTEGER)')
+        con.execute('INSERT INTO main."Ä" VALUES (777)')
+        con.execute("CREATE TABLE bronze.schools (n INTEGER)")
+        con.execute("INSERT INTO bronze.schools VALUES (5)")
+        con.execute("CREATE TABLE schools (n INTEGER)")
+        con.execute("INSERT INTO schools VALUES (5)")
+    finally:
+        con.close()
+
+
+def test_unicode_table_beside_bronze_grant_keeps_case(tmp_path: Path) -> None:
+    """A bronze-qualified grant does not fold Ä into ä.
+
+    The granted table is allowed. The other case, qualified or bare, is refused.
+    """
+    db = tmp_path / "names.duckdb"
+    ensure_demo_warehouse(db)
+    _plant_sql_source(db)
+    grants = {"bronze.ä", "bronze.schools"}
+    assert validate_compiled_sql('SELECT n FROM bronze."ä"', grantable=grants, warehouse=db) is None
+    assert validate_compiled_sql('SELECT n FROM "ä"', grantable=grants, warehouse=db) is None
+    assert (
+        validate_compiled_sql('SELECT n FROM bronze."Ä"', grantable=grants, warehouse=db)
+        == "ungranted:Ä"
+    )
+    assert (
+        validate_compiled_sql('SELECT n FROM "Ä"', grantable=grants, warehouse=db) == "ungranted:Ä"
+    )
+    assert (
+        validate_compiled_sql("SELECT n FROM bronze.schools", grantable=grants, warehouse=db)
+        is None
+    )
+    assert _serving_rows(db, 'SELECT n FROM bronze."Ä"') == [(777,)]
+    assert _serving_rows(db, 'SELECT n FROM "Ä"') == [(777,)]
+
+
+def test_bronze_grant_allows_bare_name_on_a_sql_source_space(tmp_path: Path) -> None:
+    """A SQL-source Space grants ``bronze.<t>``. The bare name is that table.
+
+    A catalog in front of the same name is another database and stays refused.
+    """
+    db = tmp_path / "sqlsource.duckdb"
+    ensure_demo_warehouse(db)
+    _plant_sql_source(db)
+    grants = {"bronze.schools"}
+    assert "schools" not in grants
+    assert validate_compiled_sql("SELECT n FROM schools", grantable=grants, warehouse=db) is None
+    assert (
+        validate_compiled_sql("SELECT n FROM bronze.schools", grantable=grants, warehouse=db)
+        is None
+    )
+    crossed = validate_compiled_sql(
+        "SELECT n FROM other.bronze.schools", grantable=grants, warehouse=db
+    )
+    assert crossed is not None and crossed.startswith("ungranted:") and "other" in crossed
+    assert _serving_rows(db, "SELECT n FROM bronze.schools") == [(5,)]

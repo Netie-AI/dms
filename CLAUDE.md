@@ -87,6 +87,7 @@ DMS UI → DMS API → HTTP → Cortex (cortex-contract 1.x)
 12. **Value normalization** — filter values must match the column's actual encoding (`BETA` vs `SKU-BETA`, `KL` vs `Kuala Lumpur`, case/whitespace). A filter that parses, validates, executes, and matches nothing is the most dangerous single failure: plausible number + green badge.
 13. **0 confidently wrong** — abstain over invent.
 14. **Secrets via OpenVault / env** — never commit keys.
+15. **A SQL-source Space answers only through its own verified ontology.** Generated SQL, and the contract ask's `sql_used`, that read two or more tables must pass `space_ontology.unverified_join_reason`: one allowlist (verified links only, a child-to-parent tree, safe parent-column positions). Everything else abstains `unverified_join:<why>`. Never widen it with a blocklist or a regex. A new allowed shape needs an adversary round and an envelope test (rule 10a). Measures are never auto-derived or shown as certified: an undeclared measure abstains `no_declared_measure`.
 
 ## Version lines (independent — do not renumber backward)
 
@@ -117,6 +118,24 @@ commit body contains:
 ```
 INVARIANT-CHANGE: <reason>
 ```
+
+## Running the checks
+
+Run these from the repo root before any push. CI runs the same without Postgres.
+
+```
+ruff check apps packages tests
+mypy apps/api/dms_api packages/core/dms_core packages/cortex_client/cortex_client packages/executor/dms_executor packages/ledger/dms_ledger
+lint-imports      # PYTHONPATH = apps/api + the four packages
+python -m pytest tests/invariants -q
+DMS_SKIP_CONTROL_PLANE_TESTS=1 python -m pytest tests -q -p no:cacheprovider    # about 9 min
+python scripts/score_answers.py --docs tests/fixtures/hostile_score --oracle-only
+python scripts/score_bird.py --self-check
+```
+
+- One pytest process at a time. They share the default DuckDB file, and `tests/control_plane` drops and recreates schema `dms` in the shared Postgres. Attack tests use their own database.
+- `DMS_SKIP_CONTROL_PLANE_TESTS=1` skips `tests/control_plane` only while Postgres is unreachable. With Postgres up they run, and `tests/test_insights_budget_01.py` then fails if it runs after them in the same process (Alembic's logging config disables the `cortex_client.compute` logger; same on `main`). Run that file on its own.
+- Run `ruff format` only on files you wrote. On an existing file it makes a large unrelated diff.
 
 ## Tool division
 
