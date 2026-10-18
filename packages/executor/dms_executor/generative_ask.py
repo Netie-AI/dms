@@ -73,6 +73,13 @@ from dms_executor.gen_path_refuse import (
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
+from dms_executor.intent_spec import (
+    ROLE_INTENT_SPEC,
+    ROLE_SQL_WRITER,
+    apply_intent_spec,
+    intent_spec_enabled,
+    without_outer_offset,
+)
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.ontology import (
     CompiledQuery,
@@ -102,6 +109,7 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
+from dms_executor.sql_grounds import sql_grounds
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
     EXTRACT_DIALECT,
@@ -751,6 +759,9 @@ def _abstain(
     retries: int = 0,
     stage: str = "generative",
 ) -> dict[str, Any]:
+    from dms_executor.pipeline_failure import visible_reason
+
+    shown = visible_reason(reason)
     env = build_abstain(
         reason=reason,
         question=question,
@@ -758,10 +769,10 @@ def _abstain(
         retries=retries,
         stage=stage,
         answer_id="ans_gen01_abstain",
-        text=customer_abstain_text(reason),
+        text=customer_abstain_text(shown),
         rows=[],
         sql_used=None,
-        assumptions=[f"GEN-01: {reason}", *[n for n in notes if str(n).strip()]],
+        assumptions=[f"GEN-01: {shown}", *[n for n in notes if str(n).strip()]],
         as_of=_as_of(),
         space_id=space_id,
         session_id=session_id,
@@ -843,7 +854,9 @@ def _l2_envelope(
     try:
         from dms_executor.sql_grounds import served_check_shadow
 
-        env["served_check_shadow"] = served_check_shadow(sql)
+        env["served_check_shadow"] = served_check_shadow(
+            sql, extended=intent_spec_enabled()
+        )
     except Exception as exc:  # noqa: BLE001 — shadow never changes the serve
         version = ""
         try:
@@ -876,6 +889,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    spec_offset: int | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -887,6 +901,17 @@ def _submit_validated(
             notes=notes,
         )
     gap = unhonored_qualifier_reason(question, sql=sql)
+    # The spec lifts unrequested_offset only for the offset it approved (a
+    # spec that pins direction, n and offset, all equal to the outer window),
+    # and only when this SQL's sole OFFSET is that one, on the outer query, and
+    # nothing else in it (nested LIMIT, window, QUALIFY, predicate subquery,
+    # self-join) can skip a row by its rank. The other qualifiers are then
+    # checked on the SQL without that OFFSET, so the lift covers the offset
+    # and nothing else. Spec off: never lifted.
+    if gap and spec_offset is not None and gap == f"unrequested_offset:{spec_offset}":
+        stripped = without_outer_offset(sql, spec_offset)
+        if stripped is not None:
+            gap = unhonored_qualifier_reason(question, sql=stripped)
     if gap:
         return _abstain(
             question,
@@ -911,6 +936,20 @@ def _submit_validated(
             session_id=session_id,
             route="generated",
             question=question,
+        )
+    # Always-false SQL is a named abstain only when the spec flag is on.
+    # Flag off executes and withholds empty rows, the same as main.
+    if intent_spec_enabled() and sql_grounds(sql).contradiction:
+        return _abstain(
+            question,
+            "contradiction",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+            sql=sql,
+            retries=0,
+            stage="intent_spec",
         )
     try:
         result = submit(sql)
@@ -1339,6 +1378,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    spec_compute: Callable[[str], dict[str, Any] | None] | None = None,
     dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
@@ -1466,6 +1506,27 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    if intent_spec_enabled() and isinstance(ctx, dict):
+        ctx = {**ctx, "dms_route_role": ROLE_SQL_WRITER}
+
+    def _spec_fetch(prompt: str) -> dict[str, Any] | None:
+        if spec_compute is not None:
+            got = spec_compute(prompt)
+            return got if isinstance(got, dict) else None
+        body = dict(ctx)
+        body["dms_route_role"] = ROLE_INTENT_SPEC
+        body["dms_route_prompt"] = prompt
+        body["dms_route_single_shot"] = True
+        got = compute(body)
+        return got if isinstance(got, dict) else None
+
+    def _retry_fetch(prompt: str) -> dict[str, Any] | None:
+        body = dict(ctx)
+        body["dms_route_role"] = ROLE_SQL_WRITER
+        body["dms_route_prompt"] = prompt
+        got = compute(body)
+        return got if isinstance(got, dict) else None
+
     try:
         payload = compute(ctx)
     except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
@@ -1547,6 +1608,7 @@ def maybe_generative_ask(
         )
     if (
         cloop_b_enabled()
+        and not intent_spec_enabled()
         and not ontology_ranked_lane_enabled()
         and isinstance(payload, dict)
     ):
@@ -1726,21 +1788,84 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
-            return _stamp(
-                _submit_validated(
-                    sql,
+            serve_sql = sql
+            spec_offset: int | None = None
+            attempt: dict[str, Any] | None = None
+            # INTENT-SPEC-01. Off by default: this block does not run, and the
+            # submit below is the pre-spec path. The named abstain is
+            # build_abstain (stage intent_spec), which writes the ticket.
+            if intent_spec_enabled():
+                decision = apply_intent_spec(
                     question=q,
-                    space_id=space_id,
-                    session_id=session_id,
-                    submit=submit,
-                    ledger_append=ledger_append,
-                    notes=("GEN-01 Cortex ontology_plan SQL",),
-                    plan_source=source,
-                    coverage=coverage_from_sql_path(sql=sql),
-                    warehouse=lake,
-                    plan_origin=origin,
+                    sql=sql,
+                    writer_payload=payload if isinstance(payload, dict) else None,
+                    spec_fetch=_spec_fetch,
+                    retry_fetch=_retry_fetch,
+                    dialect="duckdb",
                 )
+                attempt = decision.attempt
+                if decision.abstain_reason:
+                    env = _abstain(
+                        q,
+                        decision.abstain_reason,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source,
+                        notes=trail_notes,
+                        sql=decision.rejected_sql or sql,
+                        retries=decision.retries,
+                        stage="intent_spec",
+                    )
+                    env["intent_spec_attempt"] = attempt
+                    return _stamp(env)
+                serve_sql = decision.sql or sql
+                spec_offset = decision.approved_offset
+                if serve_sql != sql:
+                    retry_why = validate_compiled_sql(
+                        serve_sql, grantable=allowed, warehouse=lake
+                    )
+                    # The retried SQL passes the same two checks the first
+                    # writer SQL passed above: the one grant function, then
+                    # the declared-ontology violations (A2-02). A retry is
+                    # no exemption from either.
+                    retry_broken = (
+                        violations_cited_by_sql(serve_sql, declared, declared_violations)
+                        if declared is not None and not retry_why
+                        else []
+                    )
+                    if retry_why or retry_broken:
+                        env = _abstain(
+                            q,
+                            f"validate:{retry_why}"
+                            if retry_why
+                            else violation_reason(retry_broken),
+                            space_id=space_id,
+                            session_id=session_id,
+                            plan_source=source,
+                            notes=trail_notes,
+                            sql=serve_sql,
+                            retries=decision.retries,
+                            stage="intent_spec",
+                        )
+                        env["intent_spec_attempt"] = attempt
+                        return _stamp(env)
+            env = _submit_validated(
+                serve_sql,
+                question=q,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=("GEN-01 Cortex ontology_plan SQL",),
+                plan_source=source,
+                coverage=coverage_from_sql_path(sql=serve_sql),
+                warehouse=lake,
+                plan_origin=origin,
+                spec_offset=spec_offset,
             )
+            if attempt is not None and isinstance(env, dict):
+                env["intent_spec_attempt"] = attempt
+            return _stamp(env)
     if kind != "plan":
         # Named Insights fail-closed: never bind. Product Cortex.ask still
         # runs only on a transport miss (no insights_fail stamp).

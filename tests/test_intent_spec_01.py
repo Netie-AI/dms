@@ -1,0 +1,1390 @@
+"""INTENT-SPEC-01: a second route's spec, checked against the SQL. No word lists."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import dms_executor.pipeline_failure as tickets
+import duckdb
+import pytest
+from dms_api.app import create_app
+from dms_api.settings import Settings, get_settings
+from dms_core.pii import fail_closed_mask_payload
+from dms_executor.envelope import assert_envelope_valid
+from dms_executor.generative_ask import _submit_validated, maybe_generative_ask
+from dms_executor.intent_spec import (
+    ROLE_INTENT_SPEC,
+    AnswerSpec,
+    SpecFilter,
+    _approved_offset,
+    apply_intent_spec,
+    check_sql_against_spec,
+    masked_samples,
+    parse_spec_payload,
+    sole_outer_offset,
+    spec_prompt,
+    without_outer_offset,
+)
+from dms_executor.ontology import coverage_from_sql_path
+from dms_executor.pipeline_failure import log_pipeline_failure_ticket
+from dms_executor.sql_loop import _scrub_string
+from fastapi.testclient import TestClient
+
+_WRITER = "writer-route"
+_SPEC = "spec-route"
+_ASC3 = (
+    "SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 3"
+)
+_DESC3 = (
+    "SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total DESC LIMIT 3"
+)
+_ASC_ONE = (
+    "SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 1 OFFSET 2"
+)
+_DESC_ONE = (
+    "SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total DESC LIMIT 1 OFFSET 2"
+)
+_NARROW = "SELECT note FROM sheet WHERE note = 'Ali'"
+
+
+def _writer(sql: str, model: str = _WRITER) -> dict[str, Any]:
+    return {
+        "query_sql": sql,
+        "served_model": model,
+        "served_provider": "writer-provider",
+        "route_id": "writer-route-id",
+        "key_id": "writer-key",
+        "tokens": {"total": 4},
+    }
+
+
+def _cited(
+    *,
+    direction: str | None = None,
+    direction_span: str | None = None,
+    n: int | None = None,
+    n_span: str | None = None,
+    offset: int | None = None,
+    offset_span: str | None = None,
+    literal: str | None = None,
+    literal_span: str | None = None,
+    model: str = _SPEC,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    if direction is not None and direction_span is not None:
+        body["direction"] = {"value": direction, "spans": [direction_span]}
+    if n is not None and n_span is not None:
+        body["n"] = {"value": n, "spans": [n_span]}
+    if offset is not None and offset_span is not None:
+        body["offset"] = {"value": offset, "spans": [offset_span]}
+    if literal is not None and literal_span is not None:
+        body["filters"] = [
+            {"description": "entity", "literal": literal, "spans": [literal_span]}
+        ]
+    return {
+        "intent_spec": body,
+        "served_model": model,
+        "served_provider": "spec-provider",
+        "route_id": "spec-route-id",
+        "key_id": "spec-key",
+        "tokens": {"total": 2},
+    }
+
+
+def _seed(path: Path) -> None:
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE TABLE facts (category VARCHAR, amount INTEGER)")
+        con.executemany(
+            "INSERT INTO facts VALUES (?, ?)",
+            [("a", 1), ("b", 2), ("c", 3), ("d", 10), ("e", 20), ("f", 30)],
+        )
+        con.execute("CREATE TABLE sheet (note VARCHAR)")
+        con.executemany(
+            "INSERT INTO sheet VALUES (?)",
+            [("Ali",), ("Bea",)],
+        )
+    finally:
+        con.close()
+
+
+class _Harness:
+    def __init__(self, lake: Path) -> None:
+        self.lake = lake
+        self.submits: list[str] = []
+        self.calls: list[str | None] = []
+        self.prompts: list[str | None] = []
+        self.spec: dict[str, Any] = {}
+        self.writer_sql = ""
+        self.retry_sql = ""
+
+    def submit(self, sql: str) -> Any:
+        self.submits.append(sql)
+        con = duckdb.connect(str(self.lake), read_only=True)
+        try:
+            cur = con.execute(sql)
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            con.close()
+        return SimpleNamespace(ok=True, status="ok", run_id="run_spec", output={"rows": rows})
+
+    def compute(self, ctx: dict[str, Any]) -> dict[str, Any]:
+        role = ctx.get("dms_route_role")
+        self.calls.append(role if isinstance(role, str) else None)
+        prompt = ctx.get("dms_route_prompt")
+        self.prompts.append(prompt if isinstance(prompt, str) else None)
+        if role == ROLE_INTENT_SPEC:
+            return self.spec
+        if isinstance(prompt, str) and "feedback:" in prompt:
+            return _writer(self.retry_sql)
+        return _writer(self.writer_sql)
+
+    def ask(self, question: str) -> dict[str, Any] | None:
+        return maybe_generative_ask(
+            question,
+            warehouse=self.lake,
+            grantable={"facts", "sheet"},
+            compute=self.compute,
+            submit=self.submit,
+            ledger_append=lambda _payload: SimpleNamespace(entry_id="led_spec", hash="hash_spec"),
+            ontology=None,
+            bind_on_miss=False,
+        )
+
+
+@pytest.fixture()
+def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _Harness:
+    lake = tmp_path / "spec.duckdb"
+    _seed(lake)
+    monkeypatch.setenv("DMS_INTENT_SPEC", "1")
+    return _Harness(lake)
+
+
+def _categories(env: dict[str, Any] | None) -> list[Any]:
+    assert env is not None
+    return [row["category"] for row in env["rows"]]
+
+
+@pytest.mark.parametrize(
+    ("question", "span", "bad_sql", "good_sql", "n", "offset", "want"),
+    [
+        (
+            "lowest 3 categories by stock value",
+            "lowest",
+            _DESC3,
+            _ASC3,
+            3,
+            None,
+            ["a", "b", "c"],
+        ),
+        (
+            "bottom 3 categories by stock value",
+            "bottom",
+            _DESC3,
+            _ASC3,
+            3,
+            None,
+            ["a", "b", "c"],
+        ),
+        (
+            "the three lowest categories by stock value",
+            "three",
+            _DESC3,
+            _ASC3,
+            3,
+            None,
+            ["a", "b", "c"],
+        ),
+        (
+            "third-lowest category by stock value",
+            "third-lowest",
+            _DESC_ONE,
+            _ASC_ONE,
+            1,
+            2,
+            ["c"],
+        ),
+    ],
+)
+def test_ascending_spec_never_serves_descending_sql(
+    harness: _Harness,
+    question: str,
+    span: str,
+    bad_sql: str,
+    good_sql: str,
+    n: int,
+    offset: int | None,
+    want: list[str],
+) -> None:
+    harness.spec = _cited(
+        direction="asc",
+        direction_span=span,
+        n=n,
+        n_span=span,
+        offset=offset,
+        offset_span=span if offset is not None else None,
+    )
+    harness.writer_sql = bad_sql
+    harness.retry_sql = bad_sql
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "intent_spec_mismatch" in env["text"]
+    assert "ascending" in env["text"]
+    assert harness.submits == []
+    _ = good_sql, want
+
+
+@pytest.mark.parametrize(
+    ("question", "span", "sql", "n", "offset", "want"),
+    [
+        ("lowest 3 categories by stock value", "lowest", _ASC3, 3, None, ["a", "b", "c"]),
+        ("bottom 3 categories by stock value", "bottom", _ASC3, 3, None, ["a", "b", "c"]),
+        (
+            "the three lowest categories by stock value",
+            "three",
+            _ASC3,
+            3,
+            None,
+            ["a", "b", "c"],
+        ),
+    ],
+)
+def test_ascending_sql_serves_the_low_rows(
+    harness: _Harness,
+    question: str,
+    span: str,
+    sql: str,
+    n: int,
+    offset: int | None,
+    want: list[str],
+) -> None:
+    harness.spec = _cited(
+        direction="asc",
+        direction_span=span,
+        n=n,
+        n_span=span,
+        offset=offset,
+        offset_span=span if offset is not None else None,
+    )
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert _categories(env) == want
+    for name in want:
+        assert name in env["text"]
+    assert harness.submits == [sql]
+
+
+def test_retry_then_serves_the_ascending_rows(harness: _Harness) -> None:
+    question = "lowest 3 categories by stock value"
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = _DESC3
+    harness.retry_sql = _ASC3
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert _categories(env) == ["a", "b", "c"]
+    assert "a" in env["text"] and "f" not in env["text"]
+    assert harness.submits == [_ASC3]
+
+
+def test_top3_descending_spec_serves_the_high_rows(harness: _Harness) -> None:
+    question = "top 3 categories by stock value"
+    harness.spec = _cited(direction="desc", direction_span="top", n=3, n_span="3")
+    harness.writer_sql = _DESC3
+    harness.retry_sql = _DESC3
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert _categories(env) == ["f", "e", "d"]
+    assert "f" in env["text"]
+    assert harness.submits == [_DESC3]
+
+
+# --- The spec may lift ``unrequested_offset`` only for an offset it can prove ---
+#
+# Main refuses any OFFSET when the question has no rank window. The spec lifts
+# that refusal only when (1) a cited span holds the offset number itself,
+# (2) the writer's first, unsteered SQL already had that offset, and (3) the
+# served SQL has exactly one OFFSET, on the outer query, equal to it. Lifting
+# the offset lifts nothing else: the other qualifiers are still checked.
+
+_NESTED_OFFSET = (
+    "SELECT category, total FROM (SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 3 OFFSET 2) t ORDER BY total ASC"
+)
+_DOUBLE_OFFSET = (
+    "SELECT category, total FROM (SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 5 OFFSET 2) t "
+    "ORDER BY total ASC LIMIT 3 OFFSET 2"
+)
+_ASC3_SKIP2 = (
+    "SELECT category, SUM(amount) AS total FROM facts "
+    "GROUP BY category ORDER BY total ASC LIMIT 3 OFFSET 2"
+)
+
+
+def _assert_offset_refused(
+    env: dict[str, Any] | None, harness: _Harness, offset: int, gap: str | None = None
+) -> None:
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert (gap or f"unrequested_offset:{offset}") in env["text"]
+    assert "category=" not in env["text"]
+    assert harness.submits == []
+
+
+@pytest.mark.parametrize(
+    ("question", "offset_span"),
+    [
+        # #444 review finding 1, verbatim: offset 0 cited as "lowest 3".
+        ("lowest 3 categories by stock value", "lowest 3"),
+        # The same SQL with an offset-0 span that does hold the number.
+        ("lowest 3 categories by stock value from offset 0", "offset 0"),
+    ],
+)
+def test_spec_offset_zero_never_lifts_a_nested_offset(
+    harness: _Harness, question: str, offset_span: str
+) -> None:
+    """The outer check sees offset 0; the gate sees the nested OFFSET 2.
+
+    Before the fix: L2_VALIDATED, rows c, d, e (ranks 3 to 5). Flag off abstains.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=0,
+        offset_span=offset_span,
+    )
+    harness.writer_sql = _NESTED_OFFSET
+    harness.retry_sql = _NESTED_OFFSET
+    env = harness.ask(question)
+    _assert_offset_refused(env, harness, 2)
+
+
+def test_spec_offset_never_lifts_a_second_offset(harness: _Harness) -> None:
+    """Outer OFFSET 2 matches the spec, a nested OFFSET 2 skips two more rows.
+
+    Before the fix: L2_VALIDATED, rows e, f. The asked window is c, d, e.
+    The nested LIMIT 5 is a second window, so since #444 round 2 the spec
+    check names it before the lift is reached (the gap was unrequested_offset:2).
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = _DOUBLE_OFFSET
+    harness.retry_sql = _DOUBLE_OFFSET
+    env = harness.ask("lowest 3 categories by stock value skipping 2")
+    _assert_offset_refused(env, harness, 2, gap="intent_spec_mismatch:SQL limit is unclear")
+
+
+def test_offset_span_without_the_number_is_dropped(harness: _Harness) -> None:
+    """#444 review finding 2, verbatim: offset 2 cited as "categories".
+
+    Before the fix the spec steered the retry to OFFSET 2 and served c, d, e
+    green. Now the untied offset is dropped and the writer's SQL serves a, b, c.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=2,
+        offset_span="categories",
+    )
+    harness.writer_sql = _ASC3
+    harness.retry_sql = _ASC3_SKIP2
+    env = harness.ask("lowest 3 categories by stock value")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert _categories(env) == ["a", "b", "c"]
+    assert "category=a" in env["text"]
+    assert "category=d" not in env["text"]
+    assert harness.submits == [_ASC3]
+    assert harness.calls == ["sql_writer", ROLE_INTENT_SPEC]
+
+
+def test_offset_steered_into_the_retry_keeps_the_refusal(harness: _Harness) -> None:
+    """The span "3" holds the number, but the writer's own SQL had no offset.
+
+    An OFFSET that appears only after "spec says offset 3" feedback is not two
+    routes agreeing. Before the fix: L2_VALIDATED, rows d, e, f.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=3,
+        offset_span="3",
+    )
+    harness.writer_sql = _ASC3
+    harness.retry_sql = _ASC3 + " OFFSET 3"
+    env = harness.ask("lowest 3 categories by stock value")
+    _assert_offset_refused(env, harness, 3)
+    assert harness.calls == ["sql_writer", ROLE_INTENT_SPEC, "sql_writer"]
+
+
+def test_ordinal_word_does_not_tie_an_offset(harness: _Harness) -> None:
+    """"third-lowest" holds no digit, so offset 2 is not tied and main's refusal stands.
+
+    Reading "third" as 2 would need a word list. Before the fix: served c.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="third-lowest",
+        offset=2,
+        offset_span="third-lowest",
+    )
+    harness.writer_sql = _ASC_ONE
+    harness.retry_sql = _ASC_ONE
+    env = harness.ask("third-lowest category by stock value")
+    _assert_offset_refused(env, harness, 2)
+
+
+def test_approved_offset_still_checks_the_other_qualifiers(harness: _Harness) -> None:
+    """The lift covers the offset only. The named filter is still required.
+
+    Before the fix the lift skipped every other qualifier and served c with
+    no warehouse filter. Flag off abstains. The spec pins the whole window
+    (asc, n 1, offset 2), so the lift itself is approved and the filter gap
+    is what refuses.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=1,
+        n_span="lowest category",
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = _ASC_ONE
+    harness.retry_sql = _ASC_ONE
+    env = harness.ask("lowest category by stock value skipping 2 for warehouse A")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "unhonored_qualifier:named_filter=warehouse a" in env["text"]
+    assert "category=" not in env["text"]
+    assert harness.submits == []
+
+
+# #444 round-2 review finding 1: the second skip need not be spelled OFFSET.
+# Each SQL has the spec's outer LIMIT 3 OFFSET 2 and skips rows a second time
+# some other way. Before the fix each served L2_VALIDATED with rows e, f (or
+# d, e, f); the asked window is c, d, e. Flag off abstains unrequested_offset:2.
+# The value is the gap the flag-on envelope names: a rank filter or a nested
+# LIMIT that sql_grounds sees fails the spec check, the rest fail the lift.
+_SKIP2_Q = "lowest 3 categories by stock value skipping 2"
+_AGG = "SELECT category, SUM(amount) AS total FROM facts GROUP BY category"
+_TAIL = " ORDER BY total ASC LIMIT 3 OFFSET 2"
+_UNCLEAR = "intent_spec_mismatch:SQL limit is unclear"
+_SECOND_SKIPS: dict[str, tuple[str, str]] = {
+    "row_number": (
+        "SELECT category, total FROM (SELECT category, SUM(amount) AS total, "
+        "ROW_NUMBER() OVER (ORDER BY SUM(amount) ASC) AS rn FROM facts "
+        "GROUP BY category) t WHERE rn > 2" + _TAIL,
+        _UNCLEAR,
+    ),
+    "qualify": (
+        _AGG + " QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(amount) ASC) > 2" + _TAIL,
+        _UNCLEAR,
+    ),
+    "not_in_limit": (
+        "SELECT category, SUM(amount) AS total FROM facts WHERE category NOT IN "
+        "(SELECT category FROM facts GROUP BY category ORDER BY SUM(amount) ASC "
+        "LIMIT 2) GROUP BY category" + _TAIL,
+        "unrequested_offset:2",
+    ),
+    "nested_desc_limit": (
+        "SELECT category, total FROM (" + _AGG + " ORDER BY total DESC LIMIT 5) t" + _TAIL,
+        _UNCLEAR,
+    ),
+    "nested_fetch": (
+        "SELECT category, total FROM (" + _AGG
+        + " ORDER BY total DESC FETCH FIRST 5 ROWS ONLY) t" + _TAIL,
+        "unrequested_offset:2",
+    ),
+    "correlated_count": (
+        "SELECT a.category, a.total FROM (" + _AGG + ") a WHERE (SELECT COUNT(*) "
+        "FROM (" + _AGG + ") b WHERE b.total < a.total) >= 2"
+        " ORDER BY a.total ASC LIMIT 3 OFFSET 2",
+        "unrequested_offset:2",
+    ),
+    "having_min_subquery": (
+        _AGG + " HAVING SUM(amount) > (SELECT MIN(t) FROM (SELECT SUM(amount) AS t "
+        "FROM facts GROUP BY category) x WHERE t > (SELECT MIN(t2) FROM "
+        "(SELECT SUM(amount) AS t2 FROM facts GROUP BY category) y))" + _TAIL,
+        "unrequested_offset:2",
+    ),
+    "self_join": (
+        "SELECT a.category, a.total FROM (" + _AGG + ") a JOIN (" + _AGG + ") b "
+        "ON b.total < a.total GROUP BY a.category, a.total HAVING COUNT(*) >= 2"
+        " ORDER BY a.total ASC LIMIT 3 OFFSET 2",
+        "unrequested_offset:2",
+    ),
+}
+_SKIP_SHAPES = sorted(_SECOND_SKIPS)
+
+
+def _skip2_spec() -> dict[str, Any]:
+    return _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=2,
+        offset_span="skipping 2",
+    )
+
+
+@pytest.mark.parametrize("shape", _SKIP_SHAPES)
+def test_spec_offset_never_lifts_beside_a_second_skip(harness: _Harness, shape: str) -> None:
+    """The writer's own SQL, tied spec offset 2, and a second skip that is not OFFSET.
+
+    Before the fix: L2_VALIDATED, rows e, f or d, e, f. Now: abstain, nothing run.
+    """
+    sql, gap = _SECOND_SKIPS[shape]
+    harness.spec = _skip2_spec()
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    env = harness.ask(_SKIP2_Q)
+    _assert_offset_refused(env, harness, 2, gap=gap)
+
+
+@pytest.mark.parametrize("shape", _SKIP_SHAPES)
+def test_flag_off_refuses_the_second_skip_shapes(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """Control: main's gate refuses the same SQL with the flag off."""
+    monkeypatch.setenv("DMS_INTENT_SPEC", "0")
+    harness.writer_sql = _SECOND_SKIPS[shape][0]
+    env = harness.ask(_SKIP2_Q)
+    _assert_offset_refused(env, harness, 2)
+    assert harness.calls == [None]
+
+
+@pytest.mark.parametrize("shape", _SKIP_SHAPES)
+def test_submit_never_lifts_an_offset_beside_a_second_skip(
+    harness: _Harness, shape: str
+) -> None:
+    """The submit gate's own re-check, given spec_offset=2, still refuses.
+
+    Before the fix it stripped the outer OFFSET, passed, and served e, f.
+    """
+    sql = _SECOND_SKIPS[shape][0]
+    assert sole_outer_offset(sql) is None
+    assert without_outer_offset(sql, 2) is None
+    env = _submit_validated(
+        sql,
+        question=_SKIP2_Q,
+        space_id=None,
+        session_id=None,
+        submit=harness.submit,
+        ledger_append=lambda _payload: SimpleNamespace(entry_id="led_spec", hash="hash_spec"),
+        notes=(),
+        plan_source="ontology_plan",
+        coverage=coverage_from_sql_path(sql=sql),
+        warehouse=harness.lake,
+        spec_offset=2,
+    )
+    _assert_offset_refused(env, harness, 2)
+
+
+@pytest.mark.parametrize("shape", ["row_number", "qualify", "nested_desc_limit"])
+def test_outer_limit_beside_a_rank_filter_is_unclear(shape: str) -> None:
+    """The outer LIMIT/OFFSET alone does not say which rows a second window keeps.
+
+    Before the fix the checker read limit 3 offset 2 and passed.
+    """
+    sql = _SECOND_SKIPS[shape][0]
+    reason = check_sql_against_spec(sql, AnswerSpec(direction="asc", n=3, offset=2))
+    assert reason == "SQL limit is unclear"
+    # An unclear limit still counts as a window when the spec says no direction.
+    none_reason = check_sql_against_spec(sql, AnswerSpec(direction="none"))
+    assert none_reason == "spec says no direction, SQL orders ASC"
+
+
+_DERIVED_SKIP2 = "SELECT category, total FROM (" + _AGG + ") t" + _TAIL
+
+
+@pytest.mark.parametrize(
+    ("question", "sql", "n", "n_span", "want"),
+    [
+        (
+            "lowest category by stock value skipping 2",
+            _ASC_ONE,
+            1,
+            "lowest category",
+            ["c"],
+        ),
+        (
+            "lowest 3 categories by stock value skipping 2",
+            _ASC3_SKIP2,
+            3,
+            "3",
+            ["c", "d", "e"],
+        ),
+        # A derived table with no skip of its own still lifts.
+        (
+            "lowest 3 categories by stock value skipping 2",
+            _DERIVED_SKIP2,
+            3,
+            "3",
+            ["c", "d", "e"],
+        ),
+    ],
+)
+def test_tied_offset_the_writer_chose_is_served(
+    harness: _Harness, question: str, sql: str, n: int, n_span: str, want: list[str]
+) -> None:
+    """Span holds the number, the writer's own SQL has it once, on the outer query.
+
+    The spec pins the whole window (direction, n, offset); since #444 round 3
+    the lift needs all three.
+    """
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=n,
+        n_span=n_span,
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert _categories(env) == want
+    for name in want:
+        assert f"category={name}" in env["text"]
+    assert "category=a" not in env["text"]
+    assert harness.submits == [sql]
+
+
+def test_tied_offset_retry_keeping_the_writer_offset_is_served(harness: _Harness) -> None:
+    """The writer had OFFSET 2 but ordered DESC. The retry fixes the order only."""
+    harness.spec = _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=1,
+        n_span="lowest category",
+        offset=2,
+        offset_span="skipping 2",
+    )
+    harness.writer_sql = _DESC_ONE
+    harness.retry_sql = _ASC_ONE
+    env = harness.ask("lowest category by stock value skipping 2")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert _categories(env) == ["c"]
+    assert "category=c" in env["text"]
+    assert harness.submits == [_ASC_ONE]
+
+
+# #444 round-3 review finding 1: the lift trusted a spec that did not pin the
+# window. Both routes agreed on "skip 2", but nothing checked which end was
+# skipped or how many rows came back. Each spec below leaves the direction or
+# n unpinned: dropped as an invalid value or a paraphrased span, or never
+# given. Before the fix each served L2_VALIDATED through POST /v1/chat/ask,
+# rows d, c, b (or c, d, e, f for "lowest 3"). The asked window is c, d, e.
+# Flag off abstains unrequested_offset:2. The lift now needs the spec to pin
+# direction, n and offset, all matching the served SQL's outer window.
+_DESC3_SKIP2 = _AGG + " ORDER BY total DESC LIMIT 3 OFFSET 2"
+_ASC5_SKIP2 = _AGG + " ORDER BY total ASC LIMIT 5 OFFSET 2"
+_PARTIAL_WINDOWS: dict[str, tuple[dict[str, Any], str]] = {
+    # direction value "ascending" is dropped as invalid_value.
+    "direction_ascending_dropped": (
+        _cited(
+            direction="ascending",
+            direction_span="lowest",
+            n=3,
+            n_span="3",
+            offset=2,
+            offset_span="skipping 2",
+        ),
+        _DESC3_SKIP2,
+    ),
+    # span "lowest three" is not in the question: span_not_in_question.
+    "direction_paraphrase_dropped": (
+        _cited(
+            direction="asc",
+            direction_span="lowest three",
+            n=3,
+            n_span="3",
+            offset=2,
+            offset_span="skipping 2",
+        ),
+        _DESC3_SKIP2,
+    ),
+    "no_direction": (
+        _cited(n=3, n_span="3", offset=2, offset_span="skipping 2"),
+        _DESC3_SKIP2,
+    ),
+    "offset_only": (
+        _cited(offset=2, offset_span="skipping 2"),
+        _DESC3_SKIP2,
+    ),
+    # Direction pinned, n not: LIMIT 5 served 4 rows (c, d, e, f) for "lowest 3".
+    "no_n": (
+        _cited(direction="asc", direction_span="lowest", offset=2, offset_span="skipping 2"),
+        _ASC5_SKIP2,
+    ),
+}
+_PARTIAL_SHAPES = sorted(_PARTIAL_WINDOWS)
+
+
+def _chat_ask(harness: _Harness, question: str) -> dict[str, Any]:
+    """The JSON body of POST /v1/chat/ask, with the harness as the live ask."""
+
+    class _Ask:
+        def live_ask(self, q: str, **_k: Any) -> dict[str, Any]:
+            env = harness.ask(q)
+            assert env is not None
+            return env
+
+    app = create_app()
+    app.state.ask_service = _Ask()
+    app.state.cortex = object()
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    r = TestClient(app).post(
+        "/v1/chat/ask", json={"question": question, "session_id": "ses_spec_window"}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert isinstance(body, dict)
+    return body
+
+
+@pytest.mark.parametrize("shape", _PARTIAL_SHAPES)
+def test_offset_never_lifts_on_a_spec_that_does_not_pin_the_window(
+    harness: _Harness, shape: str
+) -> None:
+    """Customer envelope from POST /v1/chat/ask: abstain, no rows, nothing run."""
+    spec, sql = _PARTIAL_WINDOWS[shape]
+    harness.spec = spec
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    env = _chat_ask(harness, _SKIP2_Q)
+    _assert_offset_refused(env, harness, 2)
+    assert env["values"] == []
+    for name in ("b", "c", "d", "e", "f"):
+        assert f"category={name}" not in env["text"]
+    assert harness.calls == ["sql_writer", ROLE_INTENT_SPEC]
+
+
+@pytest.mark.parametrize("sql", [_DESC3_SKIP2, _ASC5_SKIP2])
+def test_flag_off_refuses_the_partial_window_sql(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, sql: str
+) -> None:
+    """Control: main's gate refuses the same SQL on the same route, flag off."""
+    monkeypatch.setenv("DMS_INTENT_SPEC", "0")
+    harness.writer_sql = sql
+    env = _chat_ask(harness, _SKIP2_Q)
+    _assert_offset_refused(env, harness, 2)
+    assert harness.calls == [None]
+
+
+@pytest.mark.parametrize("shape", _PARTIAL_SHAPES)
+def test_partial_spec_approves_no_offset(shape: str) -> None:
+    """The decision itself: the check passes, but no offset is approved."""
+    spec, sql = _PARTIAL_WINDOWS[shape]
+    decision = apply_intent_spec(
+        question=_SKIP2_Q,
+        sql=sql,
+        writer_payload=_writer(sql),
+        spec_fetch=lambda _prompt: spec,
+        retry_fetch=lambda _prompt: _writer(sql),
+    )
+    assert decision.abstain_reason is None
+    assert decision.sql == sql
+    assert decision.approved_offset is None
+
+
+def test_offset_lifts_when_the_spec_pins_the_whole_window(harness: _Harness) -> None:
+    """Served control: asc, n 3 and offset 2 all pinned and all in the outer SQL."""
+    harness.spec = _skip2_spec()
+    harness.writer_sql = _ASC3_SKIP2
+    harness.retry_sql = _ASC3_SKIP2
+    env = _chat_ask(harness, _SKIP2_Q)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert _categories(env) == ["c", "d", "e"]
+    assert [row["total"] for row in env["rows"]] == [3, 10, 20]
+    assert env["text"].startswith("Found 3 row(s).")
+    for name in ("c", "d", "e"):
+        assert f"category={name}" in env["text"]
+    for name in ("a", "b", "f"):
+        assert f"category={name}" not in env["text"]
+    assert harness.submits == [_ASC3_SKIP2]
+
+
+def test_full_spec_rejects_the_wrong_end_of_the_window(harness: _Harness) -> None:
+    """Control: the same DESC SQL against a spec that pins asc is a mismatch."""
+    harness.spec = _skip2_spec()
+    harness.writer_sql = _DESC3_SKIP2
+    harness.retry_sql = _DESC3_SKIP2
+    env = _chat_ask(harness, _SKIP2_Q)
+    _assert_offset_refused(
+        env, harness, 2, gap="intent_spec_mismatch:spec says ascending, SQL orders DESC"
+    )
+
+
+@pytest.mark.parametrize(
+    ("served_sql", "spec"),
+    [
+        # Outer LIMIT 5 is not the spec's n 3.
+        (_ASC5_SKIP2, AnswerSpec(direction="asc", n=3, offset=2)),
+        # Outer ORDER BY DESC is not the spec's asc.
+        (_DESC3_SKIP2, AnswerSpec(direction="asc", n=3, offset=2)),
+        # FETCH FIRST is not a LIMIT the lift can read.
+        (
+            _AGG + " ORDER BY total ASC OFFSET 2 ROWS FETCH FIRST 3 ROWS ONLY",
+            AnswerSpec(direction="asc", n=3, offset=2),
+        ),
+        # No outer ORDER BY.
+        (_AGG + " LIMIT 3 OFFSET 2", AnswerSpec(direction="asc", n=3, offset=2)),
+        # direction none never pins a ranked window.
+        (_ASC3_SKIP2, AnswerSpec(direction="none", n=3, offset=2)),
+    ],
+)
+def test_approval_reads_the_served_outer_window(served_sql: str, spec: AnswerSpec) -> None:
+    """``_approved_offset`` compares the spec to the outer window on its own."""
+    assert (
+        _approved_offset(
+            spec, dropped=(), first_sql=_ASC3_SKIP2, served_sql=served_sql, dialect="duckdb"
+        )
+        is None
+    )
+
+
+def test_approval_refuses_a_dropped_window_field() -> None:
+    """A dropped direction, n or offset field means the window was not pinned."""
+    spec = AnswerSpec(direction="asc", n=3, offset=2)
+    for field in ("direction", "n", "offset"):
+        assert (
+            _approved_offset(
+                spec,
+                dropped=({"field": field, "reason": "span_not_in_question"},),
+                first_sql=_ASC3_SKIP2,
+                served_sql=_ASC3_SKIP2,
+                dialect="duckdb",
+            )
+            is None
+        )
+    assert (
+        _approved_offset(
+            spec, dropped=(), first_sql=_ASC3_SKIP2, served_sql=_ASC3_SKIP2, dialect="duckdb"
+        )
+        == 2
+    )
+
+
+@pytest.mark.parametrize(
+    ("span", "kept"),
+    [
+        ("skipping 2", True),
+        ("2", True),
+        ("categories", False),
+        ("lowest 3", False),
+        ("2024", False),
+        ("12", False),
+    ],
+)
+def test_offset_span_must_hold_the_number(span: str, kept: bool) -> None:
+    question = "lowest 3 categories in 2024 skipping 2 of 12"
+    parsed = parse_spec_payload(
+        _cited(offset=2, offset_span=span),
+        question,
+        writer_payload=_writer("SELECT 1"),
+    )
+    assert parsed.unverified is None
+    if kept:
+        assert parsed.spec.offset == 2
+        assert parsed.dropped == ()
+    else:
+        assert parsed.spec.offset is None
+        assert parsed.dropped == ({"field": "offset", "reason": "value_not_in_span"},)
+
+
+def test_spec_offset_zero_does_not_lift_at_submit(harness: _Harness) -> None:
+    """``_submit_validated`` re-checks the SQL it submits, not a flag."""
+    env = _submit_validated(
+        _NESTED_OFFSET,
+        question="lowest 3 categories by stock value",
+        space_id=None,
+        session_id=None,
+        submit=harness.submit,
+        ledger_append=lambda _payload: SimpleNamespace(entry_id="led_spec", hash="hash_spec"),
+        notes=(),
+        plan_source="ontology_plan",
+        coverage=coverage_from_sql_path(sql=_NESTED_OFFSET),
+        warehouse=harness.lake,
+        spec_offset=2,
+    )
+    _assert_offset_refused(env, harness, 2)
+
+
+def test_span_outside_the_question_is_dropped_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    parsed = parse_spec_payload(
+        _cited(direction="asc", direction_span="not-in-the-question"),
+        "lowest 3 categories by stock value",
+        writer_payload=_writer("SELECT 1"),
+    )
+    assert parsed.unverified is None
+    assert parsed.spec.direction is None
+    assert parsed.dropped == ({"field": "direction", "reason": "span_not_in_question"},)
+    assert "dropped_field" in caplog.text
+    assert "span_not_in_question" in caplog.text
+
+
+def test_same_model_abstains(harness: _Harness) -> None:
+    harness.spec = _cited(
+        direction="asc", direction_span="lowest", n=3, n_span="3", model=_WRITER
+    )
+    harness.writer_sql = _ASC3
+    env = harness.ask("lowest 3 categories by stock value")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "intent_spec_unverified:same_model" in env["text"]
+    assert harness.submits == []
+
+
+def test_missing_spec_abstains(harness: _Harness) -> None:
+    harness.spec = {"served_model": _SPEC}
+    harness.writer_sql = _ASC3
+    env = harness.ask("lowest 3 categories by stock value")
+    assert env is not None
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "intent_spec_unverified:spec_missing" in env["text"]
+    assert harness.submits == []
+
+
+def test_unreported_writer_model_abstains(harness: _Harness) -> None:
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = _ASC3
+    harness.compute = lambda ctx: (  # type: ignore[method-assign]
+        harness.spec
+        if ctx.get("dms_route_role") == ROLE_INTENT_SPEC
+        else {"query_sql": _ASC3}
+    )
+    env = harness.ask("lowest 3 categories by stock value")
+    assert env is not None
+    assert env["abstained"] is True
+    assert "intent_spec_unverified:writer_model_unreported" in env["text"]
+    assert harness.submits == []
+
+
+def test_flag_off_does_not_stamp_a_spec_attempt(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DMS_INTENT_SPEC", raising=False)
+    harness.writer_sql = _DESC3
+    env = harness.ask("lowest 3 categories by stock value")
+    assert env is not None
+    assert "intent_spec_attempt" not in env
+    assert harness.calls == [None]
+    assert harness.submits == [_DESC3]
+
+
+def _mask_clock(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {
+            key: ("<as_of>" if key == "as_of" else _mask_clock(val))
+            for key, val in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_mask_clock(val) for val in obj]
+    return obj
+
+
+_WHERE_FALSE = (
+    Path(__file__).resolve().parents[1]
+    / "tests"
+    / "fixtures"
+    / "ask_guide"
+    / "flag_off_where_false_57d85c52.json"
+)
+_FALSE_SQL = "SELECT category, amount FROM facts WHERE 1 = 2"
+
+
+def test_flag_off_where_false_matches_main_empty_rows(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Flag off executes ``WHERE 1 = 2`` and withholds the empty rows, like main.
+
+    The stub runs the SQL. Main's envelope is the 57d85c52 capture.
+    Only ``as_of`` is masked. No ticket is written and no new key appears.
+    """
+    monkeypatch.delenv("DMS_INTENT_SPEC", raising=False)
+    monkeypatch.delenv("DMS_CLOOP_B", raising=False)
+    tickets._reset_pipeline_failures()
+    harness.writer_sql = _FALSE_SQL
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = harness.ask("show every row")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert harness.submits == [_FALSE_SQL]
+    main = json.loads(_WHERE_FALSE.read_text(encoding="utf-8"))
+    assert _mask_clock(env) == _mask_clock(main)
+    assert "ticket_id" not in env
+    assert _tickets(caplog) == []
+    assert "pipeline_failure" not in caplog.text
+
+
+def test_flag_on_where_false_abstains_as_contradiction(harness: _Harness) -> None:
+    """Flag on still refuses always-false SQL. The spec cites the question."""
+    harness.spec = _cited(direction="none", direction_span="show every row")
+    harness.writer_sql = _FALSE_SQL
+    harness.retry_sql = _FALSE_SQL
+    env = harness.ask("show every row")
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "contradiction" in env["text"]
+    assert harness.submits == []
+
+
+def test_always_true_comparison_still_serves(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DMS_INTENT_SPEC", raising=False)
+    harness.writer_sql = "SELECT category, amount FROM facts WHERE 1 <> 2"
+    env = harness.ask("show every row")
+    assert env is not None
+    assert env["abstained"] is False
+    assert _categories(env) == ["a", "b", "c", "d", "e", "f"]
+    assert len(harness.submits) == 1
+
+
+def test_narrowed_entity_span_is_not_served(harness: _Harness) -> None:
+    """`show ali bin` cites `ali bin`. SQL `= 'Ali'` covers only part of that span."""
+    question = "show ali bin"
+    harness.spec = _cited(literal="Ali", literal_span="ali bin")
+    harness.writer_sql = _NARROW
+    harness.retry_sql = _NARROW
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "not fully covered" in env["text"]
+    assert "ali bin" in env["text"]
+    assert harness.submits == []
+    assert all(prompt is None or "samples:" not in prompt for prompt in harness.prompts)
+
+
+def test_full_entity_span_is_served(harness: _Harness) -> None:
+    """`show Ali` with SQL `= 'Ali'` covers the cited span."""
+    question = "show Ali"
+    harness.spec = _cited(literal="Ali", literal_span="Ali")
+    harness.writer_sql = _NARROW
+    harness.retry_sql = _NARROW
+    env = harness.ask(question)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["rows"] == [{"note": "Ali"}]
+    assert "Ali" in env["text"]
+    assert "Bea" not in env["text"]
+    assert harness.submits == [_NARROW]
+
+
+def test_partial_literal_does_not_cover_a_span() -> None:
+    sql = "SELECT note FROM sheet WHERE note = 'aa'"
+    reason = check_sql_against_spec(
+        sql, AnswerSpec(filters=(SpecFilter("entity", "aa", ("aa bb",)),))
+    )
+    assert reason is not None
+    assert "not fully covered" in reason
+    assert check_sql_against_spec(
+        "SELECT note FROM sheet WHERE note = 'aa bb'",
+        AnswerSpec(filters=(SpecFilter("entity", "aa bb", ("aa bb",)),)),
+    ) is None
+    stitched = (
+        "SELECT note FROM sheet WHERE note = 'aa' AND other = 'bb'"
+    )
+    stitched_reason = check_sql_against_spec(
+        stitched, AnswerSpec(filters=(SpecFilter("entity", "aa", ("aa bb",)),))
+    )
+    assert stitched_reason is not None
+    assert "not fully covered" in stitched_reason
+
+
+def _tickets(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for rec in caplog.records:
+        if rec.levelno != logging.WARNING:
+            continue
+        message = rec.getMessage()
+        if not message.startswith("pipeline_failure "):
+            continue
+        body = message.split(" ", 1)[1]
+        if not body.startswith("{"):
+            continue
+        found.append(json.loads(body))
+    return found
+
+
+def _question_hash(question: str) -> str:
+    """Same mask then scrub the ticket writer uses. The log stores the hash."""
+    got = fail_closed_mask_payload(text=question)
+    masked = _scrub_string(str(got.get("text") or ""))
+    normal = " ".join(masked.casefold().split())
+    return hashlib.sha256(normal.encode()).hexdigest()
+
+
+def _assert_spec_ticket(
+    caplog: pytest.LogCaptureFixture,
+    env: dict[str, Any],
+    *,
+    reason: str,
+    retries: int,
+    question: str,
+    sql: str,
+    secret: str,
+) -> dict[str, Any]:
+    rows = _tickets(caplog)
+    assert len(rows) == 1
+    ticket = rows[0]
+    assert ticket["reason"] == reason
+    assert ticket["retries"] == retries
+    assert ticket["stage"] == "intent_spec"
+    assert ticket["ask_id"] == env["answer_id"]
+    assert ticket["question_hash"] == _question_hash(question)
+    assert env["ticket_id"] == ticket["ticket_id"]
+    assert str(ticket["ticket_id"]).startswith("tkt")
+    assert str(ticket["ticket_id"]).isalpha()
+    blob = json.dumps(ticket)
+    assert "question" not in ticket
+    assert "sql" not in ticket
+    assert "rejected_sql" not in ticket
+    assert question not in blob
+    assert sql not in blob
+    assert secret not in blob
+    assert question not in caplog.text
+    assert sql not in caplog.text
+    assert secret not in caplog.text
+    return ticket
+
+
+def test_flag_on_mismatch_writes_pipeline_failure_ticket(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Flag on. One WARNING ticket. The question and the SQL are not in it.
+
+    The hash is the real masker, then scrub. A bearer value does not survive.
+    """
+    tickets._reset_pipeline_failures()
+    email = "ada@example.com"
+    bearer = "sk-abcdefghij1234"
+    question = f"lowest 3 {email}"
+    sql = (
+        "SELECT category, SUM(amount) AS total FROM facts "
+        f"WHERE category <> '{bearer}' "
+        "GROUP BY category ORDER BY total DESC LIMIT 3"
+    )
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = harness.ask(question)
+    assert env is not None
+    assert env["abstained"] is True
+    assert "intent_spec_mismatch" in env["text"]
+    _assert_spec_ticket(
+        caplog, env, reason="intent_spec_mismatch", retries=2,
+        question=question, sql=sql, secret=bearer,
+    )
+    assert email not in caplog.text
+
+
+def test_validate_on_retry_names_the_ticket_and_hides_the_table(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Writer SQL is DESC. Spec is asc, n=3. The retry selects an ungranted table.
+
+    The ticket reason is a named code and retries is at least 1. The table
+    name is absent from the serialized envelope and present only on the ticket.
+    """
+    tickets._reset_pipeline_failures()
+    table = "not_a_granted_table"
+    question = "lowest 3 categories by stock value"
+    retry_sql = (
+        f"SELECT category FROM {table} ORDER BY category ASC LIMIT 3"
+    )
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = _DESC3
+    harness.retry_sql = retry_sql
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = harness.ask(question)
+    assert env is not None
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert harness.submits == []
+    assert table not in json.dumps(env)
+    rows = _tickets(caplog)
+    assert len(rows) == 1
+    ticket = rows[0]
+    assert ticket["reason"] != "unspecified"
+    assert ticket["reason"] == "validate:ungranted"
+    assert ticket["retries"] >= 1
+    assert ticket["stage"] == "intent_spec"
+    assert ticket["names"] == table
+    blob = json.dumps(ticket)
+    assert table in blob
+    assert retry_sql not in blob
+    assert question not in blob
+    assert question not in caplog.text
+    assert retry_sql not in caplog.text
+
+
+def test_flag_on_unverified_writes_pipeline_failure_ticket(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    tickets._reset_pipeline_failures()
+    question = "lowest 3 categories by stock value"
+    harness.spec = {}
+    harness.writer_sql = _ASC3
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = harness.ask(question)
+    assert env is not None
+    assert "intent_spec_unverified" in env["text"]
+    _assert_spec_ticket(
+        caplog, env, reason="intent_spec_unverified", retries=0,
+        question=question, sql=_ASC3, secret=question,
+    )
+
+
+def test_flag_on_contradiction_backstop_writes_a_ticket(
+    harness: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The submit-path contradiction exit tickets through the builder."""
+    tickets._reset_pipeline_failures()
+    question = "show every row"
+    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
+        env = _submit_validated(
+            _FALSE_SQL,
+            question=question,
+            space_id=None,
+            session_id=None,
+            submit=harness.submit,
+            ledger_append=lambda _payload: SimpleNamespace(
+                entry_id="led_spec", hash="hash_spec"
+            ),
+            notes=(),
+            plan_source="ontology_plan",
+            coverage=coverage_from_sql_path(sql=_FALSE_SQL),
+            warehouse=harness.lake,
+        )
+    assert env["abstained"] is True
+    assert "contradiction" in env["text"]
+    assert harness.submits == []
+    _assert_spec_ticket(
+        caplog, env, reason="contradiction", retries=0,
+        question=question, sql=_FALSE_SQL, secret=_FALSE_SQL,
+    )
+
+
+def test_wrong_ticket_signature_raises() -> None:
+    """The old kwargs are not an alias. Nothing swallows the TypeError."""
+    with pytest.raises(TypeError):
+        log_pipeline_failure_ticket(  # type: ignore[call-arg]
+            question="show the total",
+            rejected_sql="SELECT 1",
+            retry_count=2,
+            reason="intent_spec_mismatch",
+        )
+
+
+def test_abstain_exit_does_not_swallow_type_error(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A TypeError from the builder reaches the caller."""
+    harness.spec = _cited(direction="asc", direction_span="lowest", n=3, n_span="3")
+    harness.writer_sql = _DESC3
+    harness.retry_sql = _DESC3
+
+    def _boom(*_args: object, **_kwargs: object) -> dict[str, Any]:
+        raise TypeError("wrong signature")
+
+    monkeypatch.setattr("dms_executor.generative_ask.build_abstain", _boom)
+    with pytest.raises(TypeError, match="wrong signature"):
+        harness.ask("lowest 3 categories by stock value")
+
+
+def test_direction_mismatch_names_the_order() -> None:
+    reason = check_sql_against_spec(_DESC3, AnswerSpec(direction="asc", n=3))
+    assert reason == "spec says ascending, SQL orders DESC"
+
+
+def test_text_column_samples_are_omitted() -> None:
+    rows = [{"note": "Ali", "amount": 1}]
+    assert masked_samples(rows, {"note"}) == [{"amount": 1}]
+    prompt = spec_prompt("show ali bin", samples=rows, text_columns={"note"})
+    assert "samples:" in prompt
+    assert "Ali" not in prompt.split("samples:", 1)[1]
+    bare = spec_prompt("show ali bin")
+    assert "samples:" not in bare
+
+
+def test_rank_window_limit_agrees_with_the_spec() -> None:
+    sql = (
+        "SELECT category, amount FROM ("
+        "SELECT category, amount, ROW_NUMBER() OVER (ORDER BY amount ASC) AS rn "
+        "FROM facts) AS ranked WHERE rn <= 3"
+    )
+    assert check_sql_against_spec(sql, AnswerSpec(direction="asc", n=3)) is None
+    outer = sql + " ORDER BY amount DESC"
+    reason = check_sql_against_spec(outer, AnswerSpec(direction="asc", n=3))
+    assert reason is not None
+    assert "DESC" in reason
