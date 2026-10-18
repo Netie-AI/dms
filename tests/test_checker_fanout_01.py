@@ -2805,3 +2805,52 @@ def test_a_correlated_count_without_a_join_and_a_derived_table_are_kept(gate_lak
     ):
         why = served_result_reason(sql, warehouse=gate_lake, as_of="2026-10-16T00:00:00Z")
         assert why is None, (sql, why)
+
+
+#: Words written with ZWJ/ZWNJ (Indic, Persian) and emoji sequences are text.
+_LITERAL_MARKS = {
+    "zwj": "SELECT sku, quantity_kg FROM inventory WHERE category = 'ka‍na'",
+    "zwnj_persian": "SELECT sku, quantity_kg FROM inventory WHERE category = 'می‌خواهم'",
+    "emoji_zwj": "SELECT sku, quantity_kg FROM inventory WHERE category = 'a\U0001F468‍\U0001F469'",
+    "separator": "SELECT sku, quantity_kg FROM inventory WHERE category = 'a b'",
+    "escaped_quote": "SELECT sku, quantity_kg FROM inventory WHERE category = 'it''s‍'",
+    "two_literals": (
+        "SELECT sku, quantity_kg FROM inventory WHERE category IN ('a‍', 'b‌')"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_LITERAL_MARKS))
+def test_a_format_character_inside_a_literal_is_text(gate_lake: Path, name: str) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    sql = _LITERAL_MARKS[name]
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake) is None, name
+
+
+#: Outside a plain literal both parsers agree on, the character is still refused.
+_OUTSIDE_MARKS = {
+    "after_literal": "SELECT sku FROM inventory WHERE category = 'a'​OR 1 = 1",
+    "table_position": "SELECT sku FROM inventory WHERE EXISTS (SELECT 1 FROM​alerts)",
+    "quoted_name": 'SELECT sku FROM "inv‍entory"',
+    "e_string": "SELECT sku FROM inventory WHERE category = E'a‍'",
+    "dollar_string": "SELECT sku FROM inventory WHERE category = $$a‍$$",
+    "line_comment": "SELECT sku FROM inventory -- n‍\nWHERE 1 = 1",
+    "block_comment": "SELECT sku FROM inventory /* '‍' */",
+    "quote_in_comment": (
+        "SELECT sku FROM inventory -- it's\n"
+        "WHERE category = 'a' OR EXISTS (SELECT 1 FROM​alerts)"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_OUTSIDE_MARKS))
+def test_a_format_character_outside_an_agreed_literal_is_refused(
+    gate_lake: Path, name: str
+) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    why = validate_compiled_sql(
+        _OUTSIDE_MARKS[name], grantable={"inventory"}, warehouse=gate_lake
+    )
+    assert why == "hostile_sql:sql_not_analyzable", (name, why)

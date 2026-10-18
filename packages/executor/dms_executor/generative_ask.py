@@ -823,16 +823,77 @@ _SPLIT_DIFFERENTLY = frozenset({"\u0085", "\u1680", "\u2028", "\u2029"})
 
 
 def _invisible_format_char(sql: str) -> bool:
-    """A character the syntax tree and DuckDB read differently, anywhere in the SQL.
+    """A character the syntax tree and DuckDB read differently, outside a literal.
 
     DuckDB skips U+200B, U+2060 and U+FEFF (category Cf) as whitespace;
     sqlglot reads them as part of a name, so ``FROM<U+200B>alerts`` is a
-    column alias to every sqlglot-based check while DuckDB reads the table.
-    Four separators go the other way (_SPLIT_DIFFERENTLY).
+    column alias to every sqlglot-based check while DuckDB reads the table. Four
+    separators go the other way (_SPLIT_DIFFERENTLY). Inside a plain
+    ``'...'`` literal that both read as the same one string, the character
+    is text (ZWJ and ZWNJ in Indic and Persian words, emoji sequences).
     """
     import unicodedata
 
-    return any(unicodedata.category(ch) == "Cf" or ch in _SPLIT_DIFFERENTLY for ch in sql)
+    def odd(ch: str) -> bool:
+        return unicodedata.category(ch) == "Cf" or ch in _SPLIT_DIFFERENTLY
+
+    if not any(odd(ch) for ch in sql):
+        return False
+    inside: set[int] = set()
+    for start, end in _agreed_literal_spans(sql):
+        inside.update(range(start + 1, end - 1))
+    return any(odd(ch) and index not in inside for index, ch in enumerate(sql))
+
+
+def _agreed_literal_spans(sql: str) -> list[tuple[int, int]]:
+    """``[start, end)`` of each plain ``'...'`` literal DuckDB and sqlglot both
+    tokenize as one string at exactly that span. A comment, an E'' or a
+    dollar-quoted string ends the scan: nothing after it is exempt."""
+    import duckdb
+    from sqlglot import tokenize
+    from sqlglot.tokens import TokenType
+
+    try:
+        # DuckDB reports UTF-8 byte offsets; map them back to characters.
+        char_at: dict[int, int] = {}
+        offset = 0
+        for index, ch in enumerate(sql):
+            char_at[offset] = index
+            offset += len(ch.encode("utf-8"))
+        duck_starts = {
+            char_at.get(int(pos), -1)
+            for pos, kind in duckdb.tokenize(sql)
+            if str(kind).lower().endswith("string_const")
+        }
+        glot = {
+            (tok.start, tok.end + 1)
+            for tok in tokenize(sql, read="duckdb")
+            if tok.token_type == TokenType.STRING
+        }
+    except Exception:  # noqa: BLE001 - no agreed literal, nothing is exempt
+        return []
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(sql)
+    while i < n:
+        if sql.startswith(("--", "/*"), i) or sql[i] == "$":
+            return spans
+        if sql[i] == '"':
+            j = i + 1
+            while j < n and not (sql[j] == '"' and sql[j + 1 : j + 2] != '"'):
+                j += 2 if sql[j] == '"' else 1
+            i = j + 1
+        elif sql[i] == "'":
+            j = i + 1
+            while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
+                j += 2 if sql[j] == "'" else 1
+            end = j + 1
+            prefixed = i > 0 and (sql[i - 1].isalnum() or sql[i - 1] in "_$")
+            if not prefixed and i in duck_starts and (i, end) in glot:
+                spans.append((i, end))
+            i = end
+        else:
+            i += 1
+    return spans
 
 
 #: Plan names of the table functions that only generate rows.
