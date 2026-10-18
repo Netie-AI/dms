@@ -1,7 +1,7 @@
 """Vendor Cortex contract artifacts and regenerate ``cortex_client.generated``.
 
-Copies from CORTEX_ROOT:
-  - contract/openapi-1.2.0.json + .sha256
+Copies from CORTEX_ROOT, for --version (default: the current pin):
+  - contract/openapi-<version>.json + .sha256
   - contract/testvectors/manifest_canonical.jsonl
 
 Then prunes a generation surface and runs openapi-python-client into
@@ -16,19 +16,30 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC_NAME = "openapi-1.2.0.json"
+#: The contract line DMS generates its client from. Older specs stay vendored
+#: and pinned (CI checks every vendored spec against its .sha256).
+CURRENT_VERSION = "1.5.0"
+#: The generator release regenerate_client was checked with: regenerating the
+#: committed 1.2.0 spec reproduces the 1.2.0 client up to five blank lines.
+GENERATOR = "openapi-python-client==0.27.1"
+
+
+def _spec_name(version: str) -> str:
+    return f"openapi-{version}.json"
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def sync_artifacts(cortex_root: Path) -> None:
-    src_spec = cortex_root / "contract" / SPEC_NAME
-    src_hash = cortex_root / "contract" / f"{SPEC_NAME}.sha256"
+def sync_artifacts(cortex_root: Path, version: str = CURRENT_VERSION) -> None:
+    spec_name = _spec_name(version)
+    src_spec = cortex_root / "contract" / spec_name
+    src_hash = cortex_root / "contract" / f"{spec_name}.sha256"
     src_vectors = cortex_root / "contract" / "testvectors" / "manifest_canonical.jsonl"
     for p in (src_spec, src_hash, src_vectors):
         if not p.is_file():
@@ -37,52 +48,75 @@ def sync_artifacts(cortex_root: Path) -> None:
     dest = ROOT / "contract"
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "testvectors").mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src_spec, dest / SPEC_NAME)
-    shutil.copy2(src_hash, dest / f"{SPEC_NAME}.sha256")
+    shutil.copy2(src_spec, dest / spec_name)
+    shutil.copy2(src_hash, dest / f"{spec_name}.sha256")
     shutil.copy2(src_vectors, dest / "testvectors" / "manifest_canonical.jsonl")
 
-    expected = (dest / f"{SPEC_NAME}.sha256").read_text(encoding="utf-8").split()[0]
-    actual = _sha256(dest / SPEC_NAME)
+    expected = (dest / f"{spec_name}.sha256").read_text(encoding="utf-8").split()[0]
+    actual = _sha256(dest / spec_name)
     if actual != expected:
-        raise SystemExit(f"sha256 mismatch for {SPEC_NAME}: {actual} != {expected}")
+        raise SystemExit(f"sha256 mismatch for {spec_name}: {actual} != {expected}")
 
     vec = dest / "testvectors" / "manifest_canonical.jsonl"
     (dest / "testvectors" / "manifest_canonical.jsonl.sha256").write_text(
         f"{_sha256(vec)}  manifest_canonical.jsonl\n", encoding="utf-8"
     )
-    print(f"synced {SPEC_NAME} ({actual[:12]}…) + testvectors")
+    print(f"synced {spec_name} ({actual[:12]}…) + testvectors")
 
 
-def regenerate_client() -> None:
+def regenerate_client(version: str = CURRENT_VERSION) -> None:
+    """Prune the spec, generate the client, apply the repo's ruff fixes.
+
+    The generator runs outside the repo with its own post hooks off
+    (scripts/openapi_client_config.yaml), so no lint config it happens to
+    find changes its output. The repo's ``ruff check --fix-only`` then applies
+    the safe rewrites the committed client carries (union syntax, imports).
+    Regenerating the 1.2.0 spec this way reproduces the 1.2.0 client up to
+    five blank lines.
+    """
     prune = ROOT / "scripts" / "prune_contract_openapi.py"
-    subprocess.check_call([sys.executable, str(prune)], cwd=str(ROOT))
-    gen_spec = ROOT / "contract" / "openapi-1.2.0.gen.json"
-    tmp = ROOT / "_gen_cortex_client"
-    if tmp.exists():
-        shutil.rmtree(tmp)
-    cmd = [
-        sys.executable,
-        "-m",
-        "openapi_python_client",
-        "generate",
-        "--path",
-        str(gen_spec),
-        "--output-path",
-        str(tmp),
-        "--overwrite",
-        "--meta",
-        "none",
-    ]
-    subprocess.check_call(cmd, cwd=str(ROOT))
-    dest = ROOT / "packages" / "cortex_client" / "cortex_client" / "generated"
-    if dest.exists():
-        shutil.rmtree(dest)
-    shutil.move(str(tmp), str(dest))
+    subprocess.check_call([sys.executable, str(prune), version], cwd=str(ROOT))
+    gen_spec = ROOT / "contract" / f"openapi-{version}.gen.json"
+    with tempfile.TemporaryDirectory(prefix="cortex_client_gen_") as work:
+        tmp = Path(work) / "generated"
+        cmd = [
+            sys.executable,
+            "-m",
+            "openapi_python_client",
+            "generate",
+            "--path",
+            str(gen_spec),
+            "--output-path",
+            str(tmp),
+            "--overwrite",
+            "--meta",
+            "none",
+            "--config",
+            str(ROOT / "scripts" / "openapi_client_config.yaml"),
+        ]
+        subprocess.check_call(cmd, cwd=work)
+        ruff = shutil.which("ruff") or "ruff"
+        subprocess.check_call(
+            [
+                ruff,
+                "check",
+                "--config",
+                str(ROOT / "pyproject.toml"),
+                "--fix-only",
+                "--quiet",
+                str(tmp),
+            ]
+        )
+        dest = ROOT / "packages" / "cortex_client" / "cortex_client" / "generated"
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(tmp, dest, ignore=shutil.ignore_patterns(".ruff_cache", "__pycache__"))
     (dest / "README.md").write_text(
-        "# Auto-generated by scripts/sync_contract.py\n\nDo not hand-edit. Run: just sync-contract\n",
+        "# Auto-generated by scripts/sync_contract.py\n\n"
+        f"Contract {version}, generator {GENERATOR}, then the repo's ruff check --fix-only.\n"
+        "Do not hand-edit. Run: just sync-contract\n",
         encoding="utf-8",
     )
-    # gen.json is a build intermediate — keep for local regen, gitignore optional
     print(f"regenerated {dest}")
 
 
@@ -93,11 +127,12 @@ def main() -> int:
         type=Path,
         default=Path(os.environ.get("CORTEX_ROOT", r"D:\Cortex")),
     )
+    p.add_argument("--version", default=CURRENT_VERSION)
     p.add_argument("--skip-generate", action="store_true")
     args = p.parse_args()
-    sync_artifacts(args.cortex_root)
+    sync_artifacts(args.cortex_root, args.version)
     if not args.skip_generate:
-        regenerate_client()
+        regenerate_client(args.version)
     return 0
 
 
