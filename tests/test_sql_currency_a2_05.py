@@ -118,6 +118,7 @@ def _ask(
         submit=_submitter(lake),
         ledger_append=_ledger,
         ontology=_ontology(amount),
+        dialect="duckdb",
     )
     assert env is not None, "no envelope"
     assert_envelope_valid(env)
@@ -196,6 +197,7 @@ def test_matching_usd_column_and_currency_answers(tmp_path: Path) -> None:
         submit=_submitter(lake),
         ledger_append=_ledger,
         ontology=o,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -330,6 +332,7 @@ def test_round3_currency_iso_and_currencycode_conflict(tmp_path: Path) -> None:
             submit=_submitter(lake),
             ledger_append=_ledger,
             ontology=o,
+            dialect="duckdb",
         )
         assert env is not None
         assert_envelope_valid(env)

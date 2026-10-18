@@ -23,9 +23,12 @@ from cortex_client.compute import (
     recorded_model_calls,
 )
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
+from dms_executor.lake_registry import SERVING_ERRORS
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
 #: sqlglot dialect for a connector kind. The extract engine is separate.
+#: The serving name is the imported constant, not a second literal.
 _CONNECTOR_DIALECT: dict[str, str] = {
     "postgresql": "postgres",
     "postgres": "postgres",
@@ -33,17 +36,24 @@ _CONNECTOR_DIALECT: dict[str, str] = {
     "sqlserver": "tsql",
     "mssql": "tsql",
     "tsql": "tsql",
-    "duckdb": "duckdb",
+    SERVING_DIALECT: SERVING_DIALECT,
 }
 #: Read-only extract engine. SQL that runs here is compared in this dialect.
-EXTRACT_DIALECT = "duckdb"
+EXTRACT_DIALECT = SERVING_DIALECT
 MAX_SQL_RETRIES = 2
 EMPTY_NOTE = "no rows match"
 #: VALUE-EXISTS-01 later returns None from ``empty_result_reason`` so the
 #: caller can serve this empty answer. Until then the reason is an abstain.
 EMPTY_UNVERIFIED = "empty_result_unverified:value_exists_pending"
 _NO_RETRY_HEADS = frozenset(
-    {"hostile_sql", "ungranted", "multi_statement", "warehouse_missing"}
+    {
+        "hostile_sql",
+        "ungranted",
+        "multi_statement",
+        "warehouse_missing",
+        "statement_not_allowed",
+        "sql_not_analyzable",
+    }
 )
 # Key-name segments after splitting on non-alphanumerics. "token" is a
 # segment, so "prompt_tokens" is not a secret key.
@@ -67,21 +77,50 @@ _SK = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 _LONG_TOKEN = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
 
 
-def dialect_for_connector(kind: str | None) -> str:
-    """sqlglot dialect name for a connector kind. Unknown kinds use the extract."""
-    key = str(kind or "").strip().lower()
-    return _CONNECTOR_DIALECT.get(key, EXTRACT_DIALECT)
+class UnknownConnectorDialect(Exception):
+    """The connector kind is not a dialect this process can name.
 
-
-def extract_dialect(warehouse: Path | None) -> str:
-    """Dialect of the engine that executes model SQL.
-
-    The extract is DuckDB even when a source connector was TSQL or another
-    warehouse. Comparison uses this dialect, not the source connector.
-    ``warehouse`` is unused; the engine does not change per file.
+    ``envelope`` is the ``sql_dialect_unknown`` abstain from ``build_abstain``.
     """
-    del warehouse
-    return EXTRACT_DIALECT
+
+    def __init__(self, envelope: dict[str, Any]) -> None:
+        self.envelope = envelope
+        super().__init__("sql_dialect_unknown")
+
+
+def dialect_for_connector(kind: str | None) -> str:
+    """sqlglot dialect for a connector kind.
+
+    An unknown kind does not become the extract dialect. It is the named
+    ``sql_dialect_unknown`` abstain, and the ticket is the one ``build_abstain``
+    writes.
+    """
+    key = str(kind or "").strip().lower()
+    found = _CONNECTOR_DIALECT.get(key)
+    if found is None:
+        from dms_executor.grant_struct import sql_refusal_envelope
+
+        raise UnknownConnectorDialect(
+            sql_refusal_envelope(
+                reason="sql_dialect_unknown",
+                space_id=None,
+                session_id=None,
+                route="connector",
+                question="",
+            )
+        )
+    return found
+
+
+def extract_dialect(dialect: str | None) -> str:
+    """The dialect the caller passed, when sqlglot knows that name.
+
+    An unknown or missing dialect is an empty name. It is not replaced
+    with the extract engine.
+    """
+    from dms_executor.grant_struct import sqlglot_dialect
+
+    return sqlglot_dialect(dialect) or ""
 
 
 def empty_result_reason(sql: str) -> str | None:
@@ -100,24 +139,77 @@ def empty_result_reason(sql: str) -> str | None:
     return EMPTY_UNVERIFIED
 
 
-def run_readonly(
-    sql: str, warehouse: Path
-) -> tuple[list[dict[str, Any]] | None, str | None]:
-    """Execute on a read-only extract connection. ``(rows, None)`` or ``(None, error)``."""
+#: Refusals for SQL that is not exactly one SELECT. Nothing executed.
+_REFUSED_SHAPES = frozenset(
+    {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}
+)
+
+
+def _one_select(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT, else the refusal code. Nothing ran.
+
+    ``WITH`` that ends in SELECT is a SELECT. Any other statement type and any
+    other count are refused without executing. The type comes from the parser,
+    not from the text of the question or the SQL.
+
+    A parse failure also executes nothing, but it is a syntax error, not a
+    hostile shape: it comes back as ``explain:<Error>``, the code main gave it,
+    so the extract loop still feeds the error back and the repaired SQL can be
+    served. Refusing it with no retry threw that repair away (R-0005).
+    """
     import duckdb
 
     try:
-        con = duckdb.connect(str(warehouse), read_only=True)
-    except Exception as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        stmts = con.extract_statements(sql)
+    except Exception as exc:  # noqa: BLE001 - nothing ran; retryable like EXPLAIN
+        return f"explain:{type(exc).__name__}"
+    if len(stmts) != 1:
+        return "multi_statement"
+    if stmts[0].type != duckdb.StatementType.SELECT:
+        return "statement_not_allowed"
+    return None
+
+
+def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
     try:
         cur = con.execute(sql)
         desc = cur.description or []
         cols = [d[0] for d in desc]
         rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
         return rows, None
-    except Exception as exc:
+    except SERVING_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001 — engine error is the extract result
         return None, f"{type(exc).__name__}: {exc}"
+
+
+def run_readonly(
+    sql: str, warehouse: Path
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Execute on a pooled serving cursor. ``(rows, None)`` or ``(None, error)``.
+
+    The cursor comes from ``connect_serving``: the lake registry's one parent
+    for this file, opened read-only with external access off and the config
+    locked. Every open of the file in the process shares that configuration,
+    so this open cannot clash with the schema index or the checker. A writer
+    waits for it, and a lease miss raises the registry's named serving error
+    to the ask boundary. One SELECT runs. A WITH that ends in SELECT is a
+    SELECT. Anything else, including a parse failure, is refused without
+    executing.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
+    try:
+        con = connect_serving(Path(warehouse))
+    except SERVING_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return None, f"{type(exc).__name__}: {exc}"
+    try:
+        gate = _one_select(con, sql)
+        if gate is not None:
+            return None, gate
+        return _fetch(con, sql)
     finally:
         con.close()
 
@@ -541,6 +633,18 @@ def run_model_loop(
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
+        if exec_err in _REFUSED_SHAPES:
+            # Not one SELECT. Refused before execute, no model retry.
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome=f"checker:{exec_err}",
+                    dialect=dialect,
+                )
+            )
+            return abstain(exec_err, attempts, sql=sql, retries=retries)
         if exec_err:
             safe_err = mask_feedback_text(exec_err)
             outcome = f"db_error:{safe_err}"

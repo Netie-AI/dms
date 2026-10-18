@@ -127,6 +127,7 @@ def _lane(lake: Path, question: str) -> tuple[dict[str, Any] | None, list[str]]:
         question, onto=onto, allowed={"transactions", "inventory"}, lake=lake,
         space_id=None, session_id=None, submit=submit,
         ledger_append=lambda _p: SimpleNamespace(entry_id="led_rw", hash="hash_rw"),
+        dialect="duckdb",
     )
     got, why, _reading = rank_window_measure(question, _specs(onto))
     assert got is None

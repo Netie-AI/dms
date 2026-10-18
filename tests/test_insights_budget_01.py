@@ -129,6 +129,7 @@ def _ask(payload: dict[str, Any] | None, onto: Ontology, wh: Path) -> dict[str, 
         submit=_submit,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     return env
