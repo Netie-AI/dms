@@ -943,6 +943,66 @@ def _cited_names(sql: str) -> set[tuple[str, str, str]]:
     }
 
 
+def _split_qualified(name: str) -> list[str]:
+    """``a."b.c" AS x`` -> ``["a", "b.c"]``: a table reference as DuckDB prints
+    it, quotes undone and its alias dropped."""
+    parts: list[str] = []
+    current: list[str] = []
+    i, n = 0, len(name)
+    quoted = False
+    while i < n:
+        ch = name[i]
+        if quoted:
+            if ch == '"' and name[i + 1 : i + 2] == '"':
+                current.append('"')
+                i += 2
+                continue
+            if ch == '"':
+                quoted = False
+            else:
+                current.append(ch)
+        elif ch == '"':
+            quoted = True
+        elif ch == ".":
+            parts.append("".join(current))
+            current = []
+        elif ch.isspace():
+            # The rest is the alias DuckDB prints after the name: " AS x".
+            if not re.match(r"\s+AS\s+\S", name[i:], re.IGNORECASE):
+                raise ValueError(f"unexpected table reference {name!r}")
+            break
+        else:
+            current.append(ch)
+        i += 1
+    if quoted:
+        raise ValueError(f"unbalanced quote in {name!r}")
+    parts.append("".join(current))
+    return parts
+
+
+def _engine_cited(con: Any, sql: str) -> set[tuple[str, str, str]]:
+    """(catalog, schema, name) of every table DuckDB's own parser says ``sql`` reads.
+
+    sqlglot and DuckDB can split the same text differently: in ``e'\\'--'``
+    DuckDB reads an escaped quote and sqlglot ends the string, so a ``--``
+    hides from the syntax tree a tail that DuckDB runs. A statistics answer
+    in that tail scans nothing, so the plan check cannot see it either.
+    DuckDB's parser is what runs. Cortex's ``warehouse`` schema names a
+    lake table, as ``lake_alias_sql`` reads it.
+    """
+    lake = {_ident_fold(table) for table in DEMO_TABLES}
+    out: set[tuple[str, str, str]] = set()
+    for raw in con.get_table_names(sql, qualified=True):
+        parts = [_ident_fold(part) for part in _split_qualified(str(raw))]
+        if not 1 <= len(parts) <= 3:
+            raise ValueError(f"unexpected table name {raw!r}")
+        catalog, schema, name = [""] * (3 - len(parts)) + parts
+        if not catalog and schema == "warehouse" and name in lake:
+            schema = ""
+        out.add((catalog, schema, name))
+    return out
+
+
 def _plan_scan_reason(
     plan_json: str,
     con: Any,
@@ -1178,6 +1238,8 @@ def validate_compiled_sql(
             # The tables the engine reads, checked against the grant.
             # Bind the SQL that runs: Cortex's warehouse aliases name lake tables.
             cited = _cited_names(lake_alias_sql(sql))
+            # And by DuckDB's own parser, on the SQL as written and as run.
+            cited |= _engine_cited(con, sql) | _engine_cited(con, lake_alias_sql(sql))
             return _plan_scan_reason(str(plan[0][1]), con, grantable, cited)
         except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
             return "hostile_sql:sql_not_analyzable"

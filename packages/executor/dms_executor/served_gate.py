@@ -25,6 +25,7 @@ correlated subquery is not probed on its own (a named gap).
 from __future__ import annotations
 
 import functools
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ from sqlglot import exp, parse_one
 from dms_executor.demo_warehouse import DEMO_TABLES
 
 _DIALECT = "duckdb"
+
+logger = logging.getLogger(__name__)
 _LAKE = frozenset(t.lower() for t in DEMO_TABLES)
 _ALIAS_PREFIX = "warehouse_"
 #: DuckDB folds identifier case for ASCII letters only; Python's lower() also
@@ -151,6 +154,9 @@ def served_result_reason(
                 return many
         return _fanout(merged, path)
     except _Unprobed:
+        return "grain_unprobed"
+    except Exception as exc:  # noqa: BLE001 - a check that cannot run certifies nothing
+        logger.warning("served_gate_unprobed %s", type(exc).__name__)
         return "grain_unprobed"
 
 
@@ -344,6 +350,9 @@ def _value_terms(node: exp.Expression) -> list[exp.Expression]:
     t stays unique, but i.q * (CASE WHEN t.x THEN 1 ELSE 0 END) carries only
     i.q. ORDER BY inside an aggregate orders and states nothing.
     """
+    if node is None:
+        # A subquery's own ORDER BY clause has no expression of its own.
+        return []
     if _is_flag(node):
         # A comparison, a sign or any yes/no value picks rows or flips them,
         # like a CASE condition: (t.x = 'out')::INT carries no value of its own.

@@ -2854,3 +2854,109 @@ def test_a_format_character_outside_an_agreed_literal_is_refused(
         _OUTSIDE_MARKS[name], grantable={"inventory"}, warehouse=gate_lake
     )
     assert why == "hostile_sql:sql_not_analyzable", (name, why)
+
+
+#: In e'\'--' DuckDB reads an escaped quote and sqlglot ends the string, so the
+#: -- hides from the syntax tree a tail DuckDB runs. A statistics answer there
+#: scans nothing; DuckDB's own parser names the table.
+_TOKENIZER_SPLITS = {
+    "e_string_count": (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR 1 = (SELECT COUNT(*) FROM alerts)"
+    ),
+    "upper_e_string_max": (
+        "SELECT sku FROM inventory WHERE category = E'\\'--' "
+        "OR 1 = (SELECT MAX(alert_id) FROM alerts)"
+    ),
+    "e_string_limit_zero": (
+        "SELECT sku FROM inventory WHERE category = e'\\'--' "
+        "OR EXISTS (SELECT * FROM alerts LIMIT 0)"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_TOKENIZER_SPLITS))
+def test_a_table_only_duckdb_parses_is_grant_checked(gate_lake: Path, name: str) -> None:
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    sql = _TOKENIZER_SPLITS[name]
+    assert validate_compiled_sql(sql, grantable={"inventory"}, warehouse=gate_lake) == (
+        "ungranted:alerts"
+    ), name
+    granted = validate_compiled_sql(sql, grantable={"inventory", "alerts"}, warehouse=gate_lake)
+    assert granted is None or not granted.startswith("ungranted"), (name, granted)
+
+
+# --- Rounds 10 and 11 through POST /v1/chat/ask (rule 10a: the envelope) ---
+
+
+_ORDERED_SUBQUERY = (
+    "SELECT i.category, SUM(i.quantity_kg * (SELECT t.quantity_kg FROM transactions t "
+    "WHERE t.sku = i.sku ORDER BY t.quantity_kg DESC LIMIT 1)) AS v "
+    "FROM inventory i GROUP BY i.category"
+)
+
+
+def test_an_ordered_subquery_in_an_aggregate_is_answered_not_a_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """A subquery's ORDER BY clause has no expression; the check crashed into a 503."""
+    db = tmp_path / "ordered.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, _ORDERED_SUBQUERY, monkeypatch, minter)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env.get("text")
+    assert env["badge"] == "L2_VALIDATED", env.get("assumptions")
+    assert _cells(env["rows"]) == _cells(_executed(db, _ORDERED_SUBQUERY))
+
+
+def test_a_check_that_raises_abstains_instead_of_failing_the_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    import dms_executor.served_gate as gate
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise AttributeError("probe broke")
+
+    monkeypatch.setattr(gate, "_fanout", _boom)
+    db = tmp_path / "boom.duckdb"
+    ensure_demo_warehouse(db)
+    env, _ = _prod_post(db, _SKU_PER_LOCATION, monkeypatch, minter)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+
+
+def test_a_table_only_duckdb_parses_abstains_through_the_ask_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """Finance does not grant alerts; an e'' string hides it from the syntax tree."""
+    db = tmp_path / "estring.duckdb"
+    ensure_demo_warehouse(db)
+    sql = _TOKENIZER_SPLITS["e_string_count"]
+    env, _ = _prod_post(db, sql, monkeypatch, minter, rows_sql="SELECT sku FROM inventory")
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert "alerts" not in str(env.get("text") or "")
+
+
+def test_a_filter_value_with_a_joiner_is_served_through_the_ask_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """A category written with ZWJ is text in a literal both parsers agree on."""
+    db = _lake_with(
+        tmp_path,
+        "joiner.duckdb",
+        "INSERT INTO inventory SELECT 'SKU-ZWJ', location_id, 7.0, reorder_level_kg, "
+        "unit_cost_myr, supplier_id, 'ka‍na', expiry_date FROM inventory LIMIT 1",
+    )
+    sql = "SELECT sku, quantity_kg FROM inventory WHERE category = 'ka‍na'"
+    env, _ = _prod_post(db, sql, monkeypatch, minter)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env.get("text")
+    assert env["badge"] == "L2_VALIDATED", env.get("assumptions")
+    assert _cells(env["rows"]) == _cells(_executed(db, sql))
+    assert len(env["rows"]) == 1
