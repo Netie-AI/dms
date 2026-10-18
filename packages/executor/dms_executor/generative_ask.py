@@ -110,6 +110,7 @@ from dms_executor.sql_loop import (
     loop_entry,
     run_model_loop,
 )
+from dms_executor.sql_shape import literal_figure_reason, select_shape
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -667,6 +668,341 @@ def _filters(raw: Any) -> tuple[tuple[str, str, str, Any], ...] | None:
     return tuple(out)
 
 
+#: A table name with a path, scheme or extension in it is a file, not a table.
+_PATH_CHARS = re.compile(r"[/\\:.]")
+
+
+#: DuckDB folds identifier case for ASCII letters only.
+_ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+#: sqlglot splits names at these; DuckDB keeps them inside a name, so
+#: ``zz<U+2028>`` reads as granted ``zz`` to the syntax tree only.
+_SPLIT_DIFFERENTLY = frozenset({"\u0085", "\u1680", "\u2028", "\u2029"})
+
+
+def _invisible_format_char(sql: str) -> bool:
+    """A character the syntax tree and DuckDB read differently, outside a literal.
+
+    DuckDB skips U+200B, U+2060 and U+FEFF (category Cf) as whitespace;
+    sqlglot reads them as part of a name, so ``FROM<U+200B>alerts`` is a
+    column alias to the syntax tree while DuckDB reads the table. Four
+    separators go the other way (_SPLIT_DIFFERENTLY). Inside a plain
+    ``'...'`` literal that both read as the same one string, the character
+    is text (ZWJ and ZWNJ in Indic and Persian words, emoji sequences).
+    """
+    import unicodedata
+
+    def odd(ch: str) -> bool:
+        return unicodedata.category(ch) == "Cf" or ch in _SPLIT_DIFFERENTLY
+
+    if not any(odd(ch) for ch in sql):
+        return False
+    inside: set[int] = set()
+    for start, end in _agreed_literal_spans(sql):
+        inside.update(range(start + 1, end - 1))
+    return any(odd(ch) and index not in inside for index, ch in enumerate(sql))
+
+
+def _agreed_literal_spans(sql: str) -> list[tuple[int, int]]:
+    """``[start, end)`` of each plain ``'...'`` literal DuckDB and sqlglot both
+    tokenize as one string at exactly that span. A comment, an E'' or a
+    dollar-quoted string ends the scan: nothing after it is exempt."""
+    import duckdb
+    from sqlglot import tokenize
+    from sqlglot.tokens import TokenType
+
+    try:
+        # DuckDB reports UTF-8 byte offsets; map them back to characters.
+        char_at: dict[int, int] = {}
+        offset = 0
+        for index, ch in enumerate(sql):
+            char_at[offset] = index
+            offset += len(ch.encode("utf-8"))
+        duck_starts = {
+            char_at.get(int(pos), -1)
+            for pos, kind in duckdb.tokenize(sql)
+            if str(kind).lower().endswith("string_const")
+        }
+        glot = {
+            (tok.start, tok.end + 1)
+            for tok in tokenize(sql, read="duckdb")
+            if tok.token_type == TokenType.STRING
+        }
+    except Exception:  # noqa: BLE001 - no agreed literal, nothing is exempt
+        return []
+    spans: list[tuple[int, int]] = []
+    i, n = 0, len(sql)
+    while i < n:
+        if sql.startswith(("--", "/*"), i) or sql[i] == "$":
+            return spans
+        if sql[i] == '"':
+            j = i + 1
+            while j < n and not (sql[j] == '"' and sql[j + 1 : j + 2] != '"'):
+                j += 2 if sql[j] == '"' else 1
+            i = j + 1
+        elif sql[i] == "'":
+            j = i + 1
+            while j < n and not (sql[j] == "'" and sql[j + 1 : j + 2] != "'"):
+                j += 2 if sql[j] == "'" else 1
+            end = j + 1
+            prefixed = i > 0 and (sql[i - 1].isalnum() or sql[i - 1] in "_$")
+            if not prefixed and i in duck_starts and (i, end) in glot:
+                spans.append((i, end))
+            i = end
+        else:
+            i += 1
+    return spans
+
+
+#: Plan names of the table functions that only generate rows.
+_PLAN_GENERATORS = frozenset({"RANGE", "GENERATE_SERIES", "UNNEST"})
+#: Plan operators that scan something other than a table: a VALUES list (with
+#: or without expressions), a CTE, a recursive CTE, a delim join's side, a
+#: positional join, a dummy row, an in-memory chunk.
+_PLAN_NON_TABLE_SCANS = frozenset(
+    {
+        "CHUNK_SCAN",
+        "COLUMN_DATA_SCAN",
+        "CTE_SCAN",
+        "DELIM_SCAN",
+        "DUMMY_SCAN",
+        "EXPRESSION_SCAN",
+        "POSITIONAL_SCAN",
+        "REC_CTE_SCAN",
+        "REC_REC_CTE_SCAN",
+        "RECURSIVE_CTE_SCAN",
+        "RECURSIVE_RECURRING_CTE_SCAN",
+    }
+)
+
+
+def _qualified_ungranted(sql: str, grantable: set[str]) -> set[str]:
+    """Schema-qualified tables outside main that the Space does not grant by that name.
+
+    The plan check cannot see a table DuckDB answers from its statistics
+    (COUNT(*), numeric MIN and MAX, LIMIT 0 run no scan), so a table named
+    with its schema must be granted by exactly that name.
+    """
+    from sqlglot import exp, parse
+
+    folded = {str(g).strip().translate(_ASCII_FOLD) for g in grantable}
+    out: set[str] = set()
+    try:
+        trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+    except Exception:  # noqa: BLE001 - select_shape owns unparseable SQL
+        return out
+    for tree in trees:
+        for table in tree.find_all(exp.Table):
+            if not isinstance(table.this, exp.Identifier) or not table.db:
+                continue
+            schema = str(table.db).translate(_ASCII_FOLD)
+            name = str(table.name).translate(_ASCII_FOLD)
+            # main and Cortex's "warehouse" schema are the lake.
+            if schema not in {"main", "warehouse"} and f"{schema}.{name}" not in folded:
+                out.add(f"{schema}.{name}")
+    return out
+
+
+def _plan_names(part: str) -> tuple[str, str]:
+    """A catalog, schema or table name as a plan may print it: bare or quoted."""
+    return part, '"' + part.replace('"', '""') + '"'
+
+
+def _cited_names(sql: str) -> set[str]:
+    """Every relation name the SQL writes, folded. A main table is named
+    without its schema: main."x.y" is the lake table called "x.y"."""
+    from sqlglot import exp, parse
+
+    out: set[str] = set()
+    try:
+        trees = [t for t in parse(sql or "", read="duckdb") if t is not None]
+    except Exception:  # noqa: BLE001 - select_shape owns unparseable SQL
+        return out
+    for tree in trees:
+        for table in tree.find_all(exp.Table):
+            if isinstance(table.this, exp.Identifier):
+                schema = str(table.db or "").translate(_ASCII_FOLD)
+                name = str(table.name).translate(_ASCII_FOLD)
+                out.add(name if schema in {"", "main"} else f"{schema}.{name}")
+    return out
+
+
+def _parsed_relations(con: Any, sql: str) -> tuple[set[tuple[str, str, str]], set[str]]:
+    """The tables and table functions DuckDB's own parser says ``sql`` reads.
+
+    sqlglot and DuckDB can split the same text differently: in ``e'\\'--'``
+    DuckDB reads an escaped quote and sqlglot ends the string, so a ``--``
+    hides from the syntax tree a tail that DuckDB runs. A statistics answer
+    in that tail scans nothing, and ``query_table`` is replaced by its table
+    before planning, so the plan check cannot see them either. This reads
+    DuckDB's parse tree, which binds nothing: an unqualified name inside the
+    WITH that defines it is that CTE, every other name is a table
+    ``(catalog, schema, name)``. A tree this cannot read raises.
+    """
+    import json
+
+    tree = json.loads(con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()[0])
+    if not isinstance(tree, dict) or tree.get("error") is not False:
+        raise ValueError("DuckDB could not serialize the statement")
+    tables: set[tuple[str, str, str]] = set()
+    functions: set[str] = set()
+    stack: list[tuple[Any, frozenset[str]]] = [(tree.get("statements"), frozenset())]
+    while stack:
+        node, scope = stack.pop()
+        if isinstance(node, list):
+            stack.extend((item, scope) for item in node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        kind = node.get("type")
+        if kind in ("BASE_TABLE", "SHOW_REF"):
+            catalog, schema, name = (
+                str(node.get(k) or "") for k in ("catalog_name", "schema_name", "table_name")
+            )
+            if kind == "BASE_TABLE" and not name:
+                raise ValueError("a table reference without a name")
+            cte = not catalog and not schema and name.translate(_ASCII_FOLD) in scope
+            if name and (kind == "SHOW_REF" or not cte):
+                tables.add((catalog, schema, name))
+        elif kind == "TABLE_FUNCTION":
+            call = node.get("function")
+            if not isinstance(call, dict) or not call.get("function_name"):
+                raise ValueError("a table function without a name")
+            parts = (call.get("catalog"), call.get("schema"), call.get("function_name"))
+            functions.add(".".join(str(p).translate(_ASCII_FOLD) for p in parts if p))
+        cte_map = node.get("cte_map")
+        entries = cte_map.get("map") if isinstance(cte_map, dict) else None
+        if cte_map is not None and not isinstance(entries, list):
+            raise ValueError("a WITH this cannot read")
+        # A CTE sees the ones defined before it; the query sees them all.
+        for entry in entries or []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("key"), str):
+                raise ValueError("a WITH this cannot read")
+            stack.append((entry.get("value"), scope))
+            scope = scope | {entry["key"].translate(_ASCII_FOLD)}
+        for key, value in node.items():
+            if kind == "RECURSIVE_CTE_NODE" and key == "right":
+                # Only the recursive side sees the CTE; its anchor reads the table.
+                stack.append((value, scope | {str(node.get("cte_name")).translate(_ASCII_FOLD)}))
+            elif key != "cte_map":
+                stack.append((value, scope))
+    return tables, functions
+
+
+def _engine_tables(con: Any, sql: str, grantable: set[str]) -> tuple[str | None, set[str]]:
+    """Grant-check every relation DuckDB's own parser says ``sql`` reads.
+
+    Each table is granted as the syntax tree's names are: a lake table
+    (main or Cortex's ``warehouse``) by its name or warehouse_ alias,
+    another schema's table by ``schema.name``, another catalog's never.
+    A table function must be a pure generator, as in the plan check.
+    Returns the refusal, if any, and the table names spelled as
+    ``_cited_names`` spells them.
+    """
+    tables, functions = _parsed_relations(con, sql)
+    if functions - {g.lower() for g in _PLAN_GENERATORS}:
+        return "hostile_sql:file_reader", set()
+    folded = {str(g).strip().translate(_ASCII_FOLD) for g in grantable}
+    current = str(con.execute("SELECT current_database()").fetchone()[0]).translate(_ASCII_FOLD)
+    missing: list[list[str]] = []
+    cited: set[str] = set()
+    for ref in tables:
+        catalog, schema, name = (part.translate(_ASCII_FOLD) for part in ref)
+        if catalog and catalog != current:
+            missing.append([catalog, schema, name])
+            continue
+        cited.add(name if schema in {"", "main"} else f"{schema}.{name}")
+        if schema in {"", "main", "warehouse"}:
+            bare = name[len("warehouse_") :] if name.startswith("warehouse_") else name
+            if not {name, bare, f"warehouse_{bare}", f"main.{name}"} & folded:
+                missing.append([name])
+        elif f"{schema}.{name}" not in folded:
+            missing.append([schema, name])
+    if any(_PATH_CHARS.search(part) for parts in missing for part in parts):
+        # A quoted path or URL used as a table name. Say the code, not the path.
+        return "hostile_sql:path_not_allowed", cited
+    if missing:
+        return f"ungranted:{','.join(sorted('.'.join(parts) for parts in missing))}", cited
+    return None, cited
+
+
+def _plan_scan_reason(
+    plan_json: str, con: Any, grantable: set[str], cited: set[str] | None = None
+) -> str | None:
+    """Grant-check the tables DuckDB itself scans for this SQL.
+
+    The syntax tree reads names and DuckDB binds them. Where the two
+    disagree, the plan is what runs: every base table it scans must be
+    granted, a lake table by its name or warehouse_ alias and any other
+    schema's table (an upload) by its qualified name. Every table function
+    must be a pure generator. A scan this cannot name is not granted.
+    """
+    import json
+
+    known: dict[str, tuple[str, str]] = {}
+    for db, schema, name in con.execute(
+        "SELECT database_name, schema_name, table_name FROM duckdb_tables()"
+    ).fetchall():
+        for d in _plan_names(str(db)):
+            for sc in _plan_names(str(schema)):
+                for n in _plan_names(str(name)):
+                    known[f"{d}.{sc}.{n}"] = (str(schema), str(name))
+    # A grant "x.y" names an upload x.y and a lake table called "x.y" alike.
+    # When the lake holds both, that grant opens neither.
+    tables = {(s.translate(_ASCII_FOLD), n.translate(_ASCII_FOLD)) for s, n in known.values()}
+    ambiguous = {n for s, n in tables if s == "main" and "." in n} & {
+        f"{s}.{n}" for s, n in tables if s != "main"
+    }
+    folded = {str(g).strip().translate(_ASCII_FOLD) for g in grantable}
+    lake = {
+        g[len("main.") :] if g.startswith("main.") else g
+        for g in folded
+        if "." not in g or g.startswith("main.")
+    }
+    missing: set[str] = set()
+    stack: list[Any] = [json.loads(plan_json)]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        stack.extend(node.get("children") or [])
+        info = node.get("extra_info")
+        if not isinstance(info, dict):
+            continue
+        function = info.get("Function")
+        if function is not None and str(function).upper() not in _PLAN_GENERATORS:
+            return "hostile_sql:file_reader"
+        table = info.get("Table")
+        if table is None:
+            name_op = str(node.get("name") or "").strip().upper()
+            if function is None and "SCAN" in name_op and name_op not in _PLAN_NON_TABLE_SCANS:
+                # A scan whose table this cannot read (another DuckDB plan format).
+                return "hostile_sql:sql_not_analyzable"
+            continue
+        found = known.get(str(table))
+        if found is None:
+            return "hostile_sql:sql_not_analyzable"
+        schema, name = (part.translate(_ASCII_FOLD) for part in found)
+        if schema == "main":
+            bare = name[len("warehouse_") :] if name.startswith("warehouse_") else name
+            # A lake table may itself be named with a dot ("usd.book").
+            if not {name, bare, f"warehouse_{bare}"} & lake and (
+                name not in folded or name in ambiguous
+            ):
+                missing.add(name)
+        elif f"{schema}.{name}" not in folded or f"{schema}.{name}" in ambiguous:
+            missing.add(f"{schema}.{name}")
+    # A statistics answer scans nothing, so the names the SQL writes count too.
+    missing |= ambiguous & (cited or set())
+    if missing:
+        return f"ungranted:{','.join(sorted(missing))}"
+    return None
+
+
 def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
@@ -677,17 +1013,38 @@ def validate_compiled_sql(
     grantable: set[str],
     warehouse: Path | None,
 ) -> str | None:
-    """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
+    """None if the compiled SQL may be submitted. Else a reason (do not execute).
+
+    The one grant function. SAFE-01: the SQL must be exactly one read-only
+    SELECT (``select_shape``, the engine's own statement splitter and one
+    syntax tree) before any table is checked against ``grantable``, and
+    before EXPLAIN, which would run a stacked tail. Every table it reads must
+    be granted; that is answered before whether its output comes from a real
+    table, so an ungranted read reaches the repair ladder as ungranted. After
+    EXPLAIN, a result whose only figures are literals (``SELECT sku, 0 AS
+    revenue FROM t``) is refused by the engine's own column types.
+    """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
+    if _invisible_format_char(sql):
+        return "hostile_sql:sql_not_analyzable"
     try:
         reject_hostile_chat_sql(sql)
     except SecurityEvent as exc:
         return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
+    shape_why, named = select_shape(sql)
     missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
+    qualified = _qualified_ungranted(sql, grantable)
+    if any(_PATH_CHARS.search(t) for t in missing) or any(
+        _PATH_CHARS.search(t.replace(".", "", 1)) for t in qualified
+    ):
+        # A quoted path or URL used as a table name. Say the code, not the path.
+        return "hostile_sql:path_not_allowed"
+    missing |= qualified
     if missing:
         return f"ungranted:{','.join(sorted(missing))}"
+    if shape_why:
+        return shape_why
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
@@ -697,12 +1054,40 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
-        con.execute(f"EXPLAIN {sql}")
+        try:
+            engine_why, engine_cited = _engine_tables(con, sql, grantable)
+        except Exception:  # noqa: BLE001 - a name this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
+        if engine_why:
+            return engine_why
+        plan = con.execute(f"EXPLAIN (FORMAT JSON) {sql}").fetchall()
+        try:
+            # The tables the engine reads, checked against the grant.
+            cited = _cited_names(sql) | engine_cited
+            scanned = _plan_scan_reason(str(plan[0][1]), con, grantable, cited)
+        except Exception:  # noqa: BLE001 - a plan this cannot read is not granted
+            return "hostile_sql:sql_not_analyzable"
+        if scanned:
+            return scanned
+        # Binding only: the relation is lazy, so the types cost no scan.
+        relation = con.sql(sql)
+        types = [str(t) for t in relation.types]
+        names = [str(n) for n in relation.columns]
+        # Column names of the real tables read, so lineage binds a real column
+        # before an alias of the same name, as DuckDB does.
+        real_columns = frozenset(
+            str(row[0]).lower()
+            for row in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE lower(table_name) IN (SELECT unnest(?::VARCHAR[]))",
+                [sorted(named)],
+            ).fetchall()
+        )
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
-    return None
+    return literal_figure_reason(sql, types, names, real_columns)
 
 
 def _refusal_before_explain(con: Any, sql: str) -> str | None:
