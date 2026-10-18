@@ -198,12 +198,19 @@ def _value_rows(values: Any) -> list[Any]:
 
 
 def _without_row_order(env: dict[str, Any]) -> dict[str, Any]:
-    """Drop fields the row rule already judged. as_of stays masked. checker_version may differ."""
+    """Drop fields the row rule already judged. as_of stays masked. checker_version may differ.
+
+    ``served_route`` and ``ladder_rung`` are the only other paths dropped.
+    ROUTE-STAMP-01 writes both when the flags are off. Main's executing
+    capture has neither key. sql_used stays in the compare.
+    """
     out = json.loads(json.dumps(env, default=str))
     out.pop("as_of", None)
     out.pop("rows", None)
     out.pop("values", None)
     out.pop("text", None)
+    out.pop("served_route", None)
+    out.pop("ladder_rung", None)
     shadow = out.get("served_check_shadow")
     if isinstance(shadow, dict):
         shadow.pop("checker_version", None)
@@ -295,7 +302,10 @@ def test_flag_off_executing_matches_main_except_row_order_and_checker(
     """Executing 52 vs main 57d85c52. as_of masked. checker_version is the live file hash.
 
     Served rows are an exact ORDER BY key sequence, or a multiset when the
-    served SQL has no top-level ORDER BY. Every other field is byte-equal.
+    served SQL has no top-level ORDER BY. Answer text, value cells, and
+    sql_used stay strict. Excluded paths, and only these two:
+    ``served_route``, ``ladder_rung``. ROUTE-STAMP-01 writes both on
+    flag-off. Main's capture omitted both keys.
     """
     _pin_capture_day(monkeypatch)
     db = tmp_path / "flag52.duckdb"
