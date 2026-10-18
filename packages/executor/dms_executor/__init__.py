@@ -32,6 +32,7 @@ from dms_executor.bronze import (
     IngestReceipt,
     ingest_csv_bytes,
     list_bronze_tables,
+    list_source_pulls,
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import (
@@ -47,13 +48,19 @@ from dms_executor.db_connector import (
     SourceConnectionError,
     UnknownSourceTable,
     ingest_source_database,
+    list_source_keys,
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
     normalize_ask_question,
     with_grounded_scope,
 )
-from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
+from dms_executor.demo_grants import (
+    DemoSessionStore,
+    canonical_space_id,
+    ingested_bronze_tables,
+    is_demo_space,
+)
 from dms_executor.demo_pack import (
     curated_pack_metric_miss,
     curated_pack_present,  # noqa: F401 - re-exported; files-on-disk check
@@ -72,6 +79,7 @@ from dms_executor.demo_warehouse import (
     read_health_engine_clock,
     sql_has_reserved_as_of,
     stamp_engine_clock,
+    warehouse_path,
 )
 from dms_executor.envelope import (
     RESERVED_PARAM_AS_OF,
@@ -84,6 +92,7 @@ from dms_executor.envelope import (
 from dms_executor.generative_ask import (
     maybe_generative_ask,
     path_miss_envelope,
+    untyped_numeric_reason,
     with_served_attribution,
 )
 from dms_executor.grant_struct import (
@@ -144,6 +153,19 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.space_ontology import (
+    REASON_STORE_UNAVAILABLE,
+    bronze_catalog,
+    check_sql_against_space,
+    derive_and_store,
+    load_space_ontology,
+    ontology_store,
+    set_ontology_store,
+    source_identity,
+    space_ontology_views,
+    stored_catalogs,
+    stored_catalogs_by_source,
+)
 from dms_executor.sql_currency import tables_read as tables_read_by_sql
 from dms_executor.sql_currency import tables_read_checked as tables_read_checked_by_sql
 from dms_executor.sql_loop import apply_sql_credit, extract_dialect
@@ -163,6 +185,7 @@ from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
     identity_check,
     ingest_warehouse_path,
+    serving_sync_state,
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
@@ -170,10 +193,41 @@ from dms_executor.xlsx_orch import run_crosscheck, run_extract, run_golden
 
 logger = logging.getLogger(__name__)
 
+
+def _grant_name_ok(name: str) -> bool:
+    """One or two identifier parts. A digit-first part is not granted.
+
+    ``bronze.2024_sales`` made Cortex refuse the whole Space manifest. Unicode
+    letters stay: DuckDB keeps "Ä" and "ä" as two tables, and a grant check
+    that drops them cannot serve a granted Unicode table.
+    """
+    parts = str(name).split(".")
+    if not 1 <= len(parts) <= 2:
+        return False
+    for part in parts:
+        if not part or not (part[0].isalpha() or part[0] == "_"):
+            return False
+        if any(not (c.isalnum() or c == "_") for c in part):
+            return False
+    return True
+
+
 #: The demo tenant and its single steward. Real multi-tenancy arrives with the
 #: Postgres control plane (P-DMS-2); until then every session is this user.
 DEMO_TENANT_ID = "tenant_demo"
 DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def default_readable_tables(granted: list[str], *, space_id: str | None) -> list[str]:
+    """What a turn reads when nothing was ticked.
+
+    A seeded demo Space (and no Space) reads the demo spine only. A Space
+    created for its own data reads the tables it was granted: its bronze,
+    not the demo spine. Never wider than ``granted``.
+    """
+    if is_demo_space(space_id):
+        return [t for t in granted if t in DEMO_TABLES]
+    return list(granted)
 
 
 def _insights_compute_seam(
@@ -448,7 +502,19 @@ class Executor:
             session_id="_grantable_probe",
             pool_id="default",
         )
-        return sorted(resolve_session_acl(ctx).row_predicates)
+        granted = sorted(resolve_session_acl(ctx).row_predicates)
+        # F-c: one granted name that breaks the SHARED NAMING RULE (a legacy
+        # ``bronze.2024_sales``) made ``cortex_row_predicates`` refuse the whole
+        # Space's manifest, so every ask abstained ``submit_failed``. Such a table
+        # is not grantable (new ingests never create one); it is named, not hidden.
+        bad = [t for t in granted if not _grant_name_ok(t)]
+        if bad:
+            logger.warning(
+                "space %s: not granting %s (name breaks the naming rule; re-ingest to rename)",
+                space_id,
+                ", ".join(bad),
+            )
+        return [t for t in granted if t not in bad]
 
     def demo_acl(
         self,
@@ -488,7 +554,7 @@ class Executor:
         # An upload is grantable on request but is not part of the default
         # readable set: asking with nothing ticked must not quietly widen the
         # manifest to every file anyone has ever uploaded.
-        default_readable = [t for t in grantable if t in DEMO_TABLES]
+        default_readable = default_readable_tables(grantable, space_id=space_id)
         readable = selection or default_readable
         # A different manifest must be a different bound session — reusing the id
         # would serve the question under whatever manifest happened to be bound
@@ -967,7 +1033,7 @@ class Executor:
             granted = []
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
-        default_readable = [t for t in granted if t in DEMO_TABLES]
+        default_readable = default_readable_tables(granted, space_id=space_id)
         readable = requested or default_readable
         raise_if_ask_stopped()
         cascade = (
@@ -1048,6 +1114,25 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+        space_onto = None
+        if allow_gen and not is_demo_space(space_id):
+            # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
+            # one and never another Space's. A store that cannot be read is a
+            # named ABSTAIN: answering without the join rules it holds would
+            # be a silent downgrade.
+            try:
+                space_onto = load_space_ontology(space_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ontology store unreadable for %s: %s", space_id, exc)
+                env = path_miss_envelope(
+                    question,
+                    f"{REASON_STORE_UNAVAILABLE}: the Space ontology store could not "
+                    "be read, so no join can be checked",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -1080,7 +1165,11 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
-                dialect=self.dialect,
+                ontology=space_onto,
+                demo_ontology_allowed=space_onto is None,
+                # Extract and EXPLAIN run on the DuckDB serving copy
+                # (connect_serving), not on the source connector in self.dialect.
+                dialect=SERVING_DIALECT,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
@@ -1149,9 +1238,10 @@ class Executor:
             else:
                 raise AskServiceError(err.code, err.detail) from exc
         raw_sql = getattr(resp, "sql_used", None)
-        if raw_sql and str(raw_sql).strip() and not getattr(resp, "abstained", False):
+        sql_used = str(raw_sql or "")
+        if sql_used.strip() and not getattr(resp, "abstained", False):
             gap = serve_gap(
-                str(raw_sql),
+                sql_used,
                 grantable=set(readable),
                 dialect=self.dialect,
                 warehouse=self._warehouse,
@@ -1167,6 +1257,27 @@ class Executor:
                     question=question,
                 )
                 env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+        if sql_used and not is_demo_space(space_id) and not getattr(resp, "abstained", False):
+            # dms#277 F-e: the contract ask's SQL obeys the same text-numeric rule.
+            num_why = untyped_numeric_reason(sql_used, self._warehouse or warehouse_path())
+            if num_why:
+                env = path_miss_envelope(
+                    question, num_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
+        if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
+            # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
+            # Its SQL answers only if it passes the same rule generation does.
+            join_why = check_sql_against_space(
+                sql_used, space_onto, self._warehouse or warehouse_path(), readable
+            )
+            if join_why:
+                env = path_miss_envelope(
+                    question, join_why, space_id=space_id, session_id=session_id
+                )
                 self._store_turn(session_id, space_id, env)
                 return env
         env = attach_cascade(
@@ -1482,6 +1593,22 @@ __all__ = [
     "ingest_csv_bytes",
     "ingest_source_database",
     "verify_source_links",
+    "bronze_catalog",
+    "derive_and_store",
+    "load_space_ontology",
+    "ontology_store",
+    "set_ontology_store",
+    "source_identity",
+    "space_ontology_views",
+    "stored_catalogs",
+    "stored_catalogs_by_source",
+    "list_source_keys",
+    "list_source_pulls",
+    "canonical_space_id",
+    "is_demo_space",
+    "default_readable_tables",
+    "warehouse_path",
+    "serving_sync_state",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
