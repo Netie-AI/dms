@@ -147,6 +147,17 @@ def test_a_payload_and_a_confirm_reach_the_wire_only_when_set() -> None:
     _recording_client(seen, answer).ask(
         AskRequest(question="q?", session_id="s", dms_payload=_PAYLOAD, plan_sql_confirm="yes")
     )
-    assert seen[0]["dms_payload"] == _PAYLOAD
+    sent = seen[0]["dms_payload"]
+    assert sent["joins"] == _PAYLOAD["joins"]
+    assert [table["name"] for table in sent["tables"]] == [
+        table["name"] for table in _PAYLOAD["tables"]
+    ]
+    # No mask state on the dict: every column is masked. The wire value is a bool.
+    for table in sent["tables"]:
+        for column in table["columns"]:
+            assert column["masked"] is True
+            assert type(column["masked"]) is bool
+    assert sent["tables"][0]["columns"][0]["name"] == "sku"
+    assert sent["tables"][0]["columns"][1]["description"] == "kilograms"
     assert seen[0]["plan_sql_confirm"] == "yes"
     assert seen[0]["question"] == "q?" and seen[0]["session_id"] == "s"

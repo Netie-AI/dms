@@ -67,6 +67,49 @@ from cortex_client.models import (
 
 CONTRACT_MAJOR = 1
 
+# Not AskPayload wire fields. A sample list must not ride out beside masked.
+_SAMPLE_KEYS = frozenset({"values", "samples"})
+
+
+def _bool_mask_flags(payload: Any) -> Any:
+    """``AskPayloadColumn.masked`` leaves as a JSON bool.
+
+    A missing flag, or any value that is not a bool, is true. The string
+    ``"false"`` and the number ``0`` are not false. Bools already set by
+    ``stamp_ask_payload`` are kept. Sample keys are dropped.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        return payload
+    out = dict(payload)
+    stamped: list[Any] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            stamped.append(table)
+            continue
+        copied = dict(table)
+        columns = copied.get("columns")
+        if isinstance(columns, list):
+            new_columns: list[Any] = []
+            for column in columns:
+                if not isinstance(column, dict):
+                    new_columns.append(column)
+                    continue
+                flag = column.get("masked", True)
+                cleaned = {
+                    key: value
+                    for key, value in column.items()
+                    if key not in _SAMPLE_KEYS and key != "masked"
+                }
+                cleaned["masked"] = flag if isinstance(flag, bool) else True
+                new_columns.append(cleaned)
+            copied["columns"] = new_columns
+        stamped.append(copied)
+    out["tables"] = stamped
+    return out
+
 
 def _to_gen_manifest(m: ContractManifest) -> GenManifest:
     return GenManifest.from_dict(m.model_dump(mode="json"))
@@ -118,6 +161,8 @@ class CortexClient:
         for key in ("dms_payload", "plan_sql_confirm"):
             if data.get(key) is None:
                 data.pop(key, None)
+        if "dms_payload" in data:
+            data["dms_payload"] = _bool_mask_flags(data["dms_payload"])
         body = GenAskRequest.from_dict(data)
         parsed = ask_api.sync(client=self._client, body=body)
         if parsed is None:
