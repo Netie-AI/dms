@@ -139,6 +139,13 @@ class AskBody(BaseModel):
 _HARNESS_ASK_PATHS = frozenset({"exact", "generative"})
 
 
+class ConfirmBody(BaseModel):
+    """Yes re-asks the suggested question. No declines it."""
+
+    token: str = Field(min_length=1)
+    yes: bool | Literal["yes", "no"]
+
+
 class DrillthroughBody(BaseModel):
     token: str = Field(min_length=1)
 
@@ -173,7 +180,7 @@ def _space_refusal_envelope(
 
     where = f"in {space_name}" if space_name else "in this Space"
     subject = f"{missing_table} data" if missing_table else "data"
-    return build_validated_envelope(
+    out = build_validated_envelope(
         answer_id=f"ans_refused_{space_id[:8]}",
         text=(
             f"I can't answer that {where}. It needs {subject}, which this Space "
@@ -186,6 +193,9 @@ def _space_refusal_envelope(
         space_id=space_id,
         session_id=session_id,
     )
+    # Space boundary is an ungranted table. It stays a direct abstain.
+    out["abstain_reason"] = "ungranted"
+    return out
 
 
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
@@ -315,6 +325,7 @@ def chat_ask(
             ask=ask,
             request=request,
         )
+        env = _offer_reconfirm(ask, env, body, cortex)
     except Exception as exc:
         record_ask(
             audit,
@@ -336,6 +347,29 @@ def chat_ask(
         executed=take_executed(ask),
     )
     return env
+
+
+def _choice_yes(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() == "yes"
+
+
+def _offer_reconfirm(
+    ask: AskServicePort, env: dict[str, Any], body: AskBody, cortex: Any
+) -> dict[str, Any]:
+    offer = getattr(ask, "offer_reconfirm", None)
+    if not callable(offer):
+        return env
+    return offer(
+        env,
+        question=body.question,
+        space_id=body.space_id,
+        session_id=body.session_id,
+        tables=body.grounded_tables,
+        ask_path=body.ask_path,
+        cortex=cortex,
+    )
 
 
 def _answer_ask(
@@ -466,6 +500,80 @@ def _answer_ask(
             end = getattr(ask, "end_client_watch", None)
             if callable(end):
                 end(watch[0])
+
+
+@router.post("/ask/confirm")
+def chat_ask_confirm(
+    body: ConfirmBody,
+    settings: SettingsDep,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+    audit: AskAuditDep,
+    request: Request,
+) -> dict[str, Any]:
+    """Yes re-runs the suggested question. No logs a pipeline-failure ticket."""
+    take_executed(ask)
+    decision = compliance_gate(
+        action="chat.ask",
+        metadata={"token": body.token[:12], "task_id": "chat.ask"},
+        client=cortex,
+    )
+    if not decision.allowed and decision.reason not in _SOFT_GATE:
+        raise HTTPException(status_code=403, detail=decision.reason)
+    confirm = getattr(ask, "confirm_reconfirm", None)
+    if not callable(confirm):
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "reconfirm_unsupported", "message": "this ask service has no confirm"},
+        )
+    path_of = getattr(ask, "reconfirm_ask_path", None)
+    stored_path = path_of(body.token) if callable(path_of) else None
+    if stored_path in _HARNESS_ASK_PATHS and not settings.dms_harness_ask_paths:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "ask_path_not_allowed",
+                "message": (
+                    f"ask_path '{stored_path}' is a measurement lane and this server "
+                    "does not run it."
+                ),
+            },
+        )
+    asked_at = datetime.now(UTC)
+    try:
+        env = confirm(body.token, _choice_yes(body.yes))
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "reconfirm_unknown", "message": "that confirm token is unknown"},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "reconfirm_empty", "message": str(exc)},
+        ) from exc
+    except Exception as exc:
+        record_ask(
+            audit,
+            settings,
+            question="",
+            space_id=None,
+            asked_at=asked_at,
+            error=exc,
+            executed=take_executed(ask),
+        )
+        raise
+    record_ask(
+        audit,
+        settings,
+        question=str(env.get("question") or ""),
+        space_id=env.get("space_id"),
+        asked_at=asked_at,
+        envelope=env,
+        executed=take_executed(ask),
+    )
+    return env
 
 
 @router.post("/drillthrough")

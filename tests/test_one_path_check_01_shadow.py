@@ -43,6 +43,8 @@ def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
 def _stable(env: dict[str, Any]) -> dict[str, Any]:
     out = dict(env)
     out.pop(_SHADOW, None)
+    # Reconfirm is a later field. This capture is the answer body.
+    out.pop("reconfirm", None)
     if "as_of" in out:
         out["as_of"] = _AS_OF
     return out

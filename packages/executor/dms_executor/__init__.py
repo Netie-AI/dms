@@ -1206,6 +1206,80 @@ class Executor:
         self._store_turn(session_id, space_id, env)
         return env
 
+    def offer_reconfirm(
+        self,
+        env: dict[str, Any],
+        *,
+        question: str,
+        space_id: str | None = None,
+        session_id: str | None = None,
+        tables: list[str] | None = None,
+        ask_path: str | None = None,
+        cortex: Any = None,
+    ) -> dict[str, Any]:
+        """Attach a reconfirm offer when this envelope is not a checked answer."""
+        from dms_executor.reconfirm import (
+            apply_reconfirm,
+            complete_with_model,
+            granted_schema_names,
+            ontology_text,
+            schema_text,
+        )
+
+        return apply_reconfirm(
+            env,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            tables=tables,
+            ask_path=ask_path,
+            ontology=ontology_text(space_id),
+            schema=schema_text(None, granted_schema_names(space_id, tables)),
+            complete=lambda prompt: complete_with_model(cortex, prompt),
+        )
+
+    def reconfirm_ask_path(self, token: str) -> str | None:
+        from dms_executor.reconfirm import peek_pending
+
+        pending = peek_pending(token)
+        if pending is None:
+            return None
+        raw = pending.get("ask_path")
+        return str(raw) if isinstance(raw, str) else None
+
+    def confirm_reconfirm(self, token: str, yes: bool) -> dict[str, Any]:
+        """Yes re-runs the suggested question on the normal ladder. No logs a ticket."""
+        from dms_executor.reconfirm import decline_envelope, take_pending
+
+        pending = take_pending(token)
+        if pending is None:
+            raise KeyError(token)
+        if not yes:
+            return decline_envelope(pending)
+        suggested = str(pending.get("suggested_question") or "").strip()
+        if not suggested:
+            raise ValueError("empty suggestion")
+        env = self.live_ask(
+            suggested,
+            space_id=pending.get("space_id"),
+            session_id=pending.get("session_id"),
+            tables=pending.get("tables"),
+            ask_path=pending.get("ask_path"),
+        )
+        offered = self.offer_reconfirm(
+            env,
+            question=suggested,
+            space_id=pending.get("space_id"),
+            session_id=pending.get("session_id"),
+            tables=pending.get("tables"),
+            ask_path=pending.get("ask_path"),
+            cortex=self._cortex,
+        )
+        if not isinstance(offered.get("reconfirm"), dict):
+            offered = dict(offered)
+            offered["reconfirm_accepted"] = True
+        return offered
+
     def take_executed(self) -> ExecutedTrace:
         """What the last ``live_ask`` on this thread ran: statements with row counts,
         and the ledger entries DMS appended with their seq.
