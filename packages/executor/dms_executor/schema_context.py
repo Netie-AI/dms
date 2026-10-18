@@ -60,6 +60,7 @@ on.
 from __future__ import annotations
 
 import atexit
+import contextlib
 import hashlib
 import json
 import logging
@@ -67,7 +68,7 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -114,8 +115,20 @@ INDEX_TOTAL_CAP = 5000
 # column on the background build. Upgrade: an approximate distinct count.
 SAMPLE_ROWS = 20
 INDEX_ROW_BUDGET = 8000
-# Background build ceiling. The ask path does not wait on this.
+# Background build ceiling.
 INDEX_BUILD_BUDGET_S = 20.0
+# The build reads under a serving (read-only) lease, shared with live asks, so
+# an ask's serving read never queues behind it. Each statement is interrupted
+# after INDEX_SCAN_BUDGET_S, or at the build deadline if that is sooner; a cut
+# column indexes nothing. The lease is handed back between columns once held
+# INDEX_LEASE_HOLD_S, so a waiting ingest (and the asks a waiting ingest holds
+# back) waits INDEX_LEASE_HOLD_S plus one column's reads at most, never the
+# whole build.
+# Ceiling: a text column whose distinct scan needs longer than the budget sends
+# no hint. Upgrade: an approximate distinct count kept by ingest.
+INDEX_SCAN_BUDGET_S = 1.0
+INDEX_LEASE_HOLD_S = 0.2
+_SCAN_CUT_POLL_S = 0.05
 # Columns considered when packing a prompt. Cited hint columns are kept first.
 _SHORTLIST = 48
 _SPAN_WIDTH = 6
@@ -1993,6 +2006,50 @@ def _open_serving(serving: Path) -> Any:
     return connect_file(Path(serving))
 
 
+def _open_index_read(serving: Path) -> Any:
+    """Serving lease for the index build: read-only, shared with live asks.
+
+    Not the ingest lease. The build scans whole columns, and an exclusive
+    lease held over those scans made every serving read wait behind it.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
+    return connect_serving(Path(serving))
+
+
+@contextlib.contextmanager
+def _scan_budget(con: Any, deadline: float) -> Iterator[None]:
+    """Interrupt the statement in this block once it outlives its budget.
+
+    The budget is ``INDEX_SCAN_BUDGET_S`` from entry, or ``deadline`` if that
+    is sooner. Past it, ``con`` is interrupted every ``_SCAN_CUT_POLL_S``
+    until the block exits, so a statement that only starts after the budget
+    is spent is cut too. The interrupted statement raises inside the block,
+    the readers below catch it, and the column indexes nothing. The watcher
+    is joined on exit, so no interrupt lands on a later statement.
+    """
+    left = max(0.0, min(deadline, time.monotonic() + INDEX_SCAN_BUDGET_S) - time.monotonic())
+    done = threading.Event()
+
+    def _watch() -> None:
+        if done.wait(left):
+            return
+        while not done.is_set():
+            try:
+                con.interrupt()
+            except Exception:  # noqa: BLE001 -- best effort; the lease still closes
+                return
+            done.wait(_SCAN_CUT_POLL_S)
+
+    watcher = threading.Thread(target=_watch, name="schema-index-cut", daemon=True)
+    watcher.start()
+    try:
+        yield
+    finally:
+        done.set()
+        watcher.join()
+
+
 def _fingerprint(
     columns: Sequence[tuple[str, str, str]], sizes: Mapping[str, int]
 ) -> str:
@@ -2008,11 +2065,13 @@ def _bounded_read(
 ) -> list[str]:
     """At most ``limit`` rows, one string per row read.
 
-    ``distinct=False`` is the first rows in storage order: a sample, nothing
-    more. ``distinct=True`` is the smallest ``limit`` distinct values, the
-    only read that may stand for a column's value set. A blank cell comes
-    back as ``""`` and is not dropped, so ``len`` is the row count the engine
-    returned and ``len > cap`` is a sound "wider than the cap" test.
+    ``distinct=False`` is the first rows in storage order, whitespace folded:
+    a sample, nothing more. ``distinct=True`` is the smallest ``limit``
+    distinct values exactly as stored, the only read that may stand for a
+    column's value set. It is not folded here, so the caller can see two raw
+    values that folding would make one (``NORTH`` and ``NORTH ``). A blank
+    cell comes back and is not dropped, so ``len`` is the row count the
+    engine returned and ``len > cap`` is a sound "wider than the cap" test.
     """
     if limit < 1:
         return []
@@ -2026,7 +2085,10 @@ def _bounded_read(
         ).fetchall()
     except Exception:  # noqa: BLE001
         return []
-    return [" ".join(str(row[0]).split()) for row in rows if row and row[0] is not None]
+    cells = [str(row[0]) for row in rows if row and row[0] is not None]
+    if distinct:
+        return cells
+    return [" ".join(cell.split()) for cell in cells]
 
 
 def _count_distinct(con: Any, table: str, column: str) -> int | None:
@@ -2046,6 +2108,56 @@ def _count_distinct(con: Any, table: str, column: str) -> int | None:
     if not row or row[0] is None:
         return None
     return int(row[0])
+
+
+def _index_column(
+    con: Any, table: str, col: dict[str, Any], rows_left: int, deadline: float
+) -> int:
+    """Read one column into ``col`` for the index. Returns the row budget left.
+
+    Every statement runs under ``_scan_budget``. A cut statement reads as no
+    count or no rows, and the column then indexes nothing.
+    """
+    name = str(col["name"])
+    if _type_family(str(col.get("type") or "")) != "text":
+        with _scan_budget(con, deadline):
+            got = _bounded_read(con, table, name, min(SAMPLE_ROWS, rows_left))
+        col["samples"] = _stored_values(got, table=table, column=name)[:_SAMPLE_LIMIT]
+        return rows_left - len(got)
+    # A text column's index is its complete raw value set or nothing (rule
+    # 12): a prefix check against part of a column cannot tell NORTH from
+    # NORTH EAST.
+    col["values"] = []
+    with _scan_budget(con, deadline):
+        total = _count_distinct(con, table, name)
+    rows_left -= 1
+    if total is None:
+        return rows_left
+    if total > INDEX_COLUMN_CAP:
+        col["capped"] = True
+        col["distinct"] = f">={INDEX_COLUMN_CAP}"
+        return rows_left
+    if total > rows_left:
+        return rows_left  # the row budget cannot hold the whole set
+    with _scan_budget(con, deadline):
+        raw = _bounded_read(con, table, name, total + 1, distinct=True)
+    rows_left -= len(raw)
+    if len(raw) != total:
+        return rows_left  # the column changed under the read, or the read was cut
+    folded = [" ".join(value.split()) for value in raw]
+    if len(set(folded)) != len(raw):
+        # Two stored values are one after whitespace folding ('NORTH' and
+        # 'NORTH '). A hint on the folded value filters one of them and
+        # misses the other, so the column sends no hint at all.
+        return rows_left
+    stored = _stored_values(folded, table=table, column=name)
+    raw_kept = sum(1 for value in stored if not is_mask_token(value))
+    if raw_kept < sum(1 for value in folded if value):
+        # The PII pass dropped or tokenised a value, so the stored set is no
+        # longer the column. No hint at all.
+        return rows_left
+    col["values"] = stored
+    return rows_left
 
 
 def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[str]:
@@ -2172,8 +2284,10 @@ def build_space_index(
 ) -> str:
     """Build one Space index off the ask path. Returns a stamp, or ``""``.
 
-    Each column read is ``LIMIT``-bounded. The serving lock is taken per
-    table and released, so a live ask can attach between tables.
+    Column reads run on a serving (read-only) lease, so live asks read beside
+    the build instead of queueing behind it. Each statement is cut at
+    ``INDEX_SCAN_BUDGET_S`` and the lease is handed back between columns
+    once held ``INDEX_LEASE_HOLD_S``, so an ingest is not held for the build.
     """
     if not space_id or serving is None or not Path(serving).is_file():
         return "index_failed:ValueError"
@@ -2203,51 +2317,28 @@ def build_space_index(
     )
     rows_left = INDEX_ROW_BUDGET
     deadline = time.monotonic() + INDEX_BUILD_BUDGET_S
+    work = [
+        (str(dataset["name"]), col)
+        for dataset in plain["datasets"]
+        for col in dataset["columns"]
+    ]
+    con: Any = None
+    release_at = 0.0
     try:
-        for dataset in plain["datasets"]:
-            if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
-                break
-            table = str(dataset["name"])
-            con = _open_serving(Path(serving))
-            try:
-                for col in dataset["columns"]:
-                    if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
-                        break
-                    name = str(col["name"])
-                    is_text = _type_family(str(col.get("type") or "")) == "text"
-                    if not is_text:
-                        got = _bounded_read(con, table, name, min(SAMPLE_ROWS, rows_left))
-                        rows_left -= len(got)
-                        col["samples"] = _stored_values(got, table=table, column=name)[
-                            :_SAMPLE_LIMIT
-                        ]
-                        continue
-                    # A text column's index is its complete raw value set or
-                    # nothing (rule 12): a prefix check against part of a
-                    # column cannot tell NORTH from NORTH EAST.
-                    col["values"] = []
-                    total = _count_distinct(con, table, name)
-                    rows_left -= 1
-                    if total is None:
-                        continue
-                    if total > INDEX_COLUMN_CAP:
-                        col["capped"] = True
-                        col["distinct"] = f">={INDEX_COLUMN_CAP}"
-                        continue
-                    if total > rows_left:
-                        continue  # the row budget cannot hold the whole set
-                    got = _bounded_read(con, table, name, total + 1, distinct=True)
-                    rows_left -= len(got)
-                    if len(got) != total:
-                        continue  # the column changed under the read
-                    stored = _stored_values(got, table=table, column=name)
-                    raw_kept = sum(1 for v in stored if not is_mask_token(v))
-                    if raw_kept < sum(1 for v in got if v):
-                        # The PII pass dropped or tokenised a value, so the
-                        # stored set is no longer the column. No hint at all.
-                        continue
-                    col["values"] = stored
-            finally:
+        try:
+            for table, col in work:
+                if _STOP.is_set() or time.monotonic() >= deadline or rows_left < 1:
+                    break
+                if con is not None and time.monotonic() >= release_at:
+                    # Hand the lease back so a waiting ingest goes in now.
+                    con.close()
+                    con = None
+                if con is None:
+                    con = _open_index_read(Path(serving))
+                    release_at = time.monotonic() + INDEX_LEASE_HOLD_S
+                rows_left = _index_column(con, table, col, rows_left, deadline)
+        finally:
+            if con is not None:
                 con.close()
     except Exception as exc:  # noqa: BLE001
         name = type(exc).__name__

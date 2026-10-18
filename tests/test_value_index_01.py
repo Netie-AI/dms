@@ -30,6 +30,7 @@ from dms_executor.schema_context import (
     _forget_index,
     build_schema_context,
     build_space_index,
+    cached_value_index,
     lookup_schema,
 )
 
@@ -298,6 +299,154 @@ def test_a_value_the_pii_pass_drops_leaves_no_hint_for_its_prefix(tmp_path: Path
     ctx = _prompt(db, "total sales for NORTH Tan Wei Ming", {"sales"})
     assert "sales.region = NORTH" not in ctx.prompt
     assert "region VARCHAR distinct=2" not in ctx.prompt
+
+
+def _spaced_rows() -> list[tuple[str, int]]:
+    """'NORTH' and 'NORTH ' are two stored values; whitespace folding makes one."""
+    rows = [("NORTH", 1) for _ in range(30)]
+    rows += [("NORTH ", 1) for _ in range(20)]
+    rows += [("SOUTH", 1) for _ in range(40)]
+    return rows
+
+
+def test_values_that_fold_to_one_leave_no_hint(tmp_path: Path) -> None:
+    """Rule 12: the completeness proof counts raw values, not folded ones.
+
+    Three raw values, two after folding. Hinting ``= NORTH`` with
+    ``distinct=2`` filters 30 rows where the column holds 50 that read as
+    NORTH, so the column sends no hint and claims no distinct count.
+    """
+    db = tmp_path / "spaced.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE sales (region VARCHAR, amount INTEGER)")
+        con.executemany("INSERT INTO sales VALUES (?, ?)", _spaced_rows())
+        assert con.execute("SELECT COUNT(DISTINCT region) FROM sales").fetchone() == (3,)
+    finally:
+        con.close()
+    built = _prompt(db, "total sales for NORTH", {"sales"})
+    assert "sales.region = NORTH" not in built.prompt
+    assert "FILTER HINTS" not in built.prompt
+    assert "distinct=2" not in built.prompt
+    assert "DMSHINT_" not in built.envelope_prompt
+
+
+def test_chat_ask_values_that_fold_to_one_envelope_has_no_hint(
+    tmp_path: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "wh.duckdb"
+    _seed_inventory(db, _spaced_rows())
+    body = _chat_ask(db, minter, "total quantity for NORTH", monkeypatch)
+    context = _assert_abstain_with_context(body)
+    assert "inventory.category = DMSHINT_" not in context
+    assert "- category VARCHAR distinct=2" not in context
+    assert "NORTH" not in context
+    assert "NORTH" not in str(body["text"])
+
+
+# -- the build reads beside live asks, inside a budget ----------------------
+
+
+def test_a_serving_read_during_the_build_is_not_queued_behind_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The build scans whole columns; it must not hold the ingest lease to do it.
+
+    The build is parked inside a distinct count. A serving read, the lease an
+    ask's SQL runs on, opens and answers beside it. Under the exclusive ingest
+    lease it waited out ``DMS_LAKE_SERVING_LEASE_WAIT_S`` and raised
+    ServingLeaseCap, which the ask path renders as an abstain.
+    """
+    import threading
+
+    import dms_executor.schema_context as sc
+    from dms_executor.demo_warehouse import connect_serving
+
+    monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "0.5")
+    monkeypatch.setattr(sc, "INDEX_SCAN_BUDGET_S", 30.0, raising=False)
+    db = _region_db(tmp_path / "sales.duckdb")
+    inside = threading.Event()
+    release = threading.Event()
+    real_count = sc._count_distinct
+
+    def _parked(con: Any, table: str, column: str) -> int | None:
+        inside.set()
+        release.wait(10.0)
+        return real_count(con, table, column)
+
+    monkeypatch.setattr(sc, "_count_distinct", _parked)
+    stamps: list[str] = []
+    worker = threading.Thread(
+        target=lambda: stamps.append(build_space_index(db, _SPACE, {"sales"}, "duckdb"))
+    )
+    worker.start()
+    try:
+        assert inside.wait(10.0)
+        con = connect_serving(db)
+        try:
+            rows = con.execute(
+                "SELECT SUM(amount) FROM sales WHERE region = 'NORTH EAST'"
+            ).fetchall()
+        finally:
+            con.close()
+    finally:
+        release.set()
+        worker.join(15.0)
+    assert rows == [(435,)]
+    assert stamps == [""]
+    schema, stamp = lookup_schema(db, {"sales"}, "duckdb", _SPACE)
+    assert stamp == ""
+    built = build_schema_context(_NORTH_Q, schema, grantable={"sales"}, space_id=_SPACE)
+    assert "- sales.region = NORTH EAST" in built.prompt
+    assert "- region VARCHAR distinct=3" in built.prompt
+
+
+def test_a_scan_past_its_budget_is_interrupted_and_the_build_goes_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A distinct scan that will not finish is cut at its budget, not at the end.
+
+    ``a_slow`` is a view over ten billion generated rows, read first. Its scan
+    is interrupted, it indexes nothing, and the build still reaches ``sales``
+    and finishes well inside the build budget.
+    """
+    import threading
+    import time
+
+    import dms_executor.schema_context as sc
+
+    monkeypatch.setattr(sc, "INDEX_SCAN_BUDGET_S", 0.2, raising=False)
+    db = _region_db(tmp_path / "slow.duckdb")
+    con = duckdb.connect(str(db))
+    try:
+        con.execute(
+            "CREATE VIEW a_slow AS SELECT CAST(r % 3 AS VARCHAR) AS zone "
+            "FROM range(10000000000) t(r)"
+        )
+    finally:
+        con.close()
+    stamps: list[str] = []
+    started = time.monotonic()
+    worker = threading.Thread(
+        target=lambda: stamps.append(
+            build_space_index(db, _SPACE, {"a_slow", "sales"}, "duckdb")
+        ),
+        daemon=True,
+    )
+    worker.start()
+    worker.join(10.0)
+    assert not worker.is_alive(), "the slow scan was not interrupted"
+    assert time.monotonic() - started < sc.INDEX_BUILD_BUDGET_S
+    assert stamps == [""]
+    schema, stamp = lookup_schema(db, {"a_slow", "sales"}, "duckdb", _SPACE)
+    assert stamp == ""
+    built = build_schema_context(
+        "total sales for NORTH EAST", schema, grantable={"a_slow", "sales"}, space_id=_SPACE
+    )
+    assert "- sales.region = NORTH EAST" in built.prompt
+    held = cached_value_index(_SPACE)
+    assert "a_slow.zone" not in held
+    assert held["sales.region"] == ("NORTH", "NORTH EAST", "SOUTH")
 
 
 def test_capped_columns_do_not_spend_the_row_budget_of_later_tables(tmp_path: Path) -> None:
