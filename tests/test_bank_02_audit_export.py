@@ -136,6 +136,9 @@ class LedgerCortex:
             )
         if self.mode == "pii_sql":
             entry = self._append({"event": "ask.executed"})
+            # ``suppliers`` is a Finance grant. A table the Space does not
+            # grant is refused before the envelope (GRANT-STRUCT-01), and then
+            # there is no SQL left to mask.
             return AskResponse.model_validate(
                 {
                     "answer": "Done.",

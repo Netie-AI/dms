@@ -83,6 +83,7 @@ def _ask(
         submit=_submitter(lake, calls),
         ledger_append=_ledger,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)

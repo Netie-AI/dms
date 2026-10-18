@@ -112,7 +112,10 @@ def note_turn_grants(owner: object, space_id: str | None, grants: Iterable[str])
     turn = _TURN.get()
     if turn is None or turn.owner != id(owner) or turn.space_id != space_id:
         return
-    turn.grants = frozenset(grants)
+    # Union: the method body notes its list, then a caller may append a name
+    # and hand that list to serve_gap. A later note must not drop the extra.
+    incoming = frozenset(grants)
+    turn.grants = incoming if turn.grants is None else turn.grants | incoming
 
 
 def turn_grants() -> frozenset[str] | None:
@@ -581,6 +584,37 @@ def _ungranted(
             continue
         out.append(parts)
     return out
+
+
+def served_relation_miss(gap: str, sql: str, grants: Collection[str]) -> bool:
+    """True when the served-answer check owns this ``serve_gap`` result.
+
+    A file, a script, or an unparsed statement stays on the structural
+    refusal. A relation miss does not: the served answer abstains with the
+    name on the ticket, or it stands when the grant or the lake alias covers
+    every table the audit parser read.
+    """
+    code = str(gap or "").strip()
+    if code.startswith("hostile_sql:") or code in {
+        "ungranted:file",
+        "ungranted:unparsed",
+        "multi_statement",
+        "statement_not_allowed",
+        "sql_dialect_unknown",
+        "sql_relation_unresolved",
+    }:
+        return False
+    if code not in {"ungranted", "sql_relation_not_granted"} and not code.startswith(
+        "ungranted:"
+    ):
+        return False
+    # serve_gap can miss a bare grant or a lake alias that this lookup
+    # accepts. That answer stands. A file, a catalog, or any other
+    # relation this lookup also rejects stays on the structural refusal.
+    parts = _sql_parts([sql])
+    if parts and not _ungranted(parts, set(grants)):
+        return True
+    return code == "ungranted" or code.startswith("ungranted:")
 
 
 def _sql_parts(sources: list[str]) -> list[tuple[str, ...]]:

@@ -36,6 +36,7 @@ from dms_executor.bronze import (
     IngestReceipt,
     ingest_csv_bytes,
     list_bronze_tables,
+    list_source_pulls,
     write_bronze_rows,
 )
 from dms_executor.bronze_sheet_ask import (
@@ -51,13 +52,19 @@ from dms_executor.db_connector import (
     SourceConnectionError,
     UnknownSourceTable,
     ingest_source_database,
+    list_source_keys,
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
     normalize_ask_question,
     with_grounded_scope,
 )
-from dms_executor.demo_grants import DemoSessionStore, ingested_bronze_tables
+from dms_executor.demo_grants import (
+    DemoSessionStore,
+    canonical_space_id,
+    ingested_bronze_tables,
+    is_demo_space,
+)
 from dms_executor.demo_pack import (
     curated_pack_metric_miss,
     curated_pack_present,  # noqa: F401 - re-exported; files-on-disk check
@@ -76,6 +83,7 @@ from dms_executor.demo_warehouse import (
     read_health_engine_clock,
     sql_has_reserved_as_of,
     stamp_engine_clock,
+    warehouse_path,
 )
 from dms_executor.envelope import (
     RESERVED_PARAM_AS_OF,
@@ -88,11 +96,19 @@ from dms_executor.envelope import (
 from dms_executor.generative_ask import (
     maybe_generative_ask,
     path_miss_envelope,
+    untyped_numeric_reason,
     with_served_attribution,
+)
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    relation_gap,
+    serve_gap,
+    sql_refusal_envelope,
 )
 from dms_executor.lake_registry import (
     SERVING_DEADLINE_EXCEEDED_REASON,
     SERVING_DEADLINE_RESERVE_REASON,
+    SERVING_ERRORS,
     AskControl,
     ServingDeadlineExceeded,
     ServingDeadlineReserve,
@@ -115,10 +131,10 @@ from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
     OpenVaultTokenError,
+    SecurityEvent,
     SessionAcl,
     SubmitError,
     classify_submit_error,
-    reject_hostile_chat_sql,
     should_rement,
 )
 from dms_executor.name_echo import (
@@ -148,6 +164,19 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.space_ontology import (
+    REASON_STORE_UNAVAILABLE,
+    bronze_catalog,
+    check_sql_against_space,
+    derive_and_store,
+    load_space_ontology,
+    ontology_store,
+    set_ontology_store,
+    source_identity,
+    space_ontology_views,
+    stored_catalogs,
+    stored_catalogs_by_source,
+)
 from dms_executor.sql_currency import tables_read as tables_read_by_sql
 from dms_executor.sql_currency import tables_read_checked as tables_read_checked_by_sql
 from dms_executor.sql_loop import apply_sql_credit, extract_dialect
@@ -167,6 +196,7 @@ from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
     identity_check,
     ingest_warehouse_path,
+    serving_sync_state,
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
@@ -174,10 +204,41 @@ from dms_executor.xlsx_orch import run_crosscheck, run_extract, run_golden
 
 logger = logging.getLogger(__name__)
 
+
+def _grant_name_ok(name: str) -> bool:
+    """One or two identifier parts. A digit-first part is not granted.
+
+    ``bronze.2024_sales`` made Cortex refuse the whole Space manifest. Unicode
+    letters stay: DuckDB keeps "Ä" and "ä" as two tables, and a grant check
+    that drops them cannot serve a granted Unicode table.
+    """
+    parts = str(name).split(".")
+    if not 1 <= len(parts) <= 2:
+        return False
+    for part in parts:
+        if not part or not (part[0].isalpha() or part[0] == "_"):
+            return False
+        if any(not (c.isalnum() or c == "_") for c in part):
+            return False
+    return True
+
+
 #: The demo tenant and its single steward. Real multi-tenancy arrives with the
 #: Postgres control plane (P-DMS-2); until then every session is this user.
 DEMO_TENANT_ID = "tenant_demo"
 DEMO_USER_ID = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def default_readable_tables(granted: list[str], *, space_id: str | None) -> list[str]:
+    """What a turn reads when nothing was ticked.
+
+    A seeded demo Space (and no Space) reads the demo spine only. A Space
+    created for its own data reads the tables it was granted: its bronze,
+    not the demo spine. Never wider than ``granted``.
+    """
+    if is_demo_space(space_id):
+        return [t for t in granted if t in DEMO_TABLES]
+    return list(granted)
 
 
 def _insights_compute_seam(
@@ -270,6 +331,7 @@ class Executor:
         cortex: CortexClient | None = None,
         minter: ManifestMinter | None = None,
         warehouse_path: Path | str | None = None,
+        dialect: str | None = SERVING_DIALECT,
         openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
         session_store: Any | None = None,
@@ -278,6 +340,7 @@ class Executor:
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
+        self.dialect = dialect
         self._bound_sessions: set[str] = set()
         self._turns: dict[tuple[str, str], dict[str, Any]] = {}
         # The Space boundary reads its facts from here. Defaults to the DR-0002
@@ -349,10 +412,18 @@ class Executor:
             return
         self._turns[key] = snap
 
-    def execute(self, sql: str) -> list[dict[str, Any]]:
-        reject_hostile_chat_sql(sql)
+    def execute(
+        self, sql: str, *, grantable: set[str] | None = None
+    ) -> list[dict[str, Any]]:
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
+        gap = serve_gap(
+            sql,
+            grantable=set(grantable or ()),
+            dialect=self.dialect,
+        )
+        if gap:
+            raise SecurityEvent(gap, gap)
         ensure_demo_warehouse(self._warehouse)
         return execute_sql(sql, path=self._warehouse, product=True)
 
@@ -371,7 +442,21 @@ class Executor:
                 route="user_sql",
                 question=sql,
             )
-        rows = self.execute(sql)
+        try:
+            grants = set(self.grantable_tables(space_id=space_id))
+        except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
+            grants = set()
+        gap = serve_gap(sql, grantable=grants, dialect=self.dialect)
+        if gap:
+            return sql_refusal_envelope(
+                reason=gap,
+                shown=customer_grant_reason(gap),
+                space_id=space_id,
+                session_id=session_id,
+                route="user_sql",
+                question=None,
+            )
+        rows = self.execute(sql, grantable=grants)
         env = build_answer_envelope(
             answer_id="ans_user_sql",
             text="Query result.",
@@ -432,6 +517,19 @@ class Executor:
             pool_id="default",
         )
         granted = sorted(resolve_session_acl(ctx).row_predicates)
+        # F-c: one granted name that breaks the SHARED NAMING RULE (a legacy
+        # ``bronze.2024_sales``) made ``cortex_row_predicates`` refuse the whole
+        # Space's manifest, so every ask abstained ``submit_failed``. Such a table
+        # is not grantable (new ingests never create one); it is named, not hidden.
+        bad = [t for t in granted if not _grant_name_ok(t)]
+        if bad:
+            logger.warning(
+                "space %s: not granting %s (name breaks the naming rule; re-ingest to rename)",
+                space_id,
+                ", ".join(bad),
+            )
+        granted = [t for t in granted if t not in bad]
+        # NAME-ECHO-01: the scrub reads this set; it never derives its own.
         note_turn_grants(self, space_id, granted)
         return granted
 
@@ -473,7 +571,7 @@ class Executor:
         # An upload is grantable on request but is not part of the default
         # readable set: asking with nothing ticked must not quietly widen the
         # manifest to every file anyone has ever uploaded.
-        default_readable = [t for t in grantable if t in DEMO_TABLES]
+        default_readable = default_readable_tables(grantable, space_id=space_id)
         readable = selection or default_readable
         # A different manifest must be a different bound session — reusing the id
         # would serve the question under whatever manifest happened to be bound
@@ -742,7 +840,7 @@ class Executor:
                     out,
                     payload if isinstance(payload, dict) else None,
                     raw_loop if isinstance(raw_loop, list) else None,
-                    dialect=extract_dialect(getattr(self, "_warehouse", None)),
+                    dialect=extract_dialect(self.dialect),
                 )
             from dms_core.ask import lane_for_route
             from dms_core.pii import mask_unknown_keys
@@ -834,8 +932,36 @@ class Executor:
             run_cascade,
         )
 
+        # One Space-grant lookup per ask. ``grantable_tables`` reads the
+        # store and the lake (a serving lease), so a second lookup is a second
+        # wait under lease contention. Every lane below reads this one result;
+        # a failure is kept and raised again to the next caller, not retried.
+        grants_once: list[list[str] | Exception] = []
+
+        def space_grants() -> list[str]:
+            if not grants_once:
+                try:
+                    got = self.grantable_tables(space_id=space_id)
+                except Exception as exc:  # noqa: BLE001 -- kept for every caller
+                    grants_once.append(exc)
+                else:
+                    # The list the caller received, including a name added
+                    # after the method body noted its own copy.
+                    note_turn_grants(self, space_id, got)
+                    grants_once.append(got)
+            found = grants_once[0]
+            if isinstance(found, Exception):
+                raise found
+            return list(found)
+
         key = turn_key(session_id, space_id)
         if allow_follow:
+            try:
+                follow_grants = set(space_grants())
+            except SERVING_ERRORS:
+                raise
+            except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
+                follow_grants = set()
             follow = maybe_followup(
                 question,
                 prior=self._turns.get(key) if key else None,
@@ -843,6 +969,8 @@ class Executor:
                 session_id=session_id,
                 warehouse=self._warehouse,
                 tables=tables,
+                grantable=follow_grants,
+                dialect=self.dialect,
             )
             if follow is not None:
                 self._store_turn(session_id, space_id, follow)
@@ -855,7 +983,7 @@ class Executor:
                 space_id=space_id,
                 session_id=session_id,
                 warehouse=self._warehouse,
-                grantable=set(self.grantable_tables(space_id=space_id)),
+                grantable=set(space_grants()),
                 tables=tables,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
@@ -866,6 +994,7 @@ class Executor:
                     space_id=space_id,
                     session_id=session_id,
                 ),
+                dialect=self.dialect,
             )
             if verified_env is not None:
                 self._store_turn(session_id, space_id, verified_env)
@@ -878,7 +1007,7 @@ class Executor:
                 question,
                 space_id=space_id,
                 session_id=session_id,
-                grantable=set(self.grantable_tables(space_id=space_id)),
+                grantable=set(space_grants()),
                 tables=tables,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
@@ -890,6 +1019,7 @@ class Executor:
                     session_id=session_id,
                     event_type="ask.governed_metric",
                 ),
+                dialect=self.dialect,
             )
             if pack_env is not None:
                 self._store_turn(session_id, space_id, pack_env)
@@ -927,7 +1057,7 @@ class Executor:
         # Intersection with granted still narrows a selection; an unread grant
         # never falls back to the whole space.
         try:
-            granted = self.grantable_tables(space_id=space_id)
+            granted = space_grants()
         except (
             ServingLeaseCap,
             ServingLeaseQueueFull,
@@ -940,7 +1070,7 @@ class Executor:
             granted = []
         selection = [t for t in (tables or []) if t]
         requested = [t for t in selection if t in set(granted)]
-        default_readable = [t for t in granted if t in DEMO_TABLES]
+        default_readable = default_readable_tables(granted, space_id=space_id)
         readable = requested or default_readable
         raise_if_ask_stopped()
         cascade = (
@@ -966,10 +1096,11 @@ class Executor:
 
         asked = question
         question = with_grounded_scope(question, tables)
+        # dms#284: an ungranted sheet refuses before any model call. The
+        # phrase lane only names the sheet server's table. The grant is
+        # relation_gap, the same keys as serve_gap. No probe SQL is built.
+        # A later lane must not answer that question from another table.
         if allow_bronze:
-            # dms#284: readable bronze tables are the active listing intersected
-            # with the grants ``grantable_tables`` just returned. Same predicate
-            # as the grounded ask (``table_is_granted``). No Space fails closed.
             target = bronze_lane_table(question)
             if target is None:
                 bronze_env = None
@@ -981,17 +1112,24 @@ class Executor:
                     session_id=session_id,
                 )
             else:
-                from dms_executor.ontology import table_is_granted
-
                 active = set(
                     ingested_bronze_tables(self._warehouse, space_id=space_id)
                 )
-                bronze_readable = active.intersection(granted)
-                if table_is_granted(target, bronze_readable):
-                    # Flag off: do not call the sheet lane. Grant abstains above
-                    # and below stay. They return no rows. An ungranted table
-                    # or a missing Space is a refusal, and a later lane must
-                    # not answer it from some other table.
+                bronze_readable = set(active).intersection(granted)
+                sheet_gap = relation_gap(
+                    target,
+                    grantable=bronze_readable,
+                    dialect=self.dialect,
+                )
+                if sheet_gap == "sql_dialect_unknown":
+                    bronze_env = sql_refusal_envelope(
+                        reason=sheet_gap,
+                        space_id=space_id,
+                        session_id=session_id,
+                        route="abstain",
+                        question=question,
+                    )
+                elif sheet_gap is None:
                     bronze_env = (
                         maybe_bronze_sheet_ask(
                             question,
@@ -1011,6 +1149,25 @@ class Executor:
                     )
             if bronze_env is not None:
                 env = attach_cascade(bronze_env, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+        space_onto = None
+        if allow_gen and not is_demo_space(space_id):
+            # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
+            # one and never another Space's. A store that cannot be read is a
+            # named ABSTAIN: answering without the join rules it holds would
+            # be a silent downgrade.
+            try:
+                space_onto = load_space_ontology(space_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ontology store unreadable for %s: %s", space_id, exc)
+                env = path_miss_envelope(
+                    question,
+                    f"{REASON_STORE_UNAVAILABLE}: the Space ontology store could not "
+                    "be read, so no join can be checked",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
                 self._store_turn(session_id, space_id, env)
                 return env
         if allow_gen:
@@ -1045,6 +1202,10 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
+                ontology=space_onto,
+                demo_ontology_allowed=space_onto is None,
+                # Extract and EXPLAIN run on the DuckDB serving copy
+                # (connect_serving), not on the source connector in self.dialect.
                 dialect=SERVING_DIALECT,
             )
             if gen_env is not None:
@@ -1113,6 +1274,54 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        raw_sql = getattr(resp, "sql_used", None)
+        sql_used = str(raw_sql or "")
+        if sql_used.strip() and not getattr(resp, "abstained", False):
+            gap = serve_gap(
+                sql_used,
+                grantable=set(readable),
+                dialect=self.dialect,
+                warehouse=self._warehouse,
+            )
+            # A relation miss is the served-answer abstain (ticket keeps the
+            # name; a granted lake alias stands). A file or a script still
+            # refuses here, before the envelope is built.
+            from dms_executor.name_echo import served_relation_miss
+
+            if gap and not served_relation_miss(gap, sql_used, set(readable)):
+                # One code. The relation name is not part of it.
+                refused = sql_refusal_envelope(
+                    reason=gap,
+                    shown=customer_grant_reason(gap),
+                    space_id=space_id,
+                    session_id=session_id,
+                    route="abstain",
+                    question=question,
+                )
+                env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+        if sql_used and not is_demo_space(space_id) and not getattr(resp, "abstained", False):
+            # dms#277 F-e: the contract ask's SQL obeys the same text-numeric rule.
+            num_why = untyped_numeric_reason(sql_used, self._warehouse or warehouse_path())
+            if num_why:
+                env = path_miss_envelope(
+                    question, num_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
+        if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
+            # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
+            # Its SQL answers only if it passes the same rule generation does.
+            join_why = check_sql_against_space(
+                sql_used, space_onto, self._warehouse or warehouse_path(), readable
+            )
+            if join_why:
+                env = path_miss_envelope(
+                    question, join_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -1144,12 +1353,18 @@ class Executor:
         *,
         reminted: bool = False,
     ) -> Any:
-        reject_hostile_chat_sql(sql)
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
         if self._cortex is None:
             raise RuntimeError("CortexClient required for submit")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
+        gap = serve_gap(
+            sql,
+            grantable=set(acl.row_predicates),
+            dialect=self.dialect,
+        )
+        if gap:
+            raise SecurityEvent(gap, gap)
         manifest = self._minter.mint_manifest(acl)
         req = SubmitRequest(
             pool=PoolSpec(id=acl.pool_id),
@@ -1420,6 +1635,22 @@ __all__ = [
     "ingest_csv_bytes",
     "ingest_source_database",
     "verify_source_links",
+    "bronze_catalog",
+    "derive_and_store",
+    "load_space_ontology",
+    "ontology_store",
+    "set_ontology_store",
+    "source_identity",
+    "space_ontology_views",
+    "stored_catalogs",
+    "stored_catalogs_by_source",
+    "list_source_keys",
+    "list_source_pulls",
+    "canonical_space_id",
+    "is_demo_space",
+    "default_readable_tables",
+    "warehouse_path",
+    "serving_sync_state",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",

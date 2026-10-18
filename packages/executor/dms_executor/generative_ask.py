@@ -17,6 +17,7 @@ Does not expand certified exact-match packs. Does not invent provider keys.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import sqlglot
 from cortex_client.compute import (
     PLAN_ORIGIN_GENERATE_SQL,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
@@ -49,12 +51,14 @@ from cortex_client.qualifiers import (
     unhonored_qualifier_reason,
 )
 from dms_core.pii import mask_unknown_keys
+from sqlglot import exp
 
 from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import _is_predictive, normalize_ask_question
 from dms_executor.demo_pack import is_uncertified_paraphrase
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    SERVING_DIALECT,
     connect_serving,
     sql_has_reserved_as_of,
     warehouse_path,
@@ -73,7 +77,14 @@ from dms_executor.gen_path_refuse import (
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
-from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    serve_gap,
+    sql_refusal_envelope,
+    sqlglot_dialect,
+    structural_grant_stop,
+)
+from dms_executor.manifest import OpenVaultTokenError
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -101,15 +112,22 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.space_ontology import (
+    REASON_NO_DECLARED_MEASURE,
+    REASON_UNVERIFIED_JOIN,
+    budget_space_block,
+    relation_columns,
+    space_catalog,
+    unverified_join_reason,
+)
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
-    EXTRACT_DIALECT,
     apply_sql_credit,
-    extract_dialect,
     loop_entry,
     run_model_loop,
 )
+from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.verified_queries import rows_from_submit_result
 
 _KNOWN = frozenset(DEMO_TABLES)
@@ -676,18 +694,28 @@ def validate_compiled_sql(
     *,
     grantable: set[str],
     warehouse: Path | None,
+    dialect: str | None = None,
 ) -> str | None:
-    """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
+    """None if the compiled SQL may be submitted. Else a reason (do not execute).
+
+    Grants are one ``serve_gap`` call: statement count, the hostile scanner,
+    then the allow-list. A miss returns here, before EXPLAIN. EXPLAIN itself
+    runs on the DuckDB serving copy. When the caller omitted the dialect and
+    that file is present, the check uses the serving dialect and names a
+    missing table (``ungranted:<table>``). An explicit dialect keeps the bare
+    code. The warehouse is not passed into ``serve_gap``: a qualifier this
+    file does not know stays a grant miss, and the contract ask is what binds
+    a qualifier against the catalog.
+    """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
-    try:
-        reject_hostile_chat_sql(sql)
-    except SecurityEvent as exc:
-        return f"hostile_sql:{exc.code}"
-    named = cited_relations(sql)
-    missing = {t for t in named if t not in grantable and f"warehouse_{t}" not in grantable}
-    if missing:
-        return f"ungranted:{','.join(sorted(missing))}"
+    cite = dialect is None and warehouse is not None and Path(warehouse).is_file()
+    read = dialect if dialect is not None else (SERVING_DIALECT if cite else None)
+    gap = serve_gap(
+        sql, grantable=grantable, dialect=read, cite_missing=cite
+    )
+    if gap:
+        return gap
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
@@ -703,6 +731,52 @@ def validate_compiled_sql(
     finally:
         con.close()
     return None
+
+
+REASON_UNTYPED_NUMERIC = "untyped_numeric"
+
+
+def untyped_numeric_reason(sql: str, warehouse: Path | None) -> str | None:
+    """``untyped_numeric:<table>.<col>`` when the SQL reads a declared-numeric text column.
+
+    dms#277 F-e: a column the source declared numeric that could not land typed
+    (bare ``money`` with a currency symbol, a value that would not fit) is
+    VARCHAR, and text orders ``'9.50'`` above ``'100.25'``. MAX, ORDER BY, a
+    comparison or a SUM over it would be a confident wrong figure, so any SQL
+    naming it is refused, named, until the column is re-typed at the source.
+    A registry that cannot be read refuses too (fail closed).
+    """
+    if warehouse is None or not Path(warehouse).is_file():
+        return None
+    labels = _sql_cited_labels(sql) or []
+    read: set[str] = set()
+    for label in dict.fromkeys(str(x).strip().lower() for x in labels):
+        schema, _, bare = label.rpartition(".")
+        if schema == "bronze" or (not schema and bare not in DEMO_TABLES):
+            read.add(f"bronze.{bare}")
+    if not read:
+        return None
+    from dms_executor.bronze import untyped_numeric_columns
+
+    try:
+        flagged = untyped_numeric_columns(read, path=Path(warehouse))
+    except Exception:  # noqa: BLE001 - cannot vouch for the columns: refuse
+        return f"{REASON_UNTYPED_NUMERIC}:registry_unreadable"
+    if not flagged:
+        return None
+    try:
+        named = {
+            c.name.lower()
+            for root in sqlglot.parse(sql, read=SERVING_DIALECT)
+            if root is not None
+            for c in root.find_all(exp.Column)
+        }
+    except Exception:  # noqa: BLE001
+        return f"{REASON_UNTYPED_NUMERIC}:unparsed"
+    hits = sorted(f"{t}.{c}" for t, cols in flagged.items() for c in cols if c in named)
+    if not hits:
+        return None
+    return f"{REASON_UNTYPED_NUMERIC}:{','.join(hits)}"
 
 
 def _refusal_before_explain(con: Any, sql: str) -> str | None:
@@ -739,6 +813,44 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _grant_ticket_reason(
+    reason: str, sql: str | None, grantable: set[str], dialect: str | None
+) -> str | None:
+    """Ticket text that still names the relation. The visible code stays bare.
+
+    ``ungranted:`` is written once. A second copy would make the scrub read
+    the word ``ungranted`` as a table and cut it out of ``checker:ungranted``.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        return None
+    heads = [part.strip() for part in str(reason or "").split(":") if part.strip()]
+    if not heads:
+        return None
+    if "ungranted" not in heads and "sql_relation_not_granted" not in heads:
+        return None
+    cited = _cited_ungranted(sql, grantable, dialect)
+    if not cited or ":" not in cited:
+        return None
+    tail = cited.split(":", 1)[1]
+    if not tail or tail in heads:
+        return None
+    if "ungranted" in heads:
+        return f"{reason}:{tail}"
+    return f"{reason}:{cited}"
+
+
+def _cited_ungranted(sql: str, grantable: set[str], dialect: str | None) -> str | None:
+    """Relation tail for the ticket. The visible code stays bare."""
+    named = serve_gap(sql, grantable=set(grantable), dialect=dialect, cite_missing=True)
+    if (
+        isinstance(named, str)
+        and named.startswith("ungranted:")
+        and named not in {"ungranted:file", "ungranted:unparsed"}
+    ):
+        return named
+    return None
+
+
 def _abstain(
     question: str,
     reason: str,
@@ -750,9 +862,11 @@ def _abstain(
     sql: str | None = None,
     retries: int = 0,
     stage: str = "generative",
+    ticket_reason: str | None = None,
 ) -> dict[str, Any]:
     env = build_abstain(
         reason=reason,
+        ticket_reason=ticket_reason,
         question=question,
         sql=sql,
         retries=retries,
@@ -876,6 +990,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    grantable: set[str] | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -886,7 +1001,9 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
-    gap = unhonored_qualifier_reason(question, sql=sql)
+    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
+        question, sql, warehouse, grantable=grantable
+    )
     if gap:
         return _abstain(
             question,
@@ -911,6 +1028,16 @@ def _submit_validated(
             session_id=session_id,
             route="generated",
             question=question,
+        )
+    num_why = untyped_numeric_reason(sql, warehouse)
+    if num_why:
+        return _abstain(
+            question,
+            num_why,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
         )
     try:
         result = submit(sql)
@@ -1040,6 +1167,7 @@ def _try_multi_grain_envelope(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
@@ -1047,7 +1175,9 @@ def _try_multi_grain_envelope(
     None means this ask is not a multi-grain compile (caller continues).
     """
     lock = _multi_grain_measure(q, onto, payload)
-    multi = try_compile_multi_grain(onto, lock or None, q, grantable=allowed)
+    multi = try_compile_multi_grain(
+        onto, lock or None, q, grantable=allowed, dialect=dialect
+    )
     if multi is None:
         return None
     source = PLAN_SOURCE_ONTOLOGY
@@ -1068,7 +1198,9 @@ def _try_multi_grain_envelope(
             route="generated",
             question=q,
         )
-    why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
+    why = validate_compiled_sql(
+        multi.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     # Not one SELECT: refused first, before any other branch reads `why`.
     if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
         return _abstain(
@@ -1102,6 +1234,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        grantable=allowed,
     )
 
 
@@ -1115,6 +1248,7 @@ def rank_window_ask(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
 
@@ -1156,7 +1290,9 @@ def rank_window_ask(
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")
-    bad = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    bad = validate_compiled_sql(
+        compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     if bad in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
         return _no(bad)
     if bad:
@@ -1178,6 +1314,7 @@ def rank_window_ask(
         measure=measure,
         coverage=compiled.coverage,
         warehouse=lake,
+        grantable=allowed,
         lead=lead,
     )
 
@@ -1202,6 +1339,37 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
     )
 
 
+_SPACE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _space_table_ok(name: str) -> bool:
+    parts = str(name).split(".")
+    return len(parts) in (1, 2) and all(_SPACE_IDENT.fullmatch(p) for p in parts)
+
+
+def _space_insights_body(
+    allowed: set[str], space: dict[str, Any], schema_context: str | None = None
+) -> dict[str, Any]:
+    """Insights body for a Space that has its own ontology.
+
+    ``source`` is ``space``. Objects, verified links and declared measures come
+    from the stored ontology. Demo retrieve context is not mixed in. The
+    granted-schema prompt (``DMS_SCHEMA_CONTEXT``) is carried when one was built,
+    and counted in the budget below.
+    """
+    tables = sorted(t for t in allowed if _space_table_ok(t))
+    out: dict[str, Any] = {
+        "source": "space",
+        "tables": tables,
+        "schema": [{"table": t} for t in tables],
+    }
+    if schema_context:
+        out[SCHEMA_CONTEXT_FIELD] = schema_context
+    # Budgeted inside Cortex's caller-ontology limits. A cut is marked.
+    out.update(budget_space_block(space, used=len(json.dumps(out, default=str))))
+    return out
+
+
 def _run_extract_loop(
     *,
     question: str,
@@ -1213,6 +1381,7 @@ def _run_extract_loop(
     grantable: set[str],
     declared: Ontology | None,
     declared_violations: list[Violation],
+    space_onto: Ontology | None = None,
     space_id: str | None,
     session_id: str | None,
     submit: Callable[[str], Any],
@@ -1229,7 +1398,21 @@ def _run_extract_loop(
     def check(sql: str) -> str | None:
         if is_multi_statement(sql, dialect):
             return "multi_statement"
-        why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+        if space_onto is not None:
+            # ONTO-DERIVE-01: the Space join rule is the named refusal, and it
+            # runs before EXPLAIN so a grant or syntax miss cannot hide it.
+            try:
+                cols = relation_columns(space_onto, warehouse, sorted(grantable))
+            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+                return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            join_why = unverified_join_reason(
+                sql, space_onto, declared_violations, columns_of=cols
+            )
+            if join_why:
+                return join_why
+        why = validate_compiled_sql(
+            sql, grantable=grantable, warehouse=warehouse, dialect=dialect
+        )
         if why and why.startswith("explain:"):
             detail = _explain_error_text(sql, warehouse)
             if detail:
@@ -1254,6 +1437,7 @@ def _run_extract_loop(
             plan_source=PLAN_SOURCE_ONTOLOGY,
             coverage=coverage_from_sql_path(sql=sql),
             warehouse=warehouse,
+            grantable=grantable,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
         )
 
@@ -1274,6 +1458,9 @@ def _run_extract_loop(
                 retries=retries,
                 stage="extract_loop",
             )
+        # The loop outcome the customer reads stays the bare checker code.
+        # The ticket keeps the relation serve_gap named (NAME-ECHO-01).
+        ticket_reason = _grant_ticket_reason(reason, sql, grantable, dialect)
         return _abstain(
             question,
             reason,
@@ -1283,6 +1470,7 @@ def _run_extract_loop(
             sql=sql,
             retries=retries,
             stage="extract_loop",
+            ticket_reason=ticket_reason,
         )
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1339,6 +1527,7 @@ def maybe_generative_ask(
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
     ontology: Ontology | None = None,
     bind_on_miss: bool = False,
+    demo_ontology_allowed: bool = True,
     dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
@@ -1374,6 +1563,21 @@ def maybe_generative_ask(
     q = normalize_ask_question(question)
     if not q:
         return None
+    # Model SQL is checked and EXPLAINed on the DuckDB serving copy. A caller
+    # that already handed us that file and no dialect is that engine. No file
+    # and no dialect stays unknown: there is no silent fallback.
+    if dialect is None and warehouse is not None and Path(warehouse).is_file():
+        dialect = SERVING_DIALECT
+    resolved = sqlglot_dialect(dialect)
+    if resolved is None:
+        return sql_refusal_envelope(
+            reason="sql_dialect_unknown",
+            space_id=space_id,
+            session_id=session_id,
+            route="generated",
+            question=q,
+        )
+    dialect = resolved
     if is_uncertified_paraphrase(q):
         return _abstain(
             q, "uncertified paraphrase: not a generative certify boundary",
@@ -1436,6 +1640,7 @@ def maybe_generative_ask(
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
+        dialect=dialect,
     )
     if ranked_env is not None:
         ranked_env["generate_legs"] = generate_legs_view(None)
@@ -1466,8 +1671,24 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+    # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
+    # generated SQL must follow. Measured just above, against the lake as it is.
+    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    space_block = (
+        space_catalog(space_onto, declared_violations, allowed)
+        if space_onto is not None
+        else None
+    )
+    # What Insights is asked with. A Space asks with its own ontology, and so does
+    # every retry of the extract loop: a retry on the demo context would put the
+    # model on another ontology than the one the join rule checks against.
+    insights_ctx = (
+        _space_insights_body(allowed, space_block, ctx.get(SCHEMA_CONTEXT_FIELD))
+        if space_block is not None
+        else ctx
+    )
     try:
-        payload = compute(ctx)
+        payload = compute(insights_ctx)
     except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
         from dms_executor.lake_registry import (
             ServingDeadlineExceeded,
@@ -1495,8 +1716,6 @@ def maybe_generative_ask(
     trail_notes: list[str] = []
     validate_why: str | None = None
     loop_attempts: list[dict[str, Any]] = []
-    dialect = EXTRACT_DIALECT if cloop_b_enabled() else extract_dialect(lake)
-
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
         env = with_setup_fields(env, setup_src)
         if not isinstance(env, dict):
@@ -1570,7 +1789,7 @@ def maybe_generative_ask(
             return _stamp(
                 _run_extract_loop(
                     question=q,
-                    ctx=ctx,
+                    ctx=insights_ctx,
                     payload=payload,
                     compute=compute,
                     warehouse=lake,
@@ -1578,6 +1797,7 @@ def maybe_generative_ask(
                     grantable=allowed,
                     declared=declared,
                     declared_violations=declared_violations,
+                    space_onto=space_onto,
                     space_id=space_id,
                     session_id=session_id,
                     submit=submit,
@@ -1643,6 +1863,7 @@ def maybe_generative_ask(
         session_id=session_id,
         submit=submit,
         ledger_append=ledger_append,
+        dialect=dialect,
     )
     if multi_env is not None:
         return _stamp(with_plan_origin(multi_env, origin))
@@ -1659,7 +1880,9 @@ def maybe_generative_ask(
                     space_id=space_id, session_id=session_id, plan_source=source,
                 )
             )
-        why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        why = validate_compiled_sql(
+            sql, grantable=allowed, warehouse=lake, dialect=dialect
+        )
         # Not one SELECT: refused first, before any other branch reads `why`.
         if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
             return _stamp(
@@ -1695,23 +1918,64 @@ def maybe_generative_ask(
                     question=q,
                 )
             )
+        join_why: str | None = None
+        # The join rule is the named refusal. An EXPLAIN or grant miss must
+        # not hide it behind a generic validate reason.
+        if space_onto is not None:
+            try:
+                cols = relation_columns(space_onto, lake, sorted(allowed))
+            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+                join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            else:
+                join_why = unverified_join_reason(
+                    sql, space_onto, declared_violations, columns_of=cols
+                )
+        if join_why:
+            # No guessed joins: on a Space with a derived ontology, generated
+            # SQL may join two relations only over a link the source declared
+            # and verify() measured. A confident join on anything else is the
+            # plausible wrong number this layer exists to refuse.
+            return _stamp(
+                _abstain(
+                    q,
+                    join_why,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                )
+            )
         if why:
+            shown = customer_grant_reason(why)
+            cited = (
+                _cited_ungranted(sql, allowed, dialect)
+                if shown == "ungranted" or why == "sql_relation_not_granted"
+                else None
+            )
             if cloop_b_enabled():
                 loop_attempts.append(
                     loop_entry(
                         prompt=q,
                         payload=payload if isinstance(payload, dict) else None,
                         sql=sql,
-                        outcome=f"checker:{why}",
+                        outcome=f"checker:{shown}",
                         dialect=dialect,
                     )
                 )
-            if why.startswith("hostile_sql:") or ranked_slots is None:
+            # A file or a script that did not parse must not climb. The climb
+            # would hand the reject text, including an object name, back out.
+            if (
+                why.startswith("hostile_sql:")
+                or structural_grant_stop(why)
+                or ranked_slots is None
+            ):
                 return _stamp(
                     _abstain(
-                        q, f"validate:{why}",
+                        q, f"validate:{shown}",
                         space_id=space_id, session_id=session_id, plan_source=source,
                         notes=trail_notes,
+                        ticket_reason=(
+                            f"validate:{cited}" if cited and cited != shown else None
+                        ),
                     )
                 )
             # Climb: invalid SELECT is not authority. Ranked DMS slots may be.
@@ -1738,6 +2002,7 @@ def maybe_generative_ask(
                     plan_source=source,
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
+                    grantable=allowed,
                     plan_origin=origin,
                 )
             )
@@ -1827,6 +2092,36 @@ def maybe_generative_ask(
                 notes=trail_notes,
             )
         )
+    if (
+        space_onto is not None
+        and plan.measure
+        and plan.measure not in space_onto.measures
+    ):
+        # Measures are never derived for a SQL-source Space (NEEDS_FOUNDER):
+        # a plan that needs one the Space has not declared is a named gap.
+        return _stamp(
+            _abstain(
+                q,
+                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not a measure this "
+                "Space declares",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
+    if onto is None and not demo_ontology_allowed and declared is None:
+        return _stamp(
+            _abstain(
+                q,
+                "missing_ontology: this Space has no verified ontology, so a "
+                "typed plan cannot compile; only validated generated SQL can answer",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
     if onto is None or (not onto.verified and not declared_violations):
         return _stamp(
             _abstain(
@@ -1873,7 +2168,9 @@ def maybe_generative_ask(
             )
         )
 
-    why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    why = validate_compiled_sql(
+        compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     # Not one SELECT: refused first, before any other branch reads `why`.
     if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
         return _stamp(
@@ -1893,10 +2190,17 @@ def maybe_generative_ask(
             )
         )
     if why:
+        shown = customer_grant_reason(why)
+        cited = (
+            _cited_ungranted(compiled.sql, allowed, dialect)
+            if shown == "ungranted" or why == "sql_relation_not_granted"
+            else None
+        )
         return _stamp(
             _abstain(
-                q, f"validate:{why}",
+                q, f"validate:{shown}",
                 space_id=space_id, session_id=session_id, plan_source=source,
+                ticket_reason=(f"validate:{cited}" if cited and cited != shown else None),
             )
         )
     if not origin and source != PLAN_SOURCE_BIND:
@@ -1920,6 +2224,7 @@ def maybe_generative_ask(
             coverage=compiled.coverage,
             where_paths=compiled.where_paths,
             warehouse=lake,
+            grantable=allowed,
             plan_origin=origin,
         )
     )

@@ -94,7 +94,10 @@ _CODES = frozenset(
         "serving_deadline_reserve",
         "serving_lease_cap",
         "serving_lease_queue_full",
+        "sql_dialect_unknown",
         "sql_not_analyzable",
+        "sql_relation_not_granted",
+        "sql_relation_unresolved",
         "statement_not_allowed",
         "submit_failed",
         "ticket_missing",
@@ -153,14 +156,29 @@ def reconfirm_disposition(code: str) -> str:
 
 
 def _reason_code(raw: str) -> str:
-    """Named code only. Error prose and unknown tokens are dropped."""
+    """Named code only. Error prose is dropped. An ungranted relation stays.
+
+    ``ungranted`` is closed for messages, and the next identifier is the
+    relation. That name is the ticket. It is not the customer envelope.
+    """
     known = _known_codes()
     codes: list[str] = []
-    for part in str(raw or "").casefold().split(":"):
+    parts = str(raw or "").casefold().split(":")
+    for index, part in enumerate(parts):
         token = part.strip()
-        if not _TOKEN.fullmatch(token) or token not in known:
+        if not _TOKEN.fullmatch(token):
+            break
+        if token not in known:
+            if codes == ["ungranted"]:
+                codes.append(token)
             break
         codes.append(token)
+        if token == "ungranted":
+            if index + 1 < len(parts):
+                nxt = parts[index + 1].strip()
+                if _TOKEN.fullmatch(nxt):
+                    codes.append(nxt)
+            break
         if token in _CLOSED:
             break
     return ":".join(codes) if codes else "unspecified"

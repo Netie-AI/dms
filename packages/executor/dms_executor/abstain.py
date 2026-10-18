@@ -71,6 +71,7 @@ def build_abstain(
     ask_id: str | None = None,
     abstain_reason: str | None = None,
     demote: dict[str, Any] | None = None,
+    ticket_reason: str | None = None,
     **envelope: Any,
 ) -> dict[str, Any]:
     """Build one ABSTAIN envelope and, when the flag is on, its ticket.
@@ -98,14 +99,14 @@ def build_abstain(
                 assumptions.append(note)
         _stamp_ticket(
             demote,
-            reason=reason,
+            reason=ticket_reason or reason,
             question=question,
             sql=sql,
             retries=retries,
             stage=stage,
             ask_id=ask_id,
         )
-        return hide_echo(demote, reason)
+        return hide_echo(demote, ticket_reason or reason)
 
     from dms_executor.envelope import build_answer_envelope
 
@@ -118,14 +119,14 @@ def build_abstain(
         env["abstain_reason"] = abstain_reason
     _stamp_ticket(
         env,
-        reason=reason,
+        reason=ticket_reason or reason,
         question=question,
         sql=sql if isinstance(sql, str) else None,
         retries=retries,
         stage=stage,
         ask_id=ask_id,
     )
-    return hide_echo(env, reason)
+    return hide_echo(env, ticket_reason or reason)
 
 
 _SERVED_UNGRANTED_TEXT = (
@@ -169,7 +170,11 @@ def refuse_ungranted_answer(
         values=[],
         rows=[],
         sql_used=None,
-        assumptions=["served SQL read a relation outside this Space's grant"],
+        assumptions=[
+            "served SQL read a relation outside this Space's grant",
+            # The code stays visible. The relation name does not.
+            "ungranted",
+        ],
         abstain_reason="ungranted",
         audit_id=env.get("audit_id"),
         as_of=env.get("as_of"),
