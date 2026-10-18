@@ -2680,6 +2680,24 @@ _BOOLEAN_FLAG_FANOUT = {
         f"SELECT i.category, SUM(i.quantity_kg * CAST(t.quantity_kg AS BOOLEAN)::INT) {_JOIN}"
     ),
     "boolean_column": f"SELECT i.category, SUM(i.quantity_kg * t.is_out::INT) {_JOIN}",
+    # Round 10: list operators sqlglot does not type, and a BOOLEAN[] overload.
+    "overlap_operator": (
+        f"SELECT i.category, SUM(i.quantity_kg * ([t.txn_type] && ['outbound'])::INT) {_JOIN}"
+    ),
+    "contains_operator": (
+        f"SELECT i.category, SUM(i.quantity_kg * ([t.txn_type] @> ['outbound'])::INT) {_JOIN}"
+    ),
+    "contained_operator": (
+        f"SELECT i.category, SUM(i.quantity_kg * (['outbound'] <@ [t.txn_type])::INT) {_JOIN}"
+    ),
+    "list_has_any": (
+        "SELECT i.category, "
+        f"SUM(i.quantity_kg * list_has_any(['outbound'], [t.txn_type])::INT) {_JOIN}"
+    ),
+    "json_exists": (
+        "SELECT i.category, "
+        f"SUM(i.quantity_kg * json_exists(to_json({{'k': t.txn_type}}), '$.k')::INT) {_JOIN}"
+    ),
 }
 
 
@@ -2713,6 +2731,7 @@ def test_a_child_boolean_count_is_kept(tmp_path: Path) -> None:
         f"SELECT i.category, COUNT_IF(starts_with(t.txn_type, 'o')) {_JOIN}",
         f"SELECT i.category, SUM(t.is_out::INT) {_JOIN}",
         f"SELECT i.category, SUM(t.quantity_kg * i.unit_cost_myr) {_JOIN}",
+        f"SELECT i.category, SUM(([t.txn_type] && ['outbound'])::INT) {_JOIN}",
     ):
         why = served_result_reason(sql, warehouse=db, as_of="2026-10-16T00:00:00Z")
         assert why is None, (sql, why)
@@ -2745,6 +2764,23 @@ _UNPROBED_JOINS = {
     "correlated_join": (
         "SELECT i.sku AS sku, (SELECT SUM(i2.quantity_kg) FROM inventory i2 "
         "JOIN transactions t ON t.sku = i2.sku WHERE i2.sku = i.sku) AS kg FROM inventory i"
+    ),
+    # Round 10: the same parenthesised join one level down is still unplaceable.
+    "paren_join_in_derived": (
+        "SELECT SUM(x.q) AS kg FROM (SELECT i.quantity_kg AS q "
+        "FROM (inventory i JOIN transactions t ON t.sku = i.sku)) x"
+    ),
+    "paren_join_in_cte": (
+        "WITH x AS (SELECT i.quantity_kg AS q FROM (inventory i JOIN transactions t "
+        "ON t.sku = i.sku)) SELECT SUM(q) AS kg FROM x"
+    ),
+    "paren_join_in_cte_grouped": (
+        "WITH x AS (SELECT i.category AS c, i.quantity_kg AS q FROM (inventory i "
+        "JOIN transactions t ON t.sku = i.sku)) SELECT c, SUM(q) AS kg FROM x GROUP BY c"
+    ),
+    "paren_join_in_correlated": (
+        "SELECT i.sku AS sku, (SELECT SUM(i2.quantity_kg) FROM (inventory i2 "
+        "JOIN transactions t ON t.sku = i2.sku) WHERE i2.sku = i.sku) AS kg FROM inventory i"
     ),
 }
 

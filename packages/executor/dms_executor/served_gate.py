@@ -241,6 +241,11 @@ def _fanout(tree: exp.Query, path: Path) -> str | None:
     in its SELECT list, HAVING, ORDER BY and QUALIFY. A query that does not
     aggregate is checked on the rows it returns.
     """
+    if any(not isinstance(node.this, exp.Query) for node in tree.find_all(exp.Subquery)):
+        # FROM (a JOIN b), wherever it sits (an outer query, a CTE, a derived
+        # table, a correlated subquery): a parenthesised join list maps to no
+        # source, so no select over it can be probed.
+        raise _Unprobed("parenthesised_join")
     for select in tree.find_all(exp.Select):
         if _in_recursive_cte(select):
             continue
@@ -278,12 +283,6 @@ def _select_fanout(select: exp.Select, path: Path) -> str | None:
     targets = [node for node in _select_aggs(select) if _counts_rows(node)]
     if not targets:
         return None
-    if any(
-        isinstance(node, exp.Subquery) and not isinstance(node.this, exp.Query)
-        for node in _sources(select)
-    ):
-        # FROM (a JOIN b): a parenthesised join list maps to no source.
-        raise _Unprobed("parenthesised_join")
     sources = _source_map(select)
     if not sources or select.args.get("from") is None:
         return None
@@ -376,10 +375,22 @@ def _value_terms(node: exp.Expression) -> list[exp.Expression]:
     return [exp.Tuple(expressions=[part.copy() for part in parts])]
 
 
+#: Yes/no nodes sqlglot does not type: a comparison, AND/OR, NOT, SIGN, and the
+#: list operators && (list_has_any), @> and <@.
+_FLAG_NODES: tuple[type, ...] = (
+    exp.Predicate,
+    exp.Connector,
+    exp.Not,
+    exp.Sign,
+    exp.ArrayOverlaps,
+    exp.ArrayContainsAll,
+)
+
+
 def _is_flag(node: exp.Expression) -> bool:
     """True for a yes/no value: a comparison, a connector, NOT, SIGN, or an
     expression typed BOOLEAN (a column, a cast, contains(), regexp_matches())."""
-    if isinstance(node, (exp.Predicate, exp.Connector, exp.Not, exp.Sign)):
+    if isinstance(node, _FLAG_NODES):
         return True
     kind = node.type
     if isinstance(kind, exp.DataType) and kind.is_type(exp.DataType.Type.BOOLEAN):
@@ -396,15 +407,16 @@ def _engine_name(node: exp.Func) -> str:
 
 @functools.lru_cache(maxsize=1)
 def _boolean_functions() -> frozenset[str]:
-    """Scalar functions DuckDB types BOOLEAN in every overload. sqlglot mistypes
-    some (list_contains reads as ARRAY), so the engine's own catalog decides."""
+    """Scalar functions DuckDB types BOOLEAN (or BOOLEAN[] for a list argument,
+    as json_exists) in every overload. sqlglot mistypes some (list_contains
+    reads as ARRAY), so the engine's own catalog decides."""
     import duckdb
 
     con = duckdb.connect(":memory:")
     try:
         rows = con.execute(
             "SELECT function_name FROM duckdb_functions() WHERE function_type = 'scalar' "
-            "GROUP BY function_name HAVING bool_and(return_type = 'BOOLEAN')"
+            "GROUP BY function_name HAVING bool_and(return_type IN ('BOOLEAN', 'BOOLEAN[]'))"
         ).fetchall()
     finally:
         con.close()
