@@ -65,7 +65,12 @@ ONTOLOGY_MODE = "ontology_plan"
 PLAN_SOURCES = frozenset({"ontology_plan", "bind_plan", "other"})
 PLAN_ORIGIN_GENERATE_SQL = "generate_sql"
 PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
-PLAN_ORIGINS = frozenset({PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING})
+#: DMS's own multi-grain compile (where-paths + importance). Served in place of
+#: any generate SQL, so it never carries the generate origin or a served model.
+PLAN_ORIGIN_ONTOLOGY_COMPILE = "ontology_compile"
+PLAN_ORIGINS = frozenset(
+    {PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING, PLAN_ORIGIN_ONTOLOGY_COMPILE}
+)
 INSIGHTS_REACHED = "insights_reached"
 INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
 #: Product-lane Insights bound. Not CortexClient's 120s contract timeout and
@@ -1420,6 +1425,7 @@ __all__ = [
     "ONTOLOGY_MODE",
     "PLAN_ORIGINS",
     "PLAN_ORIGIN_GENERATE_SQL",
+    "PLAN_ORIGIN_ONTOLOGY_COMPILE",
     "PLAN_ORIGIN_ONTOLOGY_RANKING",
     "PLAN_SOURCES",
     "SERVED_LEG_KEYS",

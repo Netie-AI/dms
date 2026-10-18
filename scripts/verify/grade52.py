@@ -24,6 +24,9 @@ are rule/compile, including when ``served_model`` is set. One exception:
 ``plan_source=ontology_plan`` beside a model-SQL ``plan_origin`` is not a
 compile claim. Cortex stamps ``ontology_plan`` only when a model wrote the
 SQL, and DMS stamps it on every generative answer, so the origin decides.
+Stamps are not proof: AI also needs the served ``sql_used`` to equal the SQL
+Cortex's generate returned, which only an armed capture records. A model
+claim without that proof is unattributed.
 The paths line counts AI model SQL, rule-served (L0, L1, compile, oracle),
 and unattributed, once for correct answers and once for every served answer.
 The split line puts every case in one of ai, rule, unattributed, or abstain.
@@ -41,8 +44,8 @@ OpenVault-issued ``CORTEX_API_KEY`` (not the demo viewer key), ``CORTEX_SHA``
 ``OPENVAULT_URL`` plus ``DMS_OV_SERVICE_TOKEN``. It never falls back. It
 exits non-zero with a named reason when a setting is missing, Cortex is
 unreachable, Cortex says FreeRoute is unarmed, the mint fails, a question
-carries a stub/placeholder answer or an unarmed Insights reason, or no
-question reached Insights generate.
+carries a stub/placeholder answer or an unarmed Insights reason, or no answer
+was served from the model's own SQL (``split ai=0``).
 
 The risk line states what a score supports: per route, served answers with
 gold, how many were wrong, and the exact one-sided 95 percent upper bound on
@@ -636,8 +639,10 @@ def _compile_source(source: str, origin: str) -> bool:
     ``ontology_plan`` beside a model-SQL ``plan_origin`` is not that claim.
     Cortex stamps ``plan_source=ontology_plan`` only when a model wrote the
     SQL (its Insights law), and DMS stamps it on every generative answer,
-    model SQL and ranking compile alike. ``plan_origin`` is the stamp that
-    tells them apart: DMS sets ``ontology_ranking`` when it compiled.
+    model SQL and DMS compile alike. ``plan_origin`` is the stamp that tells
+    them apart: DMS sets ``ontology_ranking`` or ``ontology_compile`` when it
+    compiled. The stamps are still not proof: ``serve_path`` also needs the
+    served SQL to be the model's SQL.
     """
     if source == "ontology_plan" and origin in _AI_STAMPS:
         return False
@@ -671,18 +676,44 @@ def stamp_contradiction(env: Mapping[str, Any]) -> bool:
     )
 
 
-def serve_path(env: Mapping[str, Any]) -> str:
-    """Path that served the answer. Only the envelope's own stamps.
+def model_sql_served(env: Mapping[str, Any], model_sql: str | None) -> bool:
+    """The served ``sql_used`` is the model's own SQL, by the product's equality.
+
+    ``sql_byte_equal`` is the comparison the extract loop credits a model
+    with. No model SQL, or none served, is never a match.
+    """
+    served = env.get("sql_used") if isinstance(env, Mapping) else None
+    if not isinstance(served, str) or not isinstance(model_sql, str):
+        return False
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+    from dms_executor.sql_currency import sql_byte_equal
+
+    return sql_byte_equal(served, model_sql, SERVING_DIALECT)
+
+
+def serve_path(env: Mapping[str, Any], model_sql: str | None = None) -> str:
+    """Path that served the answer, from the envelope's stamps and the model's SQL.
 
     ``L0``, ``L1``, ``compile``, and ``oracle`` are rule-served. An ontology
     compile stamp (``ontology_ranking``, ``ontology_plan``, ``ontology_compile``)
     is rule/compile, and a ``served_model`` beside it does not change that.
     AI model SQL needs a model-SQL stamp and a non-empty ``served_model`` that
-    do not disagree with a rule stamp. Missing or contradictory stamps are
+    do not disagree with a rule stamp, and the served ``sql_used`` must be
+    ``model_sql``: what Cortex's generate returned. Stamps that claim a model
+    without that proof are unattributed, so a DMS compile served under stale
+    model stamps is never AI. Missing or contradictory stamps are
     unattributed, and a model name alone is never AI. ``plan_source`` of
     ``ontology_plan`` under a model-SQL ``plan_origin`` is not a compile
     claim (see ``_compile_source``).
     """
+    path = _stamped_path(env)
+    if path == "ai" and not model_sql_served(env, model_sql):
+        return "unattributed"
+    return path
+
+
+def _stamped_path(env: Mapping[str, Any]) -> str:
+    """What the envelope's own stamps claim. Not proof of a model answer."""
     if not isinstance(env, Mapping):
         return "unattributed"
     badge = _stamp_text(env, "badge").lower()
@@ -727,11 +758,11 @@ def path_group(path: str) -> str:
 SERVED_ROUTES = ("ai", "rule", "unattributed", "abstain")
 
 
-def served_route(env: Mapping[str, Any]) -> str:
+def served_route(env: Mapping[str, Any], model_sql: str | None = None) -> str:
     """ai, rule, unattributed, or abstain. An abstain is not a served path."""
     if not isinstance(env, Mapping) or _is_abstain(env):
         return "abstain"
-    return path_group(serve_path(env))
+    return path_group(serve_path(env, model_sql))
 
 
 def grade_case(
@@ -743,11 +774,13 @@ def grade_case(
     as_of: str,
     trap: bool = False,
     gold_broken: bool = False,
+    model_sql: str | None = None,
 ) -> dict[str, Any]:
     """One case. Traps are refusals. Gold-broken is an abstain with no oracle.
 
     A served answer on a gold-broken case is wrong. ``gold is None`` without
-    ``gold_broken`` is empty gold (no certified rows).
+    ``gold_broken`` is empty gold (no certified rows). ``model_sql`` is what
+    Cortex's generate returned for this case; only an armed capture has it.
     """
     badge = env.get("badge")
     route = env.get("route")
@@ -756,8 +789,8 @@ def grade_case(
     base = {
         "route": route,
         "badge": badge,
-        "serve_path": serve_path(env),
-        "served_route": served_route(env),
+        "serve_path": serve_path(env, model_sql),
+        "served_route": served_route(env, model_sql),
         "stamp_contradiction": stamp_contradiction(env),
         "answered": not _is_abstain(env),
         "abstain_code": code,
@@ -1122,11 +1155,13 @@ def grade_envelopes(
         raise SystemExit(f"pack size {len(questions)} != 52")
     flagged = set(pack_gold_served_ids(questions, oracles))
     by_id: dict[str, Any] = {}
+    model_sql_by_id: dict[str, str | None] = {}
     for item in envelopes:
         key = str(item.get("id"))
         if key in by_id:
             raise SystemExit(f"grade52: duplicate envelope for {key}")
         by_id[key] = item.get("env")
+        model_sql_by_id[key] = _record_model_sql(item)
     folder = warehouse_dir or Path(tempfile.mkdtemp(prefix="grade52-"))
     con, as_of, _path = _open_warehouse(folder)
     cases: list[dict[str, Any]] = []
@@ -1153,6 +1188,7 @@ def grade_envelopes(
                 as_of=as_of,
                 trap=trap,
                 gold_broken=broken,
+                model_sql=model_sql_by_id.get(qid),
             )
             row["id"] = qid
             row["pack_gold_served"] = qid in flagged
@@ -1456,6 +1492,13 @@ def paths_line(counts: Mapping[str, Any]) -> str:
     )
 
 
+def _record_model_sql(item: Mapping[str, Any]) -> str | None:
+    """The model SQL an armed capture recorded for one case, or None."""
+    served = item.get("served") if isinstance(item, Mapping) else None
+    raw = served.get("model_sql") if isinstance(served, Mapping) else None
+    return raw if isinstance(raw, str) and raw.strip() else None
+
+
 def served_paths_line(envelopes: Sequence[Mapping[str, Any]]) -> str:
     """Served-answer paths when the pack is not a value score."""
     counts = _zero_paths()
@@ -1463,7 +1506,7 @@ def served_paths_line(envelopes: Sequence[Mapping[str, Any]]) -> str:
         env = item.get("env") if isinstance(item, Mapping) else None
         if not isinstance(env, Mapping) or _is_abstain(env):
             continue
-        counts[path_group(serve_path(env))] += 1
+        counts[path_group(serve_path(env, _record_model_sql(item)))] += 1
     return (
         f"paths served ai={counts['ai']} rule={counts['rule']} "
         f"unattributed={counts['unattributed']}"
@@ -1924,26 +1967,32 @@ def armed_violation(record: Mapping[str, Any], stub: StubSignatures) -> str | No
 
 
 def armed_check(records: Sequence[Mapping[str, Any]]) -> None:
-    """Refuse an armed grade holding any non-live answer, or one where no model served.
+    """Refuse an armed grade holding any non-live answer, or one with no ai answer.
 
-    A run where Cortex never reported a model serving a generate call did not
-    measure the AI lane, whatever its numbers say.
+    A run where no answer was served from the model's own SQL (``split ai=0``)
+    did not measure the AI lane, whatever its other numbers say. A model that
+    was called but whose SQL DMS replaced or refused does not count.
     """
     _bootstrap()
     stub = stub_signatures()
+    ai = 0
     for record in records:
         why = armed_violation(record, stub)
         if why:
             raise _fail(str(record.get("id")), why)
-    if not any(record["served"].get("model_served") is True for record in records):
+        ai += served_route(record["env"], _record_model_sql(record)) == "ai"
+    if ai == 0:
         raise SystemExit(
-            "grade52 armed: FAIL ai_lane_not_reached: Cortex reported no model serving "
-            "any Insights generate call"
+            "grade52 armed: FAIL ai_lane_not_reached: no answer was served from model SQL "
+            "(split ai=0); the AI lane was not measured"
         )
 
 
-def _model_served(payload: Mapping[str, Any]) -> bool:
-    """Cortex stamped a served model on this generate answer or one of its legs."""
+def _model_reported(payload: Mapping[str, Any]) -> bool:
+    """Cortex stamped a served model on this generate answer or one of its legs.
+
+    A model was called. It says nothing about whether its SQL was served.
+    """
     if str(payload.get("served_model") or "").strip():
         return True
     legs = payload.get("generate_legs")
@@ -1960,27 +2009,27 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
     model_sql: str | None = None
     fail: str | None = None
     calls = 0
-    served = False
+    reported = False
     for payload in payloads:
         if not isinstance(payload, dict):
             continue
         calls += 1
-        served = served or _model_served(payload)
+        reported = reported or _model_reported(payload)
         sql = str(payload.get("query_sql") or "").strip() or insights_query_sql(payload)
         if sql:
             model_sql = sql
         fail = fail or insights_fail_reason(payload)
     rows = env.get("rows")
     return {
-        "route": served_route(env),
-        "serve_path": serve_path(env),
+        "route": served_route(env, model_sql),
+        "serve_path": serve_path(env, model_sql),
         "model_sql": model_sql,
         "sql_used": env.get("sql_used"),
         "row_count": len(rows) if isinstance(rows, list) else None,
         "text": env.get("text"),
         "served_model": env.get("served_model"),
         "insights_calls": calls,
-        "model_served": served,
+        "model_reported": reported,
         "insights_fail": fail,
     }
 
@@ -2712,16 +2761,27 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: ontology_ranking with a model was not rule/compile")
     if serve_path({"ladder_rung": "ontology_compile", "served_model": "some-model"}) != "compile":
         raise SystemExit("self-test: ontology_compile with a model was not compile")
-    model_sql = {
+    model_answer = {
         "badge": "L2_VALIDATED",
         "plan_origin": "generate_sql",
         "plan_source": "ontology_plan",
         "served_model": "some-model",
+        "sql_used": "SELECT sku FROM inventory",
     }
-    if serve_path(model_sql) != "ai" or stamp_contradiction(model_sql):
-        raise SystemExit("self-test: model SQL under Cortex's ontology_plan stamp was not AI")
-    if serve_path({**model_sql, "served_model": ""}) == "ai":
+    wrote = "SELECT sku FROM inventory"
+    if serve_path(model_answer, wrote) != "ai" or stamp_contradiction(model_answer):
+        raise SystemExit("self-test: served model SQL under Cortex's ontology_plan was not AI")
+    if serve_path(model_answer) == "ai":
+        raise SystemExit("self-test: model stamps without the model's SQL were called AI")
+    # A DMS compile served under stale model stamps: the model's SQL never ran.
+    if serve_path(model_answer, "SELECT sku, SUM(qty) AS q FROM inventory GROUP BY sku") == "ai":
+        raise SystemExit("self-test: a DMS compile under model stamps was called AI")
+    if serve_path({**model_answer, "served_model": ""}, wrote) == "ai":
         raise SystemExit("self-test: model SQL with no served model was called AI")
+    compiled = {**model_answer, "plan_origin": "ontology_compile"}
+    compiled.pop("served_model")
+    if serve_path(compiled, wrote) != "compile":
+        raise SystemExit("self-test: a DMS multi-grain compile was not rule/compile")
     stub = StubSignatures(
         texts=frozenset({"Recorded answer."}), ids=frozenset({"aud-x"}), sql=frozenset()
     )

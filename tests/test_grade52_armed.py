@@ -152,20 +152,16 @@ def _cortex(
 
     def generate(body: dict[str, Any], _headers: dict[str, str]) -> tuple[int, Any]:
         sql = model(str(body.get("question") or "").strip()) if model else None
-        base = {
-            "ok": True,
-            "phase": "generate",
-            "status": "ABSTAIN",
-            "values": [],
+        base = {"ok": True, "phase": "generate", "status": "ABSTAIN", "values": []}
+        if not sql:
+            # Cortex's stamp_api fills served_* only beside model SQL.
+            return 200, {**base, "generative": {"ok": False, "climb": {"final": "ABSTAIN"}}}
+        return 200, {
+            **base,
             "served_provider": "fake-provider",
             "served_model": "fake-model",
             "served_local": False,
             "model_called": True,
-        }
-        if not sql:
-            return 200, {**base, "generative": {"ok": False, "climb": {"final": "ABSTAIN"}}}
-        return 200, {
-            **base,
             "plan_source": "ontology_plan",
             "sql_used": sql,
             "generative": {"ok": True, "valid": True, "sql": sql, "climb": {"final": "COMPLETE"}},
@@ -407,7 +403,7 @@ def _relabelled(tmp_path: Path, mode: str) -> Path:
         if not line.strip():
             continue
         record = json.loads(line)
-        record["served"] = {"model_served": True, "insights_fail": None, "model_sql": None}
+        record["served"] = {"insights_fail": None, "model_sql": None}
         body.append(json.dumps(record))
     path = tmp_path / f"{mode}.jsonl"
     path.write_text(json.dumps(header) + "\n" + "\n".join(body) + "\n", encoding="utf-8")
@@ -459,17 +455,26 @@ def test_placeholder_answer_from_a_live_cortex_fails_the_armed_run(
     _no_score(capsys.readouterr().out)
 
 
-def test_a_run_that_never_reaches_a_model_is_not_armed(
+@pytest.mark.parametrize("generate", ["absent", "never_writes_sql"])
+def test_an_armed_run_with_no_ai_answer_is_refused(
+    generate: str,
     stack: Callable[..., tuple[_Server, _Server]],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Cortex is up and says armed, but Insights generate is not there: no AI lane ran."""
-    cortex, vault = stack(insights=False)
+    """Cortex is up and armed, but no answer is served from model SQL: split ai=0.
+
+    ``absent``: generate is not there (404). ``never_writes_sql``: generate
+    answers every call without SQL. Either way the rule lanes still answer
+    real questions, and that is not a measurement of the AI lane.
+    """
+    if generate == "absent":
+        cortex, vault = stack(insights=False)
+    else:
+        cortex, vault = stack(model=lambda _question: None)
     _arm(monkeypatch, cortex, vault)
-    with pytest.raises(SystemExit, match="FAIL ai_lane_not_reached"):
+    with pytest.raises(SystemExit, match=r"FAIL ai_lane_not_reached: .*split ai=0"):
         grade52.main(["--armed", "--layout", "full-tree"])
-    # Generate was asked and answered 404 every time: no model served anything.
     assert cortex.posts("/v1/insights") >= 1
     assert cortex.posts("/v1/contract/submit") >= 1
     _no_score(capsys.readouterr().out)
@@ -561,22 +566,148 @@ def test_armed_run_counts_the_ai_route_on_a_fake_http_cortex(
 
 
 
-def test_cortex_model_sql_stamp_is_the_ai_route() -> None:
-    """Cortex stamps plan_source=ontology_plan only when a model wrote the SQL.
+def test_ai_needs_the_model_stamps_and_the_models_own_sql() -> None:
+    """AI is the envelope's model stamps plus served SQL equal to the model's SQL.
 
-    Beside DMS's generate_sql origin that is AI, not a compile. The ranking
-    compile (origin ontology_ranking) stays compile even with a model name.
+    Cortex stamps plan_source=ontology_plan only when a model wrote the SQL,
+    so beside generate_sql it is not a compile claim. The stamps alone are not
+    proof: a DMS compile served under stale model stamps is never AI.
     """
+    wrote = "SELECT sku FROM inventory"
     model = {
         "badge": "L2_VALIDATED",
         "plan_origin": "generate_sql",
         "plan_source": "ontology_plan",
         "served_model": "fake-model",
+        "sql_used": wrote,
     }
-    assert grade52.serve_path(model) == "ai"
+    assert grade52.serve_path(model, wrote) == "ai"
+    assert grade52.served_route(model, wrote) == "ai"
     assert grade52.stamp_contradiction(model) is False
-    assert grade52.served_route(model) == "ai"
-    assert grade52.serve_path({**model, "plan_origin": "ontology_ranking"}) == "compile"
-    assert grade52.serve_path({**model, "served_model": ""}) == "unattributed"
-    assert grade52.serve_path({k: v for k, v in model.items() if k != "plan_origin"}) == "compile"
-    assert grade52.served_route({**model, "badge": "ABSTAIN", "abstained": True}) == "abstain"
+    # Same stamps, no model SQL in hand: not proven.
+    assert grade52.serve_path(model) == "unattributed"
+    # Same stamps over SQL the model did not write (a0c01504's multi-grain envelope).
+    compile_sql = "SELECT sku, SUM(quantity_kg) AS q FROM inventory GROUP BY sku"
+    assert grade52.serve_path({**model, "sql_used": compile_sql}, wrote) == "unattributed"
+    # The envelope DMS now stamps on its own multi-grain compile.
+    compiled = {k: v for k, v in model.items() if k != "served_model"}
+    compiled.update(plan_origin="ontology_compile", sql_used=compile_sql)
+    assert grade52.serve_path(compiled, wrote) == "compile"
+    assert grade52.served_route(compiled, wrote) == "rule"
+    assert grade52.serve_path({**model, "plan_origin": "ontology_ranking"}, wrote) == "compile"
+    assert grade52.serve_path({**model, "served_model": ""}, wrote) == "unattributed"
+    no_origin = {k: v for k, v in model.items() if k != "plan_origin"}
+    assert grade52.serve_path(no_origin, wrote) == "compile"
+    abstained = {**model, "badge": "ABSTAIN", "abstained": True}
+    assert grade52.served_route(abstained, wrote) == "abstain"
+
+
+_FINANCE_SPACE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+# Names two grains (sku, supplier), so DMS serves its own multi-grain compile.
+_TWO_GRAIN_QUESTION = "stock value by SKU and supplier"
+# What the fake model writes for it: one grain, never the SQL that is served.
+_ONE_GRAIN_MODEL_SQL = "SELECT sku, SUM(quantity_kg) AS model_qty FROM inventory GROUP BY sku"
+
+
+def _product_client(cortex: _Server, vault: _Server, tmp_path: Path) -> Any:
+    """This checkout's app on the product CortexClient and minter, over HTTP to the fakes."""
+    from cortex_client import CortexClient
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.manifest import ManifestMinter
+    from fastapi.testclient import TestClient
+
+    client = CortexClient(cortex.url, timeout=60.0, api_key=_KEY)
+    minter = ManifestMinter(openvault_url=vault.url)
+    minter.fetch_intermediate()
+    warehouse = ensure_demo_warehouse(tmp_path / "dms.duckdb")
+    app = create_app()
+    app.state.ask_service = Executor(cortex=client, minter=minter, warehouse_path=warehouse)
+    app.state.cortex = client
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+        cortex_url=cortex.url,
+        cortex_api_key=_KEY,
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    return TestClient(app)
+
+
+def test_a_dms_multi_grain_compile_is_never_graded_ai(
+    stack: Callable[..., tuple[_Server, _Server]],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Cortex returns model SQL, the question names two grains, DMS serves its own compile.
+
+    Through POST /v1/chat/ask. The customer envelope names the compile and no
+    model, and the grade is rule. The model's SQL never ran. At a0c01504 the
+    envelope said plan_origin=generate_sql with Cortex's served_model, and
+    the grader called it ai.
+    """
+    cortex, vault = stack(model=lambda _question: _ONE_GRAIN_MODEL_SQL)
+    _arm(monkeypatch, cortex, vault)
+    monkeypatch.setenv("CORTEX_URL", cortex.url)
+    res = _product_client(cortex, vault, tmp_path).post(
+        "/v1/chat/ask",
+        json={
+            "question": _TWO_GRAIN_QUESTION,
+            "space_id": _FINANCE_SPACE,
+            "session_id": "ses_two_grain",
+        },
+    )
+    assert res.status_code == 200
+    env = res.json()
+    assert cortex.posts("/v1/insights") >= 1  # the model was asked and answered SQL
+
+    # The answer a customer reads: rows and text from DMS's compile.
+    assert env["abstained"] is False and env["badge"] == "L2_VALIDATED"
+    rows = env["rows"]
+    assert rows and {"product_sku", "supplier_supplier_id"} <= set(rows[0])
+    text = str(env["text"])
+    assert text.startswith(f"Found {len(rows)} row(s).")
+    assert str(rows[0]["product_sku"]) in text and str(rows[0]["supplier_supplier_id"]) in text
+    assert any("ontology_compile:where+importance" in str(a) for a in env["assumptions"])
+    from dms_executor.sql_currency import sql_byte_equal
+
+    assert not sql_byte_equal(env["sql_used"], _ONE_GRAIN_MODEL_SQL, "duckdb")
+
+    # Its provenance: the compile, credited to no model.
+    assert env["plan_origin"] == "ontology_compile"
+    assert env["plan_source"] == "ontology_plan"
+    for key in ("served_model", "served_provider", "served_local"):
+        assert key not in env
+    assert env["served_attribution"] == "missing"
+    assert grade52.model_sql_served(env, _ONE_GRAIN_MODEL_SQL) is False
+
+    # The grade: rule, never ai, with the model's SQL in hand.
+    assert grade52.serve_path(env, _ONE_GRAIN_MODEL_SQL) == "compile"
+    assert grade52.served_route(env, _ONE_GRAIN_MODEL_SQL) == "rule"
+    case = grade52.grade_case(
+        gold=rows,
+        gold_sql=None,
+        env=env,
+        served_rows=rows,
+        as_of="",
+        model_sql=_ONE_GRAIN_MODEL_SQL,
+    )
+    assert case["bucket"] == "CORRECT"
+    assert (case["serve_path"], case["served_route"]) == ("compile", "rule")
+    risk = grade52.risk_counts([case])
+    assert risk["ai"] == {"served": 0, "wrong": 0} and risk["rule"]["served"] == 1
+
+    # Defence in depth: the same answer under a0c01504's stale model stamps.
+    stale = {
+        **env,
+        "plan_origin": "generate_sql",
+        "served_model": "fake-model",
+        "served_provider": "fake-provider",
+        "served_attribution": "reported",
+    }
+    assert grade52.serve_path(stale, _ONE_GRAIN_MODEL_SQL) == "unattributed"
+    # Control: those stamps over SQL the model did write are ai.
+    assert grade52.serve_path(stale, env["sql_used"]) == "ai"
