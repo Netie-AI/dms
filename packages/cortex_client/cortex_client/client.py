@@ -112,7 +112,13 @@ class CortexClient:
         self.close()
 
     def ask(self, req: AskRequest) -> AskResponse:
-        body = GenAskRequest.from_dict(req.model_dump(mode="json"))
+        data = req.model_dump(mode="json")
+        # 1.5.0 keys go on the wire only when set, so an ask without them is
+        # the same body a 1.2.0 client sent.
+        for key in ("dms_payload", "plan_sql_confirm"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        body = GenAskRequest.from_dict(data)
         parsed = ask_api.sync(client=self._client, body=body)
         if parsed is None:
             raise RuntimeError("ask: empty response")
