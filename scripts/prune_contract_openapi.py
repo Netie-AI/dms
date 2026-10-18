@@ -1,4 +1,7 @@
-"""Prune vendored OpenAPI to contract paths only for openapi-python-client."""
+"""Prune vendored OpenAPI to contract paths only for openapi-python-client.
+
+python scripts/prune_contract_openapi.py [VERSION]   # default: CURRENT_VERSION
+"""
 
 from __future__ import annotations
 
@@ -8,6 +11,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+#: The contract line DMS generates its client from. Older specs stay vendored.
+CURRENT_VERSION = "1.5.0"
 REF_RE = re.compile(r"#/components/schemas/(.+)$")
 
 
@@ -79,7 +84,7 @@ def prune(src: dict) -> dict:
         "openapi": src.get("openapi", "3.1.0"),
         "info": {
             "title": "Cortex Contract API",
-            "version": src.get("info", {}).get("version", "1.2.0"),
+            "version": src.get("info", {}).get("version", CURRENT_VERSION),
             "description": "Pruned generation surface — five contract operationIds only.",
         },
         "paths": paths2,
@@ -87,9 +92,11 @@ def prune(src: dict) -> dict:
     }
 
 
-def main() -> int:
-    src_path = ROOT / "contract" / "openapi-1.2.0.json"
-    dest = ROOT / "contract" / "openapi-1.2.0.gen.json"
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    version = args[0] if args else CURRENT_VERSION
+    src_path = ROOT / "contract" / f"openapi-{version}.json"
+    dest = ROOT / "contract" / f"openapi-{version}.gen.json"
     src = json.loads(src_path.read_text(encoding="utf-8"))
     out = prune(src)
     dest.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
