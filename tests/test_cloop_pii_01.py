@@ -5,8 +5,9 @@ is fed back to the model for a retry. DuckDB echoes the offending cell value
 in cast and constraint errors. The normal answer path masks a personal column
 by its name, so the loop must not hand the same value out through the ask
 envelope, the loop record, the pipeline-failure line, or the ``sql_feedback``
-sent to Cortex. The error is reduced to a typed code: exception class plus a
-column of a granted table when the message names one.
+sent to Cortex. That holds for an execution error and for a checker EXPLAIN
+error alike. The error is reduced to a typed code: exception class plus a
+column the SQL itself wrote, on a table it cites, when the message names one.
 
 All data below is synthetic. Table and column names belong in this file.
 """
@@ -79,8 +80,11 @@ class _Cortex:
     lake: Path | None = None
     feedback: list[Any] = field(default_factory=list)
     asks: list[AskRequest] = field(default_factory=list)
+    #: Every request body sent to the model lane: the question and every kwarg.
+    requests: list[dict[str, Any]] = field(default_factory=list)
 
     def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        self.requests.append({"question": question, **kwargs})
         self.feedback.append(kwargs.get("sql_feedback"))
         idx = min(len(self.feedback) - 1, len(self.script) - 1)
         return {
@@ -367,3 +371,120 @@ def test_typed_db_error_keeps_class_and_one_granted_column_only(
     assert got == expected
     for leaked in ("Tan Wei Ming", "1988-03-14", "SUP-77", "Kuala Lumpur", "K1234567X"):
         assert leaked not in got
+
+
+# EXPLAIN fails before any row is read, and DuckDB can still print cell values
+# while it binds. A binder error renders an ENUM column's type with its whole
+# member list. A PIVOT without an IN list binds on the ON column's distinct
+# values (the reviewer's repro on 6b1f4ab; main now refuses it as two
+# statements before EXPLAIN). The checker reason is the error class plus a
+# column the SQL itself wrote, nothing more.
+_ENUM = "ENUM('Tan Wei Ming', 'Siti Aminah')"
+_EXPLAIN_CASES = [
+    (
+        "enum_aggregate",
+        _ENUM,
+        "SELECT sum(contact_name) FROM suppliers",
+        "checker:explain:BinderException:contact_name",
+    ),
+    (
+        "enum_operator",
+        _ENUM,
+        "SELECT supplier_id, contact_name + 1 FROM suppliers",
+        "checker:explain:BinderException",
+    ),
+    (
+        "pivot_binder",
+        "VARCHAR",
+        "SELECT nope FROM (PIVOT suppliers ON contact_name USING count(*))",
+        "checker:multi_statement",
+    ),
+]
+
+
+@pytest.mark.parametrize(("case", "ddl", "sql", "reason"), _EXPLAIN_CASES)
+def test_explain_error_value_never_reaches_the_model_request_or_the_envelope(
+    case: str,
+    ddl: str,
+    sql: str,
+    reason: str,
+    lake: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secrets = ["Tan Wei Ming", "Siti Aminah"]
+    _add_column(lake, "contact_name", ddl, "Tan Wei Ming")
+    cortex = _Cortex(script=[sql])
+    env = _chat_ask(lake, minter, cortex, monkeypatch)
+    assert_envelope_valid(env)
+    assert cortex.asks == [], "the envelope must come from the loop, not a contract miss"
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert env["values"] == []
+    assert isinstance(env["text"], str) and env["text"].strip()
+    assert env["loop"], "the loop record must exist"
+    _assert_clean(env["text"], secrets, where=f"{case} text")
+    _assert_clean(
+        json.dumps(cortex.requests, default=str), secrets, where=f"{case} model request"
+    )
+    _assert_clean(json.dumps(env, default=str), secrets, where=f"{case} envelope")
+    assert env["loop"][0]["outcome"] == reason
+    if reason.startswith("checker:explain:"):
+        # Retryable: the typed code is what the model hears back.
+        sent = [fb for fb in cortex.feedback if fb]
+        assert sent, "the checker reason must reach compute_insights as sql_feedback"
+        assert sent[0]["reason"] == reason
+        assert reason in env["loop"][1]["prompt"]
+
+
+def test_retry_after_an_explain_error_recovers_and_carries_no_value(
+    lake: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secrets = ["Tan Wei Ming", "Siti Aminah"]
+    _add_column(lake, "contact_name", _ENUM, "Tan Wei Ming")
+    cortex = _Cortex(script=["SELECT sum(contact_name) FROM suppliers", _GOOD_SQL], lake=lake)
+    env = _chat_ask(lake, minter, cortex, monkeypatch)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert {row["supplier_id"] for row in env["rows"]} >= {"SUP-01", "SUP-02"}
+    assert "SUP-01" in env["text"]
+    _assert_clean(json.dumps(env, default=str), secrets, where="recovered envelope")
+    _assert_clean(json.dumps(cortex.requests, default=str), secrets, where="model request")
+    assert cortex.feedback[1]["reason"] == "checker:explain:BinderException:contact_name"
+    assert env["loop"][0]["outcome"] == "checker:explain:BinderException:contact_name"
+    assert env["loop"][1]["outcome"] == "served"
+
+
+def test_a_value_that_spells_a_column_the_sql_did_not_write_is_not_named(lake: Path) -> None:
+    # The cell value is the name of another suppliers column. A code may name
+    # only a column the SQL wrote, so the value does not ride out as a name.
+    _add_column(lake, "contact_name", "VARCHAR", "risk_score")
+    rows, err = run_readonly("SELECT strptime(contact_name, '%Y') FROM suppliers", lake)
+    assert rows is None
+    assert err == "InvalidInputException"
+    rows, err = run_readonly("SELECT CAST(contact_name AS INTEGER) FROM suppliers", lake)
+    assert rows is None
+    assert err == "ConversionException:contact_name"
+
+
+def test_cited_columns_are_written_by_the_sql_on_the_tables_it_cites(lake: Path) -> None:
+    from dms_executor.sql_loop import cited_columns
+
+    _add_column(lake, "contact_name", "VARCHAR", "Tan Wei Ming")
+    con = duckdb.connect(str(lake), read_only=True)
+    try:
+        got = cited_columns(con, "SELECT CAST(contact_name AS INTEGER) FROM suppliers")
+        assert got == ["contact_name"]
+        assert cited_columns(con, "SELECT country FROM main.suppliers") == ["country"]
+        # Another schema of the same table name is not this table.
+        assert cited_columns(con, "SELECT country FROM other.suppliers") == []
+        # A CTE named like a table is not that table.
+        assert cited_columns(
+            con, "WITH suppliers AS (SELECT 1 AS country) SELECT country FROM suppliers"
+        ) == []
+        # A column of the table that the SQL never wrote is not offered.
+        assert "supplier_name" not in cited_columns(con, "SELECT country FROM suppliers")
+        assert cited_columns(con, "SELEC nope FROM") == []
+    finally:
+        con.close()

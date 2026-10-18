@@ -106,9 +106,11 @@ from dms_executor.sql_loop import (
     EMPTY_NOTE,
     EXTRACT_DIALECT,
     apply_sql_credit,
+    cited_columns,
     extract_dialect,
     loop_entry,
     run_model_loop,
+    typed_db_error,
 )
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -720,16 +722,20 @@ def _refusal_before_explain(con: Any, sql: str) -> str | None:
     return None
 
 
-def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:
-    """Exception text from EXPLAIN. The checker reason stays the type name."""
+def _explain_error_code(sql: str, warehouse: Path | None) -> str | None:
+    """Typed code for an EXPLAIN error: ``Class`` or ``Class:column``.
+
+    Never the DuckDB message. A binder error prints an ENUM column's member
+    list, and a PIVOT binds on its column's distinct values, so the message
+    can carry cell values. The column, when named, is one the SQL wrote.
+    """
     if warehouse is None or not Path(warehouse).is_file():
         return None
     con = connect_serving(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
-        text = str(exc).strip()
-        return text or None
+        return typed_db_error(exc, cited_columns(con, sql))
     finally:
         con.close()
     return None
@@ -1231,9 +1237,10 @@ def _run_extract_loop(
             return "multi_statement"
         why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
         if why and why.startswith("explain:"):
-            detail = _explain_error_text(sql, warehouse)
-            if detail:
-                why = f"{why}: {detail}"
+            # A typed code reaches the model, never the database message.
+            code = _explain_error_code(sql, warehouse)
+            if code:
+                why = f"explain:{code}"
         if why:
             return why
         if declared is not None:

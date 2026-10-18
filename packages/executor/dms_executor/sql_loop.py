@@ -117,13 +117,14 @@ _CODE_COLUMN = re.compile(r"[\w ]{1,64}")
 def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
     """Reduce a database error to ``Class`` or ``Class:column``, never the message.
 
-    DuckDB echoes the offending cell value in cast and constraint errors, and
-    a file error echoes a path. The message body therefore never leaves the
-    run. ``columns`` are the columns of the granted tables the statement cites.
-    The column is named only when exactly one of them appears in the message,
-    and the name written is the schema spelling, not text copied from the
-    message. A message that names none, or several (a binder candidate list),
-    names none.
+    DuckDB echoes the offending cell value in cast and constraint errors, an
+    ENUM member list in binder errors, and a file error echoes a path. The
+    message body therefore never leaves the run. ``columns`` come from
+    ``cited_columns``: names the statement itself wrote, on the tables it
+    cites. The column is named only when exactly one of them appears in the
+    message, and the name written is the schema spelling, not text copied
+    from the message. A message that names none, or several (a binder
+    candidate list), names none.
     """
     name = type(exc).__name__
     code = name if _CODE_NAME.fullmatch(name) else "Error"
@@ -140,24 +141,44 @@ def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
     return code
 
 
-def _granted_columns(con: Any, sql: str) -> list[str]:
-    """Columns of the tables ``sql`` cites. The checker has already granted them."""
+def cited_columns(con: Any, sql: str) -> list[str]:
+    """Columns ``sql`` itself writes, on the tables it cites, in schema spelling.
+
+    A cell value can spell a column name. Offering only names the statement
+    wrote keeps such a value from riding out of ``typed_db_error`` as a name.
+    A CTE name is not a table, and a schema-qualified table matches only its
+    own schema. Anything that does not parse offers nothing.
+    """
     try:
         from sqlglot import exp, parse_one
 
         tree = parse_one(sql, read=EXTRACT_DIALECT)
-        tables = sorted(
-            {t.name.lower() for t in tree.find_all(exp.Table) if t.name}
-        )
-        if not tables:
+        ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
+        written = {c.name.lower() for c in tree.find_all(exp.Column) if c.name}
+        cited = {
+            (t.db.lower(), t.name.lower())
+            for t in tree.find_all(exp.Table)
+            if t.name and (t.db or t.name.lower() not in ctes)
+        }
+        if not cited or not written:
             return []
-        marks = ",".join("?" for _ in tables)
+        names = sorted({name for _, name in cited})
+        marks = ",".join("?" for _ in names)
         got = con.execute(
-            "SELECT DISTINCT column_name FROM information_schema.columns "
+            "SELECT table_schema, table_name, column_name FROM information_schema.columns "
             f"WHERE lower(table_name) IN ({marks})",
-            tables,
+            names,
         ).fetchall()
-        return [str(row[0]) for row in got]
+        out = {
+            str(column)
+            for schema, table, column in got
+            if str(column).lower() in written
+            and (
+                (str(schema).lower(), str(table).lower()) in cited
+                or ("", str(table).lower()) in cited
+            )
+        }
+        return sorted(out)
     except Exception:
         return []
 
@@ -204,7 +225,7 @@ def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]
         raise
     except Exception as exc:  # noqa: BLE001 — engine error is the extract result
         # A typed code: DuckDB echoes cell values and paths in its messages.
-        return None, typed_db_error(exc, _granted_columns(con, sql))
+        return None, typed_db_error(exc, cited_columns(con, sql))
 
 
 def run_readonly(
