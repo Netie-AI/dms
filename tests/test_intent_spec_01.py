@@ -12,6 +12,8 @@ from typing import Any
 import dms_executor.pipeline_failure as tickets
 import duckdb
 import pytest
+from dms_api.app import create_app
+from dms_api.settings import Settings, get_settings
 from dms_core.pii import fail_closed_mask_payload
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import _submit_validated, maybe_generative_ask
@@ -19,6 +21,8 @@ from dms_executor.intent_spec import (
     ROLE_INTENT_SPEC,
     AnswerSpec,
     SpecFilter,
+    _approved_offset,
+    apply_intent_spec,
     check_sql_against_spec,
     masked_samples,
     parse_spec_payload,
@@ -29,6 +33,7 @@ from dms_executor.intent_spec import (
 from dms_executor.ontology import coverage_from_sql_path
 from dms_executor.pipeline_failure import log_pipeline_failure_ticket
 from dms_executor.sql_loop import _scrub_string
+from fastapi.testclient import TestClient
 
 _WRITER = "writer-route"
 _SPEC = "spec-route"
@@ -472,11 +477,15 @@ def test_approved_offset_still_checks_the_other_qualifiers(harness: _Harness) ->
     """The lift covers the offset only. The named filter is still required.
 
     Before the fix the lift skipped every other qualifier and served c with
-    no warehouse filter. Flag off abstains.
+    no warehouse filter. Flag off abstains. The spec pins the whole window
+    (asc, n 1, offset 2), so the lift itself is approved and the filter gap
+    is what refuses.
     """
     harness.spec = _cited(
         direction="asc",
         direction_span="lowest",
+        n=1,
+        n_span="lowest category",
         offset=2,
         offset_span="skipping 2",
     )
@@ -632,21 +641,45 @@ _DERIVED_SKIP2 = "SELECT category, total FROM (" + _AGG + ") t" + _TAIL
 
 
 @pytest.mark.parametrize(
-    ("question", "sql", "want"),
+    ("question", "sql", "n", "n_span", "want"),
     [
-        ("lowest category by stock value skipping 2", _ASC_ONE, ["c"]),
-        ("lowest 3 categories by stock value skipping 2", _ASC3_SKIP2, ["c", "d", "e"]),
+        (
+            "lowest category by stock value skipping 2",
+            _ASC_ONE,
+            1,
+            "lowest category",
+            ["c"],
+        ),
+        (
+            "lowest 3 categories by stock value skipping 2",
+            _ASC3_SKIP2,
+            3,
+            "3",
+            ["c", "d", "e"],
+        ),
         # A derived table with no skip of its own still lifts.
-        ("lowest 3 categories by stock value skipping 2", _DERIVED_SKIP2, ["c", "d", "e"]),
+        (
+            "lowest 3 categories by stock value skipping 2",
+            _DERIVED_SKIP2,
+            3,
+            "3",
+            ["c", "d", "e"],
+        ),
     ],
 )
 def test_tied_offset_the_writer_chose_is_served(
-    harness: _Harness, question: str, sql: str, want: list[str]
+    harness: _Harness, question: str, sql: str, n: int, n_span: str, want: list[str]
 ) -> None:
-    """Span holds the number, the writer's own SQL has it once, on the outer query."""
+    """Span holds the number, the writer's own SQL has it once, on the outer query.
+
+    The spec pins the whole window (direction, n, offset); since #444 round 3
+    the lift needs all three.
+    """
     harness.spec = _cited(
         direction="asc",
         direction_span="lowest",
+        n=n,
+        n_span=n_span,
         offset=2,
         offset_span="skipping 2",
     )
@@ -669,6 +702,8 @@ def test_tied_offset_retry_keeping_the_writer_offset_is_served(harness: _Harness
     harness.spec = _cited(
         direction="asc",
         direction_span="lowest",
+        n=1,
+        n_span="lowest category",
         offset=2,
         offset_span="skipping 2",
     )
@@ -681,6 +716,210 @@ def test_tied_offset_retry_keeping_the_writer_offset_is_served(harness: _Harness
     assert _categories(env) == ["c"]
     assert "category=c" in env["text"]
     assert harness.submits == [_ASC_ONE]
+
+
+# #444 round-3 review finding 1: the lift trusted a spec that did not pin the
+# window. Both routes agreed on "skip 2", but nothing checked which end was
+# skipped or how many rows came back. Each spec below leaves the direction or
+# n unpinned: dropped as an invalid value or a paraphrased span, or never
+# given. Before the fix each served L2_VALIDATED through POST /v1/chat/ask,
+# rows d, c, b (or c, d, e, f for "lowest 3"). The asked window is c, d, e.
+# Flag off abstains unrequested_offset:2. The lift now needs the spec to pin
+# direction, n and offset, all matching the served SQL's outer window.
+_DESC3_SKIP2 = _AGG + " ORDER BY total DESC LIMIT 3 OFFSET 2"
+_ASC5_SKIP2 = _AGG + " ORDER BY total ASC LIMIT 5 OFFSET 2"
+_PARTIAL_WINDOWS: dict[str, tuple[dict[str, Any], str]] = {
+    # direction value "ascending" is dropped as invalid_value.
+    "direction_ascending_dropped": (
+        _cited(
+            direction="ascending",
+            direction_span="lowest",
+            n=3,
+            n_span="3",
+            offset=2,
+            offset_span="skipping 2",
+        ),
+        _DESC3_SKIP2,
+    ),
+    # span "lowest three" is not in the question: span_not_in_question.
+    "direction_paraphrase_dropped": (
+        _cited(
+            direction="asc",
+            direction_span="lowest three",
+            n=3,
+            n_span="3",
+            offset=2,
+            offset_span="skipping 2",
+        ),
+        _DESC3_SKIP2,
+    ),
+    "no_direction": (
+        _cited(n=3, n_span="3", offset=2, offset_span="skipping 2"),
+        _DESC3_SKIP2,
+    ),
+    "offset_only": (
+        _cited(offset=2, offset_span="skipping 2"),
+        _DESC3_SKIP2,
+    ),
+    # Direction pinned, n not: LIMIT 5 served 4 rows (c, d, e, f) for "lowest 3".
+    "no_n": (
+        _cited(direction="asc", direction_span="lowest", offset=2, offset_span="skipping 2"),
+        _ASC5_SKIP2,
+    ),
+}
+_PARTIAL_SHAPES = sorted(_PARTIAL_WINDOWS)
+
+
+def _chat_ask(harness: _Harness, question: str) -> dict[str, Any]:
+    """The JSON body of POST /v1/chat/ask, with the harness as the live ask."""
+
+    class _Ask:
+        def live_ask(self, q: str, **_k: Any) -> dict[str, Any]:
+            env = harness.ask(q)
+            assert env is not None
+            return env
+
+    app = create_app()
+    app.state.ask_service = _Ask()
+    app.state.cortex = object()
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+    )
+    app.dependency_overrides[get_settings] = lambda: settings
+    r = TestClient(app).post(
+        "/v1/chat/ask", json={"question": question, "session_id": "ses_spec_window"}
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert isinstance(body, dict)
+    return body
+
+
+@pytest.mark.parametrize("shape", _PARTIAL_SHAPES)
+def test_offset_never_lifts_on_a_spec_that_does_not_pin_the_window(
+    harness: _Harness, shape: str
+) -> None:
+    """Customer envelope from POST /v1/chat/ask: abstain, no rows, nothing run."""
+    spec, sql = _PARTIAL_WINDOWS[shape]
+    harness.spec = spec
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    env = _chat_ask(harness, _SKIP2_Q)
+    _assert_offset_refused(env, harness, 2)
+    assert env["values"] == []
+    for name in ("b", "c", "d", "e", "f"):
+        assert f"category={name}" not in env["text"]
+    assert harness.calls == ["sql_writer", ROLE_INTENT_SPEC]
+
+
+@pytest.mark.parametrize("sql", [_DESC3_SKIP2, _ASC5_SKIP2])
+def test_flag_off_refuses_the_partial_window_sql(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, sql: str
+) -> None:
+    """Control: main's gate refuses the same SQL on the same route, flag off."""
+    monkeypatch.setenv("DMS_INTENT_SPEC", "0")
+    harness.writer_sql = sql
+    env = _chat_ask(harness, _SKIP2_Q)
+    _assert_offset_refused(env, harness, 2)
+    assert harness.calls == [None]
+
+
+@pytest.mark.parametrize("shape", _PARTIAL_SHAPES)
+def test_partial_spec_approves_no_offset(shape: str) -> None:
+    """The decision itself: the check passes, but no offset is approved."""
+    spec, sql = _PARTIAL_WINDOWS[shape]
+    decision = apply_intent_spec(
+        question=_SKIP2_Q,
+        sql=sql,
+        writer_payload=_writer(sql),
+        spec_fetch=lambda _prompt: spec,
+        retry_fetch=lambda _prompt: _writer(sql),
+    )
+    assert decision.abstain_reason is None
+    assert decision.sql == sql
+    assert decision.approved_offset is None
+
+
+def test_offset_lifts_when_the_spec_pins_the_whole_window(harness: _Harness) -> None:
+    """Served control: asc, n 3 and offset 2 all pinned and all in the outer SQL."""
+    harness.spec = _skip2_spec()
+    harness.writer_sql = _ASC3_SKIP2
+    harness.retry_sql = _ASC3_SKIP2
+    env = _chat_ask(harness, _SKIP2_Q)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L2_VALIDATED"
+    assert _categories(env) == ["c", "d", "e"]
+    assert [row["total"] for row in env["rows"]] == [3, 10, 20]
+    assert env["text"].startswith("Found 3 row(s).")
+    for name in ("c", "d", "e"):
+        assert f"category={name}" in env["text"]
+    for name in ("a", "b", "f"):
+        assert f"category={name}" not in env["text"]
+    assert harness.submits == [_ASC3_SKIP2]
+
+
+def test_full_spec_rejects_the_wrong_end_of_the_window(harness: _Harness) -> None:
+    """Control: the same DESC SQL against a spec that pins asc is a mismatch."""
+    harness.spec = _skip2_spec()
+    harness.writer_sql = _DESC3_SKIP2
+    harness.retry_sql = _DESC3_SKIP2
+    env = _chat_ask(harness, _SKIP2_Q)
+    _assert_offset_refused(
+        env, harness, 2, gap="intent_spec_mismatch:spec says ascending, SQL orders DESC"
+    )
+
+
+@pytest.mark.parametrize(
+    ("served_sql", "spec"),
+    [
+        # Outer LIMIT 5 is not the spec's n 3.
+        (_ASC5_SKIP2, AnswerSpec(direction="asc", n=3, offset=2)),
+        # Outer ORDER BY DESC is not the spec's asc.
+        (_DESC3_SKIP2, AnswerSpec(direction="asc", n=3, offset=2)),
+        # FETCH FIRST is not a LIMIT the lift can read.
+        (
+            _AGG + " ORDER BY total ASC OFFSET 2 ROWS FETCH FIRST 3 ROWS ONLY",
+            AnswerSpec(direction="asc", n=3, offset=2),
+        ),
+        # No outer ORDER BY.
+        (_AGG + " LIMIT 3 OFFSET 2", AnswerSpec(direction="asc", n=3, offset=2)),
+        # direction none never pins a ranked window.
+        (_ASC3_SKIP2, AnswerSpec(direction="none", n=3, offset=2)),
+    ],
+)
+def test_approval_reads_the_served_outer_window(served_sql: str, spec: AnswerSpec) -> None:
+    """``_approved_offset`` compares the spec to the outer window on its own."""
+    assert (
+        _approved_offset(
+            spec, dropped=(), first_sql=_ASC3_SKIP2, served_sql=served_sql, dialect="duckdb"
+        )
+        is None
+    )
+
+
+def test_approval_refuses_a_dropped_window_field() -> None:
+    """A dropped direction, n or offset field means the window was not pinned."""
+    spec = AnswerSpec(direction="asc", n=3, offset=2)
+    for field in ("direction", "n", "offset"):
+        assert (
+            _approved_offset(
+                spec,
+                dropped=({"field": field, "reason": "span_not_in_question"},),
+                first_sql=_ASC3_SKIP2,
+                served_sql=_ASC3_SKIP2,
+                dialect="duckdb",
+            )
+            is None
+        )
+    assert (
+        _approved_offset(
+            spec, dropped=(), first_sql=_ASC3_SKIP2, served_sql=_ASC3_SKIP2, dialect="duckdb"
+        )
+        == 2
+    )
 
 
 @pytest.mark.parametrize(

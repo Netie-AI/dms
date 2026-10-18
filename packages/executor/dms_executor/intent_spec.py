@@ -22,10 +22,12 @@ question words.
 ``approved_offset`` is the one offset the spec may lift main's
 ``unrequested_offset`` refusal for: positive, tied to the question, and
 the only OFFSET in both the writer's first SQL and the served SQL, on the
-outer query. In both, that OFFSET is also the only thing that can skip a
-row by its rank: no nested LIMIT, window, QUALIFY, predicate subquery or
-self-join. An offset that appears only after spec feedback is not
-approved.
+outer query. The spec must pin the whole window (direction asc or desc,
+n and offset, none of them dropped), and the served SQL's outer ORDER BY,
+LIMIT and OFFSET must equal it. In both SQLs, that OFFSET is also the only
+thing that can skip a row by its rank: no nested LIMIT, window, QUALIFY,
+predicate subquery or self-join. An offset that appears only after spec
+feedback is not approved.
 """
 
 from __future__ import annotations
@@ -710,20 +712,67 @@ def without_outer_offset(sql: str, offset: int, *, dialect: str = "duckdb") -> s
     return str(stripped.sql(dialect=dialect))
 
 
+# Spec fields that together say which rows a ranked window returns.
+_WINDOW_FIELDS = frozenset({"direction", "n", "offset"})
+
+
+def _literal_int(node: Any) -> int | None:
+    if not isinstance(node, exp.Literal) or node.is_string:
+        return None
+    try:
+        return int(str(node.this))
+    except ValueError:
+        return None
+
+
+def _outer_window(root: exp.Expression) -> tuple[str | None, int | None]:
+    """The outer ORDER BY's first-key direction and the outer LIMIT count.
+
+    None for either when it is absent or not a plain literal. FETCH FIRST is
+    not read as a LIMIT.
+    """
+    order = root.args.get("order")
+    keys = order.expressions if isinstance(order, exp.Order) else []
+    direction: str | None = None
+    if keys and isinstance(keys[0], exp.Ordered):
+        direction = "desc" if keys[0].args.get("desc") else "asc"
+    limit = root.args.get("limit")
+    count = _literal_int(limit.args.get("expression")) if isinstance(limit, exp.Limit) else None
+    return direction, count
+
+
 def _approved_offset(
-    spec: AnswerSpec, *, first_sql: str, served_sql: str, dialect: str
+    spec: AnswerSpec,
+    *,
+    dropped: tuple[dict[str, str], ...],
+    first_sql: str,
+    served_sql: str,
+    dialect: str,
 ) -> int | None:
     """The spec offset when two routes agree on it on their own, else None.
 
-    The writer's first, unsteered SQL and the served SQL must each carry it
-    as their only OFFSET, on the outer query. Offset 0 never lifts anything.
+    The spec must pin the whole window: direction asc or desc, n, and the
+    offset, with no direction, n or offset field dropped while parsing. The
+    served SQL's outer ORDER BY, LIMIT and OFFSET must equal all three, so
+    the lift never trusts a skip whose end or size nothing checked. The
+    writer's first, unsteered SQL and the served SQL must each carry the
+    offset as their only OFFSET, on the outer query. Offset 0 never lifts
+    anything.
     """
     want = spec.offset
     if want is None or want <= 0:
         return None
+    if spec.direction not in {"asc", "desc"} or spec.n is None or spec.n <= 0:
+        return None
+    if any(item.get("field") in _WINDOW_FIELDS for item in dropped):
+        return None
     if sole_outer_offset(first_sql, dialect=dialect) != want:
         return None
-    if sole_outer_offset(served_sql, dialect=dialect) != want:
+    found = _outer_offset_tree(served_sql, dialect)
+    if found is None or found[1] != want:
+        return None
+    direction, count = _outer_window(found[0])
+    if direction != spec.direction or count != spec.n:
         return None
     return want
 
@@ -817,7 +866,11 @@ def apply_intent_spec(
         None,
         _attempt(parsed, "checked"),
         _approved_offset(
-            parsed.spec, first_sql=sql, served_sql=current_sql, dialect=dialect
+            parsed.spec,
+            dropped=parsed.dropped,
+            first_sql=sql,
+            served_sql=current_sql,
+            dialect=dialect,
         ),
         retries=retries,
     )

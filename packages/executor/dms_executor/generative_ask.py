@@ -901,8 +901,9 @@ def _submit_validated(
             notes=notes,
         )
     gap = unhonored_qualifier_reason(question, sql=sql)
-    # The spec lifts unrequested_offset only for the offset it approved, and
-    # only when this SQL's sole OFFSET is that one, on the outer query, and
+    # The spec lifts unrequested_offset only for the offset it approved (a
+    # spec that pins direction, n and offset, all equal to the outer window),
+    # and only when this SQL's sole OFFSET is that one, on the outer query, and
     # nothing else in it (nested LIMIT, window, QUALIFY, predicate subquery,
     # self-join) can skip a row by its rank. The other qualifiers are then
     # checked on the SQL without that OFFSET, so the lift covers the offset
