@@ -350,3 +350,141 @@ def test_known_safe_refusals(tmp_path: Path, question: str, sql: str) -> None:
     neither of the two values asked about. The other two do not restrict the stated column."""
     db = _lake(tmp_path)
     assert dropped_stated_value_reason(question, sql, db) is not None
+
+
+# ---- adversary round 2 ---------------------------------------------------------------------
+
+REGIONS: Tables = {"bronze.regions": (["region", "manager"], [["North", "Ann"], ["South", "Bo"]])}
+
+#: Each serves a figure that ignores the stated value, past a filter that looks like one.
+ROUND_TWO = {
+    "anti_join_on": "SELECT SUM(CAST(s.budget AS DOUBLE)) AS total_budget FROM bronze.schools s "
+    "ANTI JOIN (SELECT 1 AS k) x ON s.region = 'North'",
+    "other_table_filtered": "SELECT SUM(CAST(s.budget AS DOUBLE)) AS total_budget "
+    "FROM bronze.schools s JOIN bronze.regions r ON r.region = 'North'",
+    "other_table_exists": UNFILTERED
+    + " WHERE EXISTS (SELECT 1 FROM bronze.regions WHERE region = 'North')",
+    "column_alias_list": "SELECT SUM(CAST(budget AS DOUBLE)) AS total_budget "
+    "FROM bronze.schools AS s(school_id, region, name) WHERE region = 'North'",
+    "summarize_read": "SELECT (SELECT count FROM (SUMMARIZE bronze.schools) "
+    "WHERE column_name = 'region') AS total_budget FROM bronze.schools "
+    "WHERE region = 'North' LIMIT 1",
+}
+
+
+@pytest.mark.parametrize("sql", list(ROUND_TWO.values()), ids=list(ROUND_TWO))
+def test_round_two_filters_that_do_not_restrict_the_figure_abstain(
+    tmp_path: Path, sql: str
+) -> None:
+    _abstains(_ask(tmp_path, IN_NORTH, sql, extra=REGIONS))
+
+
+def test_a_join_key_carries_the_filter_from_the_dimension(tmp_path: Path) -> None:
+    sql = (
+        "SELECT SUM(CAST(s.budget AS DOUBLE)) AS total_budget FROM bronze.schools s "
+        "JOIN bronze.regions r ON s.region = r.region WHERE r.region = 'North'"
+    )
+    assert dropped_stated_value_reason(IN_NORTH, sql, _lake(tmp_path, extra=REGIONS)) is None
+
+
+def test_an_output_alias_is_not_an_identifier_excuse(tmp_path: Path) -> None:
+    extra: Tables = {"bronze.districts": (["school_id", "district"], [["1", "Kepong"]])}
+    sql = "SELECT SUM(CAST(budget AS DOUBLE)) AS kepong FROM bronze.schools ORDER BY kepong"
+    q = "What is the total budget of schools in Kepong?"
+    _abstains(_ask(tmp_path, q, sql, extra=extra), "Kepong")
+
+
+@pytest.mark.parametrize(
+    ("stored", "question", "literal"),
+    [
+        (["B+", "B", "B"], "What is the total budget of schools in grade B+?", "B"),
+        (["-5", "5", "5"], "What is the total budget of schools in zone -5?", "5"),
+        (["BETA-X-1-2-3", "BETA", "GAMMA"], "What is the budget of BETA-X-1-2-3?", "BETA"),
+        (["North", "NORTH", "north "], "What is the total budget of schools in North?", "North"),
+    ],
+    ids=["symbol_kept", "minus_kept", "long_code", "every_encoding"],
+)
+def test_the_literal_must_select_exactly_the_stated_value(
+    tmp_path: Path, stored: list[str], question: str, literal: str
+) -> None:
+    rows = [[str(i), f"S{i}", v, "10", "2023"] for i, v in enumerate(stored)]
+    sql = UNFILTERED + f" WHERE region = '{literal}'"
+    _abstains(_ask(tmp_path, question, sql, rows=rows))
+
+
+@pytest.mark.parametrize(
+    ("question", "region"),
+    [
+        ("What is the budget of SK Taman Tun Dr Ismail?", "SK Taman Tun Dr Ismail"),
+        ("What is the total budget of schools in OR?", "OR"),
+        ("What is the total budget of schools in Ｎｏｒｔｈ?", "North"),
+        ("What is the total budget of schools in No​rth?", "North"),
+        ("What is the total budget of St Marys?", "St. Mary's"),
+        ("What is the total budget of schools in Strasse?", "Straße"),
+    ],
+    ids=["five_words", "function_word_in_caps", "full_width", "zero_width", "no_dot", "eszett"],
+)
+def test_round_two_spellings_are_conditions(tmp_path: Path, question: str, region: str) -> None:
+    rows = [["1", "Alder", region, "100", "2023"], ["2", "Birch", "Other", "50", "2024"]]
+    _abstains(_ask(tmp_path, question, UNFILTERED, rows=rows))
+
+
+def test_an_integer_code_column_is_probed(tmp_path: Path) -> None:
+    db = _lake(tmp_path)
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE bronze.sales (school VARCHAR, postcode BIGINT, budget DOUBLE)")
+    con.execute("INSERT INTO bronze.sales VALUES ('Alder', 50480, 100), ('Birch', 50490, 50)")
+    con.close()
+    q = "What is the total budget of schools in postcode 50490?"
+    sql = "SELECT SUM(budget) FROM bronze.sales"
+    assert dropped_stated_value_reason(q, sql, db) == "unhonored_qualifier:named_filter=50490"
+    assert dropped_stated_value_reason(q, sql + " WHERE postcode = 50490", db) is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "What is the budget of North schools, ignoring South?",
+        "What is the budget of North schools, leaving out South?",
+        "What is the budget of North schools without South?",
+    ],
+)
+def test_an_excluded_value_does_not_widen_an_in_list(tmp_path: Path, question: str) -> None:
+    sql = UNFILTERED + " WHERE region IN ('North', 'South')"
+    assert dropped_stated_value_reason(question, sql, _lake(tmp_path)) is not None
+
+
+def test_an_excluded_value_is_honoured_by_not_equal(tmp_path: Path) -> None:
+    db = _lake(tmp_path)
+    q = "What is the total budget excluding Alder?"
+    assert dropped_stated_value_reason(q, UNFILTERED + " WHERE name <> 'Alder'", db) is None
+    assert dropped_stated_value_reason(q, UNFILTERED + " WHERE name = 'Alder'", db) is not None
+
+
+def test_a_value_two_columns_hold_is_ambiguous(tmp_path: Path) -> None:
+    rows = [*ROWS, ["6", "North", "South", "5.00", "2024"]]
+    db = _lake(tmp_path, rows=rows)
+    assert dropped_stated_value_reason(IN_NORTH, UNFILTERED + " WHERE name = 'North'", db)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT SUM(CAST(budget AS DOUBLE)) AS b FROM (SELECT * FROM bronze.schools) s "
+        "WHERE s.region = 'North'",
+        "SELECT region, SUM(CAST(budget AS DOUBLE)) AS b FROM bronze.schools "
+        "GROUP BY region HAVING region = 'North'",
+    ],
+    ids=["one_scope_up", "having_on_grouped_column"],
+)
+def test_round_two_honest_shapes_answer(tmp_path: Path, sql: str) -> None:
+    assert dropped_stated_value_reason(IN_NORTH, sql, _lake(tmp_path)) is None
+
+
+def test_list_columns_do_not_break_the_probe(tmp_path: Path) -> None:
+    db = _lake(tmp_path)
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE bronze.tagged AS SELECT *, ['x', 'y'] AS tags FROM bronze.schools")
+    con.close()
+    sql = "SELECT SUM(CAST(budget AS DOUBLE)) FROM bronze.tagged WHERE region = 'North'"
+    assert dropped_stated_value_reason(IN_NORTH, sql, db) is None
