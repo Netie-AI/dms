@@ -1013,6 +1013,7 @@ def _insights_body(
     session_id: str | None,
     space_id: str | None,
     ontology: dict[str, Any] | None,
+    role: str | None = None,
     sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     asked = question
@@ -1044,6 +1045,8 @@ def _insights_body(
             slots = onto.get("intent_slots")
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
+    if role:
+        body["role"] = role
     if isinstance(sql_feedback, dict) and str(sql_feedback.get("reason") or ""):
         body["sql_feedback"] = {
             "previous_sql": str(sql_feedback.get("previous_sql") or ""),
@@ -1129,6 +1132,7 @@ def _run_insights_legs(
     ontology: dict[str, Any] | None,
     *,
     call_cap: int | None = None,
+    single_shot: bool = False,
 ) -> dict[str, Any] | None:
     """Generate, optional ontology GET, one ranked retry. No /dms/query.
 
@@ -1152,6 +1156,15 @@ def _run_insights_legs(
             legs.append({"returned": "timeout"})
             raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:{leg}", legs) from exc
         legs.append(_leg(got, _leg_kind(got)))
+        return got
+
+    if single_shot:
+        # One generate POST. Role routing is on the body. No ontology climb.
+        got = _generate(insights_body, "generate")
+        if isinstance(got, dict):
+            out = dict(got)
+            out["generate_legs"] = {"count": len(legs), "legs": legs}
+            return out
         return got
 
     insights_payload = _generate(insights_body, "generate")
@@ -1212,6 +1225,8 @@ def compute_query(
     timeout: float = 120.0,
     dms_query: bool = True,
     call_cap: int | None = None,
+    role: str | None = None,
+    single_shot: bool = False,
     sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
@@ -1249,6 +1264,7 @@ def compute_query(
         session_id=session_id,
         space_id=space_id,
         ontology=ontology,
+        role=role,
         sql_feedback=sql_feedback,
     )
     from cortex_client.strict_pin import pin_config, refusal_payload
@@ -1276,6 +1292,7 @@ def compute_query(
                 insights_payload = _run_insights_legs(
                     http, root, question, insights_body, headers, ontology,
                     call_cap=cap,
+                    single_shot=single_shot,
                 )
             except _BudgetStop as stop:
                 timed_out = stop.reason.startswith(INSIGHTS_FAIL_TIMEOUT)
@@ -1375,6 +1392,8 @@ def compute_insights(
     ontology: dict[str, Any] | None = None,
     api_key: str | None = None,
     timeout: float | None = None,
+    role: str | None = None,
+    single_shot: bool = False,
     sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Ask-lane Insights planner: generate + ranking + one retry. No /dms/query.
@@ -1394,6 +1413,8 @@ def compute_insights(
         api_key=api_key,
         timeout=insights_timeout_s() if timeout is None else timeout,
         dms_query=False,
+        role=role,
+        single_shot=single_shot,
         sql_feedback=sql_feedback,
     )
 
