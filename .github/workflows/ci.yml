@@ -118,7 +118,7 @@ jobs:
           set -euo pipefail
           found=0
           # Prefer current pin; keep older specs checked when present.
-          for SPEC in contract/openapi-1.2.0.json contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
+          for SPEC in contract/openapi-1.5.0.json contract/openapi-1.2.0.json contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
             HASH="${SPEC}.sha256"
             if [ -f "$SPEC" ]; then
               found=1
@@ -139,8 +139,8 @@ jobs:
             echo "::error::No vendored OpenAPI — run scripts/sync_contract.py"
             exit 1
           fi
-          if [ ! -f contract/openapi-1.2.0.json ]; then
-            echo "::error::Missing current pin contract/openapi-1.2.0.json — run scripts/sync_contract.py"
+          if [ ! -f contract/openapi-1.5.0.json ]; then
+            echo "::error::Missing current pin contract/openapi-1.5.0.json — run scripts/sync_contract.py"
             exit 1
           fi
           VEC=contract/testvectors/manifest_canonical.jsonl
@@ -151,7 +151,9 @@ jobs:
 
   lint-type-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The job takes 18.5 min on main (a52ccb2, 8ff2623). 20 left 1.5 min, so
+    # a PR adding about two minutes of tests was cancelled with nothing failed.
+    timeout-minutes: 30
     needs: [protected-paths, contract-pin]
     env:
       PYTHONUTF8: "1"

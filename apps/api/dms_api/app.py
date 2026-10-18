@@ -5,6 +5,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from cortex_client import CortexClient
+from dms_core.control_plane.ask_audit import (
+    AskAuditStorePort,
+    InMemoryAskAuditStore,
+    PostgresAskAuditStore,
+)
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,6 +76,18 @@ def _build_space_store(settings) -> tuple[object, StoreBinding]:
     return DemoSpaceStore.seeded(), StoreBinding.memory(configured=False)
 
 
+def _build_ask_audit_store(settings, binding: StoreBinding) -> AskAuditStorePort:
+    """Bind the ask-audit store to the same backend the Spaces catalog bound to.
+
+    Same swap as the catalog: Postgres when it answered at startup, in-process
+    memory when it did not. The export reports which one served it, so a
+    memory-backed record cannot pass for a durable one.
+    """
+    if binding.persistent and settings.database_url:
+        return PostgresAskAuditStore(settings.database_url, tenant_id=settings.dms_tenant_id)
+    return InMemoryAskAuditStore()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
@@ -101,6 +118,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from dms_api.wiring import bind_ontology_store
 
         bind_ontology_store(settings.database_url, str(settings.dms_tenant_id))
+    app.state.ask_audit_store = _build_ask_audit_store(settings, binding)
     cortex = CortexClient(
         settings.cortex_url,
         timeout=settings.cortex_timeout_seconds,
@@ -125,6 +143,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.space_store = DemoSpaceStore.seeded()
+    app.state.ask_audit_store = InMemoryAskAuditStore()
     app.state.cortex = None
     app.state.ask_service = build_ask_service(None)
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]

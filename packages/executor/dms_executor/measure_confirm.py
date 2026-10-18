@@ -42,7 +42,7 @@ from dms_core.control_plane.onto_store import (
     measure_definition_hash,
 )
 
-from dms_executor.demo_warehouse import _lock_for, connect_file, warehouse_path
+from dms_executor.demo_warehouse import connect_serving, warehouse_path
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.generative_ask import (
     QueryPlan,
@@ -609,14 +609,12 @@ def measure_evidence(
     if not items:
         return []
     lake = _lake_path(warehouse)
-    # One steward check at a time per lake file: every read below goes through the same
-    # per-file attach lock the ask path uses, and a read-only registry open elsewhere in
-    # THIS process would otherwise collide with our own write-mode attach.
-    with _lock_for(lake):
-        return _probe_locked(items, space_id=space_id, lake=lake, store=store)
+    # Every read below is a pooled read-only serving cursor (CONN-POOL-01): a steward check
+    # never takes the lake's write side, so it neither pauses asks nor runs SQL writable.
+    return _probe_reads(items, space_id=space_id, lake=lake, store=store)
 
 
-def _probe_locked(
+def _probe_reads(
     items: list[EvidenceTarget],
     *,
     space_id: str,
@@ -646,7 +644,7 @@ def _probe_locked(
             if obj is not None:
                 relation_of[t.draft.grain] = obj.relation
     try:
-        con = connect_file(lake)
+        con = connect_serving(lake)
     except Exception as exc:  # noqa: BLE001
         raise MeasureRefusal(503, "warehouse_unavailable") from exc
     try:
@@ -790,7 +788,7 @@ def _probe_locked(
 
     if to_run:
         try:
-            con = connect_file(lake)
+            con = connect_serving(lake)
         except Exception as exc:  # noqa: BLE001
             raise MeasureRefusal(503, "warehouse_unavailable") from exc
         try:
