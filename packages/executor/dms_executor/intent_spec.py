@@ -22,7 +22,9 @@ question words.
 ``approved_offset`` is the one offset the spec may lift main's
 ``unrequested_offset`` refusal for: positive, tied to the question, and
 the only OFFSET in both the writer's first SQL and the served SQL, on the
-outer query. An offset that appears only after spec feedback is not
+outer query. In both, that OFFSET is also the only thing that can skip a
+row by its rank: no nested LIMIT, window, QUALIFY, predicate subquery or
+self-join. An offset that appears only after spec feedback is not
 approved.
 """
 
@@ -506,6 +508,10 @@ def _window_limit(grounds: SqlGrounds) -> tuple[int | None, int | None, str | No
 
 def _limit_offset(grounds: SqlGrounds) -> tuple[int | None, int | None, str | None]:
     if grounds.limit is not None or grounds.offset is not None:
+        # An outer LIMIT/OFFSET beside a rank filter or a nested LIMIT is two
+        # windows. The outer one alone does not say which rows come back.
+        if grounds.rank_bounds or grounds.derived_limits:
+            return None, None, "SQL limit is unclear"
         return grounds.limit, 0 if grounds.offset is None else grounds.offset, None
     limit, offset, unclear = _window_limit(grounds)
     if unclear or limit is not None:
@@ -590,8 +596,8 @@ def check_sql_against_spec(
         elif direction != spec.direction:
             reasons.append(f"spec says {word}, SQL orders {direction.upper()}")
     elif spec.direction == "none" and direction is not None:
-        limit, offset, _unclear = _limit_offset(grounds)
-        if limit is not None or (offset or 0) > 0:
+        limit, offset, unclear = _limit_offset(grounds)
+        if unclear or limit is not None or (offset or 0) > 0:
             reasons.append(f"spec says no direction, SQL orders {direction.upper()}")
     if spec.n is not None or spec.offset is not None:
         limit, offset, unclear = _limit_offset(grounds)
@@ -613,6 +619,49 @@ def check_sql_against_spec(
     return "; ".join(reasons)
 
 
+# Nodes that can drop a row for where it sits among other rows, not for its
+# own values. With any of them in the SQL the outer OFFSET is not the only
+# skip, so the spec never lifts main's refusal for it.
+_ROW_POSITION = (exp.Window, exp.Qualify, exp.TableSample, exp.SetOperation)
+_ROW_WINDOW = (exp.Order, exp.Limit, exp.Fetch, exp.Offset)
+
+
+def _source_select(select: exp.Select) -> bool:
+    """A CTE body or a FROM/JOIN source, not a predicate or projected value."""
+    parent = select.parent
+    if isinstance(parent, exp.CTE):
+        return True
+    return isinstance(parent, exp.Subquery) and isinstance(parent.parent, (exp.From, exp.Join))
+
+
+def _offset_is_the_only_skip(root: exp.Expression) -> bool:
+    """True when nothing but the outer OFFSET can skip a row by its rank.
+
+    The outer query is one SELECT, and its ORDER BY, LIMIT and OFFSET are the
+    only ones in the tree. There is no window, QUALIFY, sample or set
+    operation. Every other SELECT is a CTE or a FROM/JOIN source. No table
+    or CTE is read twice, so no row is compared with the rest of its own
+    relation (a self-join or a correlated count).
+    """
+    if not isinstance(root, exp.Select):
+        return False
+    outer = {
+        id(node) for node in (root.args.get(name) for name in ("order", "limit", "offset"))
+        if node is not None
+    }
+    tables: list[str] = []
+    for node in root.walk():
+        if isinstance(node, _ROW_POSITION):
+            return False
+        if isinstance(node, _ROW_WINDOW) and id(node) not in outer:
+            return False
+        if isinstance(node, exp.Select) and node is not root and not _source_select(node):
+            return False
+        if isinstance(node, exp.Table):
+            tables.append(node.name.casefold())
+    return len(tables) == len(set(tables))
+
+
 def _outer_offset_tree(sql: str, dialect: str) -> tuple[exp.Expression, int] | None:
     try:
         trees = [tree for tree in parse(sql or "", read=dialect) if tree is not None]
@@ -622,8 +671,7 @@ def _outer_offset_tree(sql: str, dialect: str) -> tuple[exp.Expression, int] | N
         return None
     root = trees[0]
     outer = root.args.get("offset")
-    offsets = list(root.find_all(exp.Offset))
-    if outer is None or len(offsets) != 1 or offsets[0] is not outer:
+    if outer is None or not _offset_is_the_only_skip(root):
         return None
     value = outer.args.get("expression")
     if not isinstance(value, exp.Literal) or value.is_string:
@@ -641,6 +689,8 @@ def sole_outer_offset(sql: str, *, dialect: str = "duckdb") -> int | None:
     """The SQL's only OFFSET when it is on the outer query and a positive integer.
 
     No OFFSET, a nested OFFSET, more than one OFFSET, or a non-literal is None.
+    So is any other construct that can skip a row by its rank
+    (``_offset_is_the_only_skip``).
     """
     found = _outer_offset_tree(sql, dialect)
     return None if found is None else found[1]

@@ -902,9 +902,11 @@ def _submit_validated(
         )
     gap = unhonored_qualifier_reason(question, sql=sql)
     # The spec lifts unrequested_offset only for the offset it approved, and
-    # only when this SQL's sole OFFSET is that one, on the outer query. The
-    # other qualifiers are then checked on the SQL without that OFFSET, so
-    # the lift covers the offset and nothing else. Spec off: never lifted.
+    # only when this SQL's sole OFFSET is that one, on the outer query, and
+    # nothing else in it (nested LIMIT, window, QUALIFY, predicate subquery,
+    # self-join) can skip a row by its rank. The other qualifiers are then
+    # checked on the SQL without that OFFSET, so the lift covers the offset
+    # and nothing else. Spec off: never lifted.
     if gap and spec_offset is not None and gap == f"unrequested_offset:{spec_offset}":
         stripped = without_outer_offset(sql, spec_offset)
         if stripped is not None:

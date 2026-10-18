@@ -22,7 +22,9 @@ from dms_executor.intent_spec import (
     check_sql_against_spec,
     masked_samples,
     parse_spec_payload,
+    sole_outer_offset,
     spec_prompt,
+    without_outer_offset,
 )
 from dms_executor.ontology import coverage_from_sql_path
 from dms_executor.pipeline_failure import log_pipeline_failure_ticket
@@ -337,14 +339,14 @@ _ASC3_SKIP2 = (
 
 
 def _assert_offset_refused(
-    env: dict[str, Any] | None, harness: _Harness, offset: int
+    env: dict[str, Any] | None, harness: _Harness, offset: int, gap: str | None = None
 ) -> None:
     assert env is not None
     assert_envelope_valid(env)
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
-    assert f"unrequested_offset:{offset}" in env["text"]
+    assert (gap or f"unrequested_offset:{offset}") in env["text"]
     assert "category=" not in env["text"]
     assert harness.submits == []
 
@@ -383,6 +385,8 @@ def test_spec_offset_never_lifts_a_second_offset(harness: _Harness) -> None:
     """Outer OFFSET 2 matches the spec, a nested OFFSET 2 skips two more rows.
 
     Before the fix: L2_VALIDATED, rows e, f. The asked window is c, d, e.
+    The nested LIMIT 5 is a second window, so since #444 round 2 the spec
+    check names it before the lift is reached (the gap was unrequested_offset:2).
     """
     harness.spec = _cited(
         direction="asc",
@@ -395,7 +399,7 @@ def test_spec_offset_never_lifts_a_second_offset(harness: _Harness) -> None:
     harness.writer_sql = _DOUBLE_OFFSET
     harness.retry_sql = _DOUBLE_OFFSET
     env = harness.ask("lowest 3 categories by stock value skipping 2")
-    _assert_offset_refused(env, harness, 2)
+    _assert_offset_refused(env, harness, 2, gap="intent_spec_mismatch:SQL limit is unclear")
 
 
 def test_offset_span_without_the_number_is_dropped(harness: _Harness) -> None:
@@ -488,11 +492,152 @@ def test_approved_offset_still_checks_the_other_qualifiers(harness: _Harness) ->
     assert harness.submits == []
 
 
+# #444 round-2 review finding 1: the second skip need not be spelled OFFSET.
+# Each SQL has the spec's outer LIMIT 3 OFFSET 2 and skips rows a second time
+# some other way. Before the fix each served L2_VALIDATED with rows e, f (or
+# d, e, f); the asked window is c, d, e. Flag off abstains unrequested_offset:2.
+# The value is the gap the flag-on envelope names: a rank filter or a nested
+# LIMIT that sql_grounds sees fails the spec check, the rest fail the lift.
+_SKIP2_Q = "lowest 3 categories by stock value skipping 2"
+_AGG = "SELECT category, SUM(amount) AS total FROM facts GROUP BY category"
+_TAIL = " ORDER BY total ASC LIMIT 3 OFFSET 2"
+_UNCLEAR = "intent_spec_mismatch:SQL limit is unclear"
+_SECOND_SKIPS: dict[str, tuple[str, str]] = {
+    "row_number": (
+        "SELECT category, total FROM (SELECT category, SUM(amount) AS total, "
+        "ROW_NUMBER() OVER (ORDER BY SUM(amount) ASC) AS rn FROM facts "
+        "GROUP BY category) t WHERE rn > 2" + _TAIL,
+        _UNCLEAR,
+    ),
+    "qualify": (
+        _AGG + " QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(amount) ASC) > 2" + _TAIL,
+        _UNCLEAR,
+    ),
+    "not_in_limit": (
+        "SELECT category, SUM(amount) AS total FROM facts WHERE category NOT IN "
+        "(SELECT category FROM facts GROUP BY category ORDER BY SUM(amount) ASC "
+        "LIMIT 2) GROUP BY category" + _TAIL,
+        "unrequested_offset:2",
+    ),
+    "nested_desc_limit": (
+        "SELECT category, total FROM (" + _AGG + " ORDER BY total DESC LIMIT 5) t" + _TAIL,
+        _UNCLEAR,
+    ),
+    "nested_fetch": (
+        "SELECT category, total FROM (" + _AGG
+        + " ORDER BY total DESC FETCH FIRST 5 ROWS ONLY) t" + _TAIL,
+        "unrequested_offset:2",
+    ),
+    "correlated_count": (
+        "SELECT a.category, a.total FROM (" + _AGG + ") a WHERE (SELECT COUNT(*) "
+        "FROM (" + _AGG + ") b WHERE b.total < a.total) >= 2"
+        " ORDER BY a.total ASC LIMIT 3 OFFSET 2",
+        "unrequested_offset:2",
+    ),
+    "having_min_subquery": (
+        _AGG + " HAVING SUM(amount) > (SELECT MIN(t) FROM (SELECT SUM(amount) AS t "
+        "FROM facts GROUP BY category) x WHERE t > (SELECT MIN(t2) FROM "
+        "(SELECT SUM(amount) AS t2 FROM facts GROUP BY category) y))" + _TAIL,
+        "unrequested_offset:2",
+    ),
+    "self_join": (
+        "SELECT a.category, a.total FROM (" + _AGG + ") a JOIN (" + _AGG + ") b "
+        "ON b.total < a.total GROUP BY a.category, a.total HAVING COUNT(*) >= 2"
+        " ORDER BY a.total ASC LIMIT 3 OFFSET 2",
+        "unrequested_offset:2",
+    ),
+}
+_SKIP_SHAPES = sorted(_SECOND_SKIPS)
+
+
+def _skip2_spec() -> dict[str, Any]:
+    return _cited(
+        direction="asc",
+        direction_span="lowest",
+        n=3,
+        n_span="3",
+        offset=2,
+        offset_span="skipping 2",
+    )
+
+
+@pytest.mark.parametrize("shape", _SKIP_SHAPES)
+def test_spec_offset_never_lifts_beside_a_second_skip(harness: _Harness, shape: str) -> None:
+    """The writer's own SQL, tied spec offset 2, and a second skip that is not OFFSET.
+
+    Before the fix: L2_VALIDATED, rows e, f or d, e, f. Now: abstain, nothing run.
+    """
+    sql, gap = _SECOND_SKIPS[shape]
+    harness.spec = _skip2_spec()
+    harness.writer_sql = sql
+    harness.retry_sql = sql
+    env = harness.ask(_SKIP2_Q)
+    _assert_offset_refused(env, harness, 2, gap=gap)
+
+
+@pytest.mark.parametrize("shape", _SKIP_SHAPES)
+def test_flag_off_refuses_the_second_skip_shapes(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """Control: main's gate refuses the same SQL with the flag off."""
+    monkeypatch.setenv("DMS_INTENT_SPEC", "0")
+    harness.writer_sql = _SECOND_SKIPS[shape][0]
+    env = harness.ask(_SKIP2_Q)
+    _assert_offset_refused(env, harness, 2)
+    assert harness.calls == [None]
+
+
+@pytest.mark.parametrize("shape", _SKIP_SHAPES)
+def test_submit_never_lifts_an_offset_beside_a_second_skip(
+    harness: _Harness, shape: str
+) -> None:
+    """The submit gate's own re-check, given spec_offset=2, still refuses.
+
+    Before the fix it stripped the outer OFFSET, passed, and served e, f.
+    """
+    sql = _SECOND_SKIPS[shape][0]
+    assert sole_outer_offset(sql) is None
+    assert without_outer_offset(sql, 2) is None
+    env = _submit_validated(
+        sql,
+        question=_SKIP2_Q,
+        space_id=None,
+        session_id=None,
+        submit=harness.submit,
+        ledger_append=lambda _payload: SimpleNamespace(entry_id="led_spec", hash="hash_spec"),
+        notes=(),
+        plan_source="ontology_plan",
+        coverage=coverage_from_sql_path(sql=sql),
+        warehouse=harness.lake,
+        spec_offset=2,
+    )
+    _assert_offset_refused(env, harness, 2)
+
+
+@pytest.mark.parametrize("shape", ["row_number", "qualify", "nested_desc_limit"])
+def test_outer_limit_beside_a_rank_filter_is_unclear(shape: str) -> None:
+    """The outer LIMIT/OFFSET alone does not say which rows a second window keeps.
+
+    Before the fix the checker read limit 3 offset 2 and passed.
+    """
+    sql = _SECOND_SKIPS[shape][0]
+    reason = check_sql_against_spec(sql, AnswerSpec(direction="asc", n=3, offset=2))
+    assert reason == "SQL limit is unclear"
+    # An unclear limit still counts as a window when the spec says no direction.
+    none_reason = check_sql_against_spec(sql, AnswerSpec(direction="none"))
+    assert none_reason == "spec says no direction, SQL orders ASC"
+
+
+_DERIVED_SKIP2 = "SELECT category, total FROM (" + _AGG + ") t" + _TAIL
+
+
 @pytest.mark.parametrize(
     ("question", "sql", "want"),
     [
         ("lowest category by stock value skipping 2", _ASC_ONE, ["c"]),
         ("lowest 3 categories by stock value skipping 2", _ASC3_SKIP2, ["c", "d", "e"]),
+        # A derived table with no skip of its own still lifts.
+        ("lowest 3 categories by stock value skipping 2", _DERIVED_SKIP2, ["c", "d", "e"]),
     ],
 )
 def test_tied_offset_the_writer_chose_is_served(
