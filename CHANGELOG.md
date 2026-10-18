@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-18 - PAYLOAD-MASK-FLAG-01: AskPayloadColumn.masked (Refs dms#456)
+
+- **Flag.** `stamp_ask_payload` sets `masked` on every column of a `dms_payload`. The value is a bool. Masked, PII, unread, and unknown columns are true. False only for a column DMS has positively cleared (boolean name that is not PII; numeric or date name the mask treats as non-personal, with values read and not PII; text only with an ontology `non_personal` tag and values that are not PII).
+- **Wire.** `CortexClient.ask` keeps a bool and turns a missing flag, a string, or a number into true. Sample keys are dropped. An ask with no payload is the same body as before.
+- **Older Cortex.** Contract 1.7 `AskPayloadColumn` has no `masked` field and ignores unknown keys, so the bool does not 422. `/health` does not advertise the contract version, so the field is sent. It pairs with Cortex#386. Not PASS.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.

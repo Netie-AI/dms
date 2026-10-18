@@ -3,6 +3,13 @@
 What exists in this repo and where. Update when structure changes, not when state changes
 - state lives in STATUS.md.
 
+PAYLOAD-MASK-FLAG-01 (#456): `packages/executor/dms_executor/ask_column_mask.py`
+sets `AskPayloadColumn.masked` from DMS mask and PII flags.
+`packages/cortex_client/cortex_client/client.py` keeps that value a JSON
+bool on `POST /v1/contract/ask`. No payload still sends the old body.
+Regression: `tests/test_payload_mask_flag.py`. Pairs with Cortex#386.
+Not COMPLETE.
+
 STUDIO-RESULT-01 (#365): Studio ask result is
 `apps/ui/src/components/studio/ResultView.tsx` plus `StampsPanel.tsx`.
 `StudioPage` only mounts it from router state `studioEnvelope`. SQL, paged
