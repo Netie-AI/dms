@@ -19,7 +19,11 @@ from dms_core.ask import AskServiceError, ExecutedTrace, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
 from dms_executor import executed_trace
-from dms_executor.abstain import backstop_missing_ticket, build_abstain
+from dms_executor.abstain import (
+    backstop_missing_ticket,
+    build_abstain,
+    refuse_ungranted_answer,
+)
 from dms_executor.acl import (
     SessionContext,
     SourceGrant,
@@ -95,9 +99,16 @@ from dms_executor.generative_ask import (
     untyped_numeric_reason,
     with_served_attribution,
 )
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    relation_gap,
+    serve_gap,
+    sql_refusal_envelope,
+)
 from dms_executor.lake_registry import (
     SERVING_DEADLINE_EXCEEDED_REASON,
     SERVING_DEADLINE_RESERVE_REASON,
+    SERVING_ERRORS,
     AskControl,
     ServingDeadlineExceeded,
     ServingDeadlineReserve,
@@ -120,11 +131,18 @@ from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
     OpenVaultTokenError,
+    SecurityEvent,
     SessionAcl,
     SubmitError,
     classify_submit_error,
-    reject_hostile_chat_sql,
     should_rement,
+)
+from dms_executor.name_echo import (
+    begin_grant_turn,
+    end_grant_turn,
+    hide_echo,
+    note_turn_grants,
+    turn_grants,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
@@ -313,6 +331,7 @@ class Executor:
         cortex: CortexClient | None = None,
         minter: ManifestMinter | None = None,
         warehouse_path: Path | str | None = None,
+        dialect: str | None = SERVING_DIALECT,
         openvault_url: str | None = None,
         fetch_key_on_start: bool = False,
         session_store: Any | None = None,
@@ -321,6 +340,7 @@ class Executor:
         self._minter = minter or ManifestMinter(openvault_url=openvault_url)
         self._preferred_openvault_url = openvault_url
         self._warehouse = Path(warehouse_path) if warehouse_path else None
+        self.dialect = dialect
         self._bound_sessions: set[str] = set()
         self._turns: dict[tuple[str, str], dict[str, Any]] = {}
         # The Space boundary reads its facts from here. Defaults to the DR-0002
@@ -392,10 +412,18 @@ class Executor:
             return
         self._turns[key] = snap
 
-    def execute(self, sql: str) -> list[dict[str, Any]]:
-        reject_hostile_chat_sql(sql)
+    def execute(
+        self, sql: str, *, grantable: set[str] | None = None
+    ) -> list[dict[str, Any]]:
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
+        gap = serve_gap(
+            sql,
+            grantable=set(grantable or ()),
+            dialect=self.dialect,
+        )
+        if gap:
+            raise SecurityEvent(gap, gap)
         ensure_demo_warehouse(self._warehouse)
         return execute_sql(sql, path=self._warehouse, product=True)
 
@@ -414,7 +442,21 @@ class Executor:
                 route="user_sql",
                 question=sql,
             )
-        rows = self.execute(sql)
+        try:
+            grants = set(self.grantable_tables(space_id=space_id))
+        except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
+            grants = set()
+        gap = serve_gap(sql, grantable=grants, dialect=self.dialect)
+        if gap:
+            return sql_refusal_envelope(
+                reason=gap,
+                shown=customer_grant_reason(gap),
+                space_id=space_id,
+                session_id=session_id,
+                route="user_sql",
+                question=None,
+            )
+        rows = self.execute(sql, grantable=grants)
         env = build_answer_envelope(
             answer_id="ans_user_sql",
             text="Query result.",
@@ -460,7 +502,10 @@ class Executor:
                 )
                 if g.table_name and g.table_name not in DEMO_TABLES
             }
-            return sorted({*DEMO_TABLES, *uploaded})
+            granted = sorted({*DEMO_TABLES, *uploaded})
+            # NAME-ECHO-01: the scrub reads this set; it never derives its own.
+            note_turn_grants(self, space_id, granted)
+            return granted
         ctx = intersect_space_grants(
             self._session_store,
             tenant_id=DEMO_TENANT_ID,
@@ -483,7 +528,10 @@ class Executor:
                 space_id,
                 ", ".join(bad),
             )
-        return [t for t in granted if t not in bad]
+        granted = [t for t in granted if t not in bad]
+        # NAME-ECHO-01: the scrub reads this set; it never derives its own.
+        note_turn_grants(self, space_id, granted)
+        return granted
 
     def demo_acl(
         self,
@@ -678,6 +726,12 @@ class Executor:
             control_token = bind_ask_control(ctrl)
         ctrl.deadline = deadline
         ctrl.start()
+        # NAME-ECHO-01: the grant set grantable_tables resolves in this turn is
+        # recorded here, so the scrub and the served-SQL check read it rather
+        # than opening a connection of their own.
+        grant_turn = begin_grant_turn(self, space_id)
+        from dms_executor.route_stamp import freeze_route
+
         try:
             try:
                 try:
@@ -772,6 +826,12 @@ class Executor:
                     assert_envelope_valid(env)
                 finally:
                     reset_serving_lease_block(token)
+            # An answer whose served SQL reads outside the turn's grant is a
+            # breach or a misread grant. It abstains; the relation is not hidden.
+            refused = refuse_ungranted_answer(env, question=question, grants=turn_grants())
+            if refused is not env:
+                env = refused
+                self._store_turn(session_id, space_id, env)
             stamp_engine_clock(env)
             payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
             stamped = with_served_attribution(env, payload)
@@ -782,7 +842,7 @@ class Executor:
                     out,
                     payload if isinstance(payload, dict) else None,
                     raw_loop if isinstance(raw_loop, list) else None,
-                    dialect=extract_dialect(getattr(self, "_warehouse", None)),
+                    dialect=extract_dialect(self.dialect),
                 )
             from dms_core.ask import lane_for_route
             from dms_core.pii import mask_unknown_keys
@@ -794,10 +854,16 @@ class Executor:
                 out["lane"] = mapped
             else:
                 out.pop("lane", None)
+            freeze_route(out)
             masked = mask_unknown_keys(out)
             backstop_missing_ticket(masked, question=question)
+            # Last step of the turn, after every loop re-attach. The grant set is
+            # the one this turn resolved; none resolved grants nothing.
+            if isinstance(masked, dict):
+                hide_echo(masked, "", grants=turn_grants())
             return masked
         finally:
+            end_grant_turn(grant_turn)
             if own_control and control_token is not None:
                 reset_ask_control(control_token)
             reset_ask_deadline(deadline_tokens)
@@ -869,8 +935,36 @@ class Executor:
             run_cascade,
         )
 
+        # One Space-grant lookup per ask. ``grantable_tables`` reads the
+        # store and the lake (a serving lease), so a second lookup is a second
+        # wait under lease contention. Every lane below reads this one result;
+        # a failure is kept and raised again to the next caller, not retried.
+        grants_once: list[list[str] | Exception] = []
+
+        def space_grants() -> list[str]:
+            if not grants_once:
+                try:
+                    got = self.grantable_tables(space_id=space_id)
+                except Exception as exc:  # noqa: BLE001 -- kept for every caller
+                    grants_once.append(exc)
+                else:
+                    # The list the caller received, including a name added
+                    # after the method body noted its own copy.
+                    note_turn_grants(self, space_id, got)
+                    grants_once.append(got)
+            found = grants_once[0]
+            if isinstance(found, Exception):
+                raise found
+            return list(found)
+
         key = turn_key(session_id, space_id)
         if allow_follow:
+            try:
+                follow_grants = set(space_grants())
+            except SERVING_ERRORS:
+                raise
+            except Exception:  # noqa: BLE001 -- refuse closed, do not run the SQL
+                follow_grants = set()
             follow = maybe_followup(
                 question,
                 prior=self._turns.get(key) if key else None,
@@ -878,6 +972,8 @@ class Executor:
                 session_id=session_id,
                 warehouse=self._warehouse,
                 tables=tables,
+                grantable=follow_grants,
+                dialect=self.dialect,
             )
             if follow is not None:
                 self._store_turn(session_id, space_id, follow)
@@ -890,7 +986,7 @@ class Executor:
                 space_id=space_id,
                 session_id=session_id,
                 warehouse=self._warehouse,
-                grantable=set(self.grantable_tables(space_id=space_id)),
+                grantable=set(space_grants()),
                 tables=tables,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
@@ -901,6 +997,7 @@ class Executor:
                     space_id=space_id,
                     session_id=session_id,
                 ),
+                dialect=self.dialect,
             )
             if verified_env is not None:
                 self._store_turn(session_id, space_id, verified_env)
@@ -913,7 +1010,7 @@ class Executor:
                 question,
                 space_id=space_id,
                 session_id=session_id,
-                grantable=set(self.grantable_tables(space_id=space_id)),
+                grantable=set(space_grants()),
                 tables=tables,
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
@@ -925,6 +1022,7 @@ class Executor:
                     session_id=session_id,
                     event_type="ask.governed_metric",
                 ),
+                dialect=self.dialect,
             )
             if pack_env is not None:
                 self._store_turn(session_id, space_id, pack_env)
@@ -962,7 +1060,7 @@ class Executor:
         # Intersection with granted still narrows a selection; an unread grant
         # never falls back to the whole space.
         try:
-            granted = self.grantable_tables(space_id=space_id)
+            granted = space_grants()
         except (
             ServingLeaseCap,
             ServingLeaseQueueFull,
@@ -1001,10 +1099,11 @@ class Executor:
 
         asked = question
         question = with_grounded_scope(question, tables)
+        # dms#284: an ungranted sheet refuses before any model call. The
+        # phrase lane only names the sheet server's table. The grant is
+        # relation_gap, the same keys as serve_gap. No probe SQL is built.
+        # A later lane must not answer that question from another table.
         if allow_bronze:
-            # dms#284: readable bronze tables are the active listing intersected
-            # with the grants ``grantable_tables`` just returned. Same predicate
-            # as the grounded ask (``table_is_granted``). No Space fails closed.
             target = bronze_lane_table(question)
             if target is None:
                 bronze_env = None
@@ -1016,17 +1115,24 @@ class Executor:
                     session_id=session_id,
                 )
             else:
-                from dms_executor.ontology import table_is_granted
-
                 active = set(
                     ingested_bronze_tables(self._warehouse, space_id=space_id)
                 )
-                bronze_readable = active.intersection(granted)
-                if table_is_granted(target, bronze_readable):
-                    # Flag off: do not call the sheet lane. Grant abstains above
-                    # and below stay. They return no rows. An ungranted table
-                    # or a missing Space is a refusal, and a later lane must
-                    # not answer it from some other table.
+                bronze_readable = set(active).intersection(granted)
+                sheet_gap = relation_gap(
+                    target,
+                    grantable=bronze_readable,
+                    dialect=self.dialect,
+                )
+                if sheet_gap == "sql_dialect_unknown":
+                    bronze_env = sql_refusal_envelope(
+                        reason=sheet_gap,
+                        space_id=space_id,
+                        session_id=session_id,
+                        route="abstain",
+                        question=question,
+                    )
+                elif sheet_gap is None:
                     bronze_env = (
                         maybe_bronze_sheet_ask(
                             question,
@@ -1101,6 +1207,8 @@ class Executor:
                 bind_on_miss=False,
                 ontology=space_onto,
                 demo_ontology_allowed=space_onto is None,
+                # Extract and EXPLAIN run on the DuckDB serving copy
+                # (connect_serving), not on the source connector in self.dialect.
                 dialect=SERVING_DIALECT,
             )
             if gen_env is not None:
@@ -1169,7 +1277,68 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
-        sql_used = str(getattr(resp, "sql_used", None) or "")
+        raw_sql = getattr(resp, "sql_used", None)
+        sql_used = str(raw_sql or "")
+        if sql_used.strip() and not getattr(resp, "abstained", False):
+            gap = serve_gap(
+                sql_used,
+                grantable=set(readable),
+                dialect=self.dialect,
+                warehouse=self._warehouse,
+            )
+            # A relation miss abstains here, before the envelope mapper can
+            # demote it into a different sentence. The ticket keeps the name.
+            # A granted lake alias or a bare grant falls through and stands.
+            # A file or a script uses the structural code.
+            from dms_executor.name_echo import (
+                served_relation_miss,
+                served_relations_covered,
+            )
+
+            if (
+                gap
+                and served_relation_miss(
+                    gap, sql_used, set(readable), dialect=self.dialect
+                )
+                and served_relations_covered(sql_used, set(readable))
+            ):
+                pass
+            elif gap and served_relation_miss(
+                gap, sql_used, set(readable), dialect=self.dialect
+            ):
+                refused = refuse_ungranted_answer(
+                    {
+                        "abstained": False,
+                        "sql_used": sql_used,
+                        "answer_id": "ans_served_ungranted",
+                        "text": "",
+                        "rows": [],
+                        "values": [],
+                    },
+                    question=question,
+                    grants=set(readable),
+                )
+                refused["space_id"] = space_id
+                refused["session_id"] = session_id
+                route = getattr(resp, "route", None)
+                if isinstance(route, str) and route.strip():
+                    refused["route"] = route
+                env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+            elif gap:
+                # One code. The relation name is not part of it.
+                refused = sql_refusal_envelope(
+                    reason=gap,
+                    shown=customer_grant_reason(gap),
+                    space_id=space_id,
+                    session_id=session_id,
+                    route="abstain",
+                    question=question,
+                )
+                env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
         if sql_used and not is_demo_space(space_id) and not getattr(resp, "abstained", False):
             # dms#277 F-e: the contract ask's SQL obeys the same text-numeric rule.
             num_why = untyped_numeric_reason(sql_used, self._warehouse or warehouse_path())
@@ -1247,6 +1416,11 @@ class Executor:
         raw = pending.get("ask_path")
         return str(raw) if isinstance(raw, str) else None
 
+    def reconfirm_pending(self, token: str) -> dict[str, Any] | None:
+        from dms_executor.reconfirm import peek_pending
+
+        return peek_pending(token)
+
     def confirm_reconfirm(self, token: str, yes: bool) -> dict[str, Any]:
         """Yes re-runs the suggested question on the normal ladder. No logs a ticket."""
         from dms_executor.reconfirm import decline_envelope, take_pending
@@ -1296,12 +1470,18 @@ class Executor:
         *,
         reminted: bool = False,
     ) -> Any:
-        reject_hostile_chat_sql(sql)
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
         if self._cortex is None:
             raise RuntimeError("CortexClient required for submit")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
+        gap = serve_gap(
+            sql,
+            grantable=set(acl.row_predicates),
+            dialect=self.dialect,
+        )
+        if gap:
+            raise SecurityEvent(gap, gap)
         manifest = self._minter.mint_manifest(acl)
         req = SubmitRequest(
             pool=PoolSpec(id=acl.pool_id),
@@ -1534,6 +1714,17 @@ def map_ask_response_to_envelope(
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
+    from dms_executor.route_stamp import ROUTE_L1, ROUTE_VERIFIED, stamp_route
+
+    # Cortex built this answer. Its own L0/L1 badge names the rung (grade52
+    # reads the same badge). Any other badge, L2 included, does not say which
+    # route served it, so nothing is stamped and it stays unattributed. An
+    # abstain keeps the abstain:<stage> that build_abstain wrote.
+    served = {"L0_CERTIFIED": ROUTE_VERIFIED, "L1_GOVERNED_METRIC": ROUTE_L1}.get(
+        str(env.get("badge") or "")
+    )
+    if served and env.get("abstained") is not True:
+        stamp_route(env, served)
     return env
 
 
@@ -1591,6 +1782,7 @@ __all__ = [
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
+    "hide_echo",
     "read_health_engine_clock",
     "list_bronze_tables",
     "list_promote_targets",

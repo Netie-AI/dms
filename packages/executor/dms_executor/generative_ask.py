@@ -19,7 +19,6 @@ from __future__ import annotations
 import copy
 import json
 import re
-import string
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -78,7 +77,14 @@ from dms_executor.gen_path_refuse import (
     customer_abstain_text,
     ranking_missing_metric_gap,
 )
-from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    serve_gap,
+    sql_refusal_envelope,
+    sqlglot_dialect,
+    structural_grant_stop,
+)
+from dms_executor.manifest import OpenVaultTokenError
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -93,6 +99,13 @@ from dms_executor.ontology import (
     detect_supply_chain_grains,
     missing_join_for_ungranted,
     try_compile_multi_grain,
+)
+from dms_executor.route_stamp import (
+    ROUTE_COMPILE,
+    ROUTE_LADDER,
+    ROUTE_MODEL,
+    freeze_route,
+    stamp_route,
 )
 from dms_executor.schema_context import (
     SCHEMA_CONTEXT_ENVELOPE_KEY,
@@ -117,9 +130,7 @@ from dms_executor.space_ontology import (
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
-    EXTRACT_DIALECT,
     apply_sql_credit,
-    extract_dialect,
     loop_entry,
     run_model_loop,
 )
@@ -685,294 +696,33 @@ def cited_relations(sql: str) -> set[str]:
     return {_relation_bare(n) for n in _sql_cited_labels(sql) if _relation_bare(n)}
 
 
-_ASCII_FOLD = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
-
-
-def _duckdb_fold(name: str) -> str:
-    """Fold a name the way DuckDB matches it: ASCII letters only.
-
-    DuckDB keeps "Ä" and "ä" as two tables. str.lower() merged them, so a
-    grant on one passed a read of the other.
-    """
-    return name.translate(_ASCII_FOLD)
-
-
-def _sql_ident(node: Any) -> str:
-    if node is None:
-        return ""
-    name = getattr(node, "name", None)
-    return name if isinstance(name, str) else str(node)
-
-
-def _catalog_token(name: str, catalog: str, schema: str) -> str | None:
-    """``catalog.schema.name`` when the read names a catalog, else None.
-
-    A bronze grant matches the bare table. It must not match another database
-    spelled in front of that table.
-    """
-    cat = _duckdb_fold(catalog)
-    if not cat:
-        return None
-    parts = (cat, _duckdb_fold(schema), _duckdb_fold(name))
-    return ".".join(part for part in parts if part)
-
-
-def _cross_catalog_key(
-    name: str,
-    catalog: str,
-    schema: str,
-    *,
-    current: str,
-    databases: set[str],
-) -> str | None:
-    """The grant key of a read DuckDB would serve from another database.
-
-    Three-part ``catalog.schema.name`` is cross-catalog when the catalog is
-    not the one this connection has open. Two-part ``db.table`` is the same
-    thing when ``db`` is an attached database (DuckDB records it as the schema).
-    The current database, and a schema of it, stay the bare table name.
-    """
-    explicit = _catalog_token(name, catalog, schema)
-    if explicit is not None and _duckdb_fold(catalog) != current:
-        return explicit
-    sch = _duckdb_fold(schema)
-    if explicit is None and sch and sch in databases and sch != current:
-        return f"{sch}.{_duckdb_fold(name)}"
-    return None
-
-
-def _binds_to_cte(table: Any, name: str) -> bool:
-    """True only when DuckDB binds this unqualified table name to a CTE.
-
-    The nearest enclosing WITH that defines the name decides. The query body
-    sees every CTE. A CTE body sees only the CTEs before it. A reference to
-    its own name or to a later CTE can bind to the base table in DuckDB (a
-    plain CTE does, and so does the anchor of a recursive CTE). The recursive
-    term binds to the CTE instead, so a legitimate WITH RECURSIVE is refused
-    unless its name is granted. Either way the binding is not proven here,
-    so the name is grant-checked.
-    """
-    from sqlglot import exp
-
-    path = [table]
-    node = table.parent
-    while node is not None:
-        with_ = node.args.get("with")
-        if isinstance(with_, exp.With):
-            ctes = list(with_.expressions)
-            names = [_duckdb_fold(cte.alias_or_name) for cte in ctes]
-            if name in names:
-                if path[-1] is not with_:
-                    return True
-                at = next((i for i, cte in enumerate(ctes) if cte is path[-2]), 0)
-                return name not in names[at:]
-        path.append(node)
-        node = node.parent
-    return False
-
-
-def _serving_relation_names(sql: str) -> set[str] | None:
-    """Bare names of the tables DuckDB reads, for the grant check.
-
-    Every ``Table`` node counts. Scope sources are keyed by alias, so
-    ``(SELECT 1) AS payroll_secret`` hid the real ``payroll_secret``. A
-    schema-qualified name contributes its table identifier. An unqualified
-    name is skipped only when it certainly binds to a CTE.
-
-    None means the check cannot prove what the SQL reads, and the caller
-    refuses. That covers SQL that does not parse, and a statement that is not
-    a query (``CALL`` parses as an opaque Command). It also covers a FROM,
-    JOIN or LATERAL item that is a function call and not a table name
-    (``query_table``, ``query``, ``duckdb_tables``, ``range``).
-
-    sqlglot can still miss a read DuckDB makes, so ``validate_compiled_sql``
-    also grant-checks DuckDB's own parse (``_duckdb_read_names``).
-    """
-    from sqlglot import exp, parse
-
-    try:
-        trees = [tree for tree in parse(sql or "", read=SERVING_DIALECT) if tree is not None]
-    except Exception:
-        return None
-    items = (exp.Table, exp.Subquery, exp.Unnest, exp.Values, exp.Lateral)
-    names: set[str] = set()
-    for tree in trees:
-        if not isinstance(tree, exp.Query) or tree.find(exp.Command) is not None:
-            return None
-        for clause in tree.find_all(exp.From, exp.Join, exp.Lateral):
-            allowed = (exp.Subquery,) if isinstance(clause, exp.Lateral) else items
-            if not isinstance(clause.this, allowed):
-                return None
-        for table in tree.find_all(exp.Table):
-            if not isinstance(table.this, exp.Identifier):
-                return None
-            name = _duckdb_fold(table.name)
-            catalog = _sql_ident(table.args.get("catalog"))
-            schema = _sql_ident(table.args.get("db"))
-            if catalog or schema or not _binds_to_cte(table, name):
-                names.add(_catalog_token(name, catalog, schema) or name)
-    return names
-
-
-# DuckDB's JSON parse tree. A query node carries "modifiers", a table
-# reference carries "sample", an expression carries "class".
-_DUCKDB_QUERY_NODES = frozenset(
-    {"SELECT_NODE", "SET_OPERATION_NODE", "RECURSIVE_CTE_NODE", "CTE_NODE"}
-)
-_DUCKDB_TABLE_REFS = frozenset(
-    {"BASE_TABLE", "JOIN", "SUBQUERY", "EXPRESSION_LIST", "EMPTY", "EMPTY_FROM", "PIVOT"}
-)
-
-
-def _duckdb_read_names(con: Any, sql: str) -> set[str] | None:
-    """Bare names of the tables DuckDB's own parser reads, for the grant check.
-
-    sqlglot does not parse every statement the way DuckDB runs it. It reads
-    ``(TABLE payroll_secret)`` as a column named TABLE, and ``FROM (TABLE t)``
-    as a table named ``table``. DuckDB runs both as ``SELECT * FROM t``. So
-    the tree DuckDB itself parsed (``json_serialize_sql``) is grant-checked
-    as well, wherever a BASE_TABLE sits: FROM, a CTE body or any expression.
-
-    An unqualified name is skipped only when an enclosing WITH certainly
-    binds it, by the rule in ``_binds_to_cte``: a CTE body sees the CTEs
-    before it, and the WITH nearest the reference decides.
-
-    None means the parse cannot be proven, and the caller refuses: DuckDB
-    could not serialize it, or it holds a table function, a SHOW, DESCRIBE
-    or SUMMARIZE reference, or a node type this walk does not know.
-    """
-    import json
-
-    import duckdb
-
-    try:
-        row = con.execute("SELECT json_serialize_sql(?)", [sql]).fetchone()
-        tree = json.loads(row[0])
-    except (duckdb.Error, TypeError, ValueError, IndexError):
-        return None
-    if not isinstance(tree, dict) or tree.get("error") is not False:
-        return None
-    try:
-        current = _duckdb_fold(str(con.execute("SELECT current_database()").fetchone()[0]))
-        databases = {
-            _duckdb_fold(str(row[0]))
-            for row in con.execute("SELECT database_name FROM duckdb_databases()").fetchall()
-        }
-    except (duckdb.Error, TypeError, ValueError, IndexError, AttributeError):
-        return None
-    names: set[str] = set()
-
-    def walk(node: Any, visible: frozenset[str]) -> bool:
-        if isinstance(node, list):
-            return all(walk(item, visible) for item in node)
-        if not isinstance(node, dict):
-            return True
-        kind = node.get("type")
-        if isinstance(kind, str) and "class" not in node:
-            if "modifiers" in node and kind not in _DUCKDB_QUERY_NODES:
-                return False
-            if ("sample" in node or "table_name" in node) and "modifiers" not in node:
-                if kind not in _DUCKDB_TABLE_REFS:
-                    return False
-            if kind == "BASE_TABLE":
-                catalog = str(node.get("catalog_name") or "")
-                schema = str(node.get("schema_name") or "")
-                name = _duckdb_fold(str(node.get("table_name") or ""))
-                if not name:
-                    return False
-                if catalog or schema or name not in visible:
-                    crossed = _cross_catalog_key(
-                        name, catalog, schema, current=current, databases=databases
-                    )
-                    names.add(crossed if crossed is not None else name)
-        ctes = node.get("cte_map")
-        if ctes is not None:
-            entries = ctes.get("map") if isinstance(ctes, dict) else None
-            if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-                return False
-            keys = [_duckdb_fold(str(e.get("key") or "")) for e in entries]
-            for at, entry in enumerate(entries):
-                scope = (visible | set(keys[:at])) - set(keys[at:])
-                if not walk(entry, frozenset(scope)):
-                    return False
-            visible = visible | frozenset(keys)
-        return all(walk(value, visible) for key, value in node.items() if key != "cte_map")
-
-    return names if walk(tree.get("statements"), frozenset()) else None
-
-
-def _grant_keys(name: str) -> set[str]:
-    """Names a grant covers, folded the way DuckDB folds, not with ``str.lower``.
-
-    ``table_is_granted`` accepts the table, ``warehouse_<table>``, and the
-    last identifier of a qualified grant. ``bronze.<name>`` is that last
-    identifier. The grant is also kept whole, so a table whose name contains
-    a dot (``usd.book``) still matches. ``str.lower`` would treat "Ä" and
-    "ä" as one table.
-    """
-    text = _duckdb_fold(str(name or "").strip().strip('"').strip("`").strip("[]"))
-    if not text:
-        return set()
-    bare = text.rsplit(".", 1)[-1]
-    return {text, bare} if bare else {text}
-
-
-def _ungranted(named: set[str] | None, grantable: set[str]) -> str | None:
-    """The grant refusal for a read set, or None when every name is granted.
-
-    A DuckDB-folded bare name passes when the grant is that name,
-    ``warehouse_<name>``, or ``bronze.<name>``. A cross-catalog read keeps
-    its catalog, so it does not pass on the bronze grant.
-    """
-    if named is None:
-        return "ungranted"
-    allowed: set[str] = set()
-    for raw in grantable:
-        allowed.update(_grant_keys(raw))
-    missing = {t for t in named if t not in allowed and f"warehouse_{t}" not in allowed}
-    if missing:
-        return f"ungranted:{','.join(sorted(missing))}"
-    return None
-
-
-def _cte_aliases(sql: str) -> set[str]:
-    """CTE names are not tables. A grant check must not refuse ``JOIN t``."""
-    try:
-        roots = sqlglot.parse(sql, read="duckdb")
-    except Exception:  # noqa: BLE001
-        return set()
-    out: set[str] = set()
-    for root in roots:
-        if root is None:
-            continue
-        for cte in root.find_all(exp.CTE):
-            name = _duckdb_fold(str(cte.alias or ""))
-            if name:
-                out.add(name)
-    return out
-
-
 def validate_compiled_sql(
     sql: str,
     *,
     grantable: set[str],
     warehouse: Path | None,
+    dialect: str | None = None,
 ) -> str | None:
-    """None if the compiled SQL may be submitted. Else a reason (do not execute)."""
+    """None if the compiled SQL may be submitted. Else a reason (do not execute).
+
+    Grants are one ``serve_gap`` call: statement count, the hostile scanner,
+    then the allow-list. A miss returns here, before EXPLAIN. EXPLAIN itself
+    runs on the DuckDB serving copy. When the caller omitted the dialect and
+    that file is present, the check uses the serving dialect and names a
+    missing table (``ungranted:<table>``). An explicit dialect keeps the bare
+    code. The warehouse is not passed into ``serve_gap``: a qualifier this
+    file does not know stays a grant miss, and the contract ask is what binds
+    a qualifier against the catalog.
+    """
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
-    try:
-        reject_hostile_chat_sql(sql)
-    except SecurityEvent as exc:
-        return f"hostile_sql:{exc.code}"
-    named = _serving_relation_names(sql)
-    if named is None:
-        # Still refused. A statement that is not one SELECT keeps the
-        # statement gate's own reason, as on main; anything else is ungranted.
-        return _statement_shape_refusal(sql, warehouse) or "ungranted"
-    refused = _ungranted(named, grantable)
-    if refused:
-        return refused
+    cite = dialect is None and warehouse is not None and Path(warehouse).is_file()
+    read = dialect if dialect is not None else (SERVING_DIALECT if cite else None)
+    gap = serve_gap(
+        sql, grantable=grantable, dialect=read, cite_missing=cite
+    )
+    if gap:
+        return gap
     if warehouse is None or not Path(warehouse).is_file():
         return "warehouse_missing"
     # EXPLAIN runs on the pooled serving cursor (read-only, external access
@@ -982,32 +732,12 @@ def validate_compiled_sql(
         gate = _refusal_before_explain(con, sql)
         if gate:
             return gate
-        # The read set in DuckDB's own parse must be granted too, not only the
-        # one sqlglot saw. json_serialize_sql parses the text and runs none of it.
-        refused = _ungranted(_duckdb_read_names(con, sql), grantable)
-        if refused:
-            return refused
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
         return f"explain:{type(exc).__name__}"
     finally:
         con.close()
     return None
-
-
-def _statement_shape_refusal(sql: str, warehouse: Path | None) -> str | None:
-    """``multi_statement`` or ``statement_not_allowed`` from the statement gate, else None.
-
-    Splits the SQL on the serving cursor; nothing is executed.
-    """
-    if warehouse is None or not Path(warehouse).is_file():
-        return None
-    con = connect_serving(Path(warehouse))
-    try:
-        gate = _refusal_before_explain(con, sql)
-    finally:
-        con.close()
-    return gate if gate in {"multi_statement", "statement_not_allowed"} else None
 
 
 REASON_UNTYPED_NUMERIC = "untyped_numeric"
@@ -1044,7 +774,7 @@ def untyped_numeric_reason(sql: str, warehouse: Path | None) -> str | None:
     try:
         named = {
             c.name.lower()
-            for root in sqlglot.parse(sql, read="duckdb")
+            for root in sqlglot.parse(sql, read=SERVING_DIALECT)
             if root is not None
             for c in root.find_all(exp.Column)
         }
@@ -1090,6 +820,55 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _grant_ticket_reason(
+    reason: str, sql: str | None, grantable: set[str], dialect: str | None
+) -> str | None:
+    """Ticket text that still names the relation. The visible code stays bare.
+
+    ``ungranted:`` is written once. A second copy would make the scrub read
+    the word ``ungranted`` as a table and cut it out of ``checker:ungranted``.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        return None
+    heads = [part.strip() for part in str(reason or "").split(":") if part.strip()]
+    if not heads:
+        return None
+    if "ungranted" not in heads and "sql_relation_not_granted" not in heads:
+        return None
+    cited = _cited_ungranted(sql, grantable, dialect)
+    if not cited or ":" not in cited:
+        return None
+    tail = cited.split(":", 1)[1]
+    if not tail or tail in heads:
+        return None
+    if "ungranted" in heads:
+        return f"{reason}:{tail}"
+    return f"{reason}:{cited}"
+
+
+def _cited_ungranted(sql: str, grantable: set[str], dialect: str | None) -> str | None:
+    """Relation tail for the ticket. The visible code stays bare."""
+    named = serve_gap(sql, grantable=set(grantable), dialect=dialect, cite_missing=True)
+    if (
+        isinstance(named, str)
+        and named.startswith("ungranted:")
+        and named not in {"ungranted:file", "ungranted:unparsed"}
+    ):
+        return named
+    return None
+
+
+def _sql_route(payload: dict[str, Any] | None) -> str:
+    """Model SQL is the model route only when the producer named the model.
+
+    No ``served_model`` is missing attribution (SERVED-ATTR-01): no route is
+    stamped, so the envelope stays unattributed. It is never a rule path.
+    """
+    raw = payload.get("served_model") if isinstance(payload, dict) else None
+    name = str(raw).strip() if isinstance(raw, str) else ""
+    return ROUTE_MODEL if name else ""
+
+
 def _abstain(
     question: str,
     reason: str,
@@ -1101,9 +880,11 @@ def _abstain(
     sql: str | None = None,
     retries: int = 0,
     stage: str = "generative",
+    ticket_reason: str | None = None,
 ) -> dict[str, Any]:
     env = build_abstain(
         reason=reason,
+        ticket_reason=ticket_reason,
         question=question,
         sql=sql,
         retries=retries,
@@ -1120,6 +901,7 @@ def _abstain(
         route="generated",
     )
     assert_envelope_valid(env)
+    # build_abstain already wrote abstain:<stage>. Successes stamp their own.
     return with_plan_source(env, plan_source)
 
 
@@ -1137,6 +919,7 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -1171,7 +954,10 @@ def _l2_envelope(
     )
     if env.get("abstained"):
         assert_envelope_valid(env)
-        return with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        if served_route:
+            stamp_route(env, served_route)
+        return env
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -1207,6 +993,8 @@ def _l2_envelope(
             "checker_version": version,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    if served_route:
+        stamp_route(env, served_route)
     return env
 
 
@@ -1227,6 +1015,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
     grantable: set[str] | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
@@ -1336,6 +1125,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        served_route=served_route,
     )
 
 
@@ -1404,6 +1194,7 @@ def _try_multi_grain_envelope(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
@@ -1411,7 +1202,9 @@ def _try_multi_grain_envelope(
     None means this ask is not a multi-grain compile (caller continues).
     """
     lock = _multi_grain_measure(q, onto, payload)
-    multi = try_compile_multi_grain(onto, lock or None, q, grantable=allowed)
+    multi = try_compile_multi_grain(
+        onto, lock or None, q, grantable=allowed, dialect=dialect
+    )
     if multi is None:
         return None
     source = PLAN_SOURCE_ONTOLOGY
@@ -1432,7 +1225,9 @@ def _try_multi_grain_envelope(
             route="generated",
             question=q,
         )
-    why = validate_compiled_sql(multi.sql, grantable=allowed, warehouse=lake)
+    why = validate_compiled_sql(
+        multi.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     # Not one SELECT: refused first, before any other branch reads `why`.
     if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
         return _abstain(
@@ -1466,6 +1261,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        served_route=ROUTE_COMPILE,
         grantable=allowed,
     )
 
@@ -1480,6 +1276,7 @@ def rank_window_ask(
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
 
@@ -1521,7 +1318,9 @@ def rank_window_ask(
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")
-    bad = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    bad = validate_compiled_sql(
+        compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     if bad in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
         return _no(bad)
     if bad:
@@ -1545,6 +1344,7 @@ def rank_window_ask(
         warehouse=lake,
         grantable=allowed,
         lead=lead,
+        served_route=ROUTE_LADDER,
     )
 
 
@@ -1639,7 +1439,9 @@ def _run_extract_loop(
             )
             if join_why:
                 return join_why
-        why = validate_compiled_sql(sql, grantable=grantable, warehouse=warehouse)
+        why = validate_compiled_sql(
+            sql, grantable=grantable, warehouse=warehouse, dialect=dialect
+        )
         if why and why.startswith("explain:"):
             detail = _explain_error_text(sql, warehouse)
             if detail:
@@ -1666,6 +1468,7 @@ def _run_extract_loop(
             warehouse=warehouse,
             grantable=grantable,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            served_route=_sql_route(payload),
         )
 
     def abstain(
@@ -1685,6 +1488,9 @@ def _run_extract_loop(
                 retries=retries,
                 stage="extract_loop",
             )
+        # The loop outcome the customer reads stays the bare checker code.
+        # The ticket keeps the relation serve_gap named (NAME-ECHO-01).
+        ticket_reason = _grant_ticket_reason(reason, sql, grantable, dialect)
         return _abstain(
             question,
             reason,
@@ -1694,6 +1500,7 @@ def _run_extract_loop(
             sql=sql,
             retries=retries,
             stage="extract_loop",
+            ticket_reason=ticket_reason,
         )
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1715,10 +1522,14 @@ def _run_extract_loop(
             grounded_tables=sorted(cited_relations(sql)),
         )
         assert_envelope_valid(env)
-        return with_plan_origin(
+        stamped = with_plan_origin(
             with_plan_source(env, PLAN_SOURCE_ONTOLOGY),
             PLAN_ORIGIN_GENERATE_SQL,
         )
+        route = _sql_route(payload)
+        if route:
+            stamp_route(stamped, route)
+        return stamped
 
     return run_model_loop(
         question=question,
@@ -1786,6 +1597,21 @@ def maybe_generative_ask(
     q = normalize_ask_question(question)
     if not q:
         return None
+    # Model SQL is checked and EXPLAINed on the DuckDB serving copy. A caller
+    # that already handed us that file and no dialect is that engine. No file
+    # and no dialect stays unknown: there is no silent fallback.
+    if dialect is None and warehouse is not None and Path(warehouse).is_file():
+        dialect = SERVING_DIALECT
+    resolved = sqlglot_dialect(dialect)
+    if resolved is None:
+        return sql_refusal_envelope(
+            reason="sql_dialect_unknown",
+            space_id=space_id,
+            session_id=session_id,
+            route="generated",
+            question=q,
+        )
+    dialect = resolved
     if is_uncertified_paraphrase(q):
         return _abstain(
             q, "uncertified paraphrase: not a generative certify boundary",
@@ -1848,6 +1674,7 @@ def maybe_generative_ask(
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
+        dialect=dialect,
     )
     if ranked_env is not None:
         ranked_env["generate_legs"] = generate_legs_view(None)
@@ -1923,8 +1750,6 @@ def maybe_generative_ask(
     trail_notes: list[str] = []
     validate_why: str | None = None
     loop_attempts: list[dict[str, Any]] = []
-    dialect = EXTRACT_DIALECT if cloop_b_enabled() else extract_dialect(lake)
-
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
         env = with_setup_fields(env, setup_src)
         if not isinstance(env, dict):
@@ -1945,7 +1770,7 @@ def maybe_generative_ask(
                 stamped["index_stamp"] = index_stamp
             # Through PII-01, not after it. Hint values are already tokens.
             stamped = mask_unknown_keys(stamped)
-        return stamped
+        return freeze_route(stamped)
 
     if verify_cache_missing:
         return _stamp(
@@ -2072,6 +1897,7 @@ def maybe_generative_ask(
         session_id=session_id,
         submit=submit,
         ledger_append=ledger_append,
+        dialect=dialect,
     )
     if multi_env is not None:
         return _stamp(with_plan_origin(multi_env, origin))
@@ -2088,7 +1914,9 @@ def maybe_generative_ask(
                     space_id=space_id, session_id=session_id, plan_source=source,
                 )
             )
-        why = validate_compiled_sql(sql, grantable=allowed, warehouse=lake)
+        why = validate_compiled_sql(
+            sql, grantable=allowed, warehouse=lake, dialect=dialect
+        )
         # Not one SELECT: refused first, before any other branch reads `why`.
         if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
             return _stamp(
@@ -2151,22 +1979,37 @@ def maybe_generative_ask(
                 )
             )
         if why:
+            shown = customer_grant_reason(why)
+            cited = (
+                _cited_ungranted(sql, allowed, dialect)
+                if shown == "ungranted" or why == "sql_relation_not_granted"
+                else None
+            )
             if cloop_b_enabled():
                 loop_attempts.append(
                     loop_entry(
                         prompt=q,
                         payload=payload if isinstance(payload, dict) else None,
                         sql=sql,
-                        outcome=f"checker:{why}",
+                        outcome=f"checker:{shown}",
                         dialect=dialect,
                     )
                 )
-            if why.startswith("hostile_sql:") or ranked_slots is None:
+            # A file or a script that did not parse must not climb. The climb
+            # would hand the reject text, including an object name, back out.
+            if (
+                why.startswith("hostile_sql:")
+                or structural_grant_stop(why)
+                or ranked_slots is None
+            ):
                 return _stamp(
                     _abstain(
-                        q, f"validate:{why}",
+                        q, f"validate:{shown}",
                         space_id=space_id, session_id=session_id, plan_source=source,
                         notes=trail_notes,
+                        ticket_reason=(
+                            f"validate:{cited}" if cited and cited != shown else None
+                        ),
                     )
                 )
             # Climb: invalid SELECT is not authority. Ranked DMS slots may be.
@@ -2181,6 +2024,7 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(
                     sql,
@@ -2195,6 +2039,7 @@ def maybe_generative_ask(
                     warehouse=lake,
                     grantable=allowed,
                     plan_origin=origin,
+                    served_route=sql_route,
                 )
             )
     if kind != "plan":
@@ -2359,7 +2204,9 @@ def maybe_generative_ask(
             )
         )
 
-    why = validate_compiled_sql(compiled.sql, grantable=allowed, warehouse=lake)
+    why = validate_compiled_sql(
+        compiled.sql, grantable=allowed, warehouse=lake, dialect=dialect
+    )
     # Not one SELECT: refused first, before any other branch reads `why`.
     if why in {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}:
         return _stamp(
@@ -2379,10 +2226,17 @@ def maybe_generative_ask(
             )
         )
     if why:
+        shown = customer_grant_reason(why)
+        cited = (
+            _cited_ungranted(compiled.sql, allowed, dialect)
+            if shown == "ungranted" or why == "sql_relation_not_granted"
+            else None
+        )
         return _stamp(
             _abstain(
-                q, f"validate:{why}",
+                q, f"validate:{shown}",
                 space_id=space_id, session_id=session_id, plan_source=source,
+                ticket_reason=(f"validate:{cited}" if cited and cited != shown else None),
             )
         )
     if not origin and source != PLAN_SOURCE_BIND:
@@ -2408,5 +2262,6 @@ def maybe_generative_ask(
             warehouse=lake,
             grantable=allowed,
             plan_origin=origin,
+            served_route=ROUTE_COMPILE,
         )
     )

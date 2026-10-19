@@ -22,6 +22,13 @@ from typing import Any, Generic, TypeVar
 from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    relation_gap,
+    serve_gap,
+    sql_refusal_envelope,
+    structural_grant_stop,
+)
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -479,6 +486,17 @@ def maybe_uncertified_refuse_ask(
         ),
     )
     assert_envelope_valid(env)
+    return _stamp_l1(env)
+
+
+def _stamp_l1(env: dict[str, Any]) -> dict[str, Any]:
+    """L1 only when this path executed SQL. A no-SQL abstain keeps abstain:<stage>."""
+    from dms_executor.route_stamp import ROUTE_L1, stamp_route
+
+    sql_used = env.get("sql_used")
+    if not isinstance(sql_used, str) or not sql_used.strip():
+        return env
+    stamp_route(env, ROUTE_L1)
     return env
 
 
@@ -486,11 +504,9 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _grant_covers(table: str, allowed: set[str]) -> bool:
-    """True when the Space grant names the table or its Cortex warehouse_ alias."""
-    if table in allowed:
-        return True
-    return f"warehouse_{table}" in allowed
+def _grant_covers(table: str, allowed: set[str], *, dialect: str | None) -> bool:
+    """True when ``relation_gap`` grants ``table``. A missing dialect covers nothing."""
+    return relation_gap(table, grantable=set(allowed), dialect=dialect) is None
 
 
 def match_pack_phrase(
@@ -515,25 +531,28 @@ def lookup_pack_metric(
     *,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
+    dialect: str | None = None,
 ) -> PackMetric | None:
     """Return the pack metric when the phrase matches and grants cover it.
 
     The phrase set is the ten base metrics plus the score-pack allowlist.
     A Space that does not grant every table the SQL names is not a hit here
     (Warehouse Ops vs suppliers). ``maybe_pack_ask`` names that as ``grants
-    fail`` instead of treating it as no match. Cortex ``warehouse_<table>``
-    aliases count as the same grant. Column presence is Cortex's job on
-    submit -- do not probe the thin DMS local file.
+    fail`` instead of treating it as no match. Column presence is Cortex's
+    job on submit -- do not probe the thin DMS local file.
     """
     hit = match_pack_phrase(question, tables=tables)
     if hit is None:
         return None
     allowed = grantable if grantable is not None else set()
-    if any(not _grant_covers(t, allowed) for t in hit.tables):
+    if any(not _grant_covers(t, allowed, dialect=dialect) for t in hit.tables):
         return None
     try:
         reject_hostile_chat_sql(hit.sql)
     except SecurityEvent:
+        return None
+    gap = serve_gap(hit.sql, grantable=set(allowed), dialect=dialect)
+    if gap:
         return None
     return hit
 
@@ -608,7 +627,7 @@ def curated_pack_metric_miss(
         route="abstain",
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
 
 
 def _curated_step_refusal(
@@ -646,7 +665,7 @@ def _curated_step_refusal(
         route="abstain",
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
 
 
 def envelope_from_pack_submit(
@@ -689,7 +708,30 @@ def envelope_from_pack_submit(
         grounded_tables=list(metric.tables),
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
+
+
+def _grant_miss_code(
+    gap: str | None,
+    phrase: PackMetric,
+    grantable: set[str] | None,
+    dialect: str | None,
+) -> str | None:
+    """The grant checker's code when this pack SQL is not granted.
+
+    ``None`` when the miss is not a grant miss. The customer sentence stays
+    the curated step text; this is only the code.
+    """
+    if isinstance(gap, str) and gap:
+        shown = customer_grant_reason(gap)
+        if shown in {"ungranted", "sql_relation_not_granted"}:
+            return shown
+    allowed = set(grantable or ())
+    for table in phrase.tables:
+        rel = relation_gap(table, grantable=allowed, dialect=dialect)
+        if rel == "sql_relation_not_granted":
+            return rel
+    return None
 
 
 def maybe_pack_ask(
@@ -701,6 +743,7 @@ def maybe_pack_ask(
     tables: list[str] | None = None,
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L1 envelope when the demo pack matches and Cortex executed the SQL.
 
@@ -711,6 +754,15 @@ def maybe_pack_ask(
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
         return None
+    gap = serve_gap(phrase.sql, grantable=set(grantable or ()), dialect=dialect)
+    if gap and structural_grant_stop(gap):
+        return sql_refusal_envelope(
+            reason=gap,
+            space_id=space_id,
+            session_id=session_id,
+            route="governed_metric",
+            question=question,
+        )
     try:
         reject_hostile_chat_sql(phrase.sql)
     except SecurityEvent:
@@ -719,11 +771,18 @@ def maybe_pack_ask(
         question,
         grantable=grantable,
         tables=tables,
+        dialect=dialect,
     )
     if hit is None:
-        return _curated_step_refusal(
+        env = _curated_step_refusal(
             question, "grants fail", space_id=space_id, session_id=session_id
         )
+        # The prose stays for the curated step. The grant code is what the
+        # reconfirm gate reads, so a grant miss is not offered as another question.
+        shown = _grant_miss_code(gap, phrase, grantable, dialect)
+        if shown:
+            env["abstain_reason"] = shown
+        return env
     if submit is None or ledger_append is None:
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id

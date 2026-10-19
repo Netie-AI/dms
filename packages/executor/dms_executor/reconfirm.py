@@ -19,19 +19,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-_DIRECT_HEADS = frozenset(
-    {
-        "ungranted",
-        "ungranted_table",
-        "pii",
-        "hostile_sql",
-        "statement_not_allowed",
-        "path_not_allowed",
-    }
-)
-_DESTRUCTIVE_STATEMENTS = frozenset(
-    {"drop", "delete", "update", "insert", "create", "alter", "truncate"}
-)
 _NOT_FOUND = "not found in the database"
 _LOCK = threading.Lock()
 _PENDING: dict[str, dict[str, Any]] = {}
@@ -59,52 +46,55 @@ def pipeline_failure_jsonl_path() -> Path:
     return Path(tempfile.gettempdir()) / "dms-pipeline-failures.jsonl"
 
 
-def _tokens(text: str) -> set[str]:
-    out: set[str] = set()
-    buf: list[str] = []
-    for ch in str(text or "").casefold():
-        if ch.isascii() and (ch.isalnum() or ch == "_"):
-            buf.append(ch)
-        elif buf:
-            out.add("".join(buf))
-            buf = []
-    if buf:
-        out.add("".join(buf))
-    return out
+def _parsed(text: str) -> list[Any]:
+    from sqlglot import parse
+
+    try:
+        return [tree for tree in parse(text, read="duckdb") if tree is not None]
+    except Exception:
+        return []
 
 
-def _reason_blob(env: dict[str, Any]) -> str:
-    from dms_executor.abstain import _envelope_reason
+def _one_mutating(text: str) -> bool:
+    """True when sqlglot types the text as one write statement.
 
-    parts = [_envelope_reason(env), str(env.get("text") or "")]
-    assumptions = env.get("assumptions") or []
-    if isinstance(assumptions, list):
-        parts.extend(str(item) for item in assumptions)
-    return "\n".join(parts)
+    An alias or a column fragment is not a statement. Prose that does not
+    parse as one write is not destructive.
+    """
+    from sqlglot import exp
+
+    trees = _parsed(text)
+    if len(trees) != 1:
+        return False
+    return isinstance(
+        trees[0],
+        (
+            exp.Drop,
+            exp.Delete,
+            exp.Update,
+            exp.Insert,
+            exp.Alter,
+            exp.Create,
+            exp.TruncateTable,
+            exp.Merge,
+            exp.Copy,
+        ),
+    )
 
 
 def question_is_destructive(text: str) -> bool:
-    """True when the text is one destructive SQL statement. Prose is not."""
-    raw = str(text or "").strip()
+    """True when the text is one write statement, including after prose."""
+    raw = str(text or "").strip().rstrip(";")
     if not raw:
         return False
-    head = raw.split(None, 1)[0].casefold().rstrip(";(")
-    if head not in _DESTRUCTIVE_STATEMENTS:
-        return False
-    from sqlglot import exp, parse
-
-    try:
-        trees = [tree for tree in parse(raw, read="duckdb") if tree is not None]
-    except Exception:
-        return False
-    if len(trees) != 1:
-        return False
-    tree = trees[0]
-    name = type(tree).__name__.casefold()
-    if name in _DESTRUCTIVE_STATEMENTS:
+    if _one_mutating(raw):
         return True
-    if isinstance(tree, exp.Command):
-        return str(tree.name or "").casefold() in _DESTRUCTIVE_STATEMENTS
+    # ponytail: word tails, only a tail sqlglot types as one write. Ceiling:
+    # a long question. Upgrade: tokenize and parse from the write token.
+    parts = raw.split()
+    for index in range(1, len(parts)):
+        if _one_mutating(" ".join(parts[index:]).strip().rstrip(";")):
+            return True
     return False
 
 
@@ -125,8 +115,35 @@ def question_requests_pii(question: str) -> bool:
     return False
 
 
+def _refusal_codes(env: dict[str, Any]) -> list[str]:
+    """Structured codes already on the envelope. Not the customer sentence."""
+    found: list[str] = []
+    raw = env.get("abstain_reason")
+    if isinstance(raw, str) and raw.strip():
+        found.append(raw.strip())
+    assumptions = env.get("assumptions") or []
+    if isinstance(assumptions, list):
+        for item in assumptions:
+            text = str(item).strip()
+            if text.startswith("validate:"):
+                code = text[len("validate:") :].strip()
+                if code:
+                    found.append(code)
+            elif text.startswith("GEN-01:"):
+                code = text[len("GEN-01:") :].strip()
+                if code:
+                    found.append(code)
+    return found
+
+
 def direct_abstain_reason(env: dict[str, Any], question: str) -> str | None:
-    """A closed reason that must stay an abstain, or None when reconfirm applies."""
+    """A closed reason that must stay an abstain, or None when reconfirm applies.
+
+    Ungranted, PII, and a non-read statement. The grant code is the one
+    ``serve_gap`` / the pack grant check already produced.
+    """
+    from dms_executor.pipeline_failure import reconfirm_disposition
+
     if question_requests_pii(question):
         return "pii"
     if question_is_destructive(question):
@@ -134,10 +151,9 @@ def direct_abstain_reason(env: dict[str, Any], question: str) -> str | None:
     sql_used = env.get("sql_used")
     if isinstance(sql_used, str) and question_is_destructive(sql_used):
         return "hostile_sql"
-    heads = _tokens(_reason_blob(env))
-    for head in _DIRECT_HEADS:
-        if head in heads:
-            return head
+    for code in _refusal_codes(env):
+        if reconfirm_disposition(code) == "direct":
+            return code
     return None
 
 

@@ -104,6 +104,7 @@ def _ask(tmp_path: Path, *extra: str) -> dict[str, Any]:
         submit=submit,
         ledger_append=lambda _p: SimpleNamespace(entry_id="led_bk", hash="h"),
         ontology=_onto(["customer_code"]),
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)

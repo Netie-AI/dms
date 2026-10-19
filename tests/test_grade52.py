@@ -424,22 +424,24 @@ def test_grade52_stub_exec_main() -> None:
     assert _buckets(report) == 52
     assert report["correct"] == 43
     assert report["wrong"] == 0
-    assert report["reconfirm"] == 7
+    # Ungranted stays a direct abstain (refusal or gold-broken). The other
+    # misses offer reconfirm. SELECT 1 is not an answer for a refusal.
+    assert report["reconfirm"] == 5
     assert report["abstain"] == 0
-    assert report["refusal_ok"] == 0
-    assert report["refusal_wrong"] == 2
+    assert report["refusal_ok"] == 3
+    assert report["refusal_wrong"] == 0
     assert report["empty_gold"] == 0
-    assert report["gold_broken"] == 0
+    assert report["gold_broken"] == 1
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
     line = summary_line(report)
     assert line.endswith(
-        "52: correct=43 wrong=0 reconfirm=7 abstain=0 refusal_ok=0 refusal_wrong=2 "
-        "empty_gold=0 gold_broken=0 mode=stub-exec"
+        "52: correct=43 wrong=0 reconfirm=5 abstain=0 refusal_ok=3 refusal_wrong=0 "
+        "empty_gold=0 gold_broken=1 mode=stub-exec"
     )
     assert "not a score" not in line
     assert paths_line(path_counts(report["cases"])) == (
         "paths correct ai=0 rule=43 L1=23 compile=20 unattributed=0 "
-        "served ai=0 rule=45 L0=2 L1=23 compile=20 unattributed=0 "
+        "served ai=0 rule=43 L1=23 compile=20 unattributed=0 "
         "stamp_contradiction=0"
     )
     without = report["without_pack_gold_served"]
@@ -448,11 +450,11 @@ def test_grade52_stub_exec_main() -> None:
     assert _buckets(without) == 45
     assert without["correct"] == 36
     assert without["wrong"] == 0
-    assert without["reconfirm"] == 7
+    assert without["reconfirm"] == 5
     assert without["abstain"] == 0
-    assert without["refusal_ok"] == 0
-    assert without["refusal_wrong"] == 2
-    assert without["gold_broken"] == 0
+    assert without["refusal_ok"] == 3
+    assert without["refusal_wrong"] == 0
+    assert without["gold_broken"] == 1
 
 
 def test_grade52_copy_only_main() -> None:
