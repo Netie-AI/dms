@@ -1293,11 +1293,25 @@ def test_granted_lake_alias_stays_on_an_abstain() -> None:
     assert env["sql_used"] == "SELECT SUM(x) FROM warehouse_inventory JOIN  ON true"
 
 
-def test_scrub_keeps_route_stamps_and_clears_ungranted_sql() -> None:
-    """The response-boundary scrub leaves served_route and ladder_rung byte for byte."""
+def test_scrub_keeps_closed_stamps_and_drops_a_table_shaped_one() -> None:
+    """A closed route or abstain:<known stage> stays. abstain:shipments does not."""
     from dms_executor.name_echo import hide_echo
 
-    env = {
+    closed = {
+        "abstained": True,
+        "badge": "ABSTAIN",
+        "text": "read shipments",
+        "sql_used": "SELECT 1 FROM shipments",
+        "served_route": "abstain:served_sql",
+        "ladder_rung": "abstain:served_sql",
+    }
+    hide_echo(closed, "ungranted:shipments", grants={"inventory"})
+    assert closed["served_route"] == "abstain:served_sql"
+    assert closed["ladder_rung"] == "abstain:served_sql"
+    assert "shipments" not in str(closed["sql_used"])
+    assert "shipments" not in str(closed["text"])
+
+    shaped = {
         "abstained": True,
         "badge": "ABSTAIN",
         "text": "read shipments",
@@ -1305,8 +1319,21 @@ def test_scrub_keeps_route_stamps_and_clears_ungranted_sql() -> None:
         "served_route": "abstain:shipments",
         "ladder_rung": "abstain:shipments",
     }
-    hide_echo(env, "ungranted:shipments", grants={"inventory"})
-    assert env["served_route"] == "abstain:shipments"
-    assert env["ladder_rung"] == "abstain:shipments"
-    assert "shipments" not in str(env["sql_used"])
-    assert "shipments" not in str(env["text"])
+    hide_echo(shaped, "ungranted:shipments", grants={"inventory"})
+    assert "served_route" not in shaped
+    assert "ladder_rung" not in shaped
+    assert "shipments" not in json.dumps(shaped)
+    assert "shipments" not in str(shaped["sql_used"])
+    assert "shipments" not in str(shaped["text"])
+
+    answered = {
+        "abstained": False,
+        "badge": "L1_GOVERNED_METRIC",
+        "text": "1",
+        "sql_used": "SELECT 1 FROM inventory",
+        "served_route": "l1_governed_metric",
+        "ladder_rung": "l1",
+    }
+    hide_echo(answered, "", grants={"inventory"})
+    assert answered["served_route"] == "l1_governed_metric"
+    assert answered["ladder_rung"] == "l1"

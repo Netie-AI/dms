@@ -67,7 +67,8 @@ _NAME_KEYS = frozenset(
         "text",
     }
 )
-# ROUTE-STAMP-01. The scrub never rewrites these.
+# ROUTE-STAMP-01. Restored only when the value is a closed route or
+# abstain:<known stage>. Any other value is dropped.
 _STAMP_KEYS = frozenset({"ladder_rung", "served_route"})
 # Colon form, ``ungranted table <name>``, ``(ungranted <name>)``, or the
 # ontology sentence ``(object X cites ungranted T)``.
@@ -696,7 +697,7 @@ def hide_echo(
     *,
     grants: Collection[str] | None = None,
 ) -> dict[str, Any]:
-    """Scrub name-carrying fields. Id fields, route stamps, loop SQL, and raw replies stay.
+    """Scrub name-carrying fields. Id fields, closed route stamps, loop SQL, and raw replies stay.
 
     Pure: no warehouse read, no connection. ``grants`` is the set
     ``Executor.grantable_tables`` resolved for this turn; None means the
@@ -706,9 +707,11 @@ def hide_echo(
     checked too, and ``sql_used`` is scrubbed. On an answer, ``text`` and
     ``sql_used`` are not touched (``served_ungranted`` refuses those).
     """
+    from dms_executor.route_stamp import kept_stamp
+
     granted = _granted(grants)
     answered = _answered(env)
-    stamps = {key: env[key] for key in _STAMP_KEYS if key in env}
+    stamps = {key: env[key] for key in _STAMP_KEYS if key in env and kept_stamp(env[key])}
     parts_list = _ungranted(_collect_parts(reason, env), granted)
     if not answered:
         parts_list = _merge_parts(
@@ -730,5 +733,8 @@ def hide_echo(
         unsure = receipt.get("unsure")
         if isinstance(unsure, dict) and isinstance(unsure.get("why"), str):
             unsure["why"] = _scrub_field(unsure["why"], parts_list)
+    for key in _STAMP_KEYS:
+        if key not in stamps:
+            env.pop(key, None)
     env.update(stamps)
     return env

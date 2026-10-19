@@ -28,6 +28,39 @@ ROUTES = (
     ROUTE_MODEL,
 )
 
+# Rungs freeze_route writes beside a closed route.
+RUNGS = frozenset({"l0", "l1", "compile", "generate_sql"})
+
+# Stages the builders pass to stamp_abstain, including a route string used as
+# the stage (sql_refusal_envelope, reserved_as_of_abstain). A new builder
+# stage belongs here. Anything else is not a route, so the scrub drops it.
+ABSTAIN_STAGES = frozenset(
+    {
+        "abstain",
+        "bronze",
+        "cascade",
+        "connector",
+        "cortex_ask",
+        "demo",
+        "demo_pack",
+        "envelope",
+        "extract_loop",
+        "followup",
+        "generated",
+        "generative",
+        "governed_metric",
+        "insights_budget",
+        "openvault",
+        "reserved_as_of",
+        "schema_build",
+        "serve_gap",
+        "served_sql",
+        "serving_lease",
+        "unspecified",
+        "user_sql",
+    }
+)
+
 # ladder_rung, and whether the route needs a non-empty served_model.
 _PROFILES: dict[str, tuple[str, bool]] = {
     ROUTE_VERIFIED: ("l0", False),
@@ -68,6 +101,22 @@ def is_abstain_route(route: str) -> bool:
     return bool(stage) and stage == "".join(
         ch for ch in stage if ch.isalnum() or ch == "_"
     )
+
+
+def kept_stamp(value: object) -> bool:
+    """True for a closed route, its rung, or ``abstain:<known stage>``.
+
+    ``abstain:shipments`` is a table name in the stamp field. The scrub
+    drops it. ``freeze_route`` does not.
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if text in ROUTES or text in RUNGS:
+        return True
+    if not is_abstain_route(text):
+        return False
+    return text[len("abstain:") :] in ABSTAIN_STAGES
 
 
 def stamp_abstain(
