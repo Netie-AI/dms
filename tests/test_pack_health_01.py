@@ -219,7 +219,8 @@ def test_valid_pack_caches_and_still_serves(
         assert demo_pack.curated_l0_question_norms() is norms
         assert len(parses) == seen
         metric = first[0]
-        hit = demo_pack.lookup_pack_metric(metric.question, grantable=set(metric.tables))
+        hit = demo_pack.lookup_pack_metric(metric.question, grantable=set(metric.tables),
+            dialect="duckdb")
         assert hit is not None
         assert hit.metric_id == metric.metric_id
         assert hit.sql == metric.sql
@@ -227,14 +228,15 @@ def test_valid_pack_caches_and_still_serves(
 
         doc = yaml.safe_load((root / "oracles.yaml").read_text(encoding="utf-8"))
         block = doc["oracles"][metric.metric_id]
-        block["sql"] = str(block["sql"]).rstrip() + " AND 1 = 1"
+        block["sql"] = str(block["sql"]).rstrip() + " WHERE 1 = 1"
         (root / "oracles.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
         os.utime(root / "oracles.yaml", ns=(2_000_000_000_000_000_000, 2_000_000_000_000_000_000))
-        edited = demo_pack.lookup_pack_metric(metric.question, grantable=set(metric.tables))
+        edited = demo_pack.lookup_pack_metric(metric.question, grantable=set(metric.tables),
+            dialect="duckdb")
         assert edited is not None
         assert edited.metric_id == metric.metric_id
         assert edited.sql != metric.sql
-        assert edited.sql.endswith("AND 1 = 1")
+        assert edited.sql.endswith("WHERE 1 = 1")
         assert len(parses) > seen
     finally:
         _clear()

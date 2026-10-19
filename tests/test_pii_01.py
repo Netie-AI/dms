@@ -224,6 +224,7 @@ def test_seeded_values_never_reach_compute_or_export(tmp_path: Path) -> None:
         submit=_submitter(lake),
         ledger_append=_ledger,
         ontology=_ontology(),
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -282,6 +283,7 @@ def test_count_over_pii_column_still_answers(tmp_path: Path) -> None:
         submit=_submitter(lake),
         ledger_append=_ledger,
         ontology=_ontology(),
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -404,6 +406,7 @@ def test_insights_ontology_body_has_no_seeded_values(tmp_path: Path) -> None:
             submit=_submitter(lake),
             ledger_append=_ledger,
             ontology=_ontology(),
+            dialect="duckdb",
         )
 
     bodies = [

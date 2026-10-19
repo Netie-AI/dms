@@ -18,6 +18,9 @@ import duckdb
 # Product SQL may not bind this. Oracle and scorer calls may.
 RESERVED_PARAM_AS_OF = "reserved_param:as_of"
 
+# The serving file is DuckDB. Callers read this name. They do not write it.
+SERVING_DIALECT = "duckdb"
+
 _SEEDED: set[str] = set()
 
 # Last successful execute_sql on this process. Pending until an envelope stamps it.
@@ -40,7 +43,7 @@ def sql_has_reserved_as_of(sql: str) -> bool:
     from sqlglot.tokens import TokenType
 
     try:
-        tokens = tokenize(sql or "", read="duckdb")
+        tokens = tokenize(sql or "", read=SERVING_DIALECT)
     except Exception:  # noqa: BLE001 - unreadable SQL is not a placeholder
         return False
     saw_param = False
@@ -198,10 +201,6 @@ def warehouse_path() -> Path:
     here = Path(__file__).resolve()
     repo = here.parents[3]  # packages/executor/dms_executor → repo
     return repo / DEFAULT_REL
-
-
-# The serving file is DuckDB. Schema context copies this string; it does not invent one.
-SERVING_DIALECT = "duckdb"
 
 
 def connect_file(path: Path, *, write: bool = True) -> duckdb.DuckDBPyConnection:
