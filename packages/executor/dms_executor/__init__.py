@@ -19,7 +19,11 @@ from dms_core.ask import AskServiceError, ExecutedTrace, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
 from dms_executor import executed_trace
-from dms_executor.abstain import backstop_missing_ticket, build_abstain
+from dms_executor.abstain import (
+    backstop_missing_ticket,
+    build_abstain,
+    refuse_ungranted_answer,
+)
 from dms_executor.acl import (
     SessionContext,
     SourceGrant,
@@ -132,6 +136,13 @@ from dms_executor.manifest import (
     SubmitError,
     classify_submit_error,
     should_rement,
+)
+from dms_executor.name_echo import (
+    begin_grant_turn,
+    end_grant_turn,
+    hide_echo,
+    note_turn_grants,
+    turn_grants,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
@@ -491,7 +502,10 @@ class Executor:
                 )
                 if g.table_name and g.table_name not in DEMO_TABLES
             }
-            return sorted({*DEMO_TABLES, *uploaded})
+            granted = sorted({*DEMO_TABLES, *uploaded})
+            # NAME-ECHO-01: the scrub reads this set; it never derives its own.
+            note_turn_grants(self, space_id, granted)
+            return granted
         ctx = intersect_space_grants(
             self._session_store,
             tenant_id=DEMO_TENANT_ID,
@@ -514,7 +528,10 @@ class Executor:
                 space_id,
                 ", ".join(bad),
             )
-        return [t for t in granted if t not in bad]
+        granted = [t for t in granted if t not in bad]
+        # NAME-ECHO-01: the scrub reads this set; it never derives its own.
+        note_turn_grants(self, space_id, granted)
+        return granted
 
     def demo_acl(
         self,
@@ -709,6 +726,10 @@ class Executor:
             control_token = bind_ask_control(ctrl)
         ctrl.deadline = deadline
         ctrl.start()
+        # NAME-ECHO-01: the grant set grantable_tables resolves in this turn is
+        # recorded here, so the scrub and the served-SQL check read it rather
+        # than opening a connection of their own.
+        grant_turn = begin_grant_turn(self, space_id)
         from dms_executor.route_stamp import freeze_route
 
         try:
@@ -805,6 +826,12 @@ class Executor:
                     assert_envelope_valid(env)
                 finally:
                     reset_serving_lease_block(token)
+            # An answer whose served SQL reads outside the turn's grant is a
+            # breach or a misread grant. It abstains; the relation is not hidden.
+            refused = refuse_ungranted_answer(env, question=question, grants=turn_grants())
+            if refused is not env:
+                env = refused
+                self._store_turn(session_id, space_id, env)
             stamp_engine_clock(env)
             payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
             stamped = with_served_attribution(env, payload)
@@ -830,8 +857,13 @@ class Executor:
             freeze_route(out)
             masked = mask_unknown_keys(out)
             backstop_missing_ticket(masked, question=question)
+            # Last step of the turn, after every loop re-attach. The grant set is
+            # the one this turn resolved; none resolved grants nothing.
+            if isinstance(masked, dict):
+                hide_echo(masked, "", grants=turn_grants())
             return masked
         finally:
+            end_grant_turn(grant_turn)
             if own_control and control_token is not None:
                 reset_ask_control(control_token)
             reset_ask_deadline(deadline_tokens)
@@ -912,9 +944,14 @@ class Executor:
         def space_grants() -> list[str]:
             if not grants_once:
                 try:
-                    grants_once.append(self.grantable_tables(space_id=space_id))
+                    got = self.grantable_tables(space_id=space_id)
                 except Exception as exc:  # noqa: BLE001 -- kept for every caller
                     grants_once.append(exc)
+                else:
+                    # The list the caller received, including a name added
+                    # after the method body noted its own copy.
+                    note_turn_grants(self, space_id, got)
+                    grants_once.append(got)
             found = grants_once[0]
             if isinstance(found, Exception):
                 raise found
@@ -1249,7 +1286,47 @@ class Executor:
                 dialect=self.dialect,
                 warehouse=self._warehouse,
             )
-            if gap:
+            # A relation miss abstains here, before the envelope mapper can
+            # demote it into a different sentence. The ticket keeps the name.
+            # A granted lake alias or a bare grant falls through and stands.
+            # A file or a script uses the structural code.
+            from dms_executor.name_echo import (
+                served_relation_miss,
+                served_relations_covered,
+            )
+
+            if (
+                gap
+                and served_relation_miss(
+                    gap, sql_used, set(readable), dialect=self.dialect
+                )
+                and served_relations_covered(sql_used, set(readable))
+            ):
+                pass
+            elif gap and served_relation_miss(
+                gap, sql_used, set(readable), dialect=self.dialect
+            ):
+                refused = refuse_ungranted_answer(
+                    {
+                        "abstained": False,
+                        "sql_used": sql_used,
+                        "answer_id": "ans_served_ungranted",
+                        "text": "",
+                        "rows": [],
+                        "values": [],
+                    },
+                    question=question,
+                    grants=set(readable),
+                )
+                refused["space_id"] = space_id
+                refused["session_id"] = session_id
+                route = getattr(resp, "route", None)
+                if isinstance(route, str) and route.strip():
+                    refused["route"] = route
+                env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+            elif gap:
                 # One code. The relation name is not part of it.
                 refused = sql_refusal_envelope(
                     reason=gap,
@@ -1626,6 +1703,7 @@ __all__ = [
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
+    "hide_echo",
     "read_health_engine_clock",
     "list_bronze_tables",
     "list_promote_targets",
