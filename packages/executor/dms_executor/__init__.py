@@ -730,6 +730,8 @@ class Executor:
         # recorded here, so the scrub and the served-SQL check read it rather
         # than opening a connection of their own.
         grant_turn = begin_grant_turn(self, space_id)
+        from dms_executor.route_stamp import freeze_route
+
         try:
             try:
                 try:
@@ -852,6 +854,7 @@ class Executor:
                 out["lane"] = mapped
             else:
                 out.pop("lane", None)
+            freeze_route(out)
             masked = mask_unknown_keys(out)
             backstop_missing_ticket(masked, question=question)
             # Last step of the turn, after every loop re-attach. The grant set is
@@ -1632,6 +1635,17 @@ def map_ask_response_to_envelope(
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
+    from dms_executor.route_stamp import ROUTE_L1, ROUTE_VERIFIED, stamp_route
+
+    # Cortex built this answer. Its own L0/L1 badge names the rung (grade52
+    # reads the same badge). Any other badge, L2 included, does not say which
+    # route served it, so nothing is stamped and it stays unattributed. An
+    # abstain keeps the abstain:<stage> that build_abstain wrote.
+    served = {"L0_CERTIFIED": ROUTE_VERIFIED, "L1_GOVERNED_METRIC": ROUTE_L1}.get(
+        str(env.get("badge") or "")
+    )
+    if served and env.get("abstained") is not True:
+        stamp_route(env, served)
     return env
 
 

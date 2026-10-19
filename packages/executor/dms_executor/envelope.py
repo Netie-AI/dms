@@ -1896,6 +1896,7 @@ def reserved_as_of_abstain(
     )
     assert_envelope_valid(env)
     # No SQL ran. Drop any leftover so this answer does not keep the previous clock.
+    # build_abstain already wrote abstain:<stage>.
     clear_engine_clock()
     return env
 

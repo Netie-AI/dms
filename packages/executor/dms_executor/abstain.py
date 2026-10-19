@@ -106,7 +106,11 @@ def build_abstain(
             stage=stage,
             ask_id=ask_id,
         )
-        return hide_echo(demote, ticket_reason or reason)
+        hide_echo(demote, ticket_reason or reason)
+        # After the scrub, so a cleared sql_used still gets abstain:<stage>,
+        # and the stamp is not a field the scrub rewrites.
+        _stamp_no_sql(demote, stage=stage)
+        return demote
 
     from dms_executor.envelope import build_answer_envelope
 
@@ -126,7 +130,10 @@ def build_abstain(
         stage=stage,
         ask_id=ask_id,
     )
-    return hide_echo(env, ticket_reason or reason)
+    hide_echo(env, ticket_reason or reason)
+    # After the scrub, so a cleared sql_used still gets abstain:<stage>.
+    _stamp_no_sql(env, stage=stage)
+    return env
 
 
 _SERVED_UNGRANTED_TEXT = (
@@ -204,6 +211,21 @@ def refuse_ungranted_answer(
         hide_echo(out, reason, grants=grants)
     assert_envelope_valid(out)
     return out
+
+
+def _stamp_no_sql(env: dict[str, Any], *, stage: str) -> None:
+    """An abstain with no executed SQL is abstain:<stage>, not compile, L1, or ai.
+
+    Route only. ``reason`` is the ticket code and never becomes
+    ``abstain_reason``: that field is the customer's named reason, and only a
+    caller that passes ``abstain_reason`` writes it.
+    """
+    sql_used = env.get("sql_used")
+    if isinstance(sql_used, str) and sql_used.strip():
+        return
+    from dms_executor.route_stamp import stamp_abstain
+
+    stamp_abstain(env, stage=stage)
 
 
 def _envelope_reason(env: dict[str, Any]) -> str:

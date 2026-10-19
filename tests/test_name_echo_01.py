@@ -1291,3 +1291,22 @@ def test_granted_lake_alias_stays_on_an_abstain() -> None:
     hide_echo(env, "", grants={"inventory", "suppliers", "locations", "transactions"})
     assert env["text"] == "Could not certify the spend from warehouse_inventory."
     assert env["sql_used"] == "SELECT SUM(x) FROM warehouse_inventory JOIN  ON true"
+
+
+def test_scrub_keeps_route_stamps_and_clears_ungranted_sql() -> None:
+    """The response-boundary scrub leaves served_route and ladder_rung byte for byte."""
+    from dms_executor.name_echo import hide_echo
+
+    env = {
+        "abstained": True,
+        "badge": "ABSTAIN",
+        "text": "read shipments",
+        "sql_used": "SELECT 1 FROM shipments",
+        "served_route": "abstain:shipments",
+        "ladder_rung": "abstain:shipments",
+    }
+    hide_echo(env, "ungranted:shipments", grants={"inventory"})
+    assert env["served_route"] == "abstain:shipments"
+    assert env["ladder_rung"] == "abstain:shipments"
+    assert "shipments" not in str(env["sql_used"])
+    assert "shipments" not in str(env["text"])

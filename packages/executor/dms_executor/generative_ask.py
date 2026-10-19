@@ -100,6 +100,13 @@ from dms_executor.ontology import (
     missing_join_for_ungranted,
     try_compile_multi_grain,
 )
+from dms_executor.route_stamp import (
+    ROUTE_COMPILE,
+    ROUTE_LADDER,
+    ROUTE_MODEL,
+    freeze_route,
+    stamp_route,
+)
 from dms_executor.schema_context import (
     SCHEMA_CONTEXT_ENVELOPE_KEY,
     SCHEMA_INDEX_STAMP_KEY,
@@ -851,6 +858,17 @@ def _cited_ungranted(sql: str, grantable: set[str], dialect: str | None) -> str 
     return None
 
 
+def _sql_route(payload: dict[str, Any] | None) -> str:
+    """Model SQL is the model route only when the producer named the model.
+
+    No ``served_model`` is missing attribution (SERVED-ATTR-01): no route is
+    stamped, so the envelope stays unattributed. It is never a rule path.
+    """
+    raw = payload.get("served_model") if isinstance(payload, dict) else None
+    name = str(raw).strip() if isinstance(raw, str) else ""
+    return ROUTE_MODEL if name else ""
+
+
 def _abstain(
     question: str,
     reason: str,
@@ -883,6 +901,7 @@ def _abstain(
         route="generated",
     )
     assert_envelope_valid(env)
+    # build_abstain already wrote abstain:<stage>. Successes stamp their own.
     return with_plan_source(env, plan_source)
 
 
@@ -900,6 +919,7 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -934,7 +954,10 @@ def _l2_envelope(
     )
     if env.get("abstained"):
         assert_envelope_valid(env)
-        return with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        if served_route:
+            stamp_route(env, served_route)
+        return env
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -970,6 +993,8 @@ def _l2_envelope(
             "checker_version": version,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    if served_route:
+        stamp_route(env, served_route)
     return env
 
 
@@ -990,6 +1015,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
     grantable: set[str] | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
@@ -1099,6 +1125,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        served_route=served_route,
     )
 
 
@@ -1234,6 +1261,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        served_route=ROUTE_COMPILE,
         grantable=allowed,
     )
 
@@ -1316,6 +1344,7 @@ def rank_window_ask(
         warehouse=lake,
         grantable=allowed,
         lead=lead,
+        served_route=ROUTE_LADDER,
     )
 
 
@@ -1439,6 +1468,7 @@ def _run_extract_loop(
             warehouse=warehouse,
             grantable=grantable,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            served_route=_sql_route(payload),
         )
 
     def abstain(
@@ -1492,10 +1522,14 @@ def _run_extract_loop(
             grounded_tables=sorted(cited_relations(sql)),
         )
         assert_envelope_valid(env)
-        return with_plan_origin(
+        stamped = with_plan_origin(
             with_plan_source(env, PLAN_SOURCE_ONTOLOGY),
             PLAN_ORIGIN_GENERATE_SQL,
         )
+        route = _sql_route(payload)
+        if route:
+            stamp_route(stamped, route)
+        return stamped
 
     return run_model_loop(
         question=question,
@@ -1736,7 +1770,7 @@ def maybe_generative_ask(
                 stamped["index_stamp"] = index_stamp
             # Through PII-01, not after it. Hint values are already tokens.
             stamped = mask_unknown_keys(stamped)
-        return stamped
+        return freeze_route(stamped)
 
     if verify_cache_missing:
         return _stamp(
@@ -1990,6 +2024,7 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(
                     sql,
@@ -2004,6 +2039,7 @@ def maybe_generative_ask(
                     warehouse=lake,
                     grantable=allowed,
                     plan_origin=origin,
+                    served_route=sql_route,
                 )
             )
     if kind != "plan":
@@ -2226,5 +2262,6 @@ def maybe_generative_ask(
             warehouse=lake,
             grantable=allowed,
             plan_origin=origin,
+            served_route=ROUTE_COMPILE,
         )
     )
