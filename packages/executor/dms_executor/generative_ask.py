@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import sqlglot
 from cortex_client.compute import (
@@ -131,11 +131,24 @@ from dms_executor.space_ontology import (
 from dms_executor.sql_currency import currency_mismatch_reason, is_multi_statement
 from dms_executor.sql_loop import (
     EMPTY_NOTE,
+    EMPTY_UNVERIFIED,
+    AskCallBudget,
     apply_sql_credit,
     loop_entry,
     run_model_loop,
+    run_readonly,
     typed_db_error,
     written_names,
+)
+from dms_executor.sql_vote import (
+    disagreement_detail,
+    empty_plan,
+    ontology_json,
+    reading_prompt,
+    readings_agree,
+    reconfirm_envelope,
+    reconfirm_from_payload,
+    reconfirm_prompt,
 )
 from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.verified_queries import rows_from_submit_result
@@ -1454,6 +1467,7 @@ def _run_extract_loop(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
+    budget: AskCallBudget,
 ) -> dict[str, Any]:
     """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
 
@@ -1492,6 +1506,15 @@ def _run_extract_loop(
             if broken:
                 return violation_reason(broken)
         return None
+
+    def vote_rows(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        return _vote_rows(
+            sql,
+            warehouse,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         return _submit_validated(
@@ -1570,8 +1593,11 @@ def _run_extract_loop(
             stamp_route(stamped, route)
         return stamped
 
-    return run_model_loop(
-        question=question,
+    # Rows only. The customer submit waits until the second reading agrees,
+    # so a split does not ledger a number the envelope does not serve.
+    direct = reading_prompt(question, reading=1)
+    first = run_model_loop(
+        question=direct,
         ctx=ctx,
         payload=payload,
         compute=compute,
@@ -1579,11 +1605,185 @@ def _run_extract_loop(
         dialect=dialect,
         model_sql=model_sql,
         check=check,
-        submit_sql=submit_sql,
+        submit_sql=vote_rows,
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=attempts,
         no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+        budget=budget,
+    )
+    if first.get("abstained") or not first.get("rows"):
+        return first
+    return _second_reading(
+        first,
+        question=question,
+        ctx=ctx,
+        compute=compute,
+        warehouse=warehouse,
+        dialect=dialect,
+        model_sql=model_sql,
+        check=check,
+        abstain=abstain,
+        empty_answer=empty_answer,
+        publish=submit_sql,
+        attempts=attempts,
+        space_id=space_id,
+        session_id=session_id,
+        grantable=grantable,
+        budget=budget,
+    )
+
+
+def _vote_rows(
+    sql: str,
+    warehouse: Path | None,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Rows for the comparison. The customer submit happens after agreement."""
+    if warehouse is None or not Path(warehouse).is_file():
+        return _abstain(
+            question,
+            "warehouse_missing",
+            space_id=space_id,
+            session_id=session_id,
+            sql=sql,
+            stage="sql_vote",
+        )
+    rows, err = run_readonly(sql, Path(warehouse))
+    if err or not rows:
+        return _abstain(
+            question,
+            err or EMPTY_UNVERIFIED,
+            space_id=space_id,
+            session_id=session_id,
+            sql=sql,
+            stage="sql_vote",
+        )
+    return {"abstained": False, "rows": rows, "sql_used": sql}
+
+
+def _second_reading(
+    first: dict[str, Any],
+    *,
+    question: str,
+    ctx: dict[str, Any],
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    dialect: str,
+    model_sql: Callable[[dict[str, Any] | None], str | None],
+    check: Callable[[str], str | None],
+    abstain: Callable[..., dict[str, Any]],
+    empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    publish: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    space_id: str | None,
+    session_id: str | None,
+    grantable: set[str],
+    budget: AskCallBudget,
+) -> dict[str, Any]:
+    """One plan-then-SQL prompt. Same checker. Same call cap as the first reading."""
+    first_sql = str(first.get("sql_used") or "")
+    if not budget.allow():
+        for item in reversed(attempts):
+            if item.get("outcome") == "served":
+                item["outcome"] = f"insights_call_cap:{budget.cap}"
+                break
+        return _abstain(
+            question,
+            f"insights_call_cap:{budget.cap}",
+            space_id=space_id,
+            session_id=session_id,
+            sql=first_sql,
+            stage="sql_vote",
+        )
+    second_prompt = reading_prompt(
+        question, reading=2, plan=empty_plan(), ontology=ontology_json(ctx)
+    )
+    ctx2 = dict(ctx)
+    ctx2.pop("sql_loop_feedback", None)
+    ctx2["sql_vote_prompt"] = second_prompt
+    ctx2["sql_vote_kind"] = "reading"
+    budget.take()
+    try:
+        payload = compute(ctx2)
+    except Exception:  # noqa: BLE001 - a missed second reading reconfirms
+        payload = None
+    second_attempts: list[dict[str, Any]] = []
+
+    def vote_submit(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        return _vote_rows(
+            sql,
+            warehouse,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+
+    second = run_model_loop(
+        question=second_prompt,
+        ctx=ctx2,
+        payload=payload if isinstance(payload, dict) else None,
+        compute=compute,
+        warehouse=warehouse,
+        dialect=dialect,
+        model_sql=model_sql,
+        check=check,
+        submit_sql=vote_submit,
+        abstain=abstain,
+        empty_answer=empty_answer,
+        attempts=second_attempts,
+        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+        recover_failures=True,
+        budget=budget,
+    )
+    second_sql = str(second.get("sql_used") or "")
+    raw_first = first.get("rows")
+    raw_second = second.get("rows")
+    first_rows = cast(list[dict[str, Any]], raw_first if isinstance(raw_first, list) else [])
+    second_rows = cast(list[dict[str, Any]], raw_second if isinstance(raw_second, list) else [])
+    checked = check(first_sql) is None and check(second_sql) is None
+    if checked and readings_agree(
+        prompt_a=reading_prompt(question, reading=1),
+        prompt_b=second_prompt,
+        sql_a=first_sql,
+        sql_b=second_sql,
+        rows_a=first_rows,
+        rows_b=second_rows,
+        dialect=dialect,
+        grantable=grantable,
+    ):
+        published = publish(first_sql, attempts)
+        if published.get("abstained"):
+            for item in reversed(attempts):
+                if item.get("outcome") == "served":
+                    item["outcome"] = disagreement_detail(published.get("assumptions"))
+                    break
+        return published
+    detail = disagreement_detail(second.get("assumptions") if second.get("abstained") else None)
+    why, closest = detail, ""
+    rec = None
+    if budget.allow():
+        ctx3 = dict(ctx)
+        ctx3.pop("sql_loop_feedback", None)
+        ctx3["sql_vote_prompt"] = reconfirm_prompt(question, detail)
+        ctx3["sql_vote_kind"] = "reconfirm"
+        budget.take()
+        try:
+            rec = compute(ctx3)
+        except Exception:  # noqa: BLE001 - the offer still names the disagreement
+            rec = None
+    parsed = reconfirm_from_payload(rec if isinstance(rec, dict) else None)
+    if parsed:
+        why, closest = parsed
+    return reconfirm_envelope(
+        question=question,
+        why=why,
+        closest_question=closest,
+        space_id=space_id,
+        session_id=session_id,
     )
 
 
@@ -1760,8 +1960,17 @@ def maybe_generative_ask(
         if space_block is not None
         else ctx
     )
+    vote_budget: AskCallBudget | None = None
+    if cloop_b_enabled() and not ontology_ranked_lane_enabled():
+        # Direct SQL. Reading 2 is a different instruction under the same cap.
+        insights_ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
+        insights_ctx["sql_vote_kind"] = "direct"
+        vote_budget = AskCallBudget()
     try:
-        payload = compute(insights_ctx)
+        if vote_budget is not None and not vote_budget.take():
+            payload = None
+        else:
+            payload = compute(insights_ctx)
     except Exception as exc:  # noqa: BLE001 — compute miss, do not 503 the steward
         from dms_executor.lake_registry import (
             ServingDeadlineExceeded,
@@ -1859,6 +2068,9 @@ def maybe_generative_ask(
                         stage="extract_loop",
                     )
                 )
+            if vote_budget is None:
+                vote_budget = AskCallBudget()
+                vote_budget.take()
             return _stamp(
                 _run_extract_loop(
                     question=q,
@@ -1876,6 +2088,7 @@ def maybe_generative_ask(
                     submit=submit,
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
+                    budget=vote_budget,
                 )
             )
     ranked_slots: dict[str, Any] | None = None

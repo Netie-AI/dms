@@ -1143,8 +1143,11 @@ def _run_insights_legs(
     from cortex_client.qualifiers import retry_plan_covers_qualifiers
 
     legs: list[dict[str, Any]] = []
-    # ponytail: counts this compute call's model calls. One compute per ask
-    # today (maybe_generative_ask). A second compute seam per ask must share it.
+    # ponytail: this snapshot is one compute_insights. The ask path does not
+    # use it as a second cap. AskCallBudget in the extract loop is the one
+    # cap for both readings and their retries, and it stops before another
+    # compute is sent. Upgrade: thread the ask budget into this check when
+    # a second seam can call compute_insights without that budget.
     calls_before = recorded_model_calls()
     cap = insights_call_cap() if call_cap is None else call_cap
 

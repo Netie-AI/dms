@@ -7,6 +7,8 @@ names no warehouse table or column.
 Retry only on a database execution error or a checker flag. Hostile SQL,
 multi-statement SQL, file reads, ungranted tables, a missing extract, and
 a reply with no SQL abstain at once and are not pasted into a retry prompt.
+The second reading sets ``recover_failures`` and also feeds back a pre-run
+refusal and an empty result. Hostile SQL stays out of that prompt.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from cortex_client.compute import (
     cloop_b_enabled,
     generate_model_called,
     insights_call_cap,
-    recorded_model_calls,
 )
 
 from dms_executor.demo_warehouse import SERVING_DIALECT
@@ -541,16 +542,47 @@ def feedback_prompt(question: str, *, previous_sql: str | None, reason: str | No
     return f"{question}\n\nprevious_sql:\n{safe_sql}\n\nfeedback:\n{safe_reason}"
 
 
+#: Pre-run refusals the second reading feeds back. Hostile stays in
+#: ``_NO_RETRY_HEADS`` and is not pasted into the prompt.
+_SECOND_RECOVER_HEADS = frozenset(
+    {
+        "statement_not_allowed",
+        "sql_not_analyzable",
+        "multi_statement",
+    }
+)
+
+
+def _refusal_head(why: str) -> str:
+    return why.split(":", 1)[0]
+
+
 def _no_model_retry(why: str, extra: frozenset[str]) -> bool:
     """True when this checker reason must abstain without another model call."""
     if why in extra:
         return True
-    head = why.split(":", 1)[0]
-    return head in _NO_RETRY_HEADS
+    return _refusal_head(why) in _NO_RETRY_HEADS
 
 
-def _can_retry(*, retries: int, used: int, cap: int) -> bool:
-    return retries < MAX_SQL_RETRIES and used < cap
+class AskCallBudget:
+    """One insights cap for the first reading, the second reading, and retries."""
+
+    def __init__(self) -> None:
+        self.cap = insights_call_cap()
+        self.used = 0
+
+    def allow(self) -> bool:
+        return self.used < self.cap
+
+    def take(self) -> bool:
+        if not self.allow():
+            return False
+        self.used += 1
+        return True
+
+
+def _can_retry(*, retries: int, budget: AskCallBudget) -> bool:
+    return retries < MAX_SQL_RETRIES and budget.allow()
 
 
 def _served_outcome(env: dict[str, Any]) -> str:
@@ -615,18 +647,23 @@ def run_model_loop(
     empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
     attempts: list[dict[str, Any]],
     no_retry_reasons: frozenset[str] = frozenset(),
+    recover_failures: bool = False,
+    budget: AskCallBudget,
 ) -> dict[str, Any]:
     """Checker, read-only run, feedback retry.
 
     An empty result does not retry. It abstains until VALUE-EXISTS-01
     switches ``empty_result_reason``. Hostile, multi-statement, file-read,
     and ungranted SQL abstain on the first call.
+
+    ``budget`` is the ask's one cap. The opening compute already took a
+    call. Retries take from what is left. They do not start a new cap.
+
+    ``recover_failures`` is the second reading only. It feeds back a reply
+    with no SQL, a statement refused before execute, and an empty result.
+    The next SQL still goes through ``check``. Hostile SQL does not.
     """
-    cap = insights_call_cap()
     retries = 0
-    used = recorded_model_calls()
-    if used <= 0:
-        used = 1
     current = payload if isinstance(payload, dict) else None
     reason: str | None = None
     prev_sql: str | None = None
@@ -645,6 +682,13 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            if recover_failures and _can_retry(retries=retries, budget=budget):
+                retries += 1
+                budget.take()
+                prev_sql = None
+                reason = "pre_run_refusal:no_sql"
+                current = _call(compute, ctx, prompt, reason, None)
+                continue
             return abstain("no_sql", attempts, sql=None, retries=retries)
 
         if protected_sql:
@@ -660,11 +704,11 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
-                if not _can_retry(retries=retries, used=used, cap=cap):
+                if not _can_retry(retries=retries, budget=budget):
                     head = f"loop_exhausted:{flag}"
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = sql
                 reason = flag
                 current = _call(compute, ctx, prompt, reason, sql)
@@ -679,11 +723,11 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
-                if not _can_retry(retries=retries, used=used, cap=cap):
+                if not _can_retry(retries=retries, budget=budget):
                     head = "loop_exhausted:filter_dropped"
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = sql
                 reason = "filter_dropped"
                 current = _call(compute, ctx, prompt, reason, sql)
@@ -704,18 +748,15 @@ def run_model_loop(
             )
             if why in no_retry_reasons:
                 return abstain(why, attempts, sql=sql, retries=retries)
-            if _no_model_retry(why, no_retry_reasons) or not _can_retry(
-                retries=retries, used=used, cap=cap
-            ):
-                head = (
-                    outcome
-                    if _no_model_retry(why, no_retry_reasons)
-                    else f"loop_exhausted:{outcome}"
-                )
+            blocked = _no_model_retry(why, no_retry_reasons)
+            if recover_failures and _refusal_head(why) in _SECOND_RECOVER_HEADS:
+                blocked = False
+            if blocked or not _can_retry(retries=retries, budget=budget):
+                head = outcome if blocked else f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
             protected_sql = sql
             retries += 1
-            used += 1
+            budget.take()
             prev_sql = sql
             reason = outcome
             current = _call(compute, ctx, prompt, reason, sql)
@@ -732,7 +773,8 @@ def run_model_loop(
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
         if exec_err in _REFUSED_SHAPES:
-            # Not one SELECT. Refused before execute, no model retry.
+            # Not one SELECT. The first reading stops. The second reading
+            # feeds the refusal back and still checks the next SQL.
             attempts.append(
                 loop_entry(
                     prompt=prompt,
@@ -742,6 +784,13 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            if recover_failures and _can_retry(retries=retries, budget=budget):
+                retries += 1
+                budget.take()
+                prev_sql = sql
+                reason = f"pre_run_refusal:{exec_err}"
+                current = _call(compute, ctx, prompt, reason, sql)
+                continue
             return abstain(exec_err, attempts, sql=sql, retries=retries)
         if exec_err:
             # A typed code from run_readonly. The database message never gets
@@ -754,11 +803,11 @@ def run_model_loop(
                 )
             )
             protected_sql = sql
-            if not _can_retry(retries=retries, used=used, cap=cap):
+            if not _can_retry(retries=retries, budget=budget):
                 head = f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
             retries += 1
-            used += 1
+            budget.take()
             prev_sql = sql
             reason = outcome
             current = _call(compute, ctx, prompt, reason, sql)
@@ -777,6 +826,13 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
+                if recover_failures and _can_retry(retries=retries, budget=budget):
+                    retries += 1
+                    budget.take()
+                    prev_sql = sql
+                    reason = decision
+                    current = _call(compute, ctx, prompt, reason, sql)
+                    continue
                 return abstain(decision, attempts, sql=sql, retries=retries)
             return _finish_attempt(
                 empty_answer(sql, attempts),

@@ -266,6 +266,8 @@ def test_sku_codes_and_supplier_names_in_cast_errors_are_absent(
 def test_retry_after_a_cast_error_still_recovers_and_carries_no_value(
     lake: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The shared cap covers the bad call, the retry, and the second reading.
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "4")
     _add_column(lake, "contact_name", "VARCHAR", "Tan Wei Ming")
     cortex = _Cortex(
         script=["SELECT CAST(contact_name AS INTEGER) FROM suppliers", _GOOD_SQL],
@@ -445,6 +447,8 @@ def test_explain_error_value_never_reaches_the_model_request_or_the_envelope(
 def test_retry_after_an_explain_error_recovers_and_carries_no_value(
     lake: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The shared cap covers the bad call, the retry, and the second reading.
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "4")
     secrets = ["Tan Wei Ming", "Siti Aminah"]
     _add_column(lake, "contact_name", _ENUM, "Tan Wei Ming")
     cortex = _Cortex(script=["SELECT sum(contact_name) FROM suppliers", _GOOD_SQL], lake=lake)

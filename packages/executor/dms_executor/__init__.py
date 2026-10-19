@@ -262,10 +262,15 @@ def _insights_compute_seam(
         return None
     onto = ontology
     feedback = None
-    if isinstance(ontology, dict) and "sql_loop_feedback" in ontology:
-        onto = {k: v for k, v in ontology.items() if k != "sql_loop_feedback"}
+    asked = question
+    _vote_keys = {"sql_loop_feedback", "sql_vote_prompt", "sql_vote_kind"}
+    if isinstance(ontology, dict) and _vote_keys.intersection(ontology):
+        onto = {k: v for k, v in ontology.items() if k not in _vote_keys}
         raw = ontology.get("sql_loop_feedback")
         feedback = raw if isinstance(raw, dict) else None
+        vote_prompt = ontology.get("sql_vote_prompt")
+        if isinstance(vote_prompt, str) and vote_prompt.strip():
+            asked = vote_prompt
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
@@ -275,10 +280,10 @@ def _insights_compute_seam(
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
         try:
-            return fn(question, **kwargs)
+            return fn(asked, **kwargs)
         except TypeError:
             return fn(
-                question,
+                asked,
                 session_id=session_id,
                 space_id=space_id,
                 ontology=onto,
