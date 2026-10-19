@@ -1275,19 +1275,10 @@ class Executor:
                 env = attach_cascade(gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
-            if ai_first_enabled():
-                # No model SQL and no compile serve. Do not fall through to a
-                # memorised contract answer.
-                from dms_executor.ai_first import no_model_envelope
-
-                env = attach_cascade(
-                    no_model_envelope(
-                        question, space_id=space_id, session_id=session_id
-                    ),
-                    cascade,
-                )
-                self._store_turn(session_id, space_id, env)
-                return env
+            # DMS_AI_FIRST still runs the contract grant check below. An
+            # ungranted or hostile contract SQL stays a direct abstain.
+            # A SQL that would have been served is replaced with no_model
+            # so the stub's SELECT 1 is not an answer.
         if not allow_cortex:
             env = path_miss_envelope(
                 question,
@@ -1418,6 +1409,17 @@ class Executor:
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
+        if ai_first_enabled() and not getattr(resp, "abstained", False):
+            from dms_executor.ai_first import no_model_envelope
+
+            env = attach_cascade(
+                no_model_envelope(
+                    question, space_id=space_id, session_id=session_id
+                ),
+                cascade,
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,

@@ -35,10 +35,13 @@ class _Spoof:
     insights: list[str] = field(default_factory=list)
     asks: list[Any] = field(default_factory=list)
     submits: list[str] = field(default_factory=list)
+    insights_body: dict[str, Any] = field(default_factory=lambda: {"unsure": True})
+    ask_sql: str = "SELECT 999999 AS spoof"
+    ask_rows: list[dict[str, Any]] = field(default_factory=lambda: [{"spoof": 999999}])
 
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
         self.insights.append(question)
-        return {"unsure": True}
+        return dict(self.insights_body)
 
     def submit(self, req: Any) -> QueryResult:
         body = getattr(req, "body", None)
@@ -60,8 +63,8 @@ class _Spoof:
         return AskResponse(
             answer="Spoof total 999999.",
             badge="certified",
-            sql_used="SELECT 999999 AS spoof",
-            rows=[{"spoof": 999999}],
+            sql_used=self.ask_sql,
+            rows=list(self.ask_rows),
             audit_id="aud_spoof",
             route="certified_metric",
         )
@@ -91,14 +94,14 @@ def _minter() -> ManifestMinter:
     return minter
 
 
-def _ask(tmp_path: Path, cortex: _Spoof) -> dict[str, Any]:
+def _ask(tmp_path: Path, cortex: _Spoof, question: str = SKU_Q) -> dict[str, Any]:
     from dms_executor.demo_warehouse import ensure_demo_warehouse
 
     db = tmp_path / "ai_first.duckdb"
     ensure_demo_warehouse(db)
     exe = Executor(cortex=cortex, minter=_minter(), warehouse_path=db)  # type: ignore[arg-type]
     try:
-        return exe.live_ask(SKU_Q, space_id=FINANCE, session_id="ses_ai_first")
+        return exe.live_ask(question, space_id=FINANCE, session_id="ses_ai_first")
     finally:
         exe.close()
 
@@ -140,6 +143,53 @@ def test_pack_sql_is_an_example_and_not_the_answer(
     assert isinstance(stamp, dict)
     assert stamp["examples"] >= 1
     assert "l1" in stamp["sources"]
+
+
+def test_ungranted_contract_sql_stays_direct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generative miss still refuses literal SQL. It is not a reconfirm."""
+    monkeypatch.setenv("DMS_AI_FIRST", "1")
+    cortex = _Spoof(
+        insights_body={"ontology": {"metrics": []}},
+        ask_sql="SELECT 1 AS n",
+        ask_rows=[{"n": 1}],
+    )
+    env = _ask(
+        tmp_path,
+        cortex,
+        "List active alerts across the warehouse network",
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert cortex.asks
+    assumptions = [str(item) for item in env.get("assumptions") or []]
+    assert any("ungranted" in item for item in assumptions)
+    assert NO_MODEL_SQL not in " ".join(assumptions)
+
+
+def test_granted_contract_sql_is_not_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Contract SQL that passes the grant check is still not the answer."""
+    monkeypatch.setenv("DMS_AI_FIRST", "1")
+    cortex = _Spoof(
+        insights_body={"ontology": {"metrics": []}},
+        ask_sql="SELECT COUNT(*) AS n FROM inventory",
+        ask_rows=[{"n": 999999}],
+    )
+    env = _ask(
+        tmp_path,
+        cortex,
+        "List active alerts across the warehouse network",
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert "999999" not in str(env.get("text") or "")
+    assumptions = [str(item) for item in env.get("assumptions") or []]
+    assert any(NO_MODEL_SQL in item for item in assumptions)
 
 
 def test_compile_route_does_not_submit(monkeypatch: pytest.MonkeyPatch) -> None:

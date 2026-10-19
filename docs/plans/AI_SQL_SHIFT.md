@@ -113,8 +113,9 @@ This stage is default-off (`DMS_AI_FIRST`). What this change ships:
 - If the model does not return SQL that passes the checker, the ask
   abstains with "I don't have a checked answer for that yet, so I am
   not stating a figure." The existing reconfirm offer can still attach
-  at `POST /v1/chat/ask`. Direct abstain for ungranted, PII, and
-  destructive SQL is unchanged.
+  at `POST /v1/chat/ask`. A contract SQL that is ungranted, hostile,
+  or otherwise a direct refusal still abstains that way and is not
+  served. A contract SQL that would have been the answer is not served.
 - `grade52` prints `metric ai_share=<ai>/<correct> wrong=<wrong>`.
   CI runs `python scripts/verify/grade52.py --self-test`.
   `python scripts/verify/grade52.py --main --ai-first` is the stub
