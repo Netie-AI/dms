@@ -6,7 +6,9 @@ does not route on question words.
 
 Wall-clock fields are placeholders. Every other key and value is
 compared, including ``served_check_shadow``. A key main does not send
-fails the test.
+fails the test. The two ROUTE-STAMP-01 keys (``served_route`` and
+``ladder_rung``) are new and are the only keys removed before the compare;
+``plan_origin``, ``served_model`` and ``abstain_reason`` stay compared.
 
 Against main 57d85c52, as_of stays masked. ``checker_version`` is not
 masked: it may differ, it must equal the sha256 of the current
@@ -105,6 +107,14 @@ def _freeze(env: dict[str, Any]) -> dict[str, Any]:
     frozen = json.loads(json.dumps(_norm(env), sort_keys=True, default=str))
     assert isinstance(frozen, dict)
     return frozen
+
+
+# New in ROUTE-STAMP-01. Main never sends them. Nothing else is masked.
+_NEW_ROUTE_KEYS = frozenset({"served_route", "ladder_rung"})
+
+
+def _drop_new_route_keys(env: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in env.items() if key not in _NEW_ROUTE_KEYS}
 
 
 def _extra_keys(main: Any, got: Any, path: str = "") -> list[str]:
@@ -270,7 +280,7 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
     version_diffs = 0
     extras_all: list[tuple[str, list[str]]] = []
     for index, question in enumerate(_questions()):
-        env = got[index]["envelope"]
+        env = _drop_new_route_keys(got[index]["envelope"])
         main = expected[index]["envelope"]
         assert expected[index]["question"] == question
         extras = _extra_keys(main, env)
@@ -278,7 +288,7 @@ def test_flag_off_envelopes_match_main(tmp_path: Path, monkeypatch: pytest.Monke
             extras_all.append((question, extras))
     assert extras_all == [], extras_all
     for index, question in enumerate(_questions()):
-        env = got[index]["envelope"]
+        env = _drop_new_route_keys(got[index]["envelope"])
         main = expected[index]["envelope"]
         assert env == main, question
         shadow = env.get("served_check_shadow")
