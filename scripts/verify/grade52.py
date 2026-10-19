@@ -698,16 +698,23 @@ def serve_path(env: Mapping[str, Any], model_sql: str | None = None) -> str:
     compile stamp (``ontology_ranking``, ``ontology_plan``, ``ontology_compile``)
     is rule/compile, and a ``served_model`` beside it does not change that.
     AI model SQL needs a model-SQL stamp and a non-empty ``served_model`` that
-    do not disagree with a rule stamp, and the served ``sql_used`` must be
-    ``model_sql``: what Cortex's generate returned. Stamps that claim a model
-    without that proof are unattributed, so a DMS compile served under stale
-    model stamps is never AI. Missing or contradictory stamps are
-    unattributed, and a model name alone is never AI. ``plan_source`` of
-    ``ontology_plan`` under a model-SQL ``plan_origin`` is not a compile
-    claim (see ``_compile_source``).
+    do not disagree with a rule stamp. When the envelope served SQL, that
+    ``sql_used`` must be ``model_sql`` (what Cortex's generate returned). A
+    served SQL that is not the model's is unattributed, so a DMS compile under
+    stale model stamps is never AI. No served SQL leaves the stamp as the
+    claim: the builder's model route has nothing to contradict. Missing or
+    contradictory stamps are unattributed, and a model name alone is never AI.
+    ``plan_source`` of ``ontology_plan`` under a model-SQL ``plan_origin`` is
+    not a compile claim (see ``_compile_source``).
     """
     path = _stamped_path(env)
-    if path == "ai" and not model_sql_served(env, model_sql):
+    served = env.get("sql_used") if isinstance(env, Mapping) else None
+    if (
+        path == "ai"
+        and isinstance(served, str)
+        and served.strip()
+        and not model_sql_served(env, model_sql)
+    ):
         return "unattributed"
     return path
 

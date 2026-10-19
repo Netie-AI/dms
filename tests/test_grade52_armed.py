@@ -701,12 +701,17 @@ def test_a_dms_multi_grain_compile_is_never_graded_ai(
     assert risk["ai"] == {"served": 0, "wrong": 0} and risk["rule"]["served"] == 1
 
     # Defence in depth: the same answer under a0c01504's stale model stamps.
+    # The live envelope also carries the compile route stamp. The control that
+    # pretends the model wrote sql_used has to carry the model route, or the
+    # leftover compile rung and the generate origin disagree.
     stale = {
         **env,
         "plan_origin": "generate_sql",
         "served_model": "fake-model",
         "served_provider": "fake-provider",
         "served_attribution": "reported",
+        "served_route": "model",
+        "ladder_rung": "generate_sql",
     }
     assert grade52.serve_path(stale, _ONE_GRAIN_MODEL_SQL) == "unattributed"
     # Control: those stamps over SQL the model did write are ai.

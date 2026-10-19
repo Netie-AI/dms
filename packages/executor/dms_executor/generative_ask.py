@@ -332,11 +332,14 @@ def with_served_attribution(
     never a value.
 
     An envelope whose ``plan_origin`` names a DMS compile credits no model:
-    DMS wrote the served SQL, not the model. The model credit fields are
-    dropped and ``served_attribution`` is ``missing`` when a generate call
-    may have reached a model (nothing it wrote was served, the extract loop's
-    rule), else ``none``. ``generate_legs`` still records the call. Every ask
-    envelope passes here, so a later copy of the payload cannot re-credit it.
+    DMS wrote the served SQL, not the model. ``served_attribution`` is
+    ``missing`` when a generate call may have reached a model (nothing it
+    wrote was served), else ``none``. A multi-grain ``ontology_compile``
+    drops the copied model fields, because that path replaced the model's
+    SQL. A ranking compile keeps them: its route stamp is compile, and a
+    model name beside that stamp does not change the route. ``generate_legs``
+    still records the call. Every ask envelope passes here, so a later copy
+    of the payload cannot re-credit a multi-grain compile.
     """
     if not isinstance(env, dict):
         return env
@@ -350,9 +353,13 @@ def with_served_attribution(
             keys = sorted(str(k) for k in payload)
             env["served_payload_keys"] = {"count": len(keys), "keys": keys}
     env["served_attribution"] = served_attribution(payload)
-    if str(env.get("plan_origin") or "") in COMPILE_PLAN_ORIGINS:
-        for key in MODEL_CREDIT_KEYS:
-            env.pop(key, None)
+    origin = str(env.get("plan_origin") or "")
+    if origin in COMPILE_PLAN_ORIGINS:
+        # Ranking keeps the copied served_* fields (#439). The route stamp is
+        # compile, so the name does not make the answer a model answer.
+        if origin != PLAN_ORIGIN_ONTOLOGY_RANKING:
+            for key in MODEL_CREDIT_KEYS:
+                env.pop(key, None)
         called = generate_model_called(payload)
         env["served_attribution"] = SERVED_ATTR_MISSING if called else SERVED_ATTR_NONE
     return env
