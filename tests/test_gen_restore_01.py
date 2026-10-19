@@ -41,6 +41,7 @@ from dms_executor.generative_ask import (
 )
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.ontology import Ontology
+from dms_executor.route_stamp import route_of
 
 _PREDICT_Q = "Predict how much revenue we will make"
 _REVENUE_2099_Q = "What was revenue in 2099?"
@@ -412,6 +413,11 @@ def test_generate_sql_stamps_plan_origin(
     assert env["abstained"] is False
     assert env.get("plan_source") == "ontology_plan"
     assert env.get("plan_origin") == PLAN_ORIGIN_GENERATE_SQL
+    # No served_model is missing attribution (SERVED-ATTR-01). No route is
+    # stamped, so it stays unattributed, never a rule path such as oracle.
+    assert "served_route" not in env
+    assert "ladder_rung" not in env
+    assert route_of(env) == "unattributed"
     assert binds == []
 
 
@@ -443,7 +449,11 @@ def test_ranking_stamps_plan_origin_ontology_ranking(
     assert_envelope_valid(env)
     assert env["badge"] == "L2_VALIDATED"
     assert env.get("plan_source") == "ontology_plan"
+    # plan_origin is the producer's stamp and keeps its value.
     assert env.get("plan_origin") == PLAN_ORIGIN_ONTOLOGY_RANKING
+    assert env.get("served_route") == "ontology_compile"
+    assert env.get("ladder_rung") == "compile"
+    assert route_of(env) == "ontology_compile"
     assert binds == []
     assert not any("bind_plan" in str(a) for a in (env.get("assumptions") or []))
 
