@@ -29,6 +29,7 @@ from typing import Any
 import sqlglot
 from cortex_client.compute import (
     PLAN_ORIGIN_GENERATE_SQL,
+    PLAN_ORIGIN_ONTOLOGY_COMPILE,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
     SERVED_LEG_KEYS,
@@ -133,6 +134,8 @@ from dms_executor.sql_loop import (
     apply_sql_credit,
     loop_entry,
     run_model_loop,
+    typed_db_error,
+    written_names,
 )
 from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.verified_queries import rows_from_submit_result
@@ -308,6 +311,18 @@ def served_diag_enabled() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: Origins of SQL DMS compiled itself (multi-grain where-paths, ranking slots).
+#: The served SQL is not a model's, whatever the Insights payload carried.
+COMPILE_PLAN_ORIGINS = frozenset({PLAN_ORIGIN_ONTOLOGY_COMPILE, PLAN_ORIGIN_ONTOLOGY_RANKING})
+#: The model credit copied from an Insights payload onto an envelope.
+MODEL_CREDIT_KEYS: tuple[str, ...] = (
+    "served_provider",
+    "served_model",
+    "served_local",
+    "ov_key_id",
+)
+
+
 def with_served_attribution(
     env: dict[str, Any] | None, payload: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -318,6 +333,16 @@ def with_served_attribution(
     (the Cortex contract-ask fallback after a generative miss). The diagnostic
     flag adds the Insights payload's top-level key names and their count,
     never a value.
+
+    An envelope whose ``plan_origin`` names a DMS compile credits no model:
+    DMS wrote the served SQL, not the model. ``served_attribution`` is
+    ``missing`` when a generate call may have reached a model (nothing it
+    wrote was served), else ``none``. A multi-grain ``ontology_compile``
+    drops the copied model fields, because that path replaced the model's
+    SQL. A ranking compile keeps them: its route stamp is compile, and a
+    model name beside that stamp does not change the route. ``generate_legs``
+    still records the call. Every ask envelope passes here, so a later copy
+    of the payload cannot re-credit a multi-grain compile.
     """
     if not isinstance(env, dict):
         return env
@@ -331,6 +356,15 @@ def with_served_attribution(
             keys = sorted(str(k) for k in payload)
             env["served_payload_keys"] = {"count": len(keys), "keys": keys}
     env["served_attribution"] = served_attribution(payload)
+    origin = str(env.get("plan_origin") or "")
+    if origin in COMPILE_PLAN_ORIGINS:
+        # Ranking keeps the copied served_* fields (#439). The route stamp is
+        # compile, so the name does not make the answer a model answer.
+        if origin != PLAN_ORIGIN_ONTOLOGY_RANKING:
+            for key in MODEL_CREDIT_KEYS:
+                env.pop(key, None)
+        called = generate_model_called(payload)
+        env["served_attribution"] = SERVED_ATTR_MISSING if called else SERVED_ATTR_NONE
     return env
 
 
@@ -801,16 +835,20 @@ def _refusal_before_explain(con: Any, sql: str) -> str | None:
     return None
 
 
-def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:
-    """Exception text from EXPLAIN. The checker reason stays the type name."""
+def _explain_error_code(sql: str, warehouse: Path | None) -> str | None:
+    """Typed code for an EXPLAIN error: ``Class`` or ``Class:name``.
+
+    Never the DuckDB message. A binder error prints an ENUM column's member
+    list, and a PIVOT binds on its column's distinct values, so the message
+    can carry cell values. A name, when given, is one the SQL wrote.
+    """
     if warehouse is None or not Path(warehouse).is_file():
         return None
     con = connect_serving(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
-        text = str(exc).strip()
-        return text or None
+        return typed_db_error(exc, written_names(con, sql))
     finally:
         con.close()
     return None
@@ -1443,9 +1481,10 @@ def _run_extract_loop(
             sql, grantable=grantable, warehouse=warehouse, dialect=dialect
         )
         if why and why.startswith("explain:"):
-            detail = _explain_error_text(sql, warehouse)
-            if detail:
-                why = f"{why}: {detail}"
+            # A typed code reaches the model, never the database message.
+            code = _explain_error_code(sql, warehouse)
+            if code:
+                why = f"explain:{code}"
         if why:
             return why
         if declared is not None:
@@ -1900,7 +1939,9 @@ def maybe_generative_ask(
         dialect=dialect,
     )
     if multi_env is not None:
-        return _stamp(with_plan_origin(multi_env, origin))
+        # DMS's own multi-grain compile is served. Any model SQL in the
+        # payload never ran, so its generate origin and model do not apply.
+        return _stamp(with_plan_origin(multi_env, PLAN_ORIGIN_ONTOLOGY_COMPILE))
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
