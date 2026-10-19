@@ -79,6 +79,7 @@ from dms_executor.gen_path_refuse import (
     ranking_missing_metric_gap,
 )
 from dms_executor.grant_struct import (
+    customer_grant_reason,
     serve_gap,
     sql_refusal_envelope,
     sqlglot_dialect,
@@ -851,6 +852,44 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _grant_ticket_reason(
+    reason: str, sql: str | None, grantable: set[str], dialect: str | None
+) -> str | None:
+    """Ticket text that still names the relation. The visible code stays bare.
+
+    ``ungranted:`` is written once. A second copy would make the scrub read
+    the word ``ungranted`` as a table and cut it out of ``checker:ungranted``.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        return None
+    heads = [part.strip() for part in str(reason or "").split(":") if part.strip()]
+    if not heads:
+        return None
+    if "ungranted" not in heads and "sql_relation_not_granted" not in heads:
+        return None
+    cited = _cited_ungranted(sql, grantable, dialect)
+    if not cited or ":" not in cited:
+        return None
+    tail = cited.split(":", 1)[1]
+    if not tail or tail in heads:
+        return None
+    if "ungranted" in heads:
+        return f"{reason}:{tail}"
+    return f"{reason}:{cited}"
+
+
+def _cited_ungranted(sql: str, grantable: set[str], dialect: str | None) -> str | None:
+    """Relation tail for the ticket. The visible code stays bare."""
+    named = serve_gap(sql, grantable=set(grantable), dialect=dialect, cite_missing=True)
+    if (
+        isinstance(named, str)
+        and named.startswith("ungranted:")
+        and named not in {"ungranted:file", "ungranted:unparsed"}
+    ):
+        return named
+    return None
+
+
 def _sql_route(payload: dict[str, Any] | None) -> str:
     """Model SQL is the model route only when the producer named the model.
 
@@ -873,9 +912,11 @@ def _abstain(
     sql: str | None = None,
     retries: int = 0,
     stage: str = "generative",
+    ticket_reason: str | None = None,
 ) -> dict[str, Any]:
     env = build_abstain(
         reason=reason,
+        ticket_reason=ticket_reason,
         question=question,
         sql=sql,
         retries=retries,
@@ -1479,6 +1520,9 @@ def _run_extract_loop(
                 retries=retries,
                 stage="extract_loop",
             )
+        # The loop outcome the customer reads stays the bare checker code.
+        # The ticket keeps the relation serve_gap named (NAME-ECHO-01).
+        ticket_reason = _grant_ticket_reason(reason, sql, grantable, dialect)
         return _abstain(
             question,
             reason,
@@ -1488,6 +1532,7 @@ def _run_extract_loop(
             sql=sql,
             retries=retries,
             stage="extract_loop",
+            ticket_reason=ticket_reason,
         )
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1968,13 +2013,19 @@ def maybe_generative_ask(
                 )
             )
         if why:
+            shown = customer_grant_reason(why)
+            cited = (
+                _cited_ungranted(sql, allowed, dialect)
+                if shown == "ungranted" or why == "sql_relation_not_granted"
+                else None
+            )
             if cloop_b_enabled():
                 loop_attempts.append(
                     loop_entry(
                         prompt=q,
                         payload=payload if isinstance(payload, dict) else None,
                         sql=sql,
-                        outcome=f"checker:{why}",
+                        outcome=f"checker:{shown}",
                         dialect=dialect,
                     )
                 )
@@ -1987,9 +2038,12 @@ def maybe_generative_ask(
             ):
                 return _stamp(
                     _abstain(
-                        q, f"validate:{why}",
+                        q, f"validate:{shown}",
                         space_id=space_id, session_id=session_id, plan_source=source,
                         notes=trail_notes,
+                        ticket_reason=(
+                            f"validate:{cited}" if cited and cited != shown else None
+                        ),
                     )
                 )
             # Climb: invalid SELECT is not authority. Ranked DMS slots may be.
@@ -2206,10 +2260,17 @@ def maybe_generative_ask(
             )
         )
     if why:
+        shown = customer_grant_reason(why)
+        cited = (
+            _cited_ungranted(compiled.sql, allowed, dialect)
+            if shown == "ungranted" or why == "sql_relation_not_granted"
+            else None
+        )
         return _stamp(
             _abstain(
-                q, f"validate:{why}",
+                q, f"validate:{shown}",
                 space_id=space_id, session_id=session_id, plan_source=source,
+                ticket_reason=(f"validate:{cited}" if cited and cited != shown else None),
             )
         )
     if not origin and source != PLAN_SOURCE_BIND:
