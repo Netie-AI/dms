@@ -188,6 +188,19 @@ def _space_refusal_envelope(
     )
 
 
+def _release(env: dict[str, Any]) -> dict[str, Any]:
+    """Scrub ungranted names from an envelope ``live_ask`` did not build.
+
+    ``live_ask`` scrubs its own envelope as its last step, with the grant
+    set its turn resolved. These envelopes have no turn, so nothing is
+    granted: every relation a grant check named is dropped. An answer's
+    text and SQL are left as built. Opens no connection.
+    """
+    from dms_api.wiring import scrub_ask_envelope
+
+    return scrub_ask_envelope(env)
+
+
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
     """E6 — demo_fallback_used must set an unmissable banner flag."""
     from dms_api.wiring import build_validated_envelope
@@ -356,7 +369,7 @@ def _answer_ask(
             raise HTTPException(status_code=403, detail=decision.reason)
         env = ask.demo_ask(body.question, space_id=body.space_id)
         env["ask_mode"] = "demo"
-        return env
+        return _release(env)
 
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
@@ -364,7 +377,7 @@ def _answer_ask(
     if cortex is None:
         if settings.dms_demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _stamp_demo_fallback(env, "fallback — Cortex client missing")
+            return _release(_stamp_demo_fallback(env, "fallback — Cortex client missing"))
         raise HTTPException(
             status_code=503,
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
@@ -375,6 +388,7 @@ def _answer_ask(
     task = _arm_client_disconnect(request, watch[1]) if watch is not None else None
     try:
         try:
+            # live_ask scrubs its own envelope with its turn's grant set.
             return ask.live_ask(
                 body.question,
                 space_id=body.space_id,
@@ -425,18 +439,22 @@ def _answer_ask(
             if exc.code == "path_not_allowed" and body.space_id:
                 space = store.get(body.space_id)
                 missing = _missing_table(exc.detail)
-                return _space_refusal_envelope(
-                    space_id=body.space_id,
-                    space_name=getattr(space, "name", None),
-                    missing_table=missing,
-                    session_id=body.session_id,
+                return _release(
+                    _space_refusal_envelope(
+                        space_id=body.space_id,
+                        space_name=getattr(space, "name", None),
+                        missing_table=missing,
+                        session_id=body.session_id,
+                    )
                 )
 
             # Never mask policy refusals with demo numbers (0 confidently wrong).
             if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
                 logger.warning("live ask failed (%s); demo fallback", exc.code)
                 env = ask.demo_ask(body.question, space_id=body.space_id)
-                return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
+                return _release(
+                    _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
+                )
             raise HTTPException(
                 status_code=_status_for(exc.code, exc.detail),
                 detail={"code": exc.code, "message": exc.detail or exc.code},
@@ -445,7 +463,7 @@ def _answer_ask(
             if settings.dms_demo_fallback:
                 logger.warning("live ask failed: %s; demo fallback", exc)
                 env = ask.demo_ask(body.question, space_id=body.space_id)
-                return _stamp_demo_fallback(env, "fallback — live ask failed")
+                return _release(_stamp_demo_fallback(env, "fallback — live ask failed"))
             # A slow engine and a broken one are different answers. 504 tells the
             # caller to try again; 503 says the dependency is out. The launcher
             # prints "Cortex ok" the moment /health responds, which is before the
