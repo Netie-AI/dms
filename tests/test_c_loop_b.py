@@ -158,7 +158,7 @@ def test_dropped_conjunct_uses_the_connector_dialect() -> None:
     assert len(whole) == 1
 
 
-def test_db_error_retry_gets_the_error_text_and_recovers(
+def test_db_error_retry_gets_the_typed_error_code_and_recovers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _loop(monkeypatch)
@@ -178,9 +178,10 @@ def test_db_error_retry_gets_the_error_text_and_recovers(
     assert env["rows"]
     assert len(seen) == 3
     reason = str((seen[1] or {}).get("reason") or "")
-    assert reason.startswith("db_error:")
-    assert "boom" in reason
-    assert env["loop"][0]["outcome"].startswith("db_error:")
+    # CLOOP-PII-01: the model hears the error class, never the message body.
+    assert reason == "db_error:InvalidInputException"
+    assert "boom" not in reason
+    assert env["loop"][0]["outcome"] == "db_error:InvalidInputException"
     assert env["loop"][1]["outcome"] == "served"
     assert env["served_attribution"] == "reported"
     assert env["served_model"] == _MODEL
@@ -399,6 +400,7 @@ def test_credit_is_missing_when_ranking_serves_after_a_model_call(
     assert env is not None
     assert_envelope_valid(env)
     assert env["plan_origin"] == "ontology_ranking"
+    assert env["served_route"] == "ontology_compile"
     assert env["badge"] == "L2_VALIDATED"
     assert env["sql_used"] != rejected
     assert env["served_attribution"] == "missing"

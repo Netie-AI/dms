@@ -395,6 +395,20 @@ def relation_tables(relation: str) -> frozenset[str]:
     return frozenset({bare} if bare else ())
 
 
+def table_is_granted(table: str, grantable: set[str]) -> bool:
+    """True when the grant names this table or a Cortex ``warehouse_`` alias.
+
+    The bare name is the comparison. ``serve_gap`` stays the statement check;
+    this is the served-answer and scrub lookup, which also accepts the alias
+    on the grant side.
+    """
+    t = _bare_table(table)
+    if not t:
+        return False
+    allowed = {_bare_table(x) for x in grantable}
+    return t in allowed or f"warehouse_{t}" in allowed
+
+
 def ungranted_tables(
     tables: set[str], grantable: set[str], *, dialect: str | None
 ) -> tuple[str, ...]:

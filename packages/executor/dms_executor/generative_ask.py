@@ -29,6 +29,7 @@ from typing import Any, cast
 import sqlglot
 from cortex_client.compute import (
     PLAN_ORIGIN_GENERATE_SQL,
+    PLAN_ORIGIN_ONTOLOGY_COMPILE,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
     SERVED_LEG_KEYS,
@@ -78,6 +79,7 @@ from dms_executor.gen_path_refuse import (
     ranking_missing_metric_gap,
 )
 from dms_executor.grant_struct import (
+    customer_grant_reason,
     serve_gap,
     sql_refusal_envelope,
     sqlglot_dialect,
@@ -98,6 +100,13 @@ from dms_executor.ontology import (
     detect_supply_chain_grains,
     missing_join_for_ungranted,
     try_compile_multi_grain,
+)
+from dms_executor.route_stamp import (
+    ROUTE_COMPILE,
+    ROUTE_LADDER,
+    ROUTE_MODEL,
+    freeze_route,
+    stamp_route,
 )
 from dms_executor.schema_context import (
     SCHEMA_CONTEXT_ENVELOPE_KEY,
@@ -128,6 +137,8 @@ from dms_executor.sql_loop import (
     loop_entry,
     run_model_loop,
     run_readonly,
+    typed_db_error,
+    written_names,
 )
 from dms_executor.sql_vote import (
     disagreement_detail,
@@ -313,6 +324,18 @@ def served_diag_enabled() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: Origins of SQL DMS compiled itself (multi-grain where-paths, ranking slots).
+#: The served SQL is not a model's, whatever the Insights payload carried.
+COMPILE_PLAN_ORIGINS = frozenset({PLAN_ORIGIN_ONTOLOGY_COMPILE, PLAN_ORIGIN_ONTOLOGY_RANKING})
+#: The model credit copied from an Insights payload onto an envelope.
+MODEL_CREDIT_KEYS: tuple[str, ...] = (
+    "served_provider",
+    "served_model",
+    "served_local",
+    "ov_key_id",
+)
+
+
 def with_served_attribution(
     env: dict[str, Any] | None, payload: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -323,6 +346,16 @@ def with_served_attribution(
     (the Cortex contract-ask fallback after a generative miss). The diagnostic
     flag adds the Insights payload's top-level key names and their count,
     never a value.
+
+    An envelope whose ``plan_origin`` names a DMS compile credits no model:
+    DMS wrote the served SQL, not the model. ``served_attribution`` is
+    ``missing`` when a generate call may have reached a model (nothing it
+    wrote was served), else ``none``. A multi-grain ``ontology_compile``
+    drops the copied model fields, because that path replaced the model's
+    SQL. A ranking compile keeps them: its route stamp is compile, and a
+    model name beside that stamp does not change the route. ``generate_legs``
+    still records the call. Every ask envelope passes here, so a later copy
+    of the payload cannot re-credit a multi-grain compile.
     """
     if not isinstance(env, dict):
         return env
@@ -336,6 +369,15 @@ def with_served_attribution(
             keys = sorted(str(k) for k in payload)
             env["served_payload_keys"] = {"count": len(keys), "keys": keys}
     env["served_attribution"] = served_attribution(payload)
+    origin = str(env.get("plan_origin") or "")
+    if origin in COMPILE_PLAN_ORIGINS:
+        # Ranking keeps the copied served_* fields (#439). The route stamp is
+        # compile, so the name does not make the answer a model answer.
+        if origin != PLAN_ORIGIN_ONTOLOGY_RANKING:
+            for key in MODEL_CREDIT_KEYS:
+                env.pop(key, None)
+        called = generate_model_called(payload)
+        env["served_attribution"] = SERVED_ATTR_MISSING if called else SERVED_ATTR_NONE
     return env
 
 
@@ -806,16 +848,20 @@ def _refusal_before_explain(con: Any, sql: str) -> str | None:
     return None
 
 
-def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:
-    """Exception text from EXPLAIN. The checker reason stays the type name."""
+def _explain_error_code(sql: str, warehouse: Path | None) -> str | None:
+    """Typed code for an EXPLAIN error: ``Class`` or ``Class:name``.
+
+    Never the DuckDB message. A binder error prints an ENUM column's member
+    list, and a PIVOT binds on its column's distinct values, so the message
+    can carry cell values. A name, when given, is one the SQL wrote.
+    """
     if warehouse is None or not Path(warehouse).is_file():
         return None
     con = connect_serving(Path(warehouse))
     try:
         con.execute(f"EXPLAIN {sql}")
     except Exception as exc:  # noqa: BLE001
-        text = str(exc).strip()
-        return text or None
+        return typed_db_error(exc, written_names(con, sql))
     finally:
         con.close()
     return None
@@ -823,6 +869,55 @@ def _explain_error_text(sql: str, warehouse: Path | None) -> str | None:
 
 def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _grant_ticket_reason(
+    reason: str, sql: str | None, grantable: set[str], dialect: str | None
+) -> str | None:
+    """Ticket text that still names the relation. The visible code stays bare.
+
+    ``ungranted:`` is written once. A second copy would make the scrub read
+    the word ``ungranted`` as a table and cut it out of ``checker:ungranted``.
+    """
+    if not isinstance(sql, str) or not sql.strip():
+        return None
+    heads = [part.strip() for part in str(reason or "").split(":") if part.strip()]
+    if not heads:
+        return None
+    if "ungranted" not in heads and "sql_relation_not_granted" not in heads:
+        return None
+    cited = _cited_ungranted(sql, grantable, dialect)
+    if not cited or ":" not in cited:
+        return None
+    tail = cited.split(":", 1)[1]
+    if not tail or tail in heads:
+        return None
+    if "ungranted" in heads:
+        return f"{reason}:{tail}"
+    return f"{reason}:{cited}"
+
+
+def _cited_ungranted(sql: str, grantable: set[str], dialect: str | None) -> str | None:
+    """Relation tail for the ticket. The visible code stays bare."""
+    named = serve_gap(sql, grantable=set(grantable), dialect=dialect, cite_missing=True)
+    if (
+        isinstance(named, str)
+        and named.startswith("ungranted:")
+        and named not in {"ungranted:file", "ungranted:unparsed"}
+    ):
+        return named
+    return None
+
+
+def _sql_route(payload: dict[str, Any] | None) -> str:
+    """Model SQL is the model route only when the producer named the model.
+
+    No ``served_model`` is missing attribution (SERVED-ATTR-01): no route is
+    stamped, so the envelope stays unattributed. It is never a rule path.
+    """
+    raw = payload.get("served_model") if isinstance(payload, dict) else None
+    name = str(raw).strip() if isinstance(raw, str) else ""
+    return ROUTE_MODEL if name else ""
 
 
 def _abstain(
@@ -836,9 +931,11 @@ def _abstain(
     sql: str | None = None,
     retries: int = 0,
     stage: str = "generative",
+    ticket_reason: str | None = None,
 ) -> dict[str, Any]:
     env = build_abstain(
         reason=reason,
+        ticket_reason=ticket_reason,
         question=question,
         sql=sql,
         retries=retries,
@@ -855,6 +952,7 @@ def _abstain(
         route="generated",
     )
     assert_envelope_valid(env)
+    # build_abstain already wrote abstain:<stage>. Successes stamp their own.
     return with_plan_source(env, plan_source)
 
 
@@ -872,6 +970,7 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -906,7 +1005,10 @@ def _l2_envelope(
     )
     if env.get("abstained"):
         assert_envelope_valid(env)
-        return with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
+        if served_route:
+            stamp_route(env, served_route)
+        return env
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -942,6 +1044,8 @@ def _l2_envelope(
             "checker_version": version,
             "error": f"{type(exc).__name__}: {exc}",
         }
+    if served_route:
+        stamp_route(env, served_route)
     return env
 
 
@@ -962,6 +1066,7 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    served_route: str = "",
     grantable: set[str] | None = None,
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
@@ -1071,6 +1176,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        served_route=served_route,
     )
 
 
@@ -1206,6 +1312,7 @@ def _try_multi_grain_envelope(
         coverage=multi.coverage,
         where_paths=multi.where_paths,
         warehouse=lake,
+        served_route=ROUTE_COMPILE,
         grantable=allowed,
     )
 
@@ -1288,6 +1395,7 @@ def rank_window_ask(
         warehouse=lake,
         grantable=allowed,
         lead=lead,
+        served_route=ROUTE_LADDER,
     )
 
 
@@ -1387,9 +1495,10 @@ def _run_extract_loop(
             sql, grantable=grantable, warehouse=warehouse, dialect=dialect
         )
         if why and why.startswith("explain:"):
-            detail = _explain_error_text(sql, warehouse)
-            if detail:
-                why = f"{why}: {detail}"
+            # A typed code reaches the model, never the database message.
+            code = _explain_error_code(sql, warehouse)
+            if code:
+                why = f"explain:{code}"
         if why:
             return why
         if declared is not None:
@@ -1421,6 +1530,7 @@ def _run_extract_loop(
             warehouse=warehouse,
             grantable=grantable,
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+            served_route=_sql_route(payload),
         )
 
     def abstain(
@@ -1440,6 +1550,9 @@ def _run_extract_loop(
                 retries=retries,
                 stage="extract_loop",
             )
+        # The loop outcome the customer reads stays the bare checker code.
+        # The ticket keeps the relation serve_gap named (NAME-ECHO-01).
+        ticket_reason = _grant_ticket_reason(reason, sql, grantable, dialect)
         return _abstain(
             question,
             reason,
@@ -1449,6 +1562,7 @@ def _run_extract_loop(
             sql=sql,
             retries=retries,
             stage="extract_loop",
+            ticket_reason=ticket_reason,
         )
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1470,10 +1584,14 @@ def _run_extract_loop(
             grounded_tables=sorted(cited_relations(sql)),
         )
         assert_envelope_valid(env)
-        return with_plan_origin(
+        stamped = with_plan_origin(
             with_plan_source(env, PLAN_SOURCE_ONTOLOGY),
             PLAN_ORIGIN_GENERATE_SQL,
         )
+        route = _sql_route(payload)
+        if route:
+            stamp_route(stamped, route)
+        return stamped
 
     # Rows only. The customer submit waits until the second reading agrees,
     # so a split does not ledger a number the envelope does not serve.
@@ -1900,7 +2018,7 @@ def maybe_generative_ask(
                 stamped["index_stamp"] = index_stamp
             # Through PII-01, not after it. Hint values are already tokens.
             stamped = mask_unknown_keys(stamped)
-        return stamped
+        return freeze_route(stamped)
 
     if verify_cache_missing:
         return _stamp(
@@ -2034,7 +2152,9 @@ def maybe_generative_ask(
         dialect=dialect,
     )
     if multi_env is not None:
-        return _stamp(with_plan_origin(multi_env, origin))
+        # DMS's own multi-grain compile is served. Any model SQL in the
+        # payload never ran, so its generate origin and model do not apply.
+        return _stamp(with_plan_origin(multi_env, PLAN_ORIGIN_ONTOLOGY_COMPILE))
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
@@ -2113,13 +2233,19 @@ def maybe_generative_ask(
                 )
             )
         if why:
+            shown = customer_grant_reason(why)
+            cited = (
+                _cited_ungranted(sql, allowed, dialect)
+                if shown == "ungranted" or why == "sql_relation_not_granted"
+                else None
+            )
             if cloop_b_enabled():
                 loop_attempts.append(
                     loop_entry(
                         prompt=q,
                         payload=payload if isinstance(payload, dict) else None,
                         sql=sql,
-                        outcome=f"checker:{why}",
+                        outcome=f"checker:{shown}",
                         dialect=dialect,
                     )
                 )
@@ -2132,9 +2258,12 @@ def maybe_generative_ask(
             ):
                 return _stamp(
                     _abstain(
-                        q, f"validate:{why}",
+                        q, f"validate:{shown}",
                         space_id=space_id, session_id=session_id, plan_source=source,
                         notes=trail_notes,
+                        ticket_reason=(
+                            f"validate:{cited}" if cited and cited != shown else None
+                        ),
                     )
                 )
             # Climb: invalid SELECT is not authority. Ranked DMS slots may be.
@@ -2149,6 +2278,7 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(
                     sql,
@@ -2163,6 +2293,7 @@ def maybe_generative_ask(
                     warehouse=lake,
                     grantable=allowed,
                     plan_origin=origin,
+                    served_route=sql_route,
                 )
             )
     if kind != "plan":
@@ -2349,10 +2480,17 @@ def maybe_generative_ask(
             )
         )
     if why:
+        shown = customer_grant_reason(why)
+        cited = (
+            _cited_ungranted(compiled.sql, allowed, dialect)
+            if shown == "ungranted" or why == "sql_relation_not_granted"
+            else None
+        )
         return _stamp(
             _abstain(
-                q, f"validate:{why}",
+                q, f"validate:{shown}",
                 space_id=space_id, session_id=session_id, plan_source=source,
+                ticket_reason=(f"validate:{cited}" if cited and cited != shown else None),
             )
         )
     if not origin and source != PLAN_SOURCE_BIND:
@@ -2378,5 +2516,6 @@ def maybe_generative_ask(
             warehouse=lake,
             grantable=allowed,
             plan_origin=origin,
+            served_route=ROUTE_COMPILE,
         )
     )

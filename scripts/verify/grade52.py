@@ -20,9 +20,32 @@ prints the product commit (``git rev-parse HEAD`` of the graded checkout).
 Each case records ``serve_path`` from that envelope's own ``badge``,
 ``plan_origin``, ``ladder_rung``, ``plan_source``, and ``served_model``.
 ``ontology_ranking``, ``ontology_plan``, and an ``ontology_compile`` stamp
-are rule/compile, including when ``served_model`` is set. The paths line
-counts AI model SQL, rule-served (L0, L1, compile, oracle), and
-unattributed, once for correct answers and once for every served answer.
+are rule/compile, including when ``served_model`` is set. One exception:
+``plan_source=ontology_plan`` beside a model-SQL ``plan_origin`` is not a
+compile claim. Cortex stamps ``ontology_plan`` only when a model wrote the
+SQL, and DMS stamps it on every generative answer, so the origin decides.
+Stamps are not proof: AI also needs the served ``sql_used`` to equal the SQL
+Cortex's generate returned, which only an armed capture records. A model
+claim without that proof is unattributed.
+The paths line counts AI model SQL, rule-served (L0, L1, compile, oracle),
+and unattributed, once for correct answers and once for every served answer.
+The split line puts every case in one of ai, rule, unattributed, or abstain.
+
+The first output line is the header: ``mode=armed`` or ``mode=stub``, the
+product sha, and the Cortex sha. Only ``--armed`` (or a capture whose header
+says armed) is armed. Everything else is stub, including a capture that does
+not say what it is.
+
+``--armed`` posts each pack question through ``POST /v1/chat/ask`` in this
+checkout's app, with a real ``CortexClient`` on ``CORTEX_BASE_URL`` and a
+real OpenVault manifest mint. It needs ``CORTEX_BASE_URL``, an
+OpenVault-issued ``CORTEX_API_KEY`` (not the demo viewer key), ``CORTEX_SHA``
+(Cortex does not publish its commit over HTTP), and the minter's own
+``OPENVAULT_URL`` plus ``DMS_OV_SERVICE_TOKEN``. It never falls back. It
+exits non-zero with a named reason when a setting is missing, Cortex is
+unreachable, Cortex says FreeRoute is unarmed, the mint fails, a question
+carries a stub/placeholder answer or an unarmed Insights reason, or no answer
+was served from the model's own SQL (``split ai=0``).
 
 The risk line states what a score supports: per route, served answers with
 gold, how many were wrong, and the exact one-sided 95 percent upper bound on
@@ -41,6 +64,7 @@ Usage:
     python scripts/verify/grade52.py --envelopes PATH
     python scripts/verify/grade52.py --envelopes RUN1 --envelopes RUN2 --envelopes RUN3 --gate
     python scripts/verify/grade52.py --envelopes PATH --baseline OLD/grade52.json
+    python scripts/verify/grade52.py --armed --layout copy-only
 """
 
 from __future__ import annotations
@@ -53,15 +77,23 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[2]
 PACK_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 ORACLE_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
+PACK_DIR = PACK_PATH.parent
+# What the recorded stub Cortex serves. Armed mode refuses any answer that
+# carries one of its values, read from this file and never typed here.
+STUB_RESPONSES_PATH = ROOT / "tests" / "fixtures" / "ask_guide" / "cortex_responses_52.json"
+LAYOUTS = ("copy-only", "full-tree")
 
 ABS_TOL = 0.005
 # ponytail: product of per-column candidate counts. Above this the grade is
@@ -70,12 +102,26 @@ ABS_TOL = 0.005
 MAP_CAP = 1024
 MODE_SERVED = "served"
 MODE_STUB_EXEC = "stub-exec"
+MODE_ARMED = "armed"
 MODES = (
     MODE_SERVED,
     MODE_STUB_EXEC,
+    MODE_ARMED,
 )
+# The header's run label. Armed only when the run proved it; anything else is stub.
+RUN_ARMED = "armed"
+RUN_STUB = "stub"
+ARMED_CORTEX_ENV = "CORTEX_BASE_URL"
+ARMED_KEY_ENV = "CORTEX_API_KEY"
+ARMED_SHA_ENV = "CORTEX_SHA"
+ARMED_OPENVAULT_ENV = "OPENVAULT_URL"
+# Same default as the product's Settings.openvault_url and ManifestMinter.
+ARMED_OPENVAULT_DEFAULT = "http://127.0.0.1:5000"
+ARMED_SESSION_ID = "ses_armed_52"
+ARMED_PREFLIGHT_TIMEOUT_S = 10.0
 BUCKET_CORRECT = "CORRECT"
 BUCKET_WRONG = "WRONG"
+BUCKET_RECONFIRM = "RECONFIRM"
 BUCKET_ABSTAIN = "ABSTAIN"
 BUCKET_EMPTY = "EMPTY_GOLD"
 BUCKET_REFUSAL_OK = "REFUSAL_OK"
@@ -84,6 +130,7 @@ BUCKET_GOLD_BROKEN = "GOLD_BROKEN"
 _BUCKET_KEYS = (
     "correct",
     "wrong",
+    "reconfirm",
     "abstain",
     "refusal_ok",
     "refusal_wrong",
@@ -92,13 +139,14 @@ _BUCKET_KEYS = (
 )
 # Bump when a bucket rule or the row comparison changes. A baseline graded by
 # another version is not comparable and is refused.
-GRADER_VERSION = 2
+GRADER_VERSION = 3
 CONFIDENCE = 0.95
 # Higher is worse. A case's worst-of-runs bucket is the one ranked highest.
 _SEVERITY = {
     BUCKET_WRONG: 3,
     BUCKET_REFUSAL_WRONG: 3,
     BUCKET_ABSTAIN: 2,
+    BUCKET_RECONFIRM: 2,
     BUCKET_GOLD_BROKEN: 2,
     BUCKET_EMPTY: 1,
     BUCKET_CORRECT: 0,
@@ -588,6 +636,22 @@ def _ontology_compile(text: str) -> bool:
     return text in _ONTOLOGY_COMPILE or text.startswith("ontology_compile")
 
 
+def _compile_source(source: str, origin: str) -> bool:
+    """True when ``plan_source`` claims an ontology compile.
+
+    ``ontology_plan`` beside a model-SQL ``plan_origin`` is not that claim.
+    Cortex stamps ``plan_source=ontology_plan`` only when a model wrote the
+    SQL (its Insights law), and DMS stamps it on every generative answer,
+    model SQL and DMS compile alike. ``plan_origin`` is the stamp that tells
+    them apart: DMS sets ``ontology_ranking`` or ``ontology_compile`` when it
+    compiled. The stamps are still not proof: ``serve_path`` also needs the
+    served SQL to be the model's SQL.
+    """
+    if source == "ontology_plan" and origin in _AI_STAMPS:
+        return False
+    return _ontology_compile(source)
+
+
 def _field_claim(text: str, *, unknown_if_other: bool) -> str | None:
     if not text:
         return None
@@ -606,22 +670,60 @@ def stamp_contradiction(env: Mapping[str, Any]) -> bool:
     """Compile stamp and a served model. The path stays compile."""
     if not isinstance(env, Mapping) or not _stamp_text(env, "served_model"):
         return False
+    origin = _stamp_text(env, "plan_origin").lower()
+    if _compile_source(_stamp_text(env, "plan_source").lower(), origin):
+        return True
     return any(
         _ontology_compile(_stamp_text(env, key).lower())
-        for key in ("plan_origin", "ladder_rung", "plan_source", "badge")
+        for key in ("plan_origin", "ladder_rung", "badge")
     )
 
 
-def serve_path(env: Mapping[str, Any]) -> str:
-    """Path that served the answer. Only the envelope's own stamps.
+def model_sql_served(env: Mapping[str, Any], model_sql: str | None) -> bool:
+    """The served ``sql_used`` is the model's own SQL, by the product's equality.
+
+    ``sql_byte_equal`` is the comparison the extract loop credits a model
+    with. No model SQL, or none served, is never a match.
+    """
+    served = env.get("sql_used") if isinstance(env, Mapping) else None
+    if not isinstance(served, str) or not isinstance(model_sql, str):
+        return False
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+    from dms_executor.sql_currency import sql_byte_equal
+
+    return sql_byte_equal(served, model_sql, SERVING_DIALECT)
+
+
+def serve_path(env: Mapping[str, Any], model_sql: str | None = None) -> str:
+    """Path that served the answer, from the envelope's stamps and the model's SQL.
 
     ``L0``, ``L1``, ``compile``, and ``oracle`` are rule-served. An ontology
     compile stamp (``ontology_ranking``, ``ontology_plan``, ``ontology_compile``)
     is rule/compile, and a ``served_model`` beside it does not change that.
     AI model SQL needs a model-SQL stamp and a non-empty ``served_model`` that
-    do not disagree with a rule stamp. Missing or contradictory stamps are
-    unattributed, and a model name alone is never AI.
+    do not disagree with a rule stamp. When the envelope served SQL, that
+    ``sql_used`` must be ``model_sql`` (what Cortex's generate returned). A
+    served SQL that is not the model's is unattributed, so a DMS compile under
+    stale model stamps is never AI. No served SQL leaves the stamp as the
+    claim: the builder's model route has nothing to contradict. Missing or
+    contradictory stamps are unattributed, and a model name alone is never AI.
+    ``plan_source`` of ``ontology_plan`` under a model-SQL ``plan_origin`` is
+    not a compile claim (see ``_compile_source``).
     """
+    path = _stamped_path(env)
+    served = env.get("sql_used") if isinstance(env, Mapping) else None
+    if (
+        path == "ai"
+        and isinstance(served, str)
+        and served.strip()
+        and not model_sql_served(env, model_sql)
+    ):
+        return "unattributed"
+    return path
+
+
+def _stamped_path(env: Mapping[str, Any]) -> str:
+    """What the envelope's own stamps claim. Not proof of a model answer."""
     if not isinstance(env, Mapping):
         return "unattributed"
     badge = _stamp_text(env, "badge").lower()
@@ -637,9 +739,10 @@ def serve_path(env: Mapping[str, Any]) -> str:
         claim = _field_claim(text, unknown_if_other=unknown_if_other)
         if claim:
             claims.append(claim)
-    if _ontology_compile(source):
+    compile_source = _compile_source(source, origin)
+    if compile_source:
         claims.append("compile")
-    ontology = any(_ontology_compile(text) for text in (badge, origin, rung, source))
+    ontology = compile_source or any(_ontology_compile(text) for text in (badge, origin, rung))
     model = _stamp_text(env, "served_model")
     if model and not ontology:
         claims.append("ai")
@@ -662,6 +765,46 @@ def path_group(path: str) -> str:
     return "unattributed"
 
 
+def aggregate_signature(sql: str | None) -> frozenset[str]:
+    """Aggregate expressions in a statement. Empty when there is no aggregate."""
+    if not isinstance(sql, str) or not sql.strip():
+        return frozenset()
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(sql, read=SERVING_DIALECT)
+    except Exception:
+        return frozenset()
+    return frozenset(
+        node.sql(dialect=SERVING_DIALECT).casefold() for node in tree.find_all(exp.AggFunc)
+    )
+
+
+def different_measure(gold_sql: str | None, served_sql: str | None) -> bool:
+    """True when both statements aggregate and the aggregates are not the same."""
+    gold = aggregate_signature(gold_sql)
+    served = aggregate_signature(served_sql)
+    if not gold or not served:
+        return False
+    return gold != served
+
+
+def _reconfirm_offer(env: Mapping[str, Any]) -> bool:
+    raw = env.get("reconfirm")
+    return isinstance(raw, Mapping) and "suggested_question" in raw
+
+
+SERVED_ROUTES = ("ai", "rule", "unattributed", "abstain")
+
+
+def served_route(env: Mapping[str, Any], model_sql: str | None = None) -> str:
+    """ai, rule, unattributed, or abstain. An abstain is not a served path."""
+    if not isinstance(env, Mapping) or _is_abstain(env):
+        return "abstain"
+    return path_group(serve_path(env, model_sql))
+
+
 def grade_case(
     *,
     gold: list[dict[str, Any]] | None,
@@ -671,11 +814,13 @@ def grade_case(
     as_of: str,
     trap: bool = False,
     gold_broken: bool = False,
+    model_sql: str | None = None,
 ) -> dict[str, Any]:
     """One case. Traps are refusals. Gold-broken is an abstain with no oracle.
 
     A served answer on a gold-broken case is wrong. ``gold is None`` without
-    ``gold_broken`` is empty gold (no certified rows).
+    ``gold_broken`` is empty gold (no certified rows). ``model_sql`` is what
+    Cortex's generate returned for this case; only an armed capture has it.
     """
     badge = env.get("badge")
     route = env.get("route")
@@ -684,13 +829,20 @@ def grade_case(
     base = {
         "route": route,
         "badge": badge,
-        "serve_path": serve_path(env),
+        "serve_path": serve_path(env, model_sql),
+        "served_route": served_route(env, model_sql),
         "stamp_contradiction": stamp_contradiction(env),
         "answered": not _is_abstain(env),
         "abstain_code": code,
         "as_of": as_of,
         "served_n": served_n,
     }
+    if _reconfirm_offer(env):
+        return {**base, "bucket": BUCKET_RECONFIRM, "reason": "reconfirm", "answered": False}
+    if env.get("reconfirm_accepted") is True and different_measure(
+        gold_sql, str(env.get("sql_used") or "")
+    ):
+        return {**base, "bucket": BUCKET_WRONG, "reason": "wrong measure"}
     if trap:
         if _is_abstain(env):
             return {**base, "bucket": BUCKET_REFUSAL_OK, "reason": "correct refusal"}
@@ -827,17 +979,40 @@ def _layout_text(raw: Any) -> str:
     return text
 
 
-def _header_meta(data: Any) -> tuple[str | None, str | None] | None:
-    """A JSONL header is commit and layout, not a case. None when it is a case."""
+def _run_text(raw: Any) -> str:
+    """The capture's own label. Only armed or stub; anything else is refused."""
+    if raw not in (RUN_ARMED, RUN_STUB):
+        raise SystemExit("grade52: envelope mode must be armed or stub")
+    return str(raw)
+
+
+def _cortex_sha(raw: Any) -> str:
+    text = raw.strip().lower() if isinstance(raw, str) else ""
+    if len(text) != 40 or any(char not in "0123456789abcdef" for char in text):
+        raise SystemExit("grade52: cortex sha missing (40 hex)")
+    return text
+
+
+_HEADER_KEYS = ("dms_sha", "layout", "mode", "cortex_sha")
+
+
+def _header_meta(data: Any) -> dict[str, str | None] | None:
+    """A JSONL header is commit, layout, mode and Cortex sha, not a case.
+
+    None when it is a case.
+    """
     if not isinstance(data, dict):
         return None
     if any(key in data for key in ("env", "rows", "badge", "id")):
         return None
-    if "dms_sha" not in data and "layout" not in data:
+    if not any(key in data for key in _HEADER_KEYS):
         return None
-    sha = _commit_sha(data.get("dms_sha")) if "dms_sha" in data else None
-    layout = _layout_text(data.get("layout")) if "layout" in data else None
-    return sha, layout
+    return {
+        "dms_sha": _commit_sha(data.get("dms_sha")) if "dms_sha" in data else None,
+        "layout": _layout_text(data.get("layout")) if "layout" in data else None,
+        "mode": _run_text(data.get("mode")) if "mode" in data else None,
+        "cortex_sha": _cortex_sha(data.get("cortex_sha")) if "cortex_sha" in data else None,
+    }
 
 
 def _record(data: Any, default_id: str | None = None) -> dict[str, Any]:
@@ -847,7 +1022,11 @@ def _record(data: Any, default_id: str | None = None) -> dict[str, Any]:
         if "rows" not in data["env"]:
             raise SystemExit("grade52: envelope has no rows")
         qid = str(data.get("id") or default_id or "")
-        return {"id": qid, "env": data["env"]}
+        record = {"id": qid, "env": data["env"]}
+        if isinstance(data.get("served"), dict):
+            # An armed capture's per-question record (route, model SQL, Insights reason).
+            record["served"] = data["served"]
+        return record
     if "rows" in data or "badge" in data:
         if "rows" not in data:
             raise SystemExit("grade52: envelope has no rows")
@@ -862,8 +1041,19 @@ def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None, str | 
 
     The commit is a JSONL header ``{"dms_sha": "<40 hex>", "layout": "copy-only"}``
     or ``dms_sha`` and ``layout`` files in the directory. A JSON array carries
-    neither.
+    neither. ``load_envelopes_meta`` also returns ``mode`` and ``cortex_sha``.
     """
+    rows, meta = load_envelopes_meta(path)
+    return rows, meta["dms_sha"], meta["layout"]
+
+
+def _empty_meta() -> dict[str, str | None]:
+    return {key: None for key in _HEADER_KEYS}
+
+
+def load_envelopes_meta(path: Path) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
+    """Records plus the header: ``dms_sha``, ``layout``, ``mode``, ``cortex_sha``."""
+    meta = _empty_meta()
     if path.is_dir():
         files = sorted(item for item in path.iterdir() if item.suffix == ".json" and item.is_file())
         if not files:
@@ -875,11 +1065,17 @@ def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None, str | 
             except json.JSONDecodeError as exc:
                 raise SystemExit("grade52: envelope file is not json") from exc
             rows.append(_record(data, default_id=item.stem))
-        sha_path = path / "dms_sha"
-        sha = _commit_sha(sha_path.read_text(encoding="utf-8")) if sha_path.is_file() else None
-        layout_path = path / "layout"
-        layout = _layout_text(layout_path.read_text(encoding="utf-8")) if layout_path.is_file() else None
-        return rows, sha, layout
+        readers = {
+            "dms_sha": _commit_sha,
+            "layout": _layout_text,
+            "mode": lambda raw: _run_text(raw.strip()),
+            "cortex_sha": _cortex_sha,
+        }
+        for key, read in readers.items():
+            item = path / key
+            if item.is_file():
+                meta[key] = read(item.read_text(encoding="utf-8"))
+        return rows, meta
     if not path.is_file():
         raise SystemExit("grade52: envelopes path is missing")
     text = path.read_text(encoding="utf-8")
@@ -891,10 +1087,9 @@ def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None, str | 
             raise SystemExit("grade52: envelope file is not json") from exc
         if not isinstance(data, list):
             raise SystemExit("grade52: envelope file is not json")
-        return [_record(item) for item in data], None, None
+        return [_record(item) for item in data], meta
     rows = []
-    sha: str | None = None
-    layout: str | None = None
+    seen_header = False
     for line in text.splitlines():
         if not line.strip():
             continue
@@ -904,14 +1099,15 @@ def load_envelopes(path: Path) -> tuple[list[dict[str, Any]], str | None, str | 
             raise SystemExit("grade52: envelope file is not json") from exc
         header = _header_meta(data)
         if header is not None:
-            if sha is not None or layout is not None:
+            if seen_header:
                 raise SystemExit("grade52: envelopes commit missing")
-            sha, layout = header
+            seen_header = True
+            meta = header
             continue
         rows.append(_record(data))
     if not rows:
         raise SystemExit("grade52: envelope file is empty")
-    return rows, sha, layout
+    return rows, meta
 
 
 def _sql_same(left: str, right: str) -> bool:
@@ -961,6 +1157,7 @@ def tally(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     bucket_of = {
         BUCKET_CORRECT: "correct",
         BUCKET_WRONG: "wrong",
+        BUCKET_RECONFIRM: "reconfirm",
         BUCKET_ABSTAIN: "abstain",
         BUCKET_REFUSAL_OK: "refusal_ok",
         BUCKET_REFUSAL_WRONG: "refusal_wrong",
@@ -1005,11 +1202,13 @@ def grade_envelopes(
         raise SystemExit(f"pack size {len(questions)} != 52")
     flagged = set(pack_gold_served_ids(questions, oracles))
     by_id: dict[str, Any] = {}
+    model_sql_by_id: dict[str, str | None] = {}
     for item in envelopes:
         key = str(item.get("id"))
         if key in by_id:
             raise SystemExit(f"grade52: duplicate envelope for {key}")
         by_id[key] = item.get("env")
+        model_sql_by_id[key] = _record_model_sql(item)
     folder = warehouse_dir or Path(tempfile.mkdtemp(prefix="grade52-"))
     con, as_of, _path = _open_warehouse(folder)
     cases: list[dict[str, Any]] = []
@@ -1036,6 +1235,7 @@ def grade_envelopes(
                 as_of=as_of,
                 trap=trap,
                 gold_broken=broken,
+                model_sql=model_sql_by_id.get(qid),
             )
             row["id"] = qid
             row["pack_gold_served"] = qid in flagged
@@ -1074,6 +1274,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
                 "reason": item["reason"],
                 "route": item["route"],
                 "serve_path": item.get("serve_path"),
+                "served_route": item.get("served_route"),
                 "badge": item["badge"],
                 "abstain_code": item["abstain_code"],
                 "as_of": item["as_of"],
@@ -1085,7 +1286,10 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
     without = report["without_pack_gold_served"]
     body = {
         "mode": report["mode"],
+        "run": run_label(report),
         "dms_sha": report["dms_sha"],
+        "cortex_sha": report.get("cortex_sha"),
+        "split": route_split(report["cases"]),
         "pack_gold_served": report["pack_gold_served"],
         "pack_gold_served_ids": report["pack_gold_served_ids"],
         "as_of": report["as_of"],
@@ -1093,6 +1297,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "graded": report["graded"],
         "correct": report["correct"],
         "wrong": report["wrong"],
+        "reconfirm": report["reconfirm"],
         "abstain": report["abstain"],
         "refusal_ok": report["refusal_ok"],
         "refusal_wrong": report["refusal_wrong"],
@@ -1134,17 +1339,57 @@ def _require_label(report: Mapping[str, Any]) -> None:
         raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
 
 
+def _bucket_count(report: Mapping[str, Any], key: str) -> int:
+    if key not in report:
+        if key == "reconfirm":
+            return 0
+        raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
+    return int(report[key])
+
+
 def _accounted(report: Mapping[str, Any]) -> int:
-    return sum(int(report[key]) for key in _BUCKET_KEYS)
+    return sum(_bucket_count(report, key) for key in _BUCKET_KEYS)
+
+
+def run_label(report: Mapping[str, Any]) -> str:
+    """armed only for an armed grade with a Cortex sha. Everything else is stub."""
+    if report.get("mode") == MODE_ARMED and isinstance(report.get("cortex_sha"), str):
+        return RUN_ARMED
+    return RUN_STUB
+
+
+def header_line(report: Mapping[str, Any]) -> str:
+    """First output line: armed or stub, the product sha, the Cortex sha."""
+    _require_label(report)
+    cortex = report.get("cortex_sha") if run_label(report) == RUN_ARMED else None
+    return (
+        f"header mode={run_label(report)} product_sha={report['dms_sha']} "
+        f"cortex_sha={cortex or 'none'}"
+    )
+
+
+def route_split(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Every case in one of ai, rule, unattributed, abstain. Adds up to n."""
+    counts = {key: 0 for key in SERVED_ROUTES}
+    for item in cases:
+        route = str(item.get("served_route") or "")
+        if route not in counts:
+            raise SystemExit(f"grade52: case {item.get('id')} has no served route")
+        counts[route] += 1
+    return counts
+
+
+def split_line(report: Mapping[str, Any]) -> str:
+    counts = route_split(report["cases"])
+    parts = " ".join(f"{key}={counts[key]}" for key in SERVED_ROUTES)
+    return f"split {parts} n={len(report['cases'])}"
 
 
 def summary_line(report: Mapping[str, Any]) -> str:
-    """One score line. The seven buckets are disjoint and add up to n."""
+    """One score line. The buckets are disjoint and add up to n."""
     _require_label(report)
-    for key in _BUCKET_KEYS:
-        if key not in report:
-            raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
-    if _accounted(report) != int(report["n"]):
+    counts = {key: _bucket_count(report, key) for key in _BUCKET_KEYS}
+    if sum(counts.values()) != int(report["n"]):
         raise SystemExit("grade52: buckets do not add up to n")
     layout = report.get("layout")
     head = f"sha={report['dms_sha']}"
@@ -1152,10 +1397,11 @@ def summary_line(report: Mapping[str, Any]) -> str:
         head += f" layout={layout}"
     return (
         f"{head} pack_gold_served={report['pack_gold_served']} "
-        f"{report['n']}: correct={report['correct']} wrong={report['wrong']} "
-        f"abstain={report['abstain']} refusal_ok={report['refusal_ok']} "
-        f"refusal_wrong={report['refusal_wrong']} empty_gold={report['empty_gold']} "
-        f"gold_broken={report['gold_broken']} mode={report['mode']}"
+        f"{report['n']}: correct={counts['correct']} wrong={counts['wrong']} "
+        f"reconfirm={counts['reconfirm']} abstain={counts['abstain']} "
+        f"refusal_ok={counts['refusal_ok']} "
+        f"refusal_wrong={counts['refusal_wrong']} empty_gold={counts['empty_gold']} "
+        f"gold_broken={counts['gold_broken']} mode={report['mode']}"
     )
 
 
@@ -1301,6 +1547,13 @@ def paths_line(counts: Mapping[str, Any]) -> str:
     )
 
 
+def _record_model_sql(item: Mapping[str, Any]) -> str | None:
+    """The model SQL an armed capture recorded for one case, or None."""
+    served = item.get("served") if isinstance(item, Mapping) else None
+    raw = served.get("model_sql") if isinstance(served, Mapping) else None
+    return raw if isinstance(raw, str) and raw.strip() else None
+
+
 def served_paths_line(envelopes: Sequence[Mapping[str, Any]]) -> str:
     """Served-answer paths when the pack is not a value score."""
     counts = _zero_paths()
@@ -1308,7 +1561,7 @@ def served_paths_line(envelopes: Sequence[Mapping[str, Any]]) -> str:
         env = item.get("env") if isinstance(item, Mapping) else None
         if not isinstance(env, Mapping) or _is_abstain(env):
             continue
-        counts[path_group(serve_path(env))] += 1
+        counts[path_group(serve_path(env, _record_model_sql(item)))] += 1
     return (
         f"paths served ai={counts['ai']} rule={counts['rule']} "
         f"unattributed={counts['unattributed']}"
@@ -1513,6 +1766,475 @@ def replay_executing() -> list[dict[str, Any]]:
     return rows
 
 
+# Armed: this checkout's POST /v1/chat/ask against a live Cortex. Never falls
+# back. Every refusal and failure is a named SystemExit before a score exists.
+
+
+def _refuse(code: str, hint: str) -> SystemExit:
+    """Run-level refusal. Callers pass names, codes and redacted text, never a key."""
+    return SystemExit(f"grade52 armed: REFUSED {code}: {hint}")
+
+
+def _fail(qid: str, reason: str) -> SystemExit:
+    """Question-level failure. The run stops at the first one."""
+    return SystemExit(f"grade52 armed: FAIL {qid}: {reason}")
+
+
+@dataclass(frozen=True)
+class ArmedConfig:
+    cortex_url: str
+    api_key: str = field(repr=False)
+    cortex_sha: str
+    openvault_url: str
+
+
+def public_url(url: str) -> str:
+    """``scheme://host[:port]`` only. Userinfo, path and query never reach output."""
+    parsed = urlparse(url)
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname or ''}{port}"
+
+
+def armed_config(env: Mapping[str, str] | None = None) -> ArmedConfig:
+    """Read the armed settings. No network. A missing or unusable one is refused by name.
+
+    The key check is the product's own generate gate: empty, the demo viewer
+    key, or plain http to a non-loopback host never generates.
+    """
+    _bootstrap()
+    from cortex_client.insights import generate_bearer_refuse
+
+    source = os.environ if env is None else env
+    base = str(source.get(ARMED_CORTEX_ENV) or "").strip().rstrip("/")
+    if not base:
+        raise _refuse("cortex_base_url_unset", f"set {ARMED_CORTEX_ENV} to the Cortex under test")
+    key = source.get(ARMED_KEY_ENV)
+    refused = generate_bearer_refuse(key, base)
+    if refused or key is None:
+        raise _refuse(
+            refused or "insights_bearer_missing",
+            f"{ARMED_KEY_ENV} must be an OpenVault-issued key (not empty, not the demo "
+            "viewer key) sent over https or to loopback",
+        )
+    raw_sha = source.get(ARMED_SHA_ENV)
+    text = raw_sha.strip().lower() if isinstance(raw_sha, str) else ""
+    if len(text) != 40 or any(char not in "0123456789abcdef" for char in text):
+        raise _refuse(
+            "cortex_sha_unset",
+            f"set {ARMED_SHA_ENV} to the 40-hex commit of the Cortex under test "
+            "(Cortex does not publish it over HTTP)",
+        )
+    openvault = str(source.get(ARMED_OPENVAULT_ENV) or ARMED_OPENVAULT_DEFAULT)
+    return ArmedConfig(
+        cortex_url=base,
+        api_key=key.strip(),
+        cortex_sha=text,
+        openvault_url=openvault.strip().rstrip("/"),
+    )
+
+
+def armed_preflight(cfg: ArmedConfig) -> dict[str, Any]:
+    """Cortex answers ``/health`` and its own key posture says FreeRoute is armed.
+
+    ``GET /v1/insights/keys`` is Cortex's FreeRoute arming snapshot from
+    OpenVault (``armed``, ``reason``). DMS holds no provider key, so Cortex's
+    word is the only arming fact there is.
+    """
+    import httpx
+    from cortex_client.insights import auth_headers, redact_secrets
+
+    where = public_url(cfg.cortex_url)
+    try:
+        with httpx.Client(timeout=ARMED_PREFLIGHT_TIMEOUT_S) as http:
+            health = http.get(f"{cfg.cortex_url}/health")
+            if health.status_code != 200:
+                raise _refuse("cortex_unreachable", f"{where}/health HTTP {health.status_code}")
+            keys = http.get(
+                f"{cfg.cortex_url}/v1/insights/keys", headers=auth_headers(cfg.api_key)
+            )
+    except httpx.HTTPError as exc:
+        raise _refuse("cortex_unreachable", f"{where}: {type(exc).__name__}") from None
+    try:
+        posture = keys.json()
+    except ValueError:
+        posture = None
+    if keys.status_code != 200 or not isinstance(posture, dict):
+        raise _refuse("freeroute_unverified", f"{where}/v1/insights/keys HTTP {keys.status_code}")
+    if posture.get("armed") is not True:
+        reason = redact_secrets(str(posture.get("reason") or "no reason given"), cfg.api_key)
+        raise _refuse("freeroute_unarmed", f"Cortex reports FreeRoute unarmed: {reason[:200]}")
+    return {"spendable_hops": posture.get("spendable_hops")}
+
+
+def _armed_minter(cfg: ArmedConfig) -> Any:
+    """The product's ManifestMinter, proven by one intermediate-key fetch."""
+    from cortex_client.insights import redact_secrets
+    from dms_executor.manifest import ManifestMinter
+
+    minter = ManifestMinter(openvault_url=cfg.openvault_url)
+    try:
+        minter.fetch_intermediate()
+    except Exception as exc:  # noqa: BLE001 - every mint failure is a named refusal
+        minter.close()
+        detail = redact_secrets(str(exc), cfg.api_key)[:200] or type(exc).__name__
+        raise _refuse(
+            "openvault_mint_failed", f"{public_url(cfg.openvault_url)}: {detail}"
+        ) from None
+    return minter
+
+
+@contextmanager
+def _env_value(name: str, value: str) -> Iterator[None]:
+    before = os.environ.get(name)
+    os.environ[name] = value
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = before
+
+
+@contextmanager
+def pack_layout(layout: str) -> Iterator[None]:
+    """copy-only hides the curated pack, which is what the API image holds.
+
+    The Dockerfile does not COPY ``tests/``. full-tree leaves it in place.
+    """
+    if layout not in LAYOUTS:
+        raise SystemExit("grade52: layout must be one of " + ", ".join(LAYOUTS))
+    if layout != "copy-only":
+        yield
+        return
+    hidden = PACK_DIR.with_name("curated_ceo.hide_capture")
+    if hidden.exists():
+        raise SystemExit("grade52: capture hide path is already present")
+    PACK_DIR.rename(hidden)
+    try:
+        yield
+    finally:
+        if hidden.exists() and not PACK_DIR.exists():
+            hidden.rename(PACK_DIR)
+
+
+@dataclass(frozen=True)
+class StubSignatures:
+    """Values the recorded stub Cortex serves, read from its fixture."""
+
+    texts: frozenset[str]
+    ids: frozenset[str]
+    sql: frozenset[str]
+
+
+def _canon_sql(raw: Any) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    from sqlglot import parse_one
+
+    try:
+        return parse_one(text, read="duckdb").sql(dialect="duckdb")
+    except Exception:  # noqa: BLE001 - an unparsable statement compares as written
+        return text
+
+
+def stub_signatures(path: Path = STUB_RESPONSES_PATH) -> StubSignatures:
+    """Answer texts, ids and SQL from the stub fixture. Never a typed list."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    by_id = data.get("by_id") if isinstance(data, dict) else None
+    if not isinstance(by_id, dict):
+        raise SystemExit(f"grade52: stub responses unreadable: {path.name}")
+    texts: set[str] = set()
+    ids: set[str] = set()
+    sql: set[str] = set()
+    bind = data.get("session_bind")
+    if isinstance(bind, dict):
+        ids.add(str(bind.get("run_id") or ""))
+    def _block(row: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+        value = row.get(key)
+        return value if isinstance(value, Mapping) else {}
+
+    for row in by_id.values():
+        if not isinstance(row, dict):
+            continue
+        ask = _block(row, "ask")
+        ledger = _block(row, "ledger")
+        submit = _block(row, "submit")
+        texts.add(str(ask.get("answer") or "").strip())
+        ids.update(
+            str(value or "")
+            for value in (
+                ask.get("audit_id"),
+                ledger.get("entry_id"),
+                ledger.get("hash"),
+                submit.get("run_id"),
+            )
+        )
+        canon = _canon_sql(ask.get("sql_used"))
+        if canon:
+            sql.add(canon)
+    texts.discard("")
+    ids.discard("")
+    return StubSignatures(frozenset(texts), frozenset(ids), frozenset(sql))
+
+
+def _arming_fail(reason: str) -> bool:
+    """An Insights reason that means no model could run: unarmed, unauthorized, no bearer, pin."""
+    from cortex_client.compute import INSIGHTS_FAIL_UNARMED, INSIGHTS_FAIL_UNAUTHORIZED
+    from cortex_client.insights import (
+        INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
+        INSIGHTS_FAIL_BEARER_MISSING,
+    )
+
+    named = {
+        INSIGHTS_FAIL_UNARMED,
+        INSIGHTS_FAIL_UNAUTHORIZED,
+        INSIGHTS_FAIL_BEARER_MISSING,
+        INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
+    }
+    return reason in named or reason.startswith(("pin_caller_error:", "pin_unavailable:"))
+
+
+def armed_violation(record: Mapping[str, Any], stub: StubSignatures) -> str | None:
+    """Why an armed record is not a live answer, or None. Names the field, not the value."""
+    env = record.get("env")
+    if not isinstance(env, Mapping):
+        return "no envelope"
+    served = record.get("served")
+    if not isinstance(served, Mapping):
+        return "no served record; not an armed capture"
+    if env.get("demo_fallback_used") is True or str(env.get("ask_mode") or "") == "demo":
+        return "demo_fallback: demo numbers are not a live answer"
+    for key in ("text", "answer"):
+        if str(env.get(key) or "").strip() in stub.texts:
+            return f"placeholder: {key} is a recorded stub answer"
+    if str(env.get("audit_id") or "") in stub.ids:
+        return "placeholder: audit_id is a recorded stub id"
+    if _canon_sql(env.get("sql_used")) in stub.sql:
+        return "placeholder: sql_used is the recorded stub SQL"
+    if _canon_sql(served.get("model_sql")) in stub.sql:
+        return "placeholder: model SQL is the recorded stub SQL"
+    fail = str(served.get("insights_fail") or "")
+    if fail and _arming_fail(fail):
+        return f"freeroute_unarmed: Insights answered {fail}"
+    return None
+
+
+def armed_check(records: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse an armed grade holding any non-live answer, or one with no ai answer.
+
+    A run where no answer was served from the model's own SQL (``split ai=0``)
+    did not measure the AI lane, whatever its other numbers say. A model that
+    was called but whose SQL DMS replaced or refused does not count.
+    """
+    _bootstrap()
+    stub = stub_signatures()
+    ai = 0
+    for record in records:
+        why = armed_violation(record, stub)
+        if why:
+            raise _fail(str(record.get("id")), why)
+        ai += served_route(record["env"], _record_model_sql(record)) == "ai"
+    if ai == 0:
+        raise SystemExit(
+            "grade52 armed: FAIL ai_lane_not_reached: no answer was served from model SQL "
+            "(split ai=0); the AI lane was not measured"
+        )
+
+
+def _model_reported(payload: Mapping[str, Any]) -> bool:
+    """Cortex stamped a served model on this generate answer or one of its legs.
+
+    A model was called. It says nothing about whether its SQL was served.
+    """
+    if str(payload.get("served_model") or "").strip():
+        return True
+    legs = payload.get("generate_legs")
+    items = legs.get("legs") if isinstance(legs, Mapping) else None
+    return isinstance(items, list) and any(
+        isinstance(leg, Mapping) and str(leg.get("served_model") or "").strip() for leg in items
+    )
+
+
+def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, Any]:
+    """Per question: served route, model SQL, rows, answer text, Insights reason."""
+    from cortex_client.compute import insights_fail_reason, insights_query_sql
+
+    model_sql: str | None = None
+    fail: str | None = None
+    calls = 0
+    reported = False
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        calls += 1
+        reported = reported or _model_reported(payload)
+        sql = str(payload.get("query_sql") or "").strip() or insights_query_sql(payload)
+        if sql:
+            model_sql = sql
+        fail = fail or insights_fail_reason(payload)
+    rows = env.get("rows")
+    return {
+        "route": served_route(env, model_sql),
+        "serve_path": serve_path(env, model_sql),
+        "model_sql": model_sql,
+        "sql_used": env.get("sql_used"),
+        "row_count": len(rows) if isinstance(rows, list) else None,
+        "text": env.get("text"),
+        "served_model": env.get("served_model"),
+        "insights_calls": calls,
+        "model_reported": reported,
+        "insights_fail": fail,
+    }
+
+
+def _detail_code(res: Any, api_key: str) -> str:
+    from cortex_client.insights import redact_secrets
+
+    try:
+        body = res.json()
+    except ValueError:
+        return ""
+    detail = body.get("detail") if isinstance(body, dict) else None
+    code = detail.get("code") if isinstance(detail, dict) else detail
+    return redact_secrets(str(code or ""), api_key)[:120]
+
+
+def _armed_ask(
+    cfg: ArmedConfig,
+    minter: Any,
+    questions: Sequence[Mapping[str, Any]],
+    spaces: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Same app and loop as the stub, with the product CortexClient and minter.
+
+    Each answer is checked as it arrives, so a broken Cortex stops the run at
+    the first question that shows it.
+    """
+    stub = stub_signatures()
+    from cortex_client import CortexClient
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from fastapi.testclient import TestClient
+
+    class _Observed(CortexClient):
+        """The product client. Keeps each Insights payload for the armed checks."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.payloads: list[Any] = []
+
+        def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any] | None:
+            got = super().compute_insights(question, **kwargs)
+            self.payloads.append(got)
+            return got
+
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+        cortex_url=cfg.cortex_url,
+        cortex_api_key=cfg.api_key,
+        openvault_url=cfg.openvault_url,
+    )
+    cortex = _Observed(
+        cfg.cortex_url, timeout=settings.cortex_timeout_seconds, api_key=cfg.api_key
+    )
+    db = Path(tempfile.mkdtemp(prefix="grade52-armed-")) / "warehouse.duckdb"
+    ensure_demo_warehouse(db)
+    app = create_app()
+    app.state.ask_service = Executor(cortex=cortex, minter=minter, warehouse_path=db)
+    app.state.cortex = cortex
+    app.dependency_overrides[get_settings] = lambda: settings
+    client = TestClient(app)
+    records: list[dict[str, Any]] = []
+    try:
+        for question in questions:
+            qid = str(question["id"])
+            cortex.payloads = []
+            try:
+                res = client.post(
+                    "/v1/chat/ask",
+                    json={
+                        "question": question["question"],
+                        "space_id": spaces[str(question["space"])],
+                        "session_id": ARMED_SESSION_ID,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - a crash is a named failure, not a score
+                raise _fail(qid, f"ask raised {type(exc).__name__}") from None
+            if res.status_code != 200:
+                raise _fail(qid, f"HTTP {res.status_code} {_detail_code(res, cfg.api_key)}")
+            env = res.json()
+            if not isinstance(env, dict) or not isinstance(env.get("rows"), list):
+                raise _fail(qid, "envelope has no rows")
+            record = {"id": qid, "env": env, "served": _served_block(env, cortex.payloads)}
+            why = armed_violation(record, stub)
+            if why:
+                raise _fail(qid, why)
+            records.append(record)
+    finally:
+        cortex.close()
+    if len(records) != 52:
+        raise SystemExit(f"grade52 armed: FAIL capture size {len(records)} != 52")
+    return records
+
+
+def armed_replay(
+    layout: str = "copy-only", cfg: ArmedConfig | None = None
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Every pack question through the real ask path against a live Cortex.
+
+    Order: settings, Cortex health and FreeRoute posture, one OpenVault mint,
+    then 52 asks with flags off (the stub's flag set, without its credential
+    scrub), then the armed checks. Returns ``{id, env, served}`` records and
+    the capture header fields.
+    """
+    if layout not in LAYOUTS:
+        raise SystemExit("grade52: layout must be one of " + ", ".join(LAYOUTS))
+    cfg = cfg or armed_config()
+    pack = _load_yaml(PACK_PATH)
+    questions = list(pack["questions"])
+    spaces = dict(pack["spaces"])
+    if len(questions) != 52:
+        raise SystemExit(f"pack size {len(questions)} != 52")
+    posture = armed_preflight(cfg)
+    os.environ.pop("DMS_ASK_CLARIFY", None)
+    os.environ.pop("DMS_CLOOP_B", None)
+    os.environ["DMS_DEMO_FALLBACK"] = "0"
+    # The minter tells Cortex to refresh JWKS at CORTEX_URL after each key fetch.
+    with _env_value("CORTEX_URL", cfg.cortex_url):
+        minter = _armed_minter(cfg)
+        try:
+            with pack_layout(layout):
+                records = _armed_ask(cfg, minter, questions, spaces)
+        finally:
+            minter.close()
+    armed_check(records)
+    meta = {
+        "mode": RUN_ARMED,
+        "cortex_sha": cfg.cortex_sha,
+        "layout": layout,
+        "cortex": public_url(cfg.cortex_url),
+        **posture,
+    }
+    return records, meta
+
+
+def write_capture(
+    records: Sequence[Mapping[str, Any]], header: Mapping[str, Any], path: Path
+) -> Path:
+    """JSONL: one header line, then one ``{id, env, served}`` line per question."""
+    lines = [json.dumps(dict(header), sort_keys=True)]
+    lines.extend(json.dumps(dict(row), sort_keys=True, default=str) for row in records)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def _labelled(
     report: dict[str, Any],
     *,
@@ -1535,8 +2257,12 @@ def _finish(
     name: str = "grade52.json",
     prefix: str = "",
     baseline: Mapping[str, Any] | None = None,
+    cortex_sha: str | None = None,
 ) -> dict[str, Any]:
     _labelled(report, mode=mode, included="included", dms_sha=dms_sha)
+    report["cortex_sha"] = cortex_sha
+    if mode == MODE_ARMED and cortex_sha is None:
+        raise SystemExit("grade52 armed: cortex sha missing; an armed score names both commits")
     if layout:
         report["layout"] = layout
     rest = [item for item in report["cases"] if not item.get("pack_gold_served")]
@@ -1561,10 +2287,12 @@ def _finish(
         report["baseline"] = baseline_diff(report, baseline)
     path = write_report(report, name)
     report["artifact"] = str(path)
+    print(prefix + header_line(report))
     print(prefix + summary_line(report))
     print(prefix + summary_line(without))
     print(prefix + paths_line(rolls))
     print(prefix + risk_line(report))
+    print(prefix + split_line(report))
     if report.get("baseline"):
         print(prefix + baseline_line(report["baseline"]))
     print(f"{prefix}artifact: {path}")
@@ -1577,9 +2305,15 @@ def grade_loaded(
     mode: str,
     dms_sha: str | None = None,
     layout: str | None = None,
+    cortex_sha: str | None = None,
     **finish: Any,
 ) -> dict[str, Any]:
-    """Grade served rows. A submit-stub pack is labelled stub and is not a score."""
+    """Grade served rows. A submit-stub pack is labelled stub and is not a score.
+
+    An armed grade first refuses any record that is not a live answer.
+    """
+    if mode == MODE_ARMED:
+        armed_check(envelopes)
     if _is_submit_stub(envelopes):
         print("mode=stub not a score")
         print(served_paths_line(envelopes))
@@ -1587,7 +2321,7 @@ def grade_loaded(
     if not isinstance(dms_sha, str):
         raise SystemExit("grade52: envelopes commit missing")
     report = grade_envelopes(envelopes, mode=mode)
-    return _finish(report, mode, _commit_sha(dms_sha), layout, **finish)
+    return _finish(report, mode, _commit_sha(dms_sha), layout, cortex_sha=cortex_sha, **finish)
 
 
 def grade_main(mode: str | None = None) -> dict[str, Any]:
@@ -1598,9 +2332,43 @@ def grade_main(mode: str | None = None) -> dict[str, Any]:
     return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC, dms_sha=product_sha())
 
 
+def grade_armed(layout: str = "copy-only", **finish: Any) -> dict[str, Any]:
+    """Armed capture of this checkout against a live Cortex, then the grade.
+
+    Settings are refused before the product sha is read, so a missing key
+    never reaches the network. The capture (env, model SQL, rows, answer text
+    per question) is written beside the artifact.
+    """
+    cfg = armed_config()
+    sha = product_sha()
+    records, meta = armed_replay(layout, cfg=cfg)
+    dest = _artifact_dir() / "grade52.armed.jsonl"
+    capture = write_capture(records, {"dms_sha": sha, **meta}, dest)
+    print(f"armed capture: {capture}")
+    return grade_loaded(
+        records,
+        mode=MODE_ARMED,
+        dms_sha=sha,
+        layout=layout,
+        cortex_sha=str(meta["cortex_sha"]),
+        **finish,
+    )
+
+
 def grade_envelopes_path(path: Path, **finish: Any) -> dict[str, Any]:
-    rows, sha, layout = load_envelopes(path)
-    return grade_loaded(rows, mode=MODE_SERVED, dms_sha=sha, layout=layout, **finish)
+    """A capture whose header says armed is graded armed, with every armed check."""
+    rows, meta = load_envelopes_meta(path)
+    armed = meta["mode"] == RUN_ARMED
+    if armed and meta["cortex_sha"] is None:
+        raise SystemExit("grade52 armed: capture says armed but names no cortex sha")
+    return grade_loaded(
+        rows,
+        mode=MODE_ARMED if armed else MODE_SERVED,
+        dms_sha=meta["dms_sha"],
+        layout=meta["layout"],
+        cortex_sha=meta["cortex_sha"] if armed else None,
+        **finish,
+    )
 
 
 def worst_case(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -1611,7 +2379,7 @@ def worst_case(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     as-of date, or the worst case mixes two products.
     """
     first = reports[0]
-    for key in ("dms_sha", "layout", "as_of", "mode", "n"):
+    for key in ("dms_sha", "cortex_sha", "layout", "as_of", "mode", "n"):
         if any(other.get(key) != first.get(key) for other in reports[1:]):
             raise SystemExit(f"grade52: runs differ on {key}; worst case needs one product")
     per_run = [{str(item["id"]): item for item in run["cases"]} for run in reports]
@@ -1653,6 +2421,7 @@ def grade_runs(
         runs[0].get("layout"),
         prefix=f"worst of {total} unstable={report['unstable']} ",
         baseline=baseline,
+        cortex_sha=runs[0].get("cortex_sha"),
     )
     return report
 
@@ -1982,7 +2751,7 @@ def self_test() -> dict[str, str]:
         }
     )
     if not check_line.endswith(
-        "52: correct=23 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+        "52: correct=23 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=served"
     ):
         raise SystemExit("self-test: summary shape drifted")
@@ -2047,6 +2816,84 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: ontology_ranking with a model was not rule/compile")
     if serve_path({"ladder_rung": "ontology_compile", "served_model": "some-model"}) != "compile":
         raise SystemExit("self-test: ontology_compile with a model was not compile")
+    model_answer = {
+        "badge": "L2_VALIDATED",
+        "plan_origin": "generate_sql",
+        "plan_source": "ontology_plan",
+        "served_model": "some-model",
+        "sql_used": "SELECT sku FROM inventory",
+    }
+    wrote = "SELECT sku FROM inventory"
+    if serve_path(model_answer, wrote) != "ai" or stamp_contradiction(model_answer):
+        raise SystemExit("self-test: served model SQL under Cortex's ontology_plan was not AI")
+    if serve_path(model_answer) == "ai":
+        raise SystemExit("self-test: model stamps without the model's SQL were called AI")
+    # A DMS compile served under stale model stamps: the model's SQL never ran.
+    if serve_path(model_answer, "SELECT sku, SUM(qty) AS q FROM inventory GROUP BY sku") == "ai":
+        raise SystemExit("self-test: a DMS compile under model stamps was called AI")
+    if serve_path({**model_answer, "served_model": ""}, wrote) == "ai":
+        raise SystemExit("self-test: model SQL with no served model was called AI")
+    compiled = {**model_answer, "plan_origin": "ontology_compile"}
+    compiled.pop("served_model")
+    if serve_path(compiled, wrote) != "compile":
+        raise SystemExit("self-test: a DMS multi-grain compile was not rule/compile")
+    stub = StubSignatures(
+        texts=frozenset({"Recorded answer."}), ids=frozenset({"aud-x"}), sql=frozenset()
+    )
+    live = {"env": {"text": "Found 1 row(s).", "audit_id": "led-1"}, "served": {}}
+    canned = {"env": {"text": "Recorded answer.", "audit_id": "led-1"}, "served": {}}
+    if armed_violation(live, stub) is not None or armed_violation(canned, stub) is None:
+        raise SystemExit("self-test: armed placeholder detector drifted")
+
+    reconfirm_case = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT count(*) AS n FROM src",
+        env={
+            "badge": "ABSTAIN",
+            "route": "abstain",
+            "abstained": True,
+            "reconfirm": {
+                "reason_code": "unknown_measure",
+                "reason_text": "no measure",
+                "suggested_question": "closest",
+                "token": "rcf",
+            },
+        },
+        served_rows=[],
+        as_of="2026-10-09",
+    )
+    if reconfirm_case["bucket"] != BUCKET_RECONFIRM:
+        raise SystemExit("self-test: a reconfirm offer was graded as an abstain")
+    wrong_measure = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT count(*) AS n FROM src",
+        env={
+            "badge": "L2_VALIDATED",
+            "route": "generated",
+            "abstained": False,
+            "reconfirm_accepted": True,
+            "sql_used": "SELECT sum(amount) AS n FROM src",
+        },
+        served_rows=[{"n": 1}],
+        as_of="2026-10-09",
+    )
+    if wrong_measure["bucket"] != BUCKET_WRONG or wrong_measure["reason"] != "wrong measure":
+        raise SystemExit(f"self-test: yes into another measure was {wrong_measure}")
+    same_measure = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT count(*) AS n FROM src",
+        env={
+            "badge": "L1_GOVERNED_METRIC",
+            "route": "governed_metric",
+            "abstained": False,
+            "reconfirm_accepted": True,
+            "sql_used": "SELECT count(*) AS n FROM src",
+        },
+        served_rows=[{"n": 1}],
+        as_of="2026-10-09",
+    )
+    if same_measure["reason"] == "wrong measure":
+        raise SystemExit(f"self-test: the same aggregate was a wrong measure {same_measure}")
 
     print("self-test ok")
     print(
@@ -2072,24 +2919,40 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--baseline", type=Path, help="an earlier grade52.json to diff against")
     parser.add_argument("--gate", action="store_true", help="exit 1 on any wrong served answer")
+    parser.add_argument(
+        "--armed",
+        action="store_true",
+        help=f"ask the pack against the live Cortex at {ARMED_CORTEX_ENV}; refuses unless armed",
+    )
+    parser.add_argument(
+        "--layout",
+        choices=LAYOUTS,
+        help="--armed only: copy-only (the API image, default) or full-tree",
+    )
     args = parser.parse_args(argv)
-    if args.main and args.envelopes is not None:
-        raise SystemExit("grade52: pass --envelopes or --main")
-    if (args.baseline or args.gate) and args.envelopes is None:
-        raise SystemExit("grade52: --baseline and --gate grade --envelopes")
-    run_score = args.main or args.envelopes is not None
-    if args.self_test or not run_score:
+    sources = int(args.main) + int(args.envelopes is not None) + int(args.armed)
+    if sources > 1:
+        raise SystemExit("grade52: pass one of --envelopes, --main, --armed")
+    if (args.baseline or args.gate) and args.envelopes is None and not args.armed:
+        raise SystemExit("grade52: --baseline and --gate grade --envelopes or --armed")
+    if args.layout and not args.armed:
+        raise SystemExit("grade52: --layout is for --armed; a capture carries its own layout")
+    if args.self_test or sources == 0:
         self_test()
+    baseline = None
+    if args.baseline is not None:
+        baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+    report: dict[str, Any] | None = None
     if args.envelopes is not None:
-        baseline = None
-        if args.baseline is not None:
-            baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
         report = grade_runs(args.envelopes, baseline=baseline)
-        if args.gate and int(report["wrong"]) + int(report["refusal_wrong"]) > 0:
-            print(f"gate FAIL wrong={report['wrong']} refusal_wrong={report['refusal_wrong']}")
-            return 1
+    elif args.armed:
+        report = grade_armed(args.layout or "copy-only", baseline=baseline)
     elif args.main:
         grade_main()
+    if args.gate and report is not None:
+        if int(report["wrong"]) + int(report["refusal_wrong"]) > 0:
+            print(f"gate FAIL wrong={report['wrong']} refusal_wrong={report['refusal_wrong']}")
+            return 1
     return 0
 
 

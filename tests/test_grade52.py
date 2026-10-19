@@ -53,23 +53,23 @@ _MAIN_SHA = "57d85c529aa363825aaa566f12b8822fd76a4215"
 _SYNTHETIC_SHA = "c" * 40
 _SYNTHETIC_INCLUDED = (
     f"sha={_SYNTHETIC_SHA} pack_gold_served=included "
-    "52: correct=23 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+    "52: correct=23 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
 _SYNTHETIC_EXCLUDED = (
     f"sha={_SYNTHETIC_SHA} pack_gold_served=excluded "
-    "45: correct=16 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+    "45: correct=16 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
 _COPY_ONLY = ROOT / "tests" / "fixtures" / "ask_guide" / "copy_only_57d85c52.jsonl"
 _COPY_ONLY_INCLUDED = (
     f"sha={_MAIN_SHA} layout=copy-only pack_gold_served=included "
-    "52: correct=16 wrong=0 abstain=27 refusal_ok=8 refusal_wrong=0 "
+    "52: correct=16 wrong=0 reconfirm=0 abstain=27 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
 _COPY_ONLY_EXCLUDED = (
     f"sha={_MAIN_SHA} layout=copy-only pack_gold_served=excluded "
-    "45: correct=16 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+    "45: correct=16 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
     "empty_gold=0 gold_broken=1 mode=served"
 )
 _COPY_ONLY_PATHS = (
@@ -100,6 +100,7 @@ def _buckets(report: dict) -> int:
     return (
         report["correct"]
         + report["wrong"]
+        + report.get("reconfirm", 0)
         + report["abstain"]
         + report["refusal_ok"]
         + report["refusal_wrong"]
@@ -423,18 +424,18 @@ def test_grade52_stub_exec_main() -> None:
     assert _buckets(report) == 52
     assert report["correct"] == 43
     assert report["wrong"] == 0
+    # Ungranted stays a direct abstain (refusal or gold-broken). The other
+    # misses offer reconfirm. SELECT 1 is not an answer for a refusal.
+    assert report["reconfirm"] == 5
     assert report["abstain"] == 0
-    # GRANT-STRUCT-01 (#421): trap_alerts_ungranted and trap_high_risk_pending
-    # served L0 ``SELECT 1``-style rows on main. A statement with no granted
-    # base table is now refused, so both are REFUSAL_OK. No correct answer moved.
-    assert report["refusal_ok"] == 8
+    assert report["refusal_ok"] == 3
     assert report["refusal_wrong"] == 0
     assert report["empty_gold"] == 0
     assert report["gold_broken"] == 1
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
     line = summary_line(report)
     assert line.endswith(
-        "52: correct=43 wrong=0 abstain=0 refusal_ok=8 refusal_wrong=0 "
+        "52: correct=43 wrong=0 reconfirm=5 abstain=0 refusal_ok=3 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=stub-exec"
     )
     assert "not a score" not in line
@@ -449,8 +450,9 @@ def test_grade52_stub_exec_main() -> None:
     assert _buckets(without) == 45
     assert without["correct"] == 36
     assert without["wrong"] == 0
+    assert without["reconfirm"] == 5
     assert without["abstain"] == 0
-    assert without["refusal_ok"] == 8
+    assert without["refusal_ok"] == 3
     assert without["refusal_wrong"] == 0
     assert without["gold_broken"] == 1
 

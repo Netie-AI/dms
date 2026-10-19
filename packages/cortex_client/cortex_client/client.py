@@ -254,6 +254,30 @@ class CortexClient:
             sql_feedback=sql_feedback,
         )
 
+    def complete(self, prompt: str) -> str:
+        """One generate completion for a suggested question. Not the answer ladder.
+
+        A dead engine or a refused generate returns ``""``. Nothing is filled in.
+        """
+        try:
+            payload = insights_post(
+                self.base_url,
+                question=prompt,
+                ask=False,
+                generate=True,
+                api_key=self.api_key,
+                timeout=min(2.0, float(self.timeout)),
+            )
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("suggested_question", "answer", "text"):
+            val = payload.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip().splitlines()[0].strip()
+        return ""
+
     def insights_law(self) -> dict[str, Any]:
         return insights_get(self.base_url, api_key=self.api_key, timeout=min(8.0, self.timeout))
 
