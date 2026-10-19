@@ -297,6 +297,7 @@ def test_ticked_upload_appears_in_insights_and_cascade(
             ),
             submit=_submit_ok,
             ledger_append=_ledger_ok,
+            dialect="duckdb",
         )
     bodies = _insights_bodies(posts)
     assert bodies, posts

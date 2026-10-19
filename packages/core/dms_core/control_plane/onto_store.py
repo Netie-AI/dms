@@ -7,6 +7,12 @@ schema. Never credentials, connection strings, or passwords.
 Thin API: load_active, load_by_version, list_versions. The only write is
 reconnect() creating a new version (bootstrap active, or proposed on fingerprint
 change) plus one onto_audit row. Confirm/reject belongs to the next ticket.
+
+ONTO-DERIVE-01 (dms#277 CONNECT-ASK-01 change 1) adds the measurement: a
+snapshot is the derived ontology body plus what ``Ontology.verify`` found,
+appended per derive (never updated), so a re-derive after the data changed is a
+new row and the latest one is what the ask path reads. The body carries names,
+keys and types only; never rows, never credentials.
 """
 
 from __future__ import annotations
@@ -14,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -147,6 +154,23 @@ class OntoAudit:
 
 
 @dataclass(frozen=True)
+class OntologySnapshot:
+    """One measurement of a version: the derived body and what verify() found.
+
+    ``violations`` are ``{check, subject, detail}``. ``verified`` is True only
+    when verify() ran and found nothing; a failed subject stays unusable.
+    """
+
+    id: UUID
+    version_id: UUID
+    body: dict[str, Any]
+    violations: tuple[dict[str, str], ...]
+    verified: bool
+    measured_at: datetime
+    tenant_id: UUID | None = None
+
+
+@dataclass(frozen=True)
 class ReconnectDecision:
     action: Literal["reuse", "create"]
     status: VersionStatus | None
@@ -243,6 +267,9 @@ class OntologyStore:
         self._tenant_id = tenant_id
         self._versions: list[OntologyVersion] = []
         self._audit: list[OntoAudit] = []
+        self._snapshots: list[OntologySnapshot] = []
+        # One store serves every request thread of the API process.
+        self._lock = threading.RLock()
 
     def load_active(
         self, space_id: UUID, identity: SourceIdentity
@@ -276,6 +303,24 @@ class OntologyStore:
         fingerprint: str,
         created_by: UUID | None = None,
         tenant_id: UUID | None = None,
+    ) -> OntologyVersion:
+        with self._lock:
+            return self._reconnect(
+                space_id=space_id,
+                identity=identity,
+                fingerprint=fingerprint,
+                created_by=created_by,
+                tenant_id=tenant_id,
+            )
+
+    def _reconnect(
+        self,
+        *,
+        space_id: UUID,
+        identity: SourceIdentity,
+        fingerprint: str,
+        created_by: UUID | None,
+        tenant_id: UUID | None,
     ) -> OntologyVersion:
         versions = self.list_versions(space_id, identity)
         decision = decide_reconnect(versions, fingerprint)
@@ -315,6 +360,93 @@ class OntologyStore:
             )
         )
         return version
+
+    def active_for_space(self, space_id: UUID) -> list[OntologyVersion]:
+        """Every source's active version for one Space. Never another Space's."""
+        with self._lock:
+            found = [
+                v for v in self._versions if v.space_id == space_id and v.status == "active"
+            ]
+        return sorted(found, key=lambda v: v.created_at)
+
+    def record_snapshot(
+        self,
+        version_id: UUID,
+        *,
+        body: Mapping[str, Any],
+        violations: Sequence[Mapping[str, str]],
+        verified: bool,
+        actor: UUID | None = None,
+    ) -> OntologySnapshot:
+        """Append one measurement of ``version_id`` (never an update) + audit."""
+        with self._lock:
+            version = self.load_by_version(version_id)
+            if version is None:
+                raise KeyError(f"unknown ontology version {version_id}")
+            snap = _new_snapshot(version, body, violations, verified)
+            self._snapshots.append(snap)
+            inputs, result = _snapshot_audit(snap)
+            self._audit.append(
+                OntoAudit(
+                    id=uuid4(),
+                    version_id=version_id,
+                    actor_user_id=actor,
+                    action_type="verify",
+                    inputs=inputs,
+                    result=result,
+                    created_at=snap.measured_at,
+                    tenant_id=version.tenant_id,
+                )
+            )
+            return snap
+
+    def latest_snapshot(self, version_id: UUID) -> OntologySnapshot | None:
+        with self._lock:
+            found = [s for s in self._snapshots if s.version_id == version_id]
+        return found[-1] if found else None
+
+
+def _clean_violations(
+    violations: Sequence[Mapping[str, str]],
+) -> tuple[dict[str, str], ...]:
+    return tuple(
+        {
+            "check": str(v.get("check") or ""),
+            "subject": str(v.get("subject") or ""),
+            "detail": str(v.get("detail") or ""),
+        }
+        for v in violations
+    )
+
+
+def _new_snapshot(
+    version: OntologyVersion,
+    body: Mapping[str, Any],
+    violations: Sequence[Mapping[str, str]],
+    verified: bool,
+) -> OntologySnapshot:
+    cleaned = _clean_violations(violations)
+    # A body that names a failed subject cannot also claim verified.
+    return OntologySnapshot(
+        id=uuid4(),
+        version_id=version.id,
+        body=json.loads(json.dumps(dict(body), default=str)),
+        violations=cleaned,
+        verified=bool(verified) and not cleaned,
+        measured_at=datetime.now(UTC),
+        tenant_id=version.tenant_id,
+    )
+
+
+def _snapshot_audit(snap: OntologySnapshot) -> tuple[dict[str, Any], dict[str, Any]]:
+    inputs = {"version_id": str(snap.version_id)}
+    result = {
+        "snapshot_id": str(snap.id),
+        "verified": snap.verified,
+        "violations": len(snap.violations),
+        "failed_subjects": sorted({v["subject"] for v in snap.violations}),
+    }
+    return inputs, result
 
 
 def _row_to_version(row: Any) -> OntologyVersion:
@@ -462,3 +594,175 @@ def reconnect(
     loaded = load_by_version(conn, version_id)
     assert loaded is not None
     return loaded
+
+
+_SNAPSHOT_SELECT = "id, tenant_id, version_id, body, violations, verified, measured_at"
+
+
+def _row_to_snapshot(row: Any) -> OntologySnapshot:
+    body = row[3] if isinstance(row[3], dict) else json.loads(row[3] or "{}")
+    raw = row[4] if isinstance(row[4], list) else json.loads(row[4] or "[]")
+    return OntologySnapshot(
+        id=UUID(str(row[0])),
+        tenant_id=UUID(str(row[1])) if row[1] is not None else None,
+        version_id=UUID(str(row[2])),
+        body=body,
+        violations=_clean_violations(raw),
+        verified=bool(row[5]),
+        measured_at=row[6],
+    )
+
+
+def active_for_space(
+    conn: psycopg.Connection, *, space_id: UUID | str
+) -> list[OntologyVersion]:
+    rows = conn.execute(
+        f"""
+        SELECT {_VERSION_SELECT}
+          FROM dms.ontology_version
+         WHERE space_id = %s AND status = 'active'
+         ORDER BY created_at ASC
+        """,
+        (str(space_id),),
+    ).fetchall()
+    return [_row_to_version(row) for row in rows]
+
+
+def record_snapshot(
+    conn: psycopg.Connection,
+    *,
+    version_id: UUID | str,
+    body: Mapping[str, Any],
+    violations: Sequence[Mapping[str, str]],
+    verified: bool,
+    actor: UUID | str | None = None,
+) -> OntologySnapshot:
+    """Insert one measurement row + one ``verify`` audit row. Never an UPDATE."""
+    version = load_by_version(conn, version_id)
+    if version is None or version.tenant_id is None:
+        raise KeyError(f"unknown ontology version {version_id}")
+    snap = _new_snapshot(version, body, violations, verified)
+    conn.execute(
+        """
+        INSERT INTO dms.onto_snapshot (
+          id, tenant_id, version_id, body, violations, verified, measured_at
+        ) VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+        """,
+        (
+            str(snap.id),
+            str(version.tenant_id),
+            str(version.id),
+            json.dumps(snap.body),
+            json.dumps(list(snap.violations)),
+            snap.verified,
+            snap.measured_at,
+        ),
+    )
+    inputs, result = _snapshot_audit(snap)
+    conn.execute(
+        """
+        INSERT INTO dms.onto_audit (
+          tenant_id, version_id, actor_user_id, action_type, inputs, result
+        ) VALUES (%s, %s, %s, %s, %s::jsonb, %s::jsonb)
+        """,
+        (
+            str(version.tenant_id),
+            str(version.id),
+            str(actor) if actor is not None else None,
+            "verify",
+            json.dumps(inputs),
+            json.dumps(result),
+        ),
+    )
+    return snap
+
+
+def latest_snapshot(
+    conn: psycopg.Connection, version_id: UUID | str
+) -> OntologySnapshot | None:
+    row = conn.execute(
+        f"""
+        SELECT {_SNAPSHOT_SELECT}
+          FROM dms.onto_snapshot
+         WHERE version_id = %s
+         ORDER BY measured_at DESC, id DESC
+         LIMIT 1
+        """,
+        (str(version_id),),
+    ).fetchone()
+    return _row_to_snapshot(row) if row is not None else None
+
+
+class PostgresOntologyStore:
+    """The durable store: the in-memory ``OntologyStore`` API over Postgres + RLS.
+
+    One connection and transaction per call, bound to one tenant, so a Space
+    in another tenant is invisible here by RLS, not by a WHERE clause alone.
+    """
+
+    def __init__(self, conninfo: str, *, tenant_id: UUID | str) -> None:
+        self._conninfo = conninfo
+        self._tenant_id = UUID(str(tenant_id))
+
+    def _conn(self) -> psycopg.Connection:
+        from dms_core.control_plane.session import set_tenant_context
+
+        conn = psycopg.connect(self._conninfo)
+        set_tenant_context(conn, self._tenant_id, role="steward")
+        return conn
+
+    def reconnect(
+        self,
+        *,
+        space_id: UUID,
+        identity: SourceIdentity,
+        fingerprint: str,
+        created_by: UUID | None = None,
+        tenant_id: UUID | None = None,
+    ) -> OntologyVersion:
+        with self._conn() as conn:
+            return reconnect(
+                conn,
+                tenant_id=tenant_id or self._tenant_id,
+                space_id=space_id,
+                identity=identity,
+                fingerprint=fingerprint,
+                created_by=created_by,
+            )
+
+    def load_by_version(self, version_id: UUID) -> OntologyVersion | None:
+        with self._conn() as conn:
+            return load_by_version(conn, version_id)
+
+    def list_versions(
+        self, space_id: UUID, identity: SourceIdentity
+    ) -> list[OntologyVersion]:
+        with self._conn() as conn:
+            return list_versions(conn, space_id=space_id, identity=identity)
+
+    def active_for_space(self, space_id: UUID) -> list[OntologyVersion]:
+        with self._conn() as conn:
+            return active_for_space(conn, space_id=space_id)
+
+    def record_snapshot(
+        self,
+        version_id: UUID,
+        *,
+        body: Mapping[str, Any],
+        violations: Sequence[Mapping[str, str]],
+        verified: bool,
+        actor: UUID | None = None,
+    ) -> OntologySnapshot:
+        with self._conn() as conn:
+            return record_snapshot(
+                conn,
+                version_id=version_id,
+                body=body,
+                violations=violations,
+                verified=verified,
+                actor=actor,
+            )
+
+    def latest_snapshot(self, version_id: UUID) -> OntologySnapshot | None:
+        with self._conn() as conn:
+            return latest_snapshot(conn, version_id)
