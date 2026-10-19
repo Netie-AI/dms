@@ -121,6 +121,7 @@ ARMED_SESSION_ID = "ses_armed_52"
 ARMED_PREFLIGHT_TIMEOUT_S = 10.0
 BUCKET_CORRECT = "CORRECT"
 BUCKET_WRONG = "WRONG"
+BUCKET_RECONFIRM = "RECONFIRM"
 BUCKET_ABSTAIN = "ABSTAIN"
 BUCKET_EMPTY = "EMPTY_GOLD"
 BUCKET_REFUSAL_OK = "REFUSAL_OK"
@@ -129,6 +130,7 @@ BUCKET_GOLD_BROKEN = "GOLD_BROKEN"
 _BUCKET_KEYS = (
     "correct",
     "wrong",
+    "reconfirm",
     "abstain",
     "refusal_ok",
     "refusal_wrong",
@@ -137,13 +139,14 @@ _BUCKET_KEYS = (
 )
 # Bump when a bucket rule or the row comparison changes. A baseline graded by
 # another version is not comparable and is refused.
-GRADER_VERSION = 2
+GRADER_VERSION = 3
 CONFIDENCE = 0.95
 # Higher is worse. A case's worst-of-runs bucket is the one ranked highest.
 _SEVERITY = {
     BUCKET_WRONG: 3,
     BUCKET_REFUSAL_WRONG: 3,
     BUCKET_ABSTAIN: 2,
+    BUCKET_RECONFIRM: 2,
     BUCKET_GOLD_BROKEN: 2,
     BUCKET_EMPTY: 1,
     BUCKET_CORRECT: 0,
@@ -762,6 +765,36 @@ def path_group(path: str) -> str:
     return "unattributed"
 
 
+def aggregate_signature(sql: str | None) -> frozenset[str]:
+    """Aggregate expressions in a statement. Empty when there is no aggregate."""
+    if not isinstance(sql, str) or not sql.strip():
+        return frozenset()
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+    from sqlglot import exp, parse_one
+
+    try:
+        tree = parse_one(sql, read=SERVING_DIALECT)
+    except Exception:
+        return frozenset()
+    return frozenset(
+        node.sql(dialect=SERVING_DIALECT).casefold() for node in tree.find_all(exp.AggFunc)
+    )
+
+
+def different_measure(gold_sql: str | None, served_sql: str | None) -> bool:
+    """True when both statements aggregate and the aggregates are not the same."""
+    gold = aggregate_signature(gold_sql)
+    served = aggregate_signature(served_sql)
+    if not gold or not served:
+        return False
+    return gold != served
+
+
+def _reconfirm_offer(env: Mapping[str, Any]) -> bool:
+    raw = env.get("reconfirm")
+    return isinstance(raw, Mapping) and "suggested_question" in raw
+
+
 SERVED_ROUTES = ("ai", "rule", "unattributed", "abstain")
 
 
@@ -804,6 +837,12 @@ def grade_case(
         "as_of": as_of,
         "served_n": served_n,
     }
+    if _reconfirm_offer(env):
+        return {**base, "bucket": BUCKET_RECONFIRM, "reason": "reconfirm", "answered": False}
+    if env.get("reconfirm_accepted") is True and different_measure(
+        gold_sql, str(env.get("sql_used") or "")
+    ):
+        return {**base, "bucket": BUCKET_WRONG, "reason": "wrong measure"}
     if trap:
         if _is_abstain(env):
             return {**base, "bucket": BUCKET_REFUSAL_OK, "reason": "correct refusal"}
@@ -1118,6 +1157,7 @@ def tally(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     bucket_of = {
         BUCKET_CORRECT: "correct",
         BUCKET_WRONG: "wrong",
+        BUCKET_RECONFIRM: "reconfirm",
         BUCKET_ABSTAIN: "abstain",
         BUCKET_REFUSAL_OK: "refusal_ok",
         BUCKET_REFUSAL_WRONG: "refusal_wrong",
@@ -1257,6 +1297,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "graded": report["graded"],
         "correct": report["correct"],
         "wrong": report["wrong"],
+        "reconfirm": report["reconfirm"],
         "abstain": report["abstain"],
         "refusal_ok": report["refusal_ok"],
         "refusal_wrong": report["refusal_wrong"],
@@ -1298,8 +1339,16 @@ def _require_label(report: Mapping[str, Any]) -> None:
         raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
 
 
+def _bucket_count(report: Mapping[str, Any], key: str) -> int:
+    if key not in report:
+        if key == "reconfirm":
+            return 0
+        raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
+    return int(report[key])
+
+
 def _accounted(report: Mapping[str, Any]) -> int:
-    return sum(int(report[key]) for key in _BUCKET_KEYS)
+    return sum(_bucket_count(report, key) for key in _BUCKET_KEYS)
 
 
 def run_label(report: Mapping[str, Any]) -> str:
@@ -1337,12 +1386,10 @@ def split_line(report: Mapping[str, Any]) -> str:
 
 
 def summary_line(report: Mapping[str, Any]) -> str:
-    """One score line. The seven buckets are disjoint and add up to n."""
+    """One score line. The buckets are disjoint and add up to n."""
     _require_label(report)
-    for key in _BUCKET_KEYS:
-        if key not in report:
-            raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
-    if _accounted(report) != int(report["n"]):
+    counts = {key: _bucket_count(report, key) for key in _BUCKET_KEYS}
+    if sum(counts.values()) != int(report["n"]):
         raise SystemExit("grade52: buckets do not add up to n")
     layout = report.get("layout")
     head = f"sha={report['dms_sha']}"
@@ -1350,10 +1397,11 @@ def summary_line(report: Mapping[str, Any]) -> str:
         head += f" layout={layout}"
     return (
         f"{head} pack_gold_served={report['pack_gold_served']} "
-        f"{report['n']}: correct={report['correct']} wrong={report['wrong']} "
-        f"abstain={report['abstain']} refusal_ok={report['refusal_ok']} "
-        f"refusal_wrong={report['refusal_wrong']} empty_gold={report['empty_gold']} "
-        f"gold_broken={report['gold_broken']} mode={report['mode']}"
+        f"{report['n']}: correct={counts['correct']} wrong={counts['wrong']} "
+        f"reconfirm={counts['reconfirm']} abstain={counts['abstain']} "
+        f"refusal_ok={counts['refusal_ok']} "
+        f"refusal_wrong={counts['refusal_wrong']} empty_gold={counts['empty_gold']} "
+        f"gold_broken={counts['gold_broken']} mode={report['mode']}"
     )
 
 
@@ -2703,7 +2751,7 @@ def self_test() -> dict[str, str]:
         }
     )
     if not check_line.endswith(
-        "52: correct=23 wrong=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+        "52: correct=23 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=served"
     ):
         raise SystemExit("self-test: summary shape drifted")
@@ -2796,6 +2844,56 @@ def self_test() -> dict[str, str]:
     canned = {"env": {"text": "Recorded answer.", "audit_id": "led-1"}, "served": {}}
     if armed_violation(live, stub) is not None or armed_violation(canned, stub) is None:
         raise SystemExit("self-test: armed placeholder detector drifted")
+
+    reconfirm_case = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT count(*) AS n FROM src",
+        env={
+            "badge": "ABSTAIN",
+            "route": "abstain",
+            "abstained": True,
+            "reconfirm": {
+                "reason_code": "unknown_measure",
+                "reason_text": "no measure",
+                "suggested_question": "closest",
+                "token": "rcf",
+            },
+        },
+        served_rows=[],
+        as_of="2026-10-09",
+    )
+    if reconfirm_case["bucket"] != BUCKET_RECONFIRM:
+        raise SystemExit("self-test: a reconfirm offer was graded as an abstain")
+    wrong_measure = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT count(*) AS n FROM src",
+        env={
+            "badge": "L2_VALIDATED",
+            "route": "generated",
+            "abstained": False,
+            "reconfirm_accepted": True,
+            "sql_used": "SELECT sum(amount) AS n FROM src",
+        },
+        served_rows=[{"n": 1}],
+        as_of="2026-10-09",
+    )
+    if wrong_measure["bucket"] != BUCKET_WRONG or wrong_measure["reason"] != "wrong measure":
+        raise SystemExit(f"self-test: yes into another measure was {wrong_measure}")
+    same_measure = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT count(*) AS n FROM src",
+        env={
+            "badge": "L1_GOVERNED_METRIC",
+            "route": "governed_metric",
+            "abstained": False,
+            "reconfirm_accepted": True,
+            "sql_used": "SELECT count(*) AS n FROM src",
+        },
+        served_rows=[{"n": 1}],
+        as_of="2026-10-09",
+    )
+    if same_measure["reason"] == "wrong measure":
+        raise SystemExit(f"self-test: the same aggregate was a wrong measure {same_measure}")
 
     print("self-test ok")
     print(

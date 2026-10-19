@@ -132,6 +132,29 @@ describe("Studio result view", () => {
     expect(markup).toContain("Timings");
   });
 
+  it("reconfirm shows the reason, the suggestion, and Yes and No", () => {
+    const markup = html({
+      badge: "ABSTAIN",
+      abstained: true,
+      text: "would abstain",
+      reconfirm: {
+        reason_code: "unknown_measure",
+        reason_text: "no measure matched",
+        suggested_question: "closest stock question",
+        token: "rcfexample",
+      },
+    });
+    expect(markup).toContain('data-testid="studio-reconfirm"');
+    expect(markup).toContain("no measure matched");
+    expect(markup).toContain("closest stock question");
+    expect(markup).toContain('data-testid="studio-reconfirm-yes"');
+    expect(markup).toContain(">Yes<");
+    expect(markup).toContain('data-testid="studio-reconfirm-no"');
+    expect(markup).toContain(">No<");
+    expect(markup).not.toContain('data-testid="studio-abstain"');
+    expect(markup).not.toContain('data-testid="studio-rows"');
+  });
+
   it("Chat answer card mounts ResultView", () => {
     const card = readFileSync(join(here, "../AnswerMessage.tsx"), "utf8");
     expect(card).toContain("ResultView");

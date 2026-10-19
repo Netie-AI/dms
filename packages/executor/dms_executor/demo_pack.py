@@ -23,6 +23,7 @@ from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.grant_struct import (
+    customer_grant_reason,
     relation_gap,
     serve_gap,
     sql_refusal_envelope,
@@ -635,6 +636,7 @@ def _curated_step_refusal(
     *,
     space_id: str | None,
     session_id: str | None,
+    grant_code: str | None = None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. The phrase matched; this later step did not.
 
@@ -662,6 +664,7 @@ def _curated_step_refusal(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
+        abstain_reason=grant_code,
     )
     assert_envelope_valid(env)
     return _stamp_l1(env)
@@ -710,6 +713,29 @@ def envelope_from_pack_submit(
     return _stamp_l1(env)
 
 
+def _grant_miss_code(
+    gap: str | None,
+    phrase: PackMetric,
+    grantable: set[str] | None,
+    dialect: str | None,
+) -> str | None:
+    """The grant checker's code when this pack SQL is not granted.
+
+    ``None`` when the miss is not a grant miss. The customer sentence stays
+    the curated step text; this is only the code.
+    """
+    if isinstance(gap, str) and gap:
+        shown = customer_grant_reason(gap)
+        if shown in {"ungranted", "sql_relation_not_granted"}:
+            return shown
+    allowed = set(grantable or ())
+    for table in phrase.tables:
+        rel = relation_gap(table, grantable=allowed, dialect=dialect)
+        if rel == "sql_relation_not_granted":
+            return rel
+    return None
+
+
 def maybe_pack_ask(
     question: str,
     *,
@@ -750,8 +776,14 @@ def maybe_pack_ask(
         dialect=dialect,
     )
     if hit is None:
+        # The prose stays for the curated step. The grant code goes through
+        # build_abstain, so a grant miss is not offered as another question.
         return _curated_step_refusal(
-            question, "grants fail", space_id=space_id, session_id=session_id
+            question,
+            "grants fail",
+            space_id=space_id,
+            session_id=session_id,
+            grant_code=_grant_miss_code(gap, phrase, grantable, dialect),
         )
     if submit is None or ledger_append is None:
         return _curated_step_refusal(

@@ -463,7 +463,11 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     ids = [row["id"] for row in _cases()]
     assert set(golden["cases"]) == set(ids)
     assert list(got["cases"]) == ids
-    # Only the two keys ROUTE-STAMP-01 adds. Every existing field is compared.
+    # Route stamps, the reconfirm offer, and the grant-miss code are later
+    # fields. Every existing field is compared. The two boundary asks must
+    # stay a direct abstain (the code, and no offer).
+    _direct = {"ops_spend_boundary", "ops_supplier_rank_boundary"}
+
     def _drop(body: Any) -> Any:
         if isinstance(body, dict):
             return {
@@ -476,4 +480,16 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
         return body
 
     for qid in ids:
-        assert _drop(got["cases"][qid]) == golden["cases"][qid], qid
+        live = _drop(got["cases"][qid])
+        if isinstance(live.get("body"), dict):
+            body = dict(live["body"])
+            if qid in _direct:
+                assert "reconfirm" not in body, qid
+                assert body.get("abstain_reason") in {
+                    "ungranted",
+                    "sql_relation_not_granted",
+                }, qid
+            body.pop("reconfirm", None)
+            body.pop("abstain_reason", None)
+            live = {**live, "body": body}
+        assert live == golden["cases"][qid], qid

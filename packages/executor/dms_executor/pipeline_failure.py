@@ -143,16 +143,39 @@ def _known_codes() -> frozenset[str]:
     return _CODES | GAP_REASONS
 
 
+def _direct_refusal(code: str) -> bool:
+    """Ungranted, PII, or a non-read statement. Engine codes, not question words.
+
+    ``customer_grant_reason`` folds ``ungranted:<table>`` to ``ungranted``.
+    A file read stays ``ungranted:file`` and is a direct refusal. An unparsed
+    statement is not: the ask can still offer another question.
+    """
+    raw = str(code or "").strip()
+    if not raw:
+        return False
+    from dms_executor.grant_struct import customer_grant_reason
+
+    shown = customer_grant_reason(raw.casefold())
+    if shown in {"ungranted", "sql_relation_not_granted", "ungranted:file", "pii"}:
+        return True
+    if shown.startswith("hostile_sql"):
+        return True
+    head = shown.split(":", 1)[0]
+    return head in {"statement_not_allowed", "path_not_allowed"}
+
+
 def reconfirm_disposition(code: str) -> str:
     """How ASK-RECONFIRM-01 treats a closed abstain code.
 
-    ``retry_later`` is a reconfirm with a retry offer. A direct refusal,
-    including ``ungranted``, is not this offer.
+    ``retry_later`` and ``offer`` are reconfirm. ``direct`` is ungranted,
+    PII, or destructive SQL, and is not this offer.
     """
     head = str(code or "").casefold().split(":", 1)[0].strip()
     if head in RECONFIRM_RETRY_CODES:
         return "retry_later"
-    return "other"
+    if _direct_refusal(code):
+        return "direct"
+    return "offer"
 
 
 def _reason_code(raw: str) -> str:

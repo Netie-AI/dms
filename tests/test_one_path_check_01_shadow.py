@@ -53,9 +53,23 @@ def _pin_capture_day(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dt, "date", _CaptureDate)
 
 
+_DIRECT_GRANT = frozenset({"ops_spend_boundary", "ops_supplier_rank_boundary"})
+
+
+def _assert_direct_grant(env: dict[str, Any], case_id: str) -> None:
+    """A pack grant miss stays a direct abstain. The offer is not attached."""
+    assert env.get("abstained") is True, case_id
+    assert "reconfirm" not in env, case_id
+    assert env.get("abstain_reason") in {"ungranted", "sql_relation_not_granted"}, case_id
+
+
 def _stable(env: dict[str, Any]) -> dict[str, Any]:
     out = dict(env)
     out.pop(_SHADOW, None)
+    # Reconfirm and the grant-miss code are later fields. Route stamps are
+    # ROUTE-STAMP-01. This capture is the answer body from before either.
+    out.pop("reconfirm", None)
+    out.pop("abstain_reason", None)
     for key in ("served_route", "ladder_rung"):
         out.pop(key, None)
     if "as_of" in out:
@@ -200,9 +214,10 @@ def _value_rows(values: Any) -> list[Any]:
 def _without_row_order(env: dict[str, Any]) -> dict[str, Any]:
     """Drop fields the row rule already judged. as_of stays masked. checker_version may differ.
 
-    ``served_route`` and ``ladder_rung`` are the only other paths dropped.
-    ROUTE-STAMP-01 writes both when the flags are off. Main's executing
-    capture has neither key. sql_used stays in the compare.
+    ``served_route`` and ``ladder_rung`` are ROUTE-STAMP-01. ``reconfirm``
+    and ``abstain_reason`` are later. Main's executing capture has none of
+    them. sql_used stays in the compare. The grant-miss ids are asserted
+    direct before this drop.
     """
     out = json.loads(json.dumps(env, default=str))
     out.pop("as_of", None)
@@ -211,6 +226,8 @@ def _without_row_order(env: dict[str, Any]) -> dict[str, Any]:
     out.pop("text", None)
     out.pop("served_route", None)
     out.pop("ladder_rung", None)
+    out.pop("reconfirm", None)
+    out.pop("abstain_reason", None)
     shadow = out.get("served_check_shadow")
     if isinstance(shadow, dict):
         shadow.pop("checker_version", None)
@@ -303,9 +320,9 @@ def test_flag_off_executing_matches_main_except_row_order_and_checker(
 
     Served rows are an exact ORDER BY key sequence, or a multiset when the
     served SQL has no top-level ORDER BY. Answer text, value cells, and
-    sql_used stay strict. Excluded paths, and only these two:
-    ``served_route``, ``ladder_rung``. ROUTE-STAMP-01 writes both on
-    flag-off. Main's capture omitted both keys.
+    sql_used stay strict. Excluded paths: ``served_route``, ``ladder_rung``,
+    ``reconfirm``, ``abstain_reason``. The two pack grant misses are asserted
+    as a direct abstain before those keys are dropped.
     """
     _pin_capture_day(monkeypatch)
     db = tmp_path / "flag52.duckdb"
@@ -326,6 +343,8 @@ def test_flag_off_executing_matches_main_except_row_order_and_checker(
             assert main.get("sql_used") == "SELECT 1 AS n", got_row["id"]
             _assert_direct_ungranted(got, got_row["id"])
             continue
+        if got_row["id"] in _DIRECT_GRANT:
+            _assert_direct_grant(got, got_row["id"])
         hit = flag_off_problems(main, got)
         if hit:
             problems.append(f"{got_row['id']}: {hit}")
@@ -353,6 +372,8 @@ def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
             assert gold["env"].get("sql_used") == "SELECT 1 AS n", row["id"]
             _assert_direct_ungranted(row["env"], row["id"])
             continue
+        if row["id"] in _DIRECT_GRANT:
+            _assert_direct_grant(row["env"], row["id"])
         compared_live.append(row)
         compared_golden.append(gold)
     left = dump_rows(_stable_rows(compared_live))
