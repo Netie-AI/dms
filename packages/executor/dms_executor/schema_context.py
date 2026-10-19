@@ -147,6 +147,14 @@ _NUM_TYPES = frozenset(
         "float8",
         "dec",
         "fixed",
+        # DuckDB whole numbers the catalog stores under these names.
+        # ``uint*`` is already numeric via the prefix check; these are not.
+        "hugeint",
+        "ubigint",
+        "uinteger",
+        "uhugeint",
+        "utinyint",
+        "usmallint",
     }
 )
 _INDEX_LOCK = threading.Lock()
