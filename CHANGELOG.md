@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-19 - AI-SQL-SHIFT stage 1: DMS_AI_FIRST default off
+
+- **Plan.** `docs/plans/AI_SQL_SHIFT.md`. Stage 1 is understanding the person. L1 and compile stay the serve until the flag is on. On, their SQL is a retrieved example, not an answer lane. WRONG stays 0.
+- **Flag.** `DMS_AI_FIRST` unset is off. `--main` grades flag-off. `--main --ai-first` is the stub measurement. `grade52` prints `metric ai_share=<ai>/<correct> wrong=<wrong>`. CI runs `--self-test`.
+- **Pin.** Cortex scan sha `279cbd85` is unchanged. Example rows are not an Insights body field. `model` and `strict` stay stripped.
+- **Not this change.** The flag is not default on. No durable example store yet. No UI card. Not a live-model score.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.

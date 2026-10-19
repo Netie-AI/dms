@@ -1385,6 +1385,19 @@ def split_line(report: Mapping[str, Any]) -> str:
     return f"split {parts} n={len(report['cases'])}"
 
 
+def metric_line(report: Mapping[str, Any]) -> str:
+    """AI share among correct answers, and the wrong count beside it.
+
+    ``ai_share`` is ``ai/correct``. ``0/0`` means nothing was correct, which
+    is not a share. Wrong is the served-wrong bucket and must stay 0.
+    """
+    rolls = path_counts(report["cases"])
+    ai = int(rolls["correct"]["ai"])
+    correct = int(report["correct"])
+    wrong = int(report["wrong"])
+    return f"metric ai_share={ai}/{correct} wrong={wrong}"
+
+
 def summary_line(report: Mapping[str, Any]) -> str:
     """One score line. The buckets are disjoint and add up to n."""
     _require_label(report)
@@ -1586,6 +1599,7 @@ def _prepare_flag_off() -> None:
     _bootstrap()
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
+    os.environ.pop("DMS_AI_FIRST", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     _scrub_credentials()
 
@@ -1631,9 +1645,15 @@ def _resolve_mode(mode: str | None) -> str:
     return str(mode)
 
 
-def replay_executing() -> list[dict[str, Any]]:
-    """Same capture, but submit executes the SQL it is given."""
+def replay_executing(*, ai_first: bool = False) -> list[dict[str, Any]]:
+    """Same capture, but submit executes the SQL it is given.
+
+    ``ai_first`` sets ``DMS_AI_FIRST`` after the flag-off scrub. The default
+    stays off, which is the number of record.
+    """
     _prepare_flag_off()
+    if ai_first:
+        os.environ["DMS_AI_FIRST"] = "1"
     from cortex_client.models import (
         AskRequest,
         AskResponse,
@@ -2204,6 +2224,7 @@ def armed_replay(
     posture = armed_preflight(cfg)
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
+    os.environ.pop("DMS_AI_FIRST", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     # The minter tells Cortex to refresh JWKS at CORTEX_URL after each key fetch.
     with _env_value("CORTEX_URL", cfg.cortex_url):
@@ -2291,6 +2312,7 @@ def _finish(
     print(prefix + summary_line(report))
     print(prefix + summary_line(without))
     print(prefix + paths_line(rolls))
+    print(prefix + metric_line(report))
     print(prefix + risk_line(report))
     print(prefix + split_line(report))
     if report.get("baseline"):
@@ -2324,12 +2346,17 @@ def grade_loaded(
     return _finish(report, mode, _commit_sha(dms_sha), layout, cortex_sha=cortex_sha, **finish)
 
 
-def grade_main(mode: str | None = None) -> dict[str, Any]:
-    """In-repo proof: exec-SQL stub, flags off. Same product as main 57d85c5."""
+def grade_main(mode: str | None = None, *, ai_first: bool = False) -> dict[str, Any]:
+    """In-repo proof: exec-SQL stub. Default flags off.
+
+    ``ai_first`` turns ``DMS_AI_FIRST`` on for this replay only.
+    """
     chosen = MODE_STUB_EXEC if mode is None else _resolve_mode(mode)
     if chosen != MODE_STUB_EXEC:
         raise SystemExit("grade52: --main grades the exec-SQL stub as stub-exec")
-    return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC, dms_sha=product_sha())
+    return grade_loaded(
+        replay_executing(ai_first=ai_first), mode=MODE_STUB_EXEC, dms_sha=product_sha()
+    )
 
 
 def grade_armed(layout: str = "copy-only", **finish: Any) -> dict[str, Any]:
@@ -2895,6 +2922,34 @@ def self_test() -> dict[str, str]:
     if same_measure["reason"] == "wrong measure":
         raise SystemExit(f"self-test: the same aggregate was a wrong measure {same_measure}")
 
+    share = metric_line(
+        {
+            "correct": 2,
+            "wrong": 0,
+            "cases": [
+                {
+                    "serve_path": "ai",
+                    "bucket": BUCKET_CORRECT,
+                    "answered": True,
+                    "stamp_contradiction": False,
+                },
+                {
+                    "serve_path": "L1",
+                    "bucket": BUCKET_CORRECT,
+                    "answered": True,
+                    "stamp_contradiction": False,
+                },
+            ],
+        }
+    )
+    if share != "metric ai_share=1/2 wrong=0":
+        raise SystemExit(f"self-test: metric line was {share}")
+    empty_share = metric_line(
+        {"correct": 0, "wrong": 0, "cases": []}
+    )
+    if empty_share != "metric ai_share=0/0 wrong=0":
+        raise SystemExit(f"self-test: empty metric line was {empty_share}")
+
     print("self-test ok")
     print(
         "plants: renamed_column=CORRECT dropped_row=WRONG "
@@ -2911,6 +2966,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--main", action="store_true")
+    parser.add_argument(
+        "--ai-first",
+        action="store_true",
+        help="with --main, set DMS_AI_FIRST=1 for the stub replay",
+    )
     parser.add_argument(
         "--envelopes",
         type=Path,
@@ -2937,6 +2997,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("grade52: --baseline and --gate grade --envelopes or --armed")
     if args.layout and not args.armed:
         raise SystemExit("grade52: --layout is for --armed; a capture carries its own layout")
+    if args.ai_first and not args.main:
+        raise SystemExit("grade52: --ai-first is the stub switch for --main")
     if args.self_test or sources == 0:
         self_test()
     baseline = None
@@ -2948,7 +3010,7 @@ def main(argv: list[str] | None = None) -> int:
     elif args.armed:
         report = grade_armed(args.layout or "copy-only", baseline=baseline)
     elif args.main:
-        grade_main()
+        grade_main(ai_first=bool(args.ai_first))
     if args.gate and report is not None:
         if int(report["wrong"]) + int(report["refusal_wrong"]) > 0:
             print(f"gate FAIL wrong={report['wrong']} refusal_wrong={report['refusal_wrong']}")

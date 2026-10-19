@@ -22,6 +22,9 @@ INSIGHTS_PATH = "/v1/insights"
 #: when DMS_SCHEMA_CONTEXT is on, so a pin that 422s unknown fields stays quiet.
 SCHEMA_CONTEXT_FIELD = "schema_context"
 SCHEMA_CONTEXT_ENV = "DMS_SCHEMA_CONTEXT"
+#: Catalog key for verified-example rows. Lifted before the Insights POST.
+#: Pin 279cbd85 does not declare it, so it must never be a body field.
+VERIFIED_EXAMPLES_FIELD = "verified_examples"
 #: Cortex's published demo viewer key (also the DMS settings default). Not a
 #: secret. Generate=true must not send it; KEY-01 (dms#273) removes the default.
 DEMO_VIEWER_KEY = "dms-demo-viewer-key"
