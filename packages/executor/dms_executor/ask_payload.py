@@ -80,7 +80,7 @@ from typing import Any, NamedTuple
 from dms_core.pii import _typed_date_column, classify_column, fail_closed_mask_payload
 from sqlglot import exp, parse_one
 
-from dms_executor.demo_warehouse import connect_serving
+from dms_executor.demo_warehouse import SERVING_DIALECT, connect_serving
 from dms_executor.ontology import Ontology
 from dms_executor.schema_context import (
     INDEX_COLUMN_CAP,
@@ -178,7 +178,7 @@ def _rowwise(relation: str) -> _Rowwise | None:
     if _ident(rel):
         return _Rowwise(rel, True, frozenset(), frozenset())
     try:
-        node: Any = parse_one(rel, read="duckdb")
+        node: Any = parse_one(rel, read=SERVING_DIALECT)
     except Exception:  # noqa: BLE001 - unreadable is not row for row
         return None
     while type(node) is exp.Subquery and not any(
@@ -506,7 +506,7 @@ def _build(
     exact = {_fold(name) for name in granted}
     if not exact or serving is None:
         return None
-    _fingerprint, catalog = read_catalog(serving, granted, "duckdb")
+    _fingerprint, catalog = read_catalog(serving, granted, SERVING_DIALECT)
     tags = _ontology_tags(ontology)
     candidates: list[tuple[str, list[tuple[int, Mapping[str, Any], str]]]] = []
     for dataset in catalog.get("datasets") or []:
