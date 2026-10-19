@@ -432,8 +432,9 @@ def test_single_non_select_through_http(
     loop. ``sql`` is ``kind == sql`` with the loop off.
     """
     monkeypatch.setattr("dms_executor.manifest.reject_hostile_chat_sql", lambda _sql: None)
-    monkeypatch.setattr("dms_executor.generative_ask.reject_hostile_chat_sql", lambda _sql: None)
-    monkeypatch.setattr("dms_executor.reject_hostile_chat_sql", lambda _sql: None)
+    # GRANT-STRUCT-01: grant_struct.serve_gap is the one chat-path caller of
+    # the scanner (generative_ask and the executor reach it through there).
+    monkeypatch.setattr("dms_executor.grant_struct.reject_hostile_chat_sql", lambda _sql: None)
     db = ensure_demo_warehouse(tmp_path / f"{path_name}-{case}.duckdb")
     _flags(monkeypatch, db)
     # The schema index opens the file on another thread. This case does not

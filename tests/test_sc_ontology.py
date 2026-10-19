@@ -205,6 +205,7 @@ def test_ask_sku_grain_is_ontology_plan_with_coverage(tmp_path: Path) -> None:
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -242,6 +243,7 @@ def test_ask_lane_grain_abstains_naming_missing_join(tmp_path: Path) -> None:
         submit=lambda sql: submits.append(sql) or _submit_ok(sql),
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"

@@ -147,6 +147,7 @@ def _ask(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
 
 
@@ -248,6 +249,7 @@ def test_ranked_plan_without_month_abstains(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -327,6 +329,7 @@ def test_route_a_monthly_generate_empty_named_abstain(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
@@ -371,6 +374,7 @@ def test_route_b_monthly_validate_fail_keeps_reason(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert_envelope_valid(env)
