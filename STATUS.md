@@ -6,11 +6,9 @@
 
 ## Direction
 
-AI-first, DB-GPT/Genie-style text-to-SQL. The model writes the SQL from ontology, schema, and verified-example context, then executes, checks, and retries.
+AI-first text-to-SQL. The model writes SQL from ontology, schema, and verified examples. Plan: `docs/plans/AI_SQL_SHIFT.md`. Stage 1 is understanding the person. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 
-Escalation ladder: plan-then-solve, error-fed self-correct, stronger model via an OpenVault tier, then reconfirm with the closest answerable question and a Yes button.
-
-Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules. DMS never holds or routes provider keys. Routing lives in OpenVault.
+Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm with Yes. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not route provider keys.
 
 ## 52 pack - number of record (STUB)
 
@@ -49,7 +47,6 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
 | SAFE-01: one grant function, one parser | #454 |
-| WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
 | VALUE-INDEX-01 / CLOOP-PII-01 | #450 / #441 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
