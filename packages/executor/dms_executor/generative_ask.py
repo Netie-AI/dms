@@ -29,6 +29,7 @@ from typing import Any
 import sqlglot
 from cortex_client.compute import (
     PLAN_ORIGIN_GENERATE_SQL,
+    PLAN_ORIGIN_ONTOLOGY_COMPILE,
     PLAN_ORIGIN_ONTOLOGY_RANKING,
     PLAN_ORIGINS,
     SERVED_LEG_KEYS,
@@ -310,6 +311,18 @@ def served_diag_enabled() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: Origins of SQL DMS compiled itself (multi-grain where-paths, ranking slots).
+#: The served SQL is not a model's, whatever the Insights payload carried.
+COMPILE_PLAN_ORIGINS = frozenset({PLAN_ORIGIN_ONTOLOGY_COMPILE, PLAN_ORIGIN_ONTOLOGY_RANKING})
+#: The model credit copied from an Insights payload onto an envelope.
+MODEL_CREDIT_KEYS: tuple[str, ...] = (
+    "served_provider",
+    "served_model",
+    "served_local",
+    "ov_key_id",
+)
+
+
 def with_served_attribution(
     env: dict[str, Any] | None, payload: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -320,6 +333,16 @@ def with_served_attribution(
     (the Cortex contract-ask fallback after a generative miss). The diagnostic
     flag adds the Insights payload's top-level key names and their count,
     never a value.
+
+    An envelope whose ``plan_origin`` names a DMS compile credits no model:
+    DMS wrote the served SQL, not the model. ``served_attribution`` is
+    ``missing`` when a generate call may have reached a model (nothing it
+    wrote was served), else ``none``. A multi-grain ``ontology_compile``
+    drops the copied model fields, because that path replaced the model's
+    SQL. A ranking compile keeps them: its route stamp is compile, and a
+    model name beside that stamp does not change the route. ``generate_legs``
+    still records the call. Every ask envelope passes here, so a later copy
+    of the payload cannot re-credit a multi-grain compile.
     """
     if not isinstance(env, dict):
         return env
@@ -333,6 +356,15 @@ def with_served_attribution(
             keys = sorted(str(k) for k in payload)
             env["served_payload_keys"] = {"count": len(keys), "keys": keys}
     env["served_attribution"] = served_attribution(payload)
+    origin = str(env.get("plan_origin") or "")
+    if origin in COMPILE_PLAN_ORIGINS:
+        # Ranking keeps the copied served_* fields (#439). The route stamp is
+        # compile, so the name does not make the answer a model answer.
+        if origin != PLAN_ORIGIN_ONTOLOGY_RANKING:
+            for key in MODEL_CREDIT_KEYS:
+                env.pop(key, None)
+        called = generate_model_called(payload)
+        env["served_attribution"] = SERVED_ATTR_MISSING if called else SERVED_ATTR_NONE
     return env
 
 
@@ -1907,7 +1939,9 @@ def maybe_generative_ask(
         dialect=dialect,
     )
     if multi_env is not None:
-        return _stamp(with_plan_origin(multi_env, origin))
+        # DMS's own multi-grain compile is served. Any model SQL in the
+        # payload never ran, so its generate origin and model do not apply.
+        return _stamp(with_plan_origin(multi_env, PLAN_ORIGIN_ONTOLOGY_COMPILE))
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
