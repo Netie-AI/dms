@@ -35,8 +35,14 @@ from dms_executor.route_stamp import (
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "route_stamp"
 PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
-# Wall clock, per-run ticket ids, and the two keys this PR adds. Nothing else.
-_VOLATILE = frozenset({"as_of", "ticket_id", "served_route", "ladder_rung"})
+# Wall clock, per-run ticket ids, route stamps, the reconfirm token, and the
+# grant-miss code. The copy fixtures predate the offer and the code.
+_VOLATILE = frozenset(
+    {"as_of", "ticket_id", "served_route", "ladder_rung", "reconfirm", "abstain_reason"}
+)
+# Base pack phrase. The supplier-rank sibling lives in the score fixture,
+# which this copy does not include, so the model abstain there may offer.
+_DIRECT_GRANT = frozenset({"ops_spend_boundary"})
 
 _ASK = r"""
 import json, os
@@ -525,10 +531,27 @@ def test_route_of_reads_the_builder_stamp() -> None:
     assert route_of({"served_route": "ontology_compile", "ladder_rung": "l1"}) == "contradictory"
 
 
+def _assert_grant_miss_stays_direct(rows: list[dict[str, Any]]) -> None:
+    seen: set[str] = set()
+    for row in rows:
+        if row["id"] not in _DIRECT_GRANT:
+            continue
+        seen.add(row["id"])
+        env = row["env"]
+        assert env.get("abstained") is True, row["id"]
+        assert "reconfirm" not in env, row["id"]
+        assert env.get("abstain_reason") in {
+            "ungranted",
+            "sql_relation_not_granted",
+        }, row["id"]
+    assert seen == _DIRECT_GRANT
+
+
 def test_copy_only_52_flags_off_one_route(tmp_path: Path) -> None:
     rows = _serve(tmp_path, flags_on=False)
     _assert_one_route(rows)
     _assert_no_sql_is_abstain_stage(rows)
+    _assert_grant_miss_stays_direct(rows)
     _assert_main_bytes(rows, "copy_off.json")
     l1 = [
         row["id"]
@@ -545,6 +568,7 @@ def test_copy_only_52_flags_on_one_route(tmp_path: Path) -> None:
     rows = _serve(tmp_path, flags_on=True)
     _assert_one_route(rows)
     _assert_no_sql_is_abstain_stage(rows)
+    _assert_grant_miss_stays_direct(rows)
     _assert_main_bytes(rows, "copy_on.json")
     l1 = [
         row["id"]

@@ -636,6 +636,7 @@ def _curated_step_refusal(
     *,
     space_id: str | None,
     session_id: str | None,
+    grant_code: str | None = None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. The phrase matched; this later step did not.
 
@@ -663,6 +664,7 @@ def _curated_step_refusal(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
+        abstain_reason=grant_code,
     )
     assert_envelope_valid(env)
     return _stamp_l1(env)
@@ -774,15 +776,15 @@ def maybe_pack_ask(
         dialect=dialect,
     )
     if hit is None:
-        env = _curated_step_refusal(
-            question, "grants fail", space_id=space_id, session_id=session_id
+        # The prose stays for the curated step. The grant code goes through
+        # build_abstain, so a grant miss is not offered as another question.
+        return _curated_step_refusal(
+            question,
+            "grants fail",
+            space_id=space_id,
+            session_id=session_id,
+            grant_code=_grant_miss_code(gap, phrase, grantable, dialect),
         )
-        # The prose stays for the curated step. The grant code is what the
-        # reconfirm gate reads, so a grant miss is not offered as another question.
-        shown = _grant_miss_code(gap, phrase, grantable, dialect)
-        if shown:
-            env["abstain_reason"] = shown
-        return env
     if submit is None or ledger_append is None:
         return _curated_step_refusal(
             question, "Cortex SQL fail", space_id=space_id, session_id=session_id

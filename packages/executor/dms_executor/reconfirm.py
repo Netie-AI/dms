@@ -49,8 +49,10 @@ def pipeline_failure_jsonl_path() -> Path:
 def _parsed(text: str) -> list[Any]:
     from sqlglot import parse
 
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
     try:
-        return [tree for tree in parse(text, read="duckdb") if tree is not None]
+        return [tree for tree in parse(text, read=SERVING_DIALECT) if tree is not None]
     except Exception:
         return []
 
