@@ -376,10 +376,13 @@ def test_typed_db_error_keeps_class_and_one_granted_column_only(
 
 # EXPLAIN fails before any row is read, and DuckDB can still print cell values
 # while it binds. A binder error renders an ENUM column's type with its whole
-# member list. A PIVOT without an IN list binds on the ON column's distinct
-# values (the reviewer's repro on 6b1f4ab; main now refuses it as two
-# statements before EXPLAIN). The checker reason is the error class plus a
-# column the SQL itself wrote, nothing more.
+# member list. A PIVOT without an IN list would bind on the ON column's
+# distinct values (the reviewer's repro on 6b1f4ab). sqlglot sees one
+# statement, and DuckDB will not serialize it ("Only SELECT statements can
+# be serialized"), so serve_gap returns statement_not_allowed before EXPLAIN.
+# That is main's code. It is not multi_statement: the two-statement code is
+# only the serialize result's statement list. The checker reason is the error
+# class plus a column the SQL itself wrote, nothing more.
 _ENUM = "ENUM('Tan Wei Ming', 'Siti Aminah')"
 _EXPLAIN_CASES = [
     (
@@ -398,7 +401,7 @@ _EXPLAIN_CASES = [
         "pivot_binder",
         "VARCHAR",
         "SELECT nope FROM (PIVOT suppliers ON contact_name USING count(*))",
-        "checker:multi_statement",
+        "checker:statement_not_allowed",
     ),
 ]
 

@@ -146,16 +146,16 @@ _CODE_COLUMN = re.compile(r"[\w ]{1,64}")
 
 
 def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
-    """Reduce a database error to ``Class`` or ``Class:column``, never the message.
+    """Reduce a database error to ``Class`` or ``Class:name``, never the message.
 
     DuckDB echoes the offending cell value in cast and constraint errors, an
     ENUM member list in binder errors, and a file error echoes a path. The
     message body therefore never leaves the run. ``columns`` come from
-    ``written_names``: column names the statement itself wrote. The column is
-    named only when exactly one of them appears in the message, and the name
-    written is the schema or SQL spelling, never text copied from the
-    message. A message that names none, or several (a binder candidate
-    list), names none.
+    ``written_names``: a column the statement wrote, or a string literal that
+    is a cast operand. The name is attached only when exactly one of them
+    appears in the message, and the spelling is the schema or SQL spelling,
+    never text copied from the message. A message that names none, or several
+    (a binder candidate list), names none.
     """
     name = type(exc).__name__
     code = name if _CODE_NAME.fullmatch(name) else "Error"
@@ -173,15 +173,17 @@ def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
 
 
 def written_names(con: Any, sql: str) -> list[str]:
-    """Column names ``sql`` itself writes, the only names a db error code may carry.
+    """Names ``sql`` itself writes, the only names a db error code may carry.
 
     A name that is a column of a table the statement cites comes back in
     schema spelling. Any other written name (a misspelt column, an alias the
-    statement refers to) comes back as the SQL spelled it, so the retry still
-    hears which name was wrong. No name is taken from the database message,
-    so a cell value that spells some other column cannot ride out as a name.
-    A CTE name is not a table, and a schema-qualified table matches only its
-    own schema. Anything that does not parse offers nothing.
+    statement refers to, a string literal that is a cast operand) comes back
+    as the SQL spelled it, so the retry still hears which name was wrong. A
+    cast of a column offers the column, not the cell value the message
+    quotes. No name is taken from the database message, so a cell value that
+    spells some other column cannot ride out as a name. A CTE name is not a
+    table, and a schema-qualified table matches only its own schema. Anything
+    that does not parse offers nothing.
     """
     try:
         from sqlglot import exp, parse_one
@@ -191,7 +193,18 @@ def written_names(con: Any, sql: str) -> list[str]:
         for col in tree.find_all(exp.Column):
             if col.name:
                 written.setdefault(col.name.lower(), col.name)
-        if not written:
+        # TryCast is a Cast. The operand literal is the model's own text.
+        literals: dict[str, str] = {}
+        for cast in tree.find_all(exp.Cast):
+            lit = cast.this
+            if (
+                isinstance(lit, exp.Literal)
+                and lit.is_string
+                and isinstance(lit.this, str)
+                and lit.this
+            ):
+                literals.setdefault(lit.this.lower(), lit.this)
+        if not written and not literals:
             return []
         ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
         cited = {
@@ -217,6 +230,8 @@ def written_names(con: Any, sql: str) -> list[str]:
             here = (str(schema).lower(), str(table).lower())
             if key in written and (here in cited or ("", here[1]) in cited):
                 written[key] = str(column)
+    for key, name in literals.items():
+        written.setdefault(key, name)
     return sorted(written.values())
 
 
