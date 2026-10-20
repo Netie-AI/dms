@@ -25,9 +25,13 @@ from cortex_client.models import AskResponse
 from dms_executor import map_ask_response_to_envelope
 from dms_executor.abstain import build_abstain
 from dms_executor.route_stamp import (
+    ROUTE_COMPILE,
     ROUTE_L1,
+    ROUTE_LADDER,
+    ROUTE_MODEL,
     ROUTES,
     is_abstain_route,
+    route_class,
     route_of,
     stamp_route,
 )
@@ -506,6 +510,32 @@ def test_stamp_route_does_not_relabel_a_no_sql_abstain() -> None:
     ran = {"abstained": True, "sql_used": "SELECT 1"}
     stamp_route(ran, ROUTE_L1)
     assert ran["served_route"] == ROUTE_L1
+
+
+def test_rule_serve_is_not_stamped_generated() -> None:
+    """Compile stamps compile, ladder stamps ladder, and neither stays generated."""
+    compiled = {"abstained": False, "sql_used": "SELECT 1", "route": "generated"}
+    stamp_route(compiled, ROUTE_COMPILE)
+    assert compiled["route"] == "compile"
+    assert compiled["ladder_rung"] == "compile"
+    assert compiled["served_route"] == ROUTE_COMPILE
+    assert route_class(compiled["route"]) == route_class(compiled["served_route"]) == "compile"
+    ladder = {"abstained": False, "sql_used": "SELECT 1", "route": "generated"}
+    stamp_route(ladder, ROUTE_LADDER)
+    assert ladder["route"] == "ladder"
+    assert ladder["ladder_rung"] == "ladder"
+    assert route_class(ladder["route"]) == route_class(ladder["served_route"]) == "ladder"
+    model = {
+        "abstained": False,
+        "sql_used": "SELECT 1",
+        "route": "generated",
+        "served_model": "openai/gpt-oss-120b",
+    }
+    stamp_route(model, ROUTE_MODEL)
+    assert model["route"] == "generated"
+    assert route_class(model["route"]) == route_class(model["served_route"]) == "ai"
+    assert route_of(ladder) == ROUTE_LADDER
+    assert route_of(compiled) == ROUTE_COMPILE
 
 
 def test_route_of_reads_the_builder_stamp() -> None:

@@ -126,6 +126,7 @@ from dms_executor.lake_registry import (
     reset_ask_deadline,
     reset_serving_lease_block,
     serving_deadline_missed,
+    serving_deadline_s,
 )
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
@@ -721,7 +722,6 @@ class Executor:
         import httpx
         from cortex_client.compute import (
             begin_answer_model_calls,
-            insights_timeout_s,
             recorded_model_calls,
         )
 
@@ -731,7 +731,9 @@ class Executor:
         # take_executed() right after this returns or raises.
         executed_trace.begin()
         seen: list[dict[str, Any] | None] = []
-        deadline = time.monotonic() + insights_timeout_s()
+        # Whole-ask clock. Each Insights leg keeps its own 8s HTTP timeout.
+        ask_budget_s = serving_deadline_s()
+        deadline = time.monotonic() + ask_budget_s
         deadline_tokens = bind_ask_deadline(deadline)
         own_control = current_ask_control() is None
         control_token: Any = None
@@ -823,6 +825,10 @@ class Executor:
                             f"at the cap ({exc.code}). No figure was returned."
                         )
                         answer_id = "ans_serving_lease_cap"
+                    deadline_hit = exc.code in {
+                        SERVING_DEADLINE_EXCEEDED_REASON,
+                        SERVING_DEADLINE_RESERVE_REASON,
+                    }
                     env = build_abstain(
                         reason=exc.code,
                         question=question,
@@ -837,7 +843,10 @@ class Executor:
                         session_id=session_id,
                         ask_mode="live",
                         route="abstain",
+                        abstain_reason=exc.code if deadline_hit else None,
                     )
+                    if deadline_hit:
+                        env["serving_deadline_s"] = ask_budget_s
                     assert_envelope_valid(env)
                 finally:
                     reset_serving_lease_block(token)
@@ -920,6 +929,10 @@ class Executor:
         certified_first = ladder != "generative"
         allow_gen = ladder != "exact"
         allow_cortex = ladder == "product"
+        # A real Cortex client is the armed product path. Demo-pack abstains
+        # must not gate it. Test fakes are not a CortexClient, so the planted
+        # refuses stay in front of those asks.
+        armed_product = isinstance(self._cortex, CortexClient)
         allow_follow = ladder == "product"
         allow_bronze = ladder == "product"
 
@@ -1039,16 +1052,19 @@ class Executor:
                 ),
                 dialect=self.dialect,
             )
-            if pack_env is not None:
+            if pack_env is not None and not (
+                armed_product and pack_env.get("abstained") is True
+            ):
                 self._store_turn(session_id, space_id, pack_env)
                 return pack_env
 
-        refuse_env = maybe_uncertified_refuse_ask(
-            question, space_id=space_id, session_id=session_id
-        )
-        if refuse_env is not None:
-            self._store_turn(session_id, space_id, refuse_env)
-            return refuse_env
+        if not armed_product:
+            refuse_env = maybe_uncertified_refuse_ask(
+                question, space_id=space_id, session_id=session_id
+            )
+            if refuse_env is not None:
+                self._store_turn(session_id, space_id, refuse_env)
+                return refuse_env
 
         if ladder == "exact":
             # Curated l0 phrase missing from PACK_METRICS is step 1, not a
@@ -1226,6 +1242,7 @@ class Executor:
                 # (connect_serving), not on the source connector in self.dialect.
                 dialect=SERVING_DIALECT,
                 embedder=openvault_embedder(self._cortex),
+                demo_gate=not armed_product,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain

@@ -66,6 +66,9 @@ from cortex_client.models import (
 )
 
 CONTRACT_MAJOR = 1
+#: Reconfirm suggestion only. Smaller than freeroute complete()'s default 600
+#: so a forward of this field does not reserve the answer's token budget.
+SUGGESTION_MAX_TOKENS = 64
 
 
 def _to_gen_manifest(m: ContractManifest) -> GenManifest:
@@ -254,11 +257,19 @@ class CortexClient:
             sql_feedback=sql_feedback,
         )
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str, *, max_tokens: int = SUGGESTION_MAX_TOKENS) -> str:
         """One generate completion for a suggested question. Not the answer ladder.
 
         A dead engine or a refused generate returns ``""``. Nothing is filled in.
+        Skipped when this ask already used ``insights_call_cap`` generate posts,
+        so the suggestion cannot take a call the answer still needs.
+        ``max_tokens`` is sent on this POST only.
         """
+        from cortex_client.compute import insights_call_cap, note_model_call, recorded_model_calls
+
+        if recorded_model_calls() >= insights_call_cap():
+            return ""
+        note_model_call()
         try:
             payload = insights_post(
                 self.base_url,
@@ -267,6 +278,7 @@ class CortexClient:
                 generate=True,
                 api_key=self.api_key,
                 timeout=min(2.0, float(self.timeout)),
+                max_tokens=max_tokens,
             )
         except Exception:
             return ""

@@ -275,16 +275,52 @@ def _text_from_payload(payload: Any) -> str:
     return ""
 
 
+def _existing_suggestion(env: dict[str, Any]) -> str:
+    """A closest question the ladder already wrote. Empty when there is none."""
+    raw = env.get("reconfirm")
+    if not isinstance(raw, dict):
+        return ""
+    for key in ("suggested_question", "closest_question"):
+        val = raw.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    return ""
+
+
+def _call_complete(fn: Callable[..., Any], prompt: str) -> Any:
+    """Pass a small max_tokens when the completer accepts it. No canned text."""
+    import inspect
+
+    from cortex_client.client import SUGGESTION_MAX_TOKENS
+
+    accepts = False
+    try:
+        params = inspect.signature(fn).parameters
+        accepts = "max_tokens" in params or any(
+            item.kind is inspect.Parameter.VAR_KEYWORD for item in params.values()
+        )
+    except (TypeError, ValueError):
+        accepts = False
+    if accepts:
+        return fn(prompt, max_tokens=SUGGESTION_MAX_TOKENS)
+    return fn(prompt)
+
+
 def complete_with_model(cortex: Any, prompt: str) -> str:
     """One completion. Not ``compute_insights``: that is the answer ladder.
 
-    A missing completer writes nothing. No fill-in question.
+    A missing completer writes nothing. No fill-in question. When this ask
+    has already used the generate cap, this does not call again.
     """
+    from cortex_client.compute import insights_call_cap, recorded_model_calls
+
+    if recorded_model_calls() >= insights_call_cap():
+        return ""
     fn = getattr(cortex, "complete", None)
     if not callable(fn):
         return ""
     try:
-        return _text_from_payload(fn(prompt))
+        return _text_from_payload(_call_complete(fn, prompt))
     except Exception:
         return ""
 
@@ -367,15 +403,23 @@ def apply_reconfirm(
 
     reason = _envelope_reason(env)
     reason_text = str(env.get("text") or "").strip() or reason
-    try:
-        suggested = write_suggested_question(
-            ontology=ontology,
-            schema=schema,
-            reason=reason,
-            complete=complete,
-        )
-    except Exception:
-        suggested = ""
+    # The in-budget reading already named a question. Do not spend another call.
+    suggested = _existing_suggestion(env)
+    if not suggested:
+        from cortex_client.compute import insights_call_cap, recorded_model_calls
+
+        if recorded_model_calls() >= insights_call_cap():
+            suggested = ""
+        else:
+            try:
+                suggested = write_suggested_question(
+                    ontology=ontology,
+                    schema=schema,
+                    reason=reason,
+                    complete=complete,
+                )
+            except Exception:
+                suggested = ""
     token = _save_pending(
         {
             "suggested_question": suggested,
@@ -388,12 +432,21 @@ def apply_reconfirm(
         }
     )
     out = dict(env)
-    out["reconfirm"] = {
+    block: dict[str, Any] = {
         "reason_code": reason,
         "reason_text": reason_text,
         "suggested_question": suggested,
         "token": token,
     }
+    prior = env.get("reconfirm")
+    if isinstance(prior, dict):
+        closest = prior.get("closest_question")
+        if isinstance(closest, str) and closest.strip():
+            block["closest_question"] = closest.strip()
+    out["reconfirm"] = block
+    from cortex_client.compute import recorded_model_calls
+
+    out["model_calls"] = recorded_model_calls()
     return out
 
 
