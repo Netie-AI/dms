@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-18 MYT, from live GitHub
+**Last updated:** 2026-10-20, VQ-RAG-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** merges main `6daf59e` (#464). SQL-VOTE #463. n=348 not run. Not PASS.
+**Tip:** `DMS_VQ_RAG` default off. Replay stays off-flag. Few-shot when on. n=348 not run. Not PASS.
 
 ## Direction
 
@@ -21,7 +21,7 @@ STUB: an in-process TestClient that replays recorded Cortex responses, not a liv
 | `57d85c52` (`tests/fixtures/ask_guide/copy_only_57d85c52.jsonl`) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
 | this branch stub-exec `--main`. Not a score. | 43 / 0 / 0 reconfirm=5 | 36 / 0 / 0 | ai=0 rule=43 |
 
-Copy-only row: refusal_ok=8, refusal_wrong=0, gold_broken=1. stub-exec: refusal_ok=3, refusal_wrong=0, gold_broken=1, wrong_ub95=6.7%, coverage 43/43, split ai=0 rule=43 unattributed=0 abstain=9. Not PASS.
+Copy-only row: refusal_ok=8, refusal_wrong=0, gold_broken=1. stub-exec flag off and on: refusal_ok=3, refusal_wrong=0, gold_broken=1, wrong_ub95=6.7%, coverage 43/43, split ai=0 rule=43 unattributed=0 abstain=9. Not PASS.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 

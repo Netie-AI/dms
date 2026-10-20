@@ -151,7 +151,13 @@ from dms_executor.sql_vote import (
     reconfirm_prompt,
 )
 from dms_executor.stated_values import dropped_stated_value_reason
-from dms_executor.verified_queries import rows_from_submit_result
+from dms_executor.verified_queries import (
+    examples_text,
+    maybe_save_checked_sql,
+    retrieve_verified_examples,
+    rows_from_submit_result,
+    vq_rag_enabled,
+)
 
 _KNOWN = frozenset(DEMO_TABLES)
 _UNSURE_ASK = re.compile(
@@ -1761,6 +1767,18 @@ def _second_reading(
                 if item.get("outcome") == "served":
                     item["outcome"] = disagreement_detail(published.get("assumptions"))
                     break
+        else:
+            route = published.get("served_route")
+            maybe_save_checked_sql(
+                question=question,
+                sql=first_sql,
+                space_id=space_id,
+                warehouse=warehouse,
+                grantable=grantable,
+                dialect=dialect,
+                provenance="yes:vote",
+                served_route=route.strip() if isinstance(route, str) else "",
+            )
         return published
     detail = disagreement_detail(second.get("assumptions") if second.get("abstained") else None)
     why, closest = detail, ""
@@ -1768,6 +1786,7 @@ def _second_reading(
     if budget.allow():
         ctx3 = dict(ctx)
         ctx3.pop("sql_loop_feedback", None)
+        ctx3.pop("vq_examples", None)
         ctx3["sql_vote_prompt"] = reconfirm_prompt(question, detail)
         ctx3["sql_vote_kind"] = "reconfirm"
         budget.take()
@@ -1802,6 +1821,7 @@ def maybe_generative_ask(
     bind_on_miss: bool = False,
     demo_ontology_allowed: bool = True,
     dialect: str | None = None,
+    embedder: Callable[[list[str]], Any] | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1960,6 +1980,19 @@ def maybe_generative_ask(
         if space_block is not None
         else ctx
     )
+    if vq_rag_enabled():
+        example_rows = retrieve_verified_examples(
+            q,
+            space_id=space_id,
+            warehouse=lake,
+            grantable=allowed,
+            dialect=dialect,
+            embedder=embedder,
+        )
+        block = examples_text(example_rows)
+        if block:
+            insights_ctx = dict(insights_ctx)
+            insights_ctx["vq_examples"] = block
     vote_budget: AskCallBudget | None = None
     if cloop_b_enabled() and not ontology_ranked_lane_enabled():
         # Direct SQL. Reading 2 is a different instruction under the same cap.
