@@ -183,7 +183,9 @@ from dms_executor.sql_loop import apply_sql_credit, extract_dialect
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
+    maybe_save_checked_sql,
     maybe_verified_ask,
+    openvault_embedder,
     register_verified_query,
 )
 from dms_executor.warehouse_browse import (
@@ -263,14 +265,22 @@ def _insights_compute_seam(
     onto = ontology
     feedback = None
     asked = question
-    _vote_keys = {"sql_loop_feedback", "sql_vote_prompt", "sql_vote_kind"}
-    if isinstance(ontology, dict) and _vote_keys.intersection(ontology):
-        onto = {k: v for k, v in ontology.items() if k not in _vote_keys}
+    examples = ""
+    # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
+    # stays quiet because the key is removed before the POST.
+    _hidden = {"sql_loop_feedback", "sql_vote_prompt", "sql_vote_kind", "vq_examples"}
+    if isinstance(ontology, dict) and _hidden.intersection(ontology):
+        onto = {k: v for k, v in ontology.items() if k not in _hidden}
         raw = ontology.get("sql_loop_feedback")
         feedback = raw if isinstance(raw, dict) else None
         vote_prompt = ontology.get("sql_vote_prompt")
         if isinstance(vote_prompt, str) and vote_prompt.strip():
             asked = vote_prompt
+        raw_examples = ontology.get("vq_examples")
+        if isinstance(raw_examples, str) and raw_examples.strip():
+            examples = raw_examples.strip()
+    if examples:
+        asked = f"{asked.rstrip()}\nExamples:\n{examples}"
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
@@ -1215,6 +1225,7 @@ class Executor:
                 # Extract and EXPLAIN run on the DuckDB serving copy
                 # (connect_serving), not on the source connector in self.dialect.
                 dialect=SERVING_DIALECT,
+                embedder=openvault_embedder(self._cortex),
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
@@ -1457,6 +1468,20 @@ class Executor:
         if not isinstance(offered.get("reconfirm"), dict):
             offered = dict(offered)
             offered["reconfirm_accepted"] = True
+            raw_space = pending.get("space_id")
+            route = offered.get("served_route")
+            maybe_save_checked_sql(
+                question=suggested,
+                sql=str(offered.get("sql_used") or ""),
+                space_id=raw_space if isinstance(raw_space, str) else None,
+                warehouse=self._warehouse,
+                grantable=None,
+                dialect=self.dialect,
+                provenance="yes:reconfirm",
+                served_route=route.strip() if isinstance(route, str) else "",
+                abstained=offered.get("abstained") is True
+                or str(offered.get("badge") or "") == "ABSTAIN",
+            )
         return offered
 
     def take_executed(self) -> ExecutedTrace:
