@@ -1303,6 +1303,9 @@ def test_abstain_including_watermark_stays_under_ask_timeout(
         holder.close()
         keeper.join(6.0)
     monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
+    # This half is the measured 8s ask clock (reserve fires while the slot
+    # is still held). The product default is the longer ladder budget.
+    monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "8")
     holder = connect_serving(lake)
     keeper = threading.Thread(target=_hold, args=(9.0,))
     keeper.start()

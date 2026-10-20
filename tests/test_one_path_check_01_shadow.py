@@ -2,8 +2,11 @@
 
 The 52-question replay is the existing flag-off fixture
 (``tests/fixtures/ask_guide``). ``as_of`` is the wall clock, so both sides
-replace it. The other allowed differences are ``served_check_shadow`` and
-the two keys ROUTE-STAMP-01 adds (``served_route`` and ``ladder_rung``).
+replace it. The other allowed differences are ``served_check_shadow``,
+the two keys ROUTE-STAMP-01 adds (``served_route`` and ``ladder_rung``),
+and a rule answer's customer ``route`` / ``lane``. The capture still says
+``generated`` / ``generative``. The live stamp names the rung that produced
+the rows and drops that lane. ``route`` must match ``served_route``'s class.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import pytest
 import sqlglot
 from dms_executor import sql_grounds
 from dms_executor.demo_warehouse import SERVING_DIALECT, ensure_demo_warehouse
+from dms_executor.route_stamp import route_class
 from sqlglot import exp
 
 from tests.fixtures.ask_guide.capture_flag_off_52 import HERE, dump_rows, replay_pack
@@ -61,6 +65,28 @@ def _assert_direct_grant(env: dict[str, Any], case_id: str) -> None:
     assert env.get("abstained") is True, case_id
     assert "reconfirm" not in env, case_id
     assert env.get("abstain_reason") in {"ungranted", "sql_relation_not_granted"}, case_id
+
+
+_RULE_CLASSES = frozenset({"compile", "ladder"})
+
+
+def _align_rule_stamp(main: dict[str, Any], got: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite a historical generated stamp only after the live rung matches.
+
+    The capture said ``route=generated`` and ``lane=generative`` for rule SQL.
+    LIVE-HARNESS-01 writes the rung (``compile`` or ``ladder``) and drops the
+    lane. Anything else, including a rule answer still stamped ``generated``,
+    stays a diff.
+    """
+    served = route_class(got.get("served_route"))
+    if main.get("route") != "generated" or served not in _RULE_CLASSES:
+        return main
+    assert route_class(got.get("route")) == served
+    assert "lane" not in got
+    aligned = dict(main)
+    aligned["route"] = got["route"]
+    aligned.pop("lane", None)
+    return aligned
 
 
 def _stable(env: dict[str, Any]) -> dict[str, Any]:
@@ -321,8 +347,10 @@ def test_flag_off_executing_matches_main_except_row_order_and_checker(
     Served rows are an exact ORDER BY key sequence, or a multiset when the
     served SQL has no top-level ORDER BY. Answer text, value cells, and
     sql_used stay strict. Excluded paths: ``served_route``, ``ladder_rung``,
-    ``reconfirm``, ``abstain_reason``. The two pack grant misses are asserted
-    as a direct abstain before those keys are dropped.
+    ``reconfirm``, ``abstain_reason``. A rule answer's ``route`` and ``lane``
+    are aligned to the live rung only when that rung matches ``served_route``.
+    The two pack grant misses are asserted as a direct abstain before those
+    keys are dropped.
     """
     _pin_capture_day(monkeypatch)
     db = tmp_path / "flag52.duckdb"
@@ -345,7 +373,7 @@ def test_flag_off_executing_matches_main_except_row_order_and_checker(
             continue
         if got_row["id"] in _DIRECT_GRANT:
             _assert_direct_grant(got, got_row["id"])
-        hit = flag_off_problems(main, got)
+        hit = flag_off_problems(_align_rule_stamp(main, got), got)
         if hit:
             problems.append(f"{got_row['id']}: {hit}")
         shadow = got.get("served_check_shadow")
@@ -375,7 +403,9 @@ def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
         if row["id"] in _DIRECT_GRANT:
             _assert_direct_grant(row["env"], row["id"])
         compared_live.append(row)
-        compared_golden.append(gold)
+        compared_golden.append(
+            {"id": gold["id"], "env": _align_rule_stamp(gold["env"], row["env"])}
+        )
     left = dump_rows(_stable_rows(compared_live))
     right = dump_rows(_stable_rows(compared_golden))
     if left != right:
@@ -390,7 +420,8 @@ def test_flag_off_envelopes_match_f9ffc3e1_except_shadow(
     for row in live:
         env = row["env"]
         shadow = env.get(_SHADOW)
-        if env.get("badge") == "L2_VALIDATED" and env.get("route") == "generated":
+        kind = route_class(env.get("route"))
+        if env.get("badge") == "L2_VALIDATED" and kind in {"compile", "ladder", "ai"}:
             served += 1
             assert isinstance(shadow, dict), row["id"]
             assert shadow.get("checker_version")
