@@ -23,6 +23,7 @@ write. Upgrade: a second file snapshot if that pause is too long.
 from __future__ import annotations
 
 import contextvars
+import math
 import os
 import threading
 import time
@@ -67,6 +68,11 @@ DEFAULT_SERVING_LEASE_RESERVE_S = 0.55
 #: so the interrupt fires by about 7.15s, before 7.3s. The same probes with
 #: the margin put back to 0.2s: p50=7.867s p95=7.917s max=7.973s, over 7.5s.
 DEFAULT_SERVING_DEADLINE_DELIVER_S = 0.90
+#: Whole-ask clock. Not the per-leg HTTP timeout (that stays 8s).
+#: ``DMS_SERVING_DEADLINE_S``. Default is call-cap generates plus one
+#: ontology GET, each at the 8s leg, plus the 0.55s local reserve:
+#: (2 + 1) * 8.0 + 0.55 = 24.55. Invalid values fall back. Ceiling 120s.
+SERVING_DEADLINE_CEILING_S = 120.0
 
 _INGEST_WAIT_ENV = "DMS_LAKE_INGEST_WAIT_S"
 _LEASE_CAP_ENV = "DMS_LAKE_SERVING_LEASE_CAP"
@@ -74,6 +80,7 @@ _LEASE_WAIT_ENV = "DMS_LAKE_SERVING_LEASE_WAIT_S"
 _LEASE_QUEUE_ENV = "DMS_LAKE_SERVING_LEASE_QUEUE_MAX"
 _LEASE_RESERVE_ENV = "DMS_LAKE_SERVING_LEASE_RESERVE_S"
 _DEADLINE_DELIVER_ENV = "DMS_LAKE_SERVING_DEADLINE_DELIVER_S"
+_SERVING_DEADLINE_ENV = "DMS_SERVING_DEADLINE_S"
 _serving_block: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "dms_serving_lease_block",
     default=None,
@@ -173,6 +180,44 @@ def serving_lease_queue_max() -> int:
 def serving_lease_reserve_s() -> float:
     """Time left for model, SQL, and the check after a lease is granted."""
     return _env_float(_LEASE_RESERVE_ENV, DEFAULT_SERVING_LEASE_RESERVE_S)
+
+
+def default_serving_deadline_s() -> float:
+    """Ladder plus two readings: cap generates, one ontology GET, local reserve.
+
+    The per-question call cap is not an input. A raised cap does not stretch
+    this default, and this default does not raise the cap.
+    """
+    from cortex_client.compute import (
+        INSIGHTS_ASK_TIMEOUT_SECONDS,
+        INSIGHTS_CALL_CAP_DEFAULT,
+    )
+
+    return (
+        (INSIGHTS_CALL_CAP_DEFAULT + 1) * INSIGHTS_ASK_TIMEOUT_SECONDS
+        + DEFAULT_SERVING_LEASE_RESERVE_S
+    )
+
+
+def serving_deadline_s() -> float:
+    """``DMS_SERVING_DEADLINE_S``. Unset, empty, or not a positive number uses the default.
+
+    Above ``SERVING_DEADLINE_CEILING_S`` clamps to the ceiling. The per-leg
+    Insights timeout and the call cap are separate.
+    """
+    default = default_serving_deadline_s()
+    raw = os.environ.get(_SERVING_DEADLINE_ENV)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value) or value <= 0:
+        return default
+    if value > SERVING_DEADLINE_CEILING_S:
+        return SERVING_DEADLINE_CEILING_S
+    return value
 
 
 def serving_deadline_deliver_s() -> float:

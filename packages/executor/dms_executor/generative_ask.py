@@ -1822,6 +1822,7 @@ def maybe_generative_ask(
     demo_ontology_allowed: bool = True,
     dialect: str | None = None,
     embedder: Callable[[list[str]], Any] | None = None,
+    demo_gate: bool = True,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -1871,7 +1872,9 @@ def maybe_generative_ask(
             question=q,
         )
     dialect = resolved
-    if is_uncertified_paraphrase(q):
+    # Armed product asks pass demo_gate=False. The planted paraphrase list
+    # stays in front of test fakes; it does not abstain a CortexClient ask.
+    if demo_gate and is_uncertified_paraphrase(q):
         return _abstain(
             q, "uncertified paraphrase: not a generative certify boundary",
             space_id=space_id, session_id=session_id,

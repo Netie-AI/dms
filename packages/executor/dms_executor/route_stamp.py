@@ -29,7 +29,7 @@ ROUTES = (
 )
 
 # Rungs freeze_route writes beside a closed route.
-RUNGS = frozenset({"l0", "l1", "compile", "generate_sql"})
+RUNGS = frozenset({"l0", "l1", "compile", "ladder", "generate_sql"})
 
 # Stages the builders pass to stamp_abstain, including a route string used as
 # the stage (sql_refusal_envelope, reserved_as_of_abstain). A new builder
@@ -68,8 +68,29 @@ _PROFILES: dict[str, tuple[str, bool]] = {
     ROUTE_VERIFIED: ("l0", False),
     ROUTE_L1: ("l1", False),
     ROUTE_COMPILE: ("compile", False),
-    ROUTE_LADDER: ("compile", False),
+    ROUTE_LADDER: ("ladder", False),
     ROUTE_MODEL: ("generate_sql", True),
+}
+
+# Customer route and served_route use different tokens for one path.
+_ROUTE_CLASS = {
+    "generated": "ai",
+    "model": "ai",
+    "generate_sql": "ai",
+    "model_sql": "ai",
+    "ai": "ai",
+    "ontology_compile": "compile",
+    "compile": "compile",
+    "ontology_ranking": "compile",
+    "ontology_plan": "compile",
+    "ladder_rung": "ladder",
+    "ladder": "ladder",
+    "l1": "l1",
+    "l1_governed_metric": "l1",
+    "governed_metric": "l1",
+    "verified_query": "l0",
+    "l0": "l0",
+    "l0_certified": "l0",
 }
 
 # Producer plan_origin tokens that name model SQL.
@@ -139,6 +160,11 @@ def stamp_abstain(
     return env
 
 
+def route_class(token: object) -> str:
+    """Class of a customer route or a served_route token. Empty when unknown."""
+    return _ROUTE_CLASS.get(str(token or "").strip().lower(), "")
+
+
 def stamp_route(
     env: dict[str, Any] | None,
     route: str,
@@ -154,6 +180,9 @@ def stamp_route(
     rung, _needs_model = _PROFILES[route]
     env["served_route"] = route
     env["ladder_rung"] = rung
+    # A rule path built these rows. "generated" would claim the model did.
+    if route != ROUTE_MODEL and env.get("route") == "generated":
+        env["route"] = rung
     return env
 
 

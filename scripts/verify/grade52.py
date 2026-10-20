@@ -76,6 +76,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -164,10 +165,24 @@ _RULE_STAMPS = {
     "l1": "L1",
     "l1_governed_metric": "L1",
     "compile": "compile",
+    "ladder": "ladder",
+    "ladder_rung": "ladder",
     "oracle": "oracle",
 }
 _AI_STAMPS = frozenset({"generate_sql", "model_sql", "ai"})
-_RULE_PATHS = frozenset({"L0", "L1", "compile", "oracle"})
+_RULE_PATHS = frozenset({"L0", "L1", "compile", "ladder", "oracle"})
+# OpenVault per-caller cap. The armed pacer stays under both. It does not raise them.
+_OV_REQ_PER_MIN = 20
+_OV_TOK_PER_MIN = 40_000
+_ABSTAIN_PART_BUCKETS = {
+    BUCKET_RECONFIRM: "reconfirm",
+    BUCKET_REFUSAL_OK: "refusal_ok",
+    BUCKET_GOLD_BROKEN: "gold_broken",
+    BUCKET_ABSTAIN: "abstain",
+    BUCKET_EMPTY: "empty_gold",
+}
+_ABSTAIN_PARTS = ("reconfirm", "refusal_ok", "gold_broken", "abstain", "empty_gold", "other")
+_PATH_DETAIL = ("L0", "L1", "compile", "ladder", "oracle")
 # Ontology compile is a rule path. A model name on the same envelope does not
 # overturn it. ``ontology_compile:*`` notes use the same prefix.
 _ONTOLOGY_COMPILE = frozenset({"ontology_ranking", "ontology_plan", "ontology_compile"})
@@ -805,6 +820,25 @@ def served_route(env: Mapping[str, Any], model_sql: str | None = None) -> str:
     return path_group(serve_path(env, model_sql))
 
 
+def _model_call_count(env: Mapping[str, Any]) -> int:
+    """Generate posts recorded on the envelope. Missing counts as a first try."""
+    raw = env.get("model_calls")
+    if isinstance(raw, bool):
+        return 0
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, dict):
+        total = raw.get("total")
+        if isinstance(total, int) and not isinstance(total, bool):
+            return total
+    return 0
+
+
+def _pin_mismatch(requested: str, served: str) -> bool:
+    """True when both sides are set and they differ. A missing request is not a mismatch."""
+    return bool(requested) and bool(served) and requested != served
+
+
 def grade_case(
     *,
     gold: list[dict[str, Any]] | None,
@@ -836,6 +870,7 @@ def grade_case(
         "abstain_code": code,
         "as_of": as_of,
         "served_n": served_n,
+        "model_calls": _model_call_count(env),
     }
     if _reconfirm_offer(env):
         return {**base, "bucket": BUCKET_RECONFIRM, "reason": "reconfirm", "answered": False}
@@ -1203,12 +1238,16 @@ def grade_envelopes(
     flagged = set(pack_gold_served_ids(questions, oracles))
     by_id: dict[str, Any] = {}
     model_sql_by_id: dict[str, str | None] = {}
+    served_by_id: dict[str, Mapping[str, Any]] = {}
     for item in envelopes:
         key = str(item.get("id"))
         if key in by_id:
             raise SystemExit(f"grade52: duplicate envelope for {key}")
         by_id[key] = item.get("env")
         model_sql_by_id[key] = _record_model_sql(item)
+        block = item.get("served")
+        if isinstance(block, Mapping):
+            served_by_id[key] = block
     folder = warehouse_dir or Path(tempfile.mkdtemp(prefix="grade52-"))
     con, as_of, _path = _open_warehouse(folder)
     cases: list[dict[str, Any]] = []
@@ -1239,6 +1278,14 @@ def grade_envelopes(
             )
             row["id"] = qid
             row["pack_gold_served"] = qid in flagged
+            block = served_by_id.get(qid) or {}
+            row["model_requested"] = _stamp_text(block, "model_requested") or _stamp_text(
+                env, "model_requested"
+            )
+            row["served_model"] = _stamp_text(block, "served_model") or _stamp_text(
+                env, "served_model"
+            )
+            row["pin_mismatch"] = _pin_mismatch(row["model_requested"], row["served_model"])
             cases.append(row)
     finally:
         con.close()
@@ -1379,10 +1426,44 @@ def route_split(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def abstain_part_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Buckets among cases whose served route is abstain. They add up to that count."""
+    counts = {key: 0 for key in _ABSTAIN_PARTS}
+    for item in cases:
+        if str(item.get("served_route") or "") != "abstain":
+            continue
+        name = _ABSTAIN_PART_BUCKETS.get(str(item.get("bucket") or ""))
+        counts[name or "other"] += 1
+    return counts
+
+
 def split_line(report: Mapping[str, Any]) -> str:
     counts = route_split(report["cases"])
     parts = " ".join(f"{key}={counts[key]}" for key in SERVED_ROUTES)
-    return f"split {parts} n={len(report['cases'])}"
+    breakdown = abstain_part_counts(report["cases"])
+    shown = [key for key in _ABSTAIN_PARTS if breakdown[key] or key != "other"]
+    tail = " ".join(f"{key}={breakdown[key]}" for key in shown)
+    return f"split {parts} n={len(report['cases'])} abstain_parts {tail}"
+
+
+def tries_line(cases: Sequence[Mapping[str, Any]]) -> str:
+    """Correct on the first generate, and correct only after a retry. Mismatches are out."""
+    first = 0
+    retry = 0
+    for item in cases:
+        if item.get("bucket") != BUCKET_CORRECT or item.get("pin_mismatch"):
+            continue
+        if int(item.get("model_calls") or 0) > 1:
+            retry += 1
+        else:
+            first += 1
+    return f"tries correct_first={first} correct_retry={retry}"
+
+
+def not_scored_line(cases: Sequence[Mapping[str, Any]]) -> str:
+    """Served model differs from the requested pin. Not in the tries counts."""
+    mismatched = sum(1 for item in cases if item.get("pin_mismatch"))
+    return f"not_scored pin_mismatch={mismatched}"
 
 
 def summary_line(report: Mapping[str, Any]) -> str:
@@ -1419,8 +1500,8 @@ def path_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     served = _zero_paths()
     contradictions = 0
     detail = {
-        "correct": {key: 0 for key in ("L0", "L1", "compile", "oracle")},
-        "served": {key: 0 for key in ("L0", "L1", "compile", "oracle")},
+        "correct": {key: 0 for key in _PATH_DETAIL},
+        "served": {key: 0 for key in _PATH_DETAIL},
     }
     for item in cases:
         path = str(item.get("serve_path") or "unattributed")
@@ -1522,7 +1603,7 @@ def risk_line(report: Mapping[str, Any]) -> str:
 
 def _path_side(block: Mapping[str, int], detail: Mapping[str, int]) -> str:
     parts = [f"ai={block['ai']}", f"rule={block['rule']}"]
-    for key in ("L0", "L1", "compile", "oracle"):
+    for key in _PATH_DETAIL:
         count = int(detail.get(key) or 0)
         if count:
             parts.append(f"{key}={count}")
@@ -2057,7 +2138,12 @@ def _model_reported(payload: Mapping[str, Any]) -> bool:
     )
 
 
-def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, Any]:
+def _served_block(
+    env: Mapping[str, Any],
+    payloads: Sequence[Any],
+    *,
+    model_requested: str = "",
+) -> dict[str, Any]:
     """Per question: served route, model SQL, rows, answer text, Insights reason."""
     from cortex_client.compute import insights_fail_reason, insights_query_sql
 
@@ -2083,6 +2169,7 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
         "row_count": len(rows) if isinstance(rows, list) else None,
         "text": env.get("text"),
         "served_model": env.get("served_model"),
+        "model_requested": model_requested,
         "insights_calls": calls,
         "model_reported": reported,
         "insights_fail": fail,
@@ -2099,6 +2186,93 @@ def _detail_code(res: Any, api_key: str) -> str:
     detail = body.get("detail") if isinstance(body, dict) else None
     code = detail.get("code") if isinstance(detail, dict) else detail
     return redact_secrets(str(code or ""), api_key)[:120]
+
+
+def _pace_int(name: str, default: int, ceiling: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        value = default
+    else:
+        try:
+            value = int(str(raw).strip())
+        except ValueError:
+            value = default
+    if value < 1:
+        value = default
+    return min(value, ceiling)
+
+
+def pace_plan(
+    req_per_min: int | None = None,
+    tok_per_min: int | None = None,
+    reserve: int | None = None,
+) -> tuple[int, float]:
+    """Requests per minute, and seconds between them. Both stay under the OV caps.
+
+    Defaults are 18 req/min and 36000 tok/min with a 2000-token reserve, so the
+    gap is 60/18 seconds. A requested rate at or above the cap is clamped under it.
+    """
+    if req_per_min is None:
+        req = _pace_int("DMS_GRADE52_REQ_PER_MIN", 18, _OV_REQ_PER_MIN - 1)
+    else:
+        req = min(max(1, req_per_min), _OV_REQ_PER_MIN - 1)
+    if tok_per_min is None:
+        tok = _pace_int("DMS_GRADE52_TOK_PER_MIN", 36_000, _OV_TOK_PER_MIN - 1)
+    else:
+        tok = min(max(1, tok_per_min), _OV_TOK_PER_MIN - 1)
+    if reserve is None:
+        reserve = _pace_int("DMS_GRADE52_TOKEN_RESERVE", 2000, tok)
+    else:
+        reserve = min(max(1, reserve), tok)
+    per_min = max(1, min(req, max(1, tok // reserve)))
+    return per_min, 60.0 / per_min
+
+
+def pace_backoff_s(attempt: int) -> float:
+    """429 wait. ``attempt`` is 1-based. Doubles from 2s and stops at 60s."""
+    step = attempt if attempt >= 1 else 1
+    return min(60.0, 2.0 * (2 ** (step - 1)))
+
+
+class _ArmedPacer:
+    """One armed run, one gap. Sequential so two asks cannot share a minute slot."""
+
+    def __init__(self) -> None:
+        self.per_min, self.interval = pace_plan()
+        self._next = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        # The OV cap is the live armed run. Pytest's fake Cortex is not that cap,
+        # and a 3s gap on every fake request does not fit the CI job.
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next - now
+            if delay > 0:
+                time.sleep(delay)
+            self._next = time.monotonic() + self.interval
+
+
+def _install_pacer(pacer: _ArmedPacer) -> Any:
+    """Pace every httpx client request for this armed run. Caller restores it."""
+    import httpx
+
+    original = httpx.Client.request
+
+    def request(self: Any, method: str, url: str, *args: Any, **kwargs: Any) -> Any:
+        attempt = 0
+        while True:
+            pacer.wait()
+            response = original(self, method, url, *args, **kwargs)
+            if getattr(response, "status_code", None) != 429 or attempt >= 4:
+                return response
+            attempt += 1
+            time.sleep(pace_backoff_s(attempt))
+
+    httpx.Client.request = request  # type: ignore[method-assign]
+    return original
 
 
 def _armed_ask(
@@ -2151,6 +2325,11 @@ def _armed_ask(
     app.dependency_overrides[get_settings] = lambda: settings
     client = TestClient(app)
     records: list[dict[str, Any]] = []
+    from cortex_client.strict_pin import pin_config
+
+    requested_model = pin_config().model
+    pacer = _ArmedPacer()
+    original_request = _install_pacer(pacer)
     try:
         for question in questions:
             qid = str(question["id"])
@@ -2171,12 +2350,21 @@ def _armed_ask(
             env = res.json()
             if not isinstance(env, dict) or not isinstance(env.get("rows"), list):
                 raise _fail(qid, "envelope has no rows")
-            record = {"id": qid, "env": env, "served": _served_block(env, cortex.payloads)}
+            record = {
+                "id": qid,
+                "env": env,
+                "served": _served_block(
+                    env, cortex.payloads, model_requested=requested_model
+                ),
+            }
             why = armed_violation(record, stub)
             if why:
                 raise _fail(qid, why)
             records.append(record)
     finally:
+        import httpx
+
+        httpx.Client.request = original_request  # type: ignore[method-assign]
         cortex.close()
     if len(records) != 52:
         raise SystemExit(f"grade52 armed: FAIL capture size {len(records)} != 52")
@@ -2293,6 +2481,8 @@ def _finish(
     print(prefix + paths_line(rolls))
     print(prefix + risk_line(report))
     print(prefix + split_line(report))
+    print(prefix + tries_line(report["cases"]))
+    print(prefix + not_scored_line(report["cases"]))
     if report.get("baseline"):
         print(prefix + baseline_line(report["baseline"]))
     print(f"{prefix}artifact: {path}")
@@ -2894,6 +3084,56 @@ def self_test() -> dict[str, str]:
     )
     if same_measure["reason"] == "wrong measure":
         raise SystemExit(f"self-test: the same aggregate was a wrong measure {same_measure}")
+
+    first = {
+        "bucket": BUCKET_CORRECT,
+        "served_route": "ai",
+        "model_calls": 1,
+        "pin_mismatch": False,
+    }
+    retried = {
+        "bucket": BUCKET_CORRECT,
+        "served_route": "ai",
+        "model_calls": 2,
+        "pin_mismatch": False,
+    }
+    mismatched = {
+        "bucket": BUCKET_CORRECT,
+        "served_route": "ai",
+        "model_calls": 1,
+        "pin_mismatch": True,
+        "model_requested": "openai/gpt-oss-120b",
+        "served_model": "openai/gpt-oss-20b",
+    }
+    abstained = {
+        "bucket": BUCKET_ABSTAIN,
+        "served_route": "abstain",
+        "model_calls": 0,
+    }
+    refused = {
+        "bucket": BUCKET_REFUSAL_OK,
+        "served_route": "abstain",
+        "model_calls": 0,
+    }
+    sample = [first, retried, mismatched, abstained, refused]
+    if tries_line(sample) != "tries correct_first=1 correct_retry=1":
+        raise SystemExit(f"self-test: tries line drifted ({tries_line(sample)})")
+    if not_scored_line(sample) != "not_scored pin_mismatch=1":
+        raise SystemExit("self-test: pin mismatch was scored")
+    parts = abstain_part_counts(sample)
+    if parts["abstain"] + parts["refusal_ok"] != 2 or sum(parts.values()) != 2:
+        raise SystemExit(f"self-test: abstain parts do not add up ({parts})")
+    per_min, gap = pace_plan(18, 36_000, 2000)
+    if per_min >= _OV_REQ_PER_MIN or per_min != 18 or abs(gap - (60.0 / 18)) > 1e-9:
+        raise SystemExit(f"self-test: pacer is not under the cap ({per_min}, {gap})")
+    if pace_plan(100, 80_000, 2000)[0] >= _OV_REQ_PER_MIN:
+        raise SystemExit("self-test: pacer accepted a rate at the cap")
+    if pace_backoff_s(1) != 2 or pace_backoff_s(2) != 4 or pace_backoff_s(8) != 60:
+        raise SystemExit("self-test: 429 backoff drifted")
+    if _pin_mismatch("", "openai/gpt-oss-20b") or not _pin_mismatch(
+        "openai/gpt-oss-120b", "openai/gpt-oss-20b"
+    ):
+        raise SystemExit("self-test: pin mismatch rule drifted")
 
     print("self-test ok")
     print(
