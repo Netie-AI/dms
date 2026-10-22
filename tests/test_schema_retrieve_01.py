@@ -822,6 +822,7 @@ def test_two_asks_on_different_spaces_do_not_cross(
                 ledger_append=lambda _payload: None,
                 space_id=space,
                 session_id=space,
+                dialect="duckdb",
             )
             if env is None:
                 raise AssertionError(space)
@@ -897,6 +898,7 @@ def test_flag_off_calls_no_schema_function(
         submit=lambda _sql: None,
         ledger_append=lambda _payload: None,
         space_id="space-off",
+        dialect="duckdb",
     )
     assert called == []
     assert "schema_context" not in seen["ctx"]
@@ -1740,6 +1742,7 @@ def test_index_pending_ask_uses_catalog_only(
         ledger_append=lambda _payload: None,
         space_id="space-pending",
         session_id="sess-pending",
+        dialect="duckdb",
     )
     assert env is not None
     assert env["index_stamp"] == "index_pending"
@@ -1765,7 +1768,7 @@ def test_index_failed_stamp_on_envelope_and_attempt(
 
     monkeypatch.setattr("dms_executor.schema_context._bounded_read", _boom)
     assert (
-        build_space_index(serving, "space-failed", {"person"})
+        build_space_index(serving, "space-failed", {"person"}, "duckdb")
         == "index_failed:RuntimeError"
     )
     onto = Ontology()
@@ -1781,6 +1784,7 @@ def test_index_failed_stamp_on_envelope_and_attempt(
         ledger_append=lambda _payload: None,
         space_id="space-failed",
         session_id="sess-failed",
+        dialect="duckdb",
     )
     assert env is not None
     assert env["index_stamp"] == "index_failed:RuntimeError"
@@ -1811,9 +1815,9 @@ def test_three_hundred_table_shortlist_p95_under_two_seconds(
     rows_read = 0
     real_read = schema_mod._bounded_read
 
-    def _counting(con: Any, table: str, column: str, limit: int) -> list[str]:
+    def _counting(con: Any, table: str, column: str, limit: int, **kwargs: Any) -> list[str]:
         nonlocal rows_read
-        got = real_read(con, table, column, limit)
+        got = real_read(con, table, column, limit, **kwargs)
         rows_read += len(got)
         return got
 

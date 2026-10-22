@@ -65,7 +65,12 @@ ONTOLOGY_MODE = "ontology_plan"
 PLAN_SOURCES = frozenset({"ontology_plan", "bind_plan", "other"})
 PLAN_ORIGIN_GENERATE_SQL = "generate_sql"
 PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
-PLAN_ORIGINS = frozenset({PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING})
+#: DMS's own multi-grain compile (where-paths + importance). Served in place of
+#: any generate SQL, so it never carries the generate origin or a served model.
+PLAN_ORIGIN_ONTOLOGY_COMPILE = "ontology_compile"
+PLAN_ORIGINS = frozenset(
+    {PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING, PLAN_ORIGIN_ONTOLOGY_COMPILE}
+)
 INSIGHTS_REACHED = "insights_reached"
 INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
 #: Product-lane Insights bound. Not CortexClient's 120s contract timeout and
@@ -1138,8 +1143,11 @@ def _run_insights_legs(
     from cortex_client.qualifiers import retry_plan_covers_qualifiers
 
     legs: list[dict[str, Any]] = []
-    # ponytail: counts this compute call's model calls. One compute per ask
-    # today (maybe_generative_ask). A second compute seam per ask must share it.
+    # ponytail: this snapshot is one compute_insights. The ask path does not
+    # use it as a second cap. AskCallBudget in the extract loop is the one
+    # cap for both readings and their retries, and it stops before another
+    # compute is sent. Upgrade: thread the ask budget into this check when
+    # a second seam can call compute_insights without that budget.
     calls_before = recorded_model_calls()
     cap = insights_call_cap() if call_cap is None else call_cap
 
@@ -1420,6 +1428,7 @@ __all__ = [
     "ONTOLOGY_MODE",
     "PLAN_ORIGINS",
     "PLAN_ORIGIN_GENERATE_SQL",
+    "PLAN_ORIGIN_ONTOLOGY_COMPILE",
     "PLAN_ORIGIN_ONTOLOGY_RANKING",
     "PLAN_SOURCES",
     "SERVED_LEG_KEYS",

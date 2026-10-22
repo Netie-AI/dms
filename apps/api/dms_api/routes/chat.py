@@ -139,6 +139,13 @@ class AskBody(BaseModel):
 _HARNESS_ASK_PATHS = frozenset({"exact", "generative"})
 
 
+class ConfirmBody(BaseModel):
+    """Yes re-asks the suggested question. No declines it."""
+
+    token: str = Field(min_length=1)
+    yes: bool | Literal["yes", "no"]
+
+
 class DrillthroughBody(BaseModel):
     token: str = Field(min_length=1)
 
@@ -173,7 +180,7 @@ def _space_refusal_envelope(
 
     where = f"in {space_name}" if space_name else "in this Space"
     subject = f"{missing_table} data" if missing_table else "data"
-    return build_validated_envelope(
+    out = build_validated_envelope(
         answer_id=f"ans_refused_{space_id[:8]}",
         text=(
             f"I can't answer that {where}. It needs {subject}, which this Space "
@@ -186,6 +193,22 @@ def _space_refusal_envelope(
         space_id=space_id,
         session_id=session_id,
     )
+    # Space boundary is an ungranted table. It stays a direct abstain.
+    out["abstain_reason"] = "ungranted"
+    return out
+
+
+def _release(env: dict[str, Any]) -> dict[str, Any]:
+    """Scrub ungranted names from an envelope ``live_ask`` did not build.
+
+    ``live_ask`` scrubs its own envelope as its last step, with the grant
+    set its turn resolved. These envelopes have no turn, so nothing is
+    granted: every relation a grant check named is dropped. An answer's
+    text and SQL are left as built. Opens no connection.
+    """
+    from dms_api.wiring import scrub_ask_envelope
+
+    return scrub_ask_envelope(env)
 
 
 def _stamp_demo_fallback(env: dict[str, Any], note: str) -> dict[str, Any]:
@@ -315,6 +338,7 @@ def chat_ask(
             ask=ask,
             request=request,
         )
+        env = _offer_reconfirm(ask, env, body, cortex)
     except Exception as exc:
         record_ask(
             audit,
@@ -338,6 +362,120 @@ def chat_ask(
     return env
 
 
+def _choice_yes(value: bool | str) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().casefold() == "yes"
+
+
+def _offer_reconfirm(
+    ask: AskServicePort, env: dict[str, Any], body: AskBody, cortex: Any
+) -> dict[str, Any]:
+    offer = getattr(ask, "offer_reconfirm", None)
+    if not callable(offer):
+        return env
+    return offer(
+        env,
+        question=body.question,
+        space_id=body.space_id,
+        session_id=body.session_id,
+        tables=body.grounded_tables,
+        ask_path=body.ask_path,
+        cortex=cortex,
+    )
+
+
+def _map_live_exception(
+    exc: Exception,
+    *,
+    settings: Settings,
+    store: SpaceStorePort,
+    ask: AskServicePort,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+    grounded_tables: list[str] | None,
+) -> dict[str, Any]:
+    """The /ask error map. Returns an envelope or raises the HTTP error."""
+    if isinstance(exc, GroundingRefused):
+        # Refusing is the fix, not the failure: this used to widen the manifest
+        # to the whole demo warehouse while the UI read "Grounded in 1 file".
+        # Demo fallback must not catch this either — answering from demo numbers
+        # after refusing the requested scope is the same lie in a new costume.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": exc.code,
+                "message": exc.message,
+                "ungrantable_tables": list(exc.ungrantable),
+                "grantable_tables": list(exc.grantable),
+            },
+        ) from exc
+    if isinstance(exc, AskServiceError):
+        # A grounded question that needs a table the user did not tick is not a
+        # failure — it is the scope working. Saying so beats handing back
+        # "path_not_allowed: table 'alerts' is not named by this manifest",
+        # which reads as a bug rather than as the answer to what was asked.
+        if exc.code == "path_not_allowed" and grounded_tables:
+            missing = _missing_table(exc.detail)
+            chosen = ", ".join(grounded_tables)
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "outside_grounded_scope",
+                    "message": (
+                        f"That needs {missing or 'a table'}, which is not in the "
+                        f"{len(grounded_tables)} file(s) you grounded this question in "
+                        f"({chosen}). Widen the selection or clear it to use the whole Space."
+                    ),
+                    "grounded_tables": list(grounded_tables),
+                    "required_table": missing,
+                },
+            ) from exc
+
+        # The Space boundary refusing is the control working, and dms#2 requires
+        # it to arrive as an envelope with abstained: true and a reason - not as
+        # a raw "path_not_allowed / Unexpected status code: 403", which reads as
+        # a crash. This is the half of the demo that must look deliberate.
+        if exc.code == "path_not_allowed" and space_id:
+            space = store.get(space_id)
+            missing = _missing_table(exc.detail)
+            return _space_refusal_envelope(
+                space_id=space_id,
+                space_name=getattr(space, "name", None),
+                missing_table=missing,
+                session_id=session_id,
+            )
+
+        # Never mask policy refusals with demo numbers (0 confidently wrong).
+        if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
+            logger.warning("live ask failed (%s); demo fallback", exc.code)
+            env = ask.demo_ask(question, space_id=space_id)
+            return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
+        raise HTTPException(
+            status_code=_status_for(exc.code, exc.detail),
+            detail={"code": exc.code, "message": exc.detail or exc.code},
+        ) from exc
+    if settings.dms_demo_fallback:
+        logger.warning("live ask failed: %s; demo fallback", exc)
+        env = ask.demo_ask(question, space_id=space_id)
+        return _stamp_demo_fallback(env, "fallback — live ask failed")
+    # A slow engine and a broken one are different answers. 504 tells the
+    # caller to try again; 503 says the dependency is out. The launcher
+    # prints "Cortex ok" the moment /health responds, which is before the
+    # first submit can actually complete, so on a cold start this branch is
+    # reached by a timeout more often than by a real outage.
+    timed_out = _looks_like_timeout(str(exc), type(exc).__name__)
+    raise HTTPException(
+        status_code=504 if timed_out else 503,
+        detail={
+            "code": "live_ask_timeout" if timed_out else "live_ask_failed",
+            "message": str(exc)[:400],
+            "retryable": timed_out,
+        },
+    ) from exc
+
+
 def _answer_ask(
     body: AskBody,
     decision: Any,
@@ -356,7 +494,7 @@ def _answer_ask(
             raise HTTPException(status_code=403, detail=decision.reason)
         env = ask.demo_ask(body.question, space_id=body.space_id)
         env["ask_mode"] = "demo"
-        return env
+        return _release(env)
 
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
@@ -364,7 +502,7 @@ def _answer_ask(
     if cortex is None:
         if settings.dms_demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _stamp_demo_fallback(env, "fallback — Cortex client missing")
+            return _release(_stamp_demo_fallback(env, "fallback — Cortex client missing"))
         raise HTTPException(
             status_code=503,
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},
@@ -375,6 +513,7 @@ def _answer_ask(
     task = _arm_client_disconnect(request, watch[1]) if watch is not None else None
     try:
         try:
+            # live_ask scrubs its own envelope with its turn's grant set.
             return ask.live_ask(
                 body.question,
                 space_id=body.space_id,
@@ -382,90 +521,124 @@ def _answer_ask(
                 tables=body.grounded_tables,
                 ask_path=body.ask_path,
             )
-        except GroundingRefused as exc:
-            # Refusing is the fix, not the failure: this used to widen the manifest
-            # to the whole demo warehouse while the UI read "Grounded in 1 file".
-            # Demo fallback must not catch this either — answering from demo numbers
-            # after refusing the requested scope is the same lie in a new costume.
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": exc.code,
-                    "message": exc.message,
-                    "ungrantable_tables": list(exc.ungrantable),
-                    "grantable_tables": list(exc.grantable),
-                },
-            ) from exc
-        except AskServiceError as exc:
-            # A grounded question that needs a table the user did not tick is not a
-            # failure — it is the scope working. Saying so beats handing back
-            # "path_not_allowed: table 'alerts' is not named by this manifest",
-            # which reads as a bug rather than as the answer to what was asked.
-            if exc.code == "path_not_allowed" and body.grounded_tables:
-                missing = _missing_table(exc.detail)
-                chosen = ", ".join(body.grounded_tables)
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "code": "outside_grounded_scope",
-                        "message": (
-                            f"That needs {missing or 'a table'}, which is not in the "
-                            f"{len(body.grounded_tables)} file(s) you grounded this question in "
-                            f"({chosen}). Widen the selection or clear it to use the whole Space."
-                        ),
-                        "grounded_tables": list(body.grounded_tables),
-                        "required_table": missing,
-                    },
-                ) from exc
-
-            # The Space boundary refusing is the control working, and dms#2 requires
-            # it to arrive as an envelope with abstained: true and a reason - not as
-            # a raw "path_not_allowed / Unexpected status code: 403", which reads as
-            # a crash. This is the half of the demo that must look deliberate.
-            if exc.code == "path_not_allowed" and body.space_id:
-                space = store.get(body.space_id)
-                missing = _missing_table(exc.detail)
-                return _space_refusal_envelope(
-                    space_id=body.space_id,
-                    space_name=getattr(space, "name", None),
-                    missing_table=missing,
-                    session_id=body.session_id,
-                )
-
-            # Never mask policy refusals with demo numbers (0 confidently wrong).
-            if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
-                logger.warning("live ask failed (%s); demo fallback", exc.code)
-                env = ask.demo_ask(body.question, space_id=body.space_id)
-                return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
-            raise HTTPException(
-                status_code=_status_for(exc.code, exc.detail),
-                detail={"code": exc.code, "message": exc.detail or exc.code},
-            ) from exc
         except Exception as exc:  # noqa: BLE001
-            if settings.dms_demo_fallback:
-                logger.warning("live ask failed: %s; demo fallback", exc)
-                env = ask.demo_ask(body.question, space_id=body.space_id)
-                return _stamp_demo_fallback(env, "fallback — live ask failed")
-            # A slow engine and a broken one are different answers. 504 tells the
-            # caller to try again; 503 says the dependency is out. The launcher
-            # prints "Cortex ok" the moment /health responds, which is before the
-            # first submit can actually complete, so on a cold start this branch is
-            # reached by a timeout more often than by a real outage.
-            timed_out = _looks_like_timeout(str(exc), type(exc).__name__)
-            raise HTTPException(
-                status_code=504 if timed_out else 503,
-                detail={
-                    "code": "live_ask_timeout" if timed_out else "live_ask_failed",
-                    "message": str(exc)[:400],
-                    "retryable": timed_out,
-                },
-            ) from exc
+            return _release(
+                _map_live_exception(
+                    exc,
+                    settings=settings,
+                    store=store,
+                    ask=ask,
+                    question=body.question,
+                    space_id=body.space_id,
+                    session_id=body.session_id,
+                    grounded_tables=body.grounded_tables,
+                )
+            )
     finally:
         _stop_client_disconnect(task)
         if watch is not None:
             end = getattr(ask, "end_client_watch", None)
             if callable(end):
                 end(watch[0])
+
+
+@router.post("/ask/confirm")
+def chat_ask_confirm(
+    body: ConfirmBody,
+    settings: SettingsDep,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+    audit: AskAuditDep,
+    request: Request,
+) -> dict[str, Any]:
+    """Yes re-runs the suggested question. No logs a pipeline-failure ticket."""
+    take_executed(ask)
+    decision = compliance_gate(
+        action="chat.ask",
+        metadata={"token": body.token[:12], "task_id": "chat.ask"},
+        client=cortex,
+    )
+    if not decision.allowed and decision.reason not in _SOFT_GATE:
+        raise HTTPException(status_code=403, detail=decision.reason)
+    confirm = getattr(ask, "confirm_reconfirm", None)
+    if not callable(confirm):
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "reconfirm_unsupported", "message": "this ask service has no confirm"},
+        )
+    path_of = getattr(ask, "reconfirm_ask_path", None)
+    stored_path = path_of(body.token) if callable(path_of) else None
+    pending_of = getattr(ask, "reconfirm_pending", None)
+    pending = pending_of(body.token) if callable(pending_of) else None
+    pending = pending if isinstance(pending, dict) else {}
+    grounded = pending.get("tables")
+    grounded_tables = list(grounded) if isinstance(grounded, list) else None
+    if stored_path in _HARNESS_ASK_PATHS and not settings.dms_harness_ask_paths:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "ask_path_not_allowed",
+                "message": (
+                    f"ask_path '{stored_path}' is a measurement lane and this server "
+                    "does not run it."
+                ),
+            },
+        )
+    asked_at = datetime.now(UTC)
+    try:
+        try:
+            env = confirm(body.token, _choice_yes(body.yes))
+        except KeyError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "reconfirm_unknown", "message": "that confirm token is unknown"},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "reconfirm_empty", "message": str(exc)},
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            # Same map as /ask. Yes re-enters live_ask, so a grounding refusal
+            # or an engine error must not become an unmapped 500.
+            env = _release(
+                _map_live_exception(
+                    exc,
+                    settings=settings,
+                    store=store,
+                    ask=ask,
+                    question=str(pending.get("question") or ""),
+                    space_id=pending.get("space_id")
+                    if isinstance(pending.get("space_id"), str)
+                    else None,
+                    session_id=pending.get("session_id")
+                    if isinstance(pending.get("session_id"), str)
+                    else None,
+                    grounded_tables=grounded_tables,
+                )
+            )
+    except Exception as exc:
+        record_ask(
+            audit,
+            settings,
+            question=str(pending.get("question") or ""),
+            space_id=pending.get("space_id") if isinstance(pending.get("space_id"), str) else None,
+            asked_at=asked_at,
+            error=exc,
+            executed=take_executed(ask),
+        )
+        raise
+    record_ask(
+        audit,
+        settings,
+        question=str(env.get("question") or ""),
+        space_id=env.get("space_id"),
+        asked_at=asked_at,
+        envelope=env,
+        executed=take_executed(ask),
+    )
+    return env
 
 
 @router.post("/drillthrough")

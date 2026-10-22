@@ -92,7 +92,11 @@ def minter() -> ManifestMinter:
 def test_chat_ask_post_ungrounded_demotes_wide_fill_ranking(
     minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """POST /v1/chat/ask with no grounded_tables — E9-02 must still fire."""
+    """POST /v1/chat/ask with no grounded_tables.
+
+    The engine SQL reads a sheet outside the default schema. The grant
+    checker refuses that before the figures can be served.
+    """
     from dms_api import settings as settings_mod
 
     settings_mod.get_settings.cache_clear()
@@ -124,10 +128,13 @@ def test_chat_ask_post_ungrounded_demotes_wide_fill_ranking(
     assert body["badge"] == "ABSTAIN"
     assert body["values"] == []
     assert body["rows"] == []
-    assert "scope conflict" in body["text"].lower()
+    # The sheet is not in the default schema and was not granted, so the
+    # ask-path checker refuses before the envelope mapper can demote.
+    assumptions = " ".join(str(item) for item in (body.get("assumptions") or []))
+    assert "sql_relation_not_granted" in assumptions
     for n in ("383,803.56", "242,755.97", "228,548.84"):
         assert n not in body["text"]
-    assert body["audit_id"] == "aud_e902_http"
+    assert body["sql_used"] is None
     assert body["drillthrough_token"] in (None, "")
     assert len(cortex.asks) == 1
 

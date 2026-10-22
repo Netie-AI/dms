@@ -2,6 +2,32 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-18 - SQL-VOTE: merge main after #421
+
+- **Base.** #421 is on main (`89aea317`). This branch merges main's tip `d1f8eeb` (that commit plus #452). `serve_gap` grant checks stay. Equal rows, one call cap, and `build_abstain` stay. Not PASS.
+
+## 2026-10-18 - SQL-VOTE: equal rows, one call cap, abstain through the builder
+
+- **Agreement.** Equal rows from two different instructions agree. The SQL does not have to match. Both statements must pass `validate_compiled_sql`, and each must read at least one granted table. `SELECT 3` does not agree.
+- **Cap.** The first reading, the second reading, and every retry share one `insights_call_cap`. A later call is not sent once the cap is spent.
+- **Abstain.** Comparison rows that do not run go through `build_abstain`. Not a raw abstain dict.
+- **Base.** DMS #421 is still open. This branch stays on `cursor/grant-struct-01`, not main. Not PASS.
+
+## 2026-10-18 - SQL-VOTE: plan-then-solve, not a reading=2 suffix
+
+- **Framing.** Reading 1 asks for one SELECT. Reading 2 asks for a JSON plan of tables, joins, measure, and filters from the ontology, then for SQL that follows that plan. A short suffix is not a second instruction. The insights body still sends `model_preference=free+normal` and has no temperature or seed, so no second model is set.
+- **Retry.** The second reading feeds back a pre-run refusal, an EXPLAIN failure, and an empty result. The next SQL still goes through `validate_compiled_sql`. Hostile SQL is not fed back.
+- **Stub.** `scripts/score_sql_vote.py --self-check` covers 10 pre-run refusals, 7 EXPLAIN failures, and 4 empty results, all marked recovered. That is not the held-out split.
+- **Harness.** `scripts/verify/sql_vote_heldout.py --live` compares n=348 against main when the Mini-Dev DBs and the route env vars are set. They are not set here. Not PASS.
+
+## 2026-10-18 - SQL-VOTE: second reading retries, equivalent SQL can agree
+
+- **Base.** DMS #421 is open. This change sits on `cursor/grant-struct-01`, not on main.
+- **Second reading.** A served model SQL is not the answer until a second reading, with a different prompt hash, returns the same rows. That reading uses the extract loop's retry budget (`MAX_SQL_RETRIES`, `insights_call_cap`) and `validate_compiled_sql`. A retry does not skip the checker.
+- **Agreement.** Normalized identical SQL plus equal rows counts, when the prompts differ. The same prompt does not count.
+- **Split.** Disagreement is a reconfirm: why, closest question, and Yes. It does not serve the number and it does not ledger it.
+- **Measure.** Held-out n=348 was not run here. No BIRD databases and no model route. `scripts/score_sql_vote.py --self-check` is a four-row stub. Not PASS.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.
