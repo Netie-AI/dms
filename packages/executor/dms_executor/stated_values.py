@@ -127,7 +127,7 @@ def _question(con: Any, question: str) -> _Question | None:
     if not raw:
         return _Question([])
     row = con.execute(
-        f"SELECT list_transform(?::VARCHAR[], t -> {_norm_sql('t')})", [raw]
+        f"SELECT list_transform(?::VARCHAR[], lambda t: {_norm_sql('t')})", [raw]
     ).fetchone()
     words: list[str] = []
     marked: list[bool] = []
