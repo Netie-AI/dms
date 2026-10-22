@@ -51,6 +51,11 @@ def _restamped(path: Path, **stamps: Any) -> Path:
             env["ladder_rung"] = _RUNGS[n % len(_RUNGS)]
             env["served_model"] = "cortex-model"
             env.update(stamps)
+            # #469: a served SQL is AI only when it is the model's own SQL.
+            # The capture records it beside the envelope; the rung decides
+            # the claim, this proves it.
+            if isinstance(env.get("sql_used"), str) and env["sql_used"].strip():
+                record.setdefault("served", {})["model_sql"] = env["sql_used"]
         out.append(json.dumps(record))
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
     return path
