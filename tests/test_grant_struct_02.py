@@ -2157,7 +2157,7 @@ def test_duckdb_parse_alone_refuses_what_sqlglot_cannot_see() -> None:
     for name, sql, code, _proof, _before in _ROUND3_HOLES:
         assert _duckdb_gap(sql, grants, "duckdb", None) == code, name
     # Parts as written; an enclosing CTE covers a bare name, not a qualified one.
-    parsed = duckdb.sql(
+    parsed = duckdb.execute(
         "SELECT json_serialize_sql("
         "'WITH c AS (SELECT 1) SELECT * FROM c, main.c, \"Inventory\", lake.main.t')"
     ).fetchone()
