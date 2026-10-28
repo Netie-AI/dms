@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-10-28, DEF-VALIDATE-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_DEF_VALIDATE` default 0. Generated SQL is checked against approved ontology items when on. Stacked on #473. Clean tree `f96651a`: 1 failed, 3570 passed, 41 skipped, 33 xfailed, exit 1 (twice). The failure is the 1s serving-deadline ticket test. Same test alone passed. n=348 not run. Not PASS.
+**Tip:** `DMS_DEF_VALIDATE` default 0. Generated SQL is checked against approved ontology items when on. Rebased onto #473 `2c127260` (main `8dd1e80f`). Clean tree `0bf5776`: 3589 passed, 41 skipped, 33 xfailed, exit 0, 1288s. n=348 not run. Not PASS.
 
 ## Direction
 

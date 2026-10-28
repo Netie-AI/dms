@@ -7,8 +7,8 @@ Append-only. Never edited, only added to. Newest first.
 - **Gate.** `DMS_DEF_VALIDATE` defaults to 0. On, AI-generated SQL is checked with sqlglot against `Ontology.from_store`: tables, columns, join edges, and measure expressions. The join read uses the vendored auto-ontology extractor.
 - **Outcomes.** A pass executes. An undeclared join, a measure expression that is not approved, or a revoked item returns the #464 reconfirm envelope and shows the definition used. A PII-tagged column or an ungranted column abstains.
 - **Provenance.** Every answer on this path carries the ontology version id and the item ids.
-- **Stack.** Built on #473 (`cursor/onto-data-01-b817`), stacked on #471. Rebase onto main `c7d29ed2` after those merge. Pin `279cbd85` was not edited.
-- **Suite.** Clean tree `f96651a`, two runs, both exit 1: `1 failed, 3570 passed, 41 skipped, 33 xfailed` (1894s, then 1678s). The failure is `test_serving_abstain_tickets_follow_the_flag`: a 1s clock returned `serving_deadline_reserve` instead of `serving_deadline_exceeded`. That test alone passed in 2.43s. n=348 not run. Not PASS.
+- **Stack.** Rebased onto #473 at `2c127260` (main `8dd1e80f`). PR base stays `cursor/onto-data-01-b817` until #473 merges. Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `0bf5776`: `3589 passed, 41 skipped, 33 xfailed`, exit 0, 1288s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
 
 ## 2026-10-28 - GRAIN-AI-01: question-to-grain reading, flag off
 
