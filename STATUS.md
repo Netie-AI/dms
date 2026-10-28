@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-10-28, RECONFIRM-YES-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_RECONFIRM_RUN_HELD` default 0. On, a def_validate hold: Yes re-checks grants and read-only, then runs that SQL once (`yes:definition:<code>`). Flag off still re-asks. Chat shows Yes above Details. Draft PR #477, base main. Suite on `9cbcb15`: 3600 passed, 41 skipped, 33 xfailed, exit 0, 1291.33s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+**Tip:** `DMS_RECONFIRM_RUN_HELD` default 0. On, a def_validate hold: Yes re-checks grants and read-only, then runs that SQL once (`yes:definition:<code>`). Flag off still re-asks. Chat shows Yes above Details. Rebased onto main `9abbe9b6` (#476). Draft PR #477. Suite on `9666b0f`: 3603 passed, 41 skipped, 33 xfailed, exit 0, 1246.22s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
 
 ## Direction
 

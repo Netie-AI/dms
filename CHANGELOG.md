@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - RECONFIRM-YES-01 rebased onto main 9abbe9b6
+
+- **Base.** #476 is merged (`9abbe9b6`, AO-KEY-01). The two RECONFIRM-YES commits replayed onto that tip. No code conflict.
+- **Suite.** Clean tree `9666b0f`: `3603 passed, 41 skipped, 33 xfailed`, exit 0, 1246.22s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
 ## 2026-10-28 - RECONFIRM-YES-01: Yes runs the held SQL, Chat shows the card
 
 - **Flag.** `DMS_RECONFIRM_RUN_HELD` defaults to 0. Off, Yes still re-asks the suggested question.
