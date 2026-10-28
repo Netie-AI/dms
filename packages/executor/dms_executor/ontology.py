@@ -93,12 +93,24 @@ def onto_from_data_enabled() -> bool:
     return os.environ.get("DMS_ONTO_FROM_DATA", "0").strip() == "1"
 
 
+def _grain_ai_on() -> bool:
+    """True only when ``DMS_GRAIN_AI`` is the digit 1. Unset is off."""
+    from dms_executor.grain_ai import grain_ai_enabled
+
+    return grain_ai_enabled()
+
+
 def _catalog_grains(onto: Ontology | None = None) -> tuple[str, ...]:
     """Grain names the catalog walks.
 
-    Flag off keeps ``SUPPLY_CHAIN_GRAINS``. Flag on uses approved grain
-    aliases and does not read that tuple.
+    Flag off keeps ``SUPPLY_CHAIN_GRAINS``. ``DMS_ONTO_FROM_DATA`` uses
+    approved grain aliases on ``onto``. ``DMS_GRAIN_AI`` uses
+    ``Ontology.from_store`` and does not read that tuple.
     """
+    if _grain_ai_on():
+        from dms_executor.grain_ai import approved_grain_names
+
+        return approved_grain_names()
     if onto_from_data_enabled():
         if onto is None:
             return ()
@@ -368,8 +380,12 @@ _GRAIN_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def detect_supply_chain_grains(question: str) -> tuple[str, ...]:
-    """Grains the ask names. Word matches only; warehouse/shipment stay climb L0s."""
-    if onto_from_data_enabled():
+    """Grains the ask names. Word matches only; warehouse/shipment stay climb L0s.
+
+    ``DMS_ONTO_FROM_DATA`` and ``DMS_GRAIN_AI`` return no names from here.
+    The grain-ai reader does not call this function.
+    """
+    if onto_from_data_enabled() or _grain_ai_on():
         return ()
     q = question or ""
     return tuple(name for name, pat in _GRAIN_RES if pat.search(q))
@@ -387,6 +403,10 @@ def resolve_grain_object(onto: Ontology, grain: str) -> str | None:
     alias = onto.grain_aliases.get(grain)
     if alias and alias in onto.objects:
         return alias
+    if _grain_ai_on():
+        if grain in onto.objects:
+            return grain
+        return None
     for name in GRAIN_OBJECTS.get(grain, (grain,)):
         if name in onto.objects:
             return name
@@ -461,11 +481,14 @@ def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
     }
     if head != "ungranted" and not named_table:
         return None
-    if onto_from_data_enabled():
+    if onto_from_data_enabled() or _grain_ai_on():
         named = [g for g in grains if str(g).strip()]
     else:
         named = [g for g in grains if g in SUPPLY_CHAIN_GRAINS]
-    focus = [g for g in named if g != "sku"] or list(named)
+    if _grain_ai_on():
+        focus = list(named)
+    else:
+        focus = [g for g in named if g != "sku"] or list(named)
     label = ", ".join(focus) if focus else "join"
     # The grant code is bare ``ungranted``. A legacy ``ungranted:<table>``
     # still names the table. The customer sentence does not have to.
@@ -611,8 +634,13 @@ class Ontology:
         alias = self.grain_aliases.get(name)
         if alias and alias in self.objects:
             return alias
-        if onto_from_data_enabled():
-            if name in self.missing_grains or name in self.grain_aliases:
+        if onto_from_data_enabled() or _grain_ai_on():
+            known = name in self.missing_grains or name in self.grain_aliases
+            if _grain_ai_on():
+                from dms_executor.grain_ai import approved_grain_names
+
+                known = known or name in approved_grain_names()
+            if known:
                 detail = self.missing_grains.get(name) or (
                     f"missing join: {name} grain is not an approved object. "
                     "No silent pad."
@@ -1698,12 +1726,23 @@ class Ontology:
         that cites an ungranted table is ``missing_join`` naming the grain --
         not SQL that later dies as ``validate:ungranted:...``.
         """
-        if onto_from_data_enabled():
+        if _grain_ai_on():
+            from dms_executor.grain_ai import approved_grain_names
+
+            allowed_names = set(approved_grain_names())
+            named = tuple(g for g in grains if g in allowed_names)
+        elif onto_from_data_enabled():
             allowed_names = set(self.grain_aliases) | set(self.objects)
             named = tuple(g for g in grains if g in allowed_names)
         else:
             named = tuple(g for g in grains if g in SUPPLY_CHAIN_GRAINS)
         if len(named) < 2:
+            if _grain_ai_on():
+                return Refusal(
+                    "missing_join",
+                    "multi-join compile needs at least 2 approved grains; "
+                    f"got {list(named) or 'none'}",
+                )
             return Refusal(
                 "missing_join",
                 "multi-join compile needs ≥2 supply-chain grains "
@@ -1858,13 +1897,28 @@ def try_compile_multi_grain(
     via: dict[str, str] | None = None,
     grantable: set[str] | None = None,
     dialect: str | None = None,
-) -> CompiledQuery | Refusal | None:
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> CompiledQuery | Refusal | dict[str, Any] | None:
     """≥2 named supply-chain grains → compile_grains. Else None (not bind_plan).
 
     When ``grantable`` is set, a path that cites an ungranted table is
     ``missing_join`` naming the grain -- not a later ``validate:ungranted``.
+
+    ``DMS_GRAIN_AI`` takes grains from approved items. A split or a low
+    confidence reading returns the reconfirm envelope instead of a refusal.
     """
-    grains = detect_supply_chain_grains(question)
+    if _grain_ai_on():
+        from dms_executor.grain_ai import map_question_to_grains
+
+        mapped = map_question_to_grains(
+            question, space_id=space_id, session_id=session_id
+        )
+        if "reconfirm" in mapped:
+            return mapped
+        grains = tuple(mapped.get("grains") or ())
+    else:
+        grains = detect_supply_chain_grains(question)
     if onto is None or not onto.verified or len(grains) < 2:
         return None
     return onto.compile_grains(

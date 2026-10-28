@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - GRAIN-AI-01: question-to-grain reading, flag off
+
+- **Flag.** `DMS_GRAIN_AI` defaults to 0. Off, `detect_supply_chain_grains` and `SUPPLY_CHAIN_GRAINS` stay the ask path.
+- **On.** Grain candidates are approved items from `Ontology.from_store`. Two OpenVault readings (role alias `grain`, no model id) return grains and evidence spans. Low confidence or a split returns the #464 reconfirm envelope. No word list.
+- **Plug.** `load_understand_question` calls `ai_first.understand_question` on this base (main `5522d7a`). The thin stand-in remains the ImportError fallback. `reading` stays None until the model sends a sentence.
+- **Stack.** Rebased onto main `5522d7a` after #473 squash-merged. The ONTO-DATA commits are not on this branch. Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `60192e3`: `3589 passed, 41 skipped, 33 xfailed`, exit 0, 1252.29s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
 ## 2026-10-28 - ONTO-DATA-01 rebased onto main 8dd1e80
 
 - **Base.** #471 is merged (`8dd1e80f`). The two ONTO-DATA commits replayed onto that tip. `STATUS.md` was the only conflict.
