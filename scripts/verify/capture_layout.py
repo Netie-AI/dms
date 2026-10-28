@@ -37,6 +37,7 @@ SESSION_ID = "ses_flag_off_52"
 def _prepare() -> None:
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
+    os.environ.pop("DMS_AI_FIRST", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     for rel in (
         ".",
