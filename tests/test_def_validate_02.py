@@ -26,9 +26,13 @@ _GRANTS = {"orders", "customers"}
 
 @pytest.fixture(autouse=True)
 def _reset_store() -> Iterator[None]:
+    from dms_executor.reconfirm import _reset_reconfirm
+
     reset_ontology_data_store()
+    _reset_reconfirm()
     yield
     reset_ontology_data_store()
+    _reset_reconfirm()
 
 
 def test_count_star_on_an_approved_object_passes(
@@ -85,6 +89,7 @@ def test_empty_store_join_reconfirms_not_in_ontology(
     assert submitted == []
     assert env["abstained"] is True
     assert env["reconfirm_yes"] == "yes"
+    assert env["reconfirm"]["code"] == "not_in_ontology"
     assert env["text"].startswith("not_in_ontology:")
     assert "." in env["reconfirm"]["definition"]
     assert "ungranted" not in env["text"]
@@ -100,6 +105,7 @@ def test_sum_of_a_column_outside_the_ontology_is_measure_drift(
     assert env is not None
     assert submitted == []
     assert env["reconfirm_yes"] == "yes"
+    assert env["reconfirm"]["code"] == "measure_drift"
     assert env["text"].startswith("measure_drift:")
     assert "qty" in env["reconfirm"]["definition"]
     assert "not_in_ontology" not in env["text"]
@@ -176,6 +182,76 @@ def test_not_in_ontology_disposition_is_offer() -> None:
     assert _reason_code("not_in_ontology:orders.qty") == "not_in_ontology"
     assert reconfirm_disposition("ungranted") == "direct"
     assert reconfirm_disposition("ungranted:alerts") == "direct"
+
+
+@pytest.mark.parametrize(
+    ("sql", "code", "kind"),
+    [
+        (_JOIN, "not_in_ontology", "empty"),
+        ("SELECT SUM(qty) AS n FROM orders", "measure_drift", "no_qty"),
+    ],
+)
+def test_held_yes_runs_the_reconfirm_sql(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    sql: str,
+    code: str,
+    kind: str,
+) -> None:
+    """#477 parks SQL only when code and definition are non-empty strings.
+
+    Provenance ``yes:definition:<code>`` is stored only when code is an identifier.
+    """
+    from dms_executor.reconfirm import apply_reconfirm, peek_pending
+    from dms_executor.verified_queries import _provenance_ok
+    from test_reconfirm_yes_01 import _executor, _patch_run, _patch_save, _refuse_model
+
+    monkeypatch.setenv("DMS_RECONFIRM_RUN_HELD", "1")
+    monkeypatch.setenv("DMS_VQ_RAG", "1")
+    if kind == "no_qty":
+        _approve(qty=False)
+    env, submitted = _ask(monkeypatch, tmp_path, sql)
+    assert env is not None
+    assert submitted == []
+    block = env["reconfirm"]
+    assert block["code"] == code
+    assert block["code"].isidentifier()
+    assert isinstance(block["definition"], str) and block["definition"].strip()
+    assert isinstance(block.get("hold_id"), str) and block["hold_id"]
+    offered = apply_reconfirm(
+        env,
+        question=_QUESTION,
+        space_id=None,
+        session_id=None,
+        tables=None,
+        ask_path=None,
+        ontology="",
+        schema="",
+        complete=_refuse_model,
+    )
+    assert "hold_id" not in offered["reconfirm"]
+    assert sql not in str(offered["reconfirm"])
+    token = offered["reconfirm"]["token"]
+    pending = peek_pending(token)
+    assert pending is not None
+    assert pending["sql"] == sql
+    assert pending["reason_code"] == code
+    assert pending["definition"] == block["definition"].strip()
+    assert "rows" not in pending
+    ran: list[str] = []
+    saved: list[dict[str, Any]] = []
+    _patch_run(monkeypatch, ran)
+    _patch_save(monkeypatch, saved)
+    answered = _executor(tmp_path / "def_validate_02.duckdb").confirm_reconfirm(token, True)
+    provenance = f"yes:definition:{code}"
+    assert ran == [sql]
+    assert "reconfirm" not in answered
+    assert answered["reconfirm_accepted"] is True
+    assert answered["provenance"] == provenance
+    assert answered["abstained"] is False
+    assert answered["rows"]
+    assert _provenance_ok(provenance)
+    assert saved and saved[0]["provenance"] == provenance
 
 
 def _approve(

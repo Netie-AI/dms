@@ -123,9 +123,11 @@ def validate_generated_sql(
             return _ungranted(question, space_id, session_id, provenance)
     miss = _ontology_miss(tree, declared, granted)
     if miss is not None:
+        # Head only. Yes provenance is yes:definition:<code>, and that code
+        # has to be an identifier or the held SQL is not stored.
         qual = miss.split(":", 1)[1]
         return _reconfirm(
-            miss,
+            "not_in_ontology",
             qual,
             question=question,
             space_id=space_id,
