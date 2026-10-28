@@ -47,6 +47,16 @@ unreachable, Cortex says FreeRoute is unarmed, the mint fails, a question
 carries a stub/placeholder answer or an unarmed Insights reason, or no answer
 was served from the model's own SQL (``split ai=0``).
 
+``DMS_ONTO_FROM_DATA=1`` (default off) makes ``--armed`` read approved items
+from the persisted store before the first question. Zero approved objects
+exits non-zero with ``no approved ontology version``. It does not fall
+back to the spine. grade52 never approves. The artifact then records
+``ontology_version_id``, approved counts by kind, and the approver actor
+id beside ``paths_served``. Every armed artifact also records
+``ov_calls_by_caller_role`` from the OpenVault usage ledger window of the
+run (Cortex versus DMS-direct grain and ontology), so a model mismatch is
+counted per role.
+
 The risk line states what a score supports: per route, served answers with
 gold, how many were wrong, and the exact one-sided 95 percent upper bound on
 the wrong-served rate (0 wrong in n is about 3/n). Abstains are not served
@@ -1372,6 +1382,14 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "without_pack_gold_served": without,
         "cases": slim_cases,
     }
+    for key in (
+        "ontology_version_id",
+        "approved_counts",
+        "approver_actor_id",
+        "ov_calls_by_caller_role",
+    ):
+        if report.get(key) is not None:
+            body[key] = report[key]
     dest.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return dest
 
@@ -2449,6 +2467,117 @@ def _armed_ask(
     return records
 
 
+_CALLER_ROLES = ("cortex", "grain", "ontology")
+_GATEWAY_UNSET_MODEL = "auto"
+
+
+def _onto_from_data_on() -> bool:
+    return os.environ.get("DMS_ONTO_FROM_DATA", "0").strip() == "1"
+
+
+def approved_counts_by_kind(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Approved item counts by kind. ``unkeyed`` is not a stored kind."""
+    counts = {"object": 0, "link": 0}
+    for row in items:
+        kind = str(row.get("kind") or "")
+        if not kind:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def approved_ontology_precheck(store: Any = None) -> dict[str, Any]:
+    """Read approved items before the first armed question.
+
+    With no injected store, the factory must be the Postgres store
+    (``DMS_ONTO_PG=1`` and ``DATABASE_URL``) and ``DMS_TENANT_ID`` must be
+    set. An empty object list exits non-zero. There is no spine fallback.
+    """
+    _bootstrap()
+    if store is None:
+        from dms_core.control_plane.onto_data import (
+            PostgresOntologyDataStore,
+            onto_pg_enabled,
+            ontology_data_store,
+        )
+
+        if not os.environ.get("DMS_TENANT_ID", "").strip():
+            raise SystemExit("grade52 armed: FAIL tenant_unset")
+        if not onto_pg_enabled() or not os.environ.get("DATABASE_URL", "").strip():
+            raise SystemExit("grade52 armed: FAIL ontology store is not persisted")
+        store = ontology_data_store()
+        if not isinstance(store, PostgresOntologyDataStore):
+            raise SystemExit("grade52 armed: FAIL ontology store is not persisted")
+    items = list(store.approved_items())
+    objects = [row for row in items if str(row.get("kind") or "") == "object"]
+    if not objects:
+        raise SystemExit("grade52 armed: FAIL no approved ontology version")
+    versions = {str(row.get("version_id") or "") for row in objects}
+    versions.discard("")
+    actors = {str(row.get("approved_by") or "") for row in objects}
+    actors.discard("")
+    if len(versions) != 1:
+        raise SystemExit("grade52 armed: FAIL multiple approved ontology versions")
+    if len(actors) != 1:
+        raise SystemExit("grade52 armed: FAIL mixed approver on approved ontology")
+    return {
+        "ontology_version_id": next(iter(versions)),
+        "approved_counts": approved_counts_by_kind(items),
+        "approver_actor_id": next(iter(actors)),
+    }
+
+
+def ov_calls_by_caller_role(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Count ledger rows and model mismatches per caller role.
+
+    A row names its role in ``caller_role`` or ``role``. Cortex, grain, and
+    ontology are the roles this grade reports. A row with no role and a
+    pinned model request is Cortex. A row with no role and no pinned model
+    stays ``unattributed`` so a DMS-direct call is not counted as Cortex.
+    """
+    out: dict[str, dict[str, int]] = {
+        role: {"calls": 0, "model_mismatch": 0} for role in _CALLER_ROLES
+    }
+    for event in events:
+        role = _ledger_role(event)
+        bucket = out.setdefault(role, {"calls": 0, "model_mismatch": 0})
+        bucket["calls"] += 1
+        requested = str(event.get("model_requested") or "")
+        served = str(event.get("model_served") or "")
+        if _pin_mismatch(requested, served):
+            bucket["model_mismatch"] += 1
+    return out
+
+
+def _ledger_role(event: Mapping[str, Any]) -> str:
+    for key in ("caller_role", "role"):
+        raw = event.get(key)
+        if isinstance(raw, str) and raw.strip() in _CALLER_ROLES:
+            return raw.strip()
+    requested = str(event.get("model_requested") or "").strip()
+    if requested and requested != _GATEWAY_UNSET_MODEL:
+        return "cortex"
+    return "unattributed"
+
+
+def read_ov_calls(openvault_url: str, since: float) -> dict[str, Any]:
+    """Usage-ledger window. A failed read is named on the artifact, not a score."""
+    import httpx
+
+    url = openvault_url.rstrip("/") + "/api/usage"
+    try:
+        response = httpx.get(url, params={"since": since, "limit": 1000}, timeout=5.0)
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:  # noqa: BLE001 - the grade keeps the failure name
+        return {"read": "failed", "reason": type(exc).__name__}
+    events = body.get("events") if isinstance(body, dict) else None
+    if not isinstance(events, list):
+        return {"read": "failed", "reason": "usage_ledger_shape"}
+    rows = [row for row in events if isinstance(row, dict)]
+    return ov_calls_by_caller_role(rows)
+
+
 def armed_replay(
     layout: str = "copy-only", cfg: ArmedConfig | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -2472,7 +2601,11 @@ def armed_replay(
     os.environ.pop("DMS_CLOOP_B", None)
     os.environ.pop("DMS_AI_FIRST", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
+    onto_fields: dict[str, Any] | None = None
+    if _onto_from_data_on():
+        onto_fields = approved_ontology_precheck()
     # The minter tells Cortex to refresh JWKS at CORTEX_URL after each key fetch.
+    started = time.time()
     with _env_value("CORTEX_URL", cfg.cortex_url):
         minter = _armed_minter(cfg)
         try:
@@ -2486,8 +2619,11 @@ def armed_replay(
         "cortex_sha": cfg.cortex_sha,
         "layout": layout,
         "cortex": public_url(cfg.cortex_url),
+        "ov_calls_by_caller_role": read_ov_calls(cfg.openvault_url, started),
         **posture,
     }
+    if onto_fields:
+        meta.update(onto_fields)
     return records, meta
 
 
@@ -2576,11 +2712,13 @@ def grade_loaded(
     dms_sha: str | None = None,
     layout: str | None = None,
     cortex_sha: str | None = None,
+    extra: Mapping[str, Any] | None = None,
     **finish: Any,
 ) -> dict[str, Any]:
     """Grade served rows. A submit-stub pack is labelled stub and is not a score.
 
     An armed grade first refuses any record that is not a live answer.
+    ``extra`` is copied onto the artifact (ontology version, OV role counts).
     """
     if mode == MODE_ARMED:
         armed_check(envelopes)
@@ -2591,6 +2729,8 @@ def grade_loaded(
     if not isinstance(dms_sha, str):
         raise SystemExit("grade52: envelopes commit missing")
     report = grade_envelopes(envelopes, mode=mode)
+    if extra:
+        report.update(dict(extra))
     return _finish(report, mode, _commit_sha(dms_sha), layout, cortex_sha=cortex_sha, **finish)
 
 
@@ -2620,12 +2760,23 @@ def grade_armed(layout: str = "copy-only", **finish: Any) -> dict[str, Any]:
     dest = _artifact_dir() / "grade52.armed.jsonl"
     capture = write_capture(records, {"dms_sha": sha, **meta}, dest)
     print(f"armed capture: {capture}")
+    extra = {
+        key: meta[key]
+        for key in (
+            "ontology_version_id",
+            "approved_counts",
+            "approver_actor_id",
+            "ov_calls_by_caller_role",
+        )
+        if key in meta
+    }
     return grade_loaded(
         records,
         mode=MODE_ARMED,
         dms_sha=sha,
         layout=layout,
         cortex_sha=str(meta["cortex_sha"]),
+        extra=extra,
         **finish,
     )
 

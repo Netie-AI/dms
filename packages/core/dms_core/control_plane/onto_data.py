@@ -250,6 +250,34 @@ def _iso(value: Any) -> str:
     return str(value)
 
 
+def _approval_ref(approval_ref: str | None) -> str:
+    """The caller's text when it is non-empty, otherwise one generated id."""
+    text = (approval_ref or "").strip()
+    return text or str(uuid4())
+
+
+def _approval_provenance(ref: str, actor: str) -> dict[str, str]:
+    return {"approval_ref": ref, "approved_by": actor}
+
+
+def ensure_tenant_row(conn: psycopg.Connection, tenant_id: str) -> str:
+    """Insert ``dms.tenants`` when this uuid is missing. Return the uuid.
+
+    The slug is the uuid with a prefix, so two tenants cannot share it.
+    This writes the tenant row only. No user, space, or ontology payload.
+    """
+    tenant = str(UUID(str(tenant_id)))
+    conn.execute(
+        """
+        INSERT INTO dms.tenants (id, slug, name)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (tenant, "t-" + tenant, tenant),
+    )
+    return tenant
+
+
 class OntologyDataStore:
     def __init__(self) -> None:
         self._versions: dict[str, VersionRow] = {}
@@ -337,22 +365,28 @@ class OntologyDataStore:
         row.ts = _now()
         return row
 
-    def approve_version(self, version_id: str, actor: str) -> int:
+    def approve_version(
+        self, version_id: str, actor: str, approval_ref: str | None = None
+    ) -> int:
         """Approve every proposed item of one version. One in-memory pass.
 
         Unknown version raises ``KeyError``. A version with no proposed items
         returns 0. Every item written here shares one ``approval_ref``.
+        A non-empty ``approval_ref`` is stored as given. Provenance records
+        the same text and the actor.
         """
         if version_id not in self._versions:
             raise KeyError(version_id)
-        ref = str(uuid4())
+        ref = _approval_ref(approval_ref)
         now = _now()
+        stamp = _approval_provenance(ref, actor)
         count = 0
         for row in self._items.values():
             if row.version_id == version_id and row.status == "proposed":
                 row.status = "approved"
                 row.approved_by = actor
                 row.approval_ref = ref
+                row.provenance = {**row.provenance, **stamp}
                 row.ts = now
                 count += 1
         return count
@@ -465,6 +499,7 @@ class PostgresOntologyDataStore:
             )
         conn = self._connect()
         try:
+            ensure_tenant_row(conn, tenant)
             set_tenant_context(conn, tenant, role="steward")
             conn.execute(
                 """
@@ -550,20 +585,25 @@ class PostgresOntologyDataStore:
             return None
         return _item_from_db(fetched)
 
-    def approve_version(self, version_id: str, actor: str) -> int:
+    def approve_version(
+        self, version_id: str, actor: str, approval_ref: str | None = None
+    ) -> int:
         """Approve every proposed item of one version in one transaction.
 
         Unknown version raises ``KeyError``. A version with no proposed items
         returns 0. The version row is locked, then every proposed item is
         updated with the same ``approved_by`` and ``approval_ref``.
+        A non-empty ``approval_ref`` is stored as given. Provenance records
+        the same text and the actor.
         """
         try:
             version = str(UUID(str(version_id)))
         except ValueError:
             raise KeyError(version_id) from None
         tenant = self._tenant(None)
-        ref = str(uuid4())
+        ref = _approval_ref(approval_ref)
         now = datetime.now(UTC)
+        stamp = json.dumps(_approval_provenance(ref, actor))
         conn = self._connect()
         try:
             set_tenant_context(conn, tenant, role="steward")
@@ -583,12 +623,13 @@ class PostgresOntologyDataStore:
                    SET status = 'approved',
                        approved_by = %s,
                        approval_ref = %s,
+                       provenance = COALESCE(provenance, '{}'::jsonb) || %s::jsonb,
                        ts = %s
                  WHERE version_id = %s
                    AND tenant_id = %s
                    AND status = 'proposed'
                 """,
-                (actor, ref, now, version, tenant),
+                (actor, ref, stamp, now, version, tenant),
             )
             count = int(updated.rowcount)
             conn.commit()
