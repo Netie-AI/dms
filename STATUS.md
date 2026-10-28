@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-10-28, GRAIN-AI-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_GRAIN_AI` default 0. On, grains come from approved items and an OpenVault reading (role `grain`). Split or low confidence is reconfirm. Rebased onto #473 `2c12726` (main `8dd1e80f`). Suite not run on this tree yet. n=348 not run. Not PASS.
+**Tip:** `DMS_GRAIN_AI` default 0. On, grains come from approved items and an OpenVault reading (role `grain`). Split or low confidence is reconfirm. On main `5522d7a`. Suite on `60192e3`: 3589 passed, 41 skipped, 33 xfailed. n=348 not run. Not PASS.
 
 ## Direction
 
