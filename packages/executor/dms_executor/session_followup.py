@@ -12,11 +12,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dms_executor.abstain import build_abstain
 from dms_executor.demo_warehouse import execute_sql, sql_has_reserved_as_of, stamp_engine_clock
 from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
     reserved_as_of_abstain,
+)
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    serve_gap,
+    sql_refusal_envelope,
 )
 
 _AVG = re.compile(r"^\s*average of them\s*[.?]?\s*$", re.I)
@@ -56,23 +62,32 @@ def turn_key(session_id: str | None, space_id: str | None) -> tuple[str, str] | 
 
 
 def snapshot_turn(env: dict[str, Any]) -> dict[str, Any] | None:
+    stamp = env.get("index_stamp")
+    stamp_s = stamp if isinstance(stamp, str) and stamp else ""
     if env.get("abstained") is True:
+        if stamp_s:
+            return {"index_stamp": stamp_s}
         return None
     nums = numeric_values(env)
     if not nums:
+        if stamp_s:
+            return {"index_stamp": stamp_s}
         return None
-    return {"values": nums, "sql_used": env.get("sql_used")}
+    out: dict[str, Any] = {"values": nums, "sql_used": env.get("sql_used")}
+    if stamp_s:
+        out["index_stamp"] = stamp_s
+    return out
 
 
 def _abstain(*, space_id: str | None, session_id: str | None, why: str) -> dict[str, Any]:
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        stage="followup",
         answer_id="ans_followup_abstain",
         text=(
             "I cannot compute that follow-up without a prior numeric answer in "
             "this session. Ask the parent question first."
         ),
-        badge="ABSTAIN",
-        abstained=True,
         assumptions=["session follow-up abstained — no invent", why],
         as_of=_as_of(),
         space_id=space_id,
@@ -126,10 +141,26 @@ def _followup_execute(
     space_id: str | None,
     session_id: str | None,
     question: str,
+    grantable: set[str] | None = None,
+    dialect: str | None = None,
 ) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
     """Rows, or a reserved_param abstain. The placeholder never reaches DuckDB."""
     if sql_has_reserved_as_of(sql):
         return None, reserved_as_of_abstain(
+            space_id=space_id,
+            session_id=session_id,
+            route="followup",
+            question=question,
+        )
+    gap = serve_gap(
+        sql,
+        grantable=set(grantable or ()),
+        dialect=dialect,
+    )
+    if gap:
+        return None, sql_refusal_envelope(
+            reason=gap,
+            shown=customer_grant_reason(gap),
             space_id=space_id,
             session_id=session_id,
             route="followup",
@@ -147,6 +178,8 @@ def run_followup_sql(
     question: str,
     why: str,
     text: str,
+    grantable: set[str] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any]:
     """Follow-up SQL. A real $as_of placeholder abstains and does not run."""
     rows, refused = _followup_execute(
@@ -155,6 +188,8 @@ def run_followup_sql(
         space_id=space_id,
         session_id=session_id,
         question=question,
+        grantable=grantable,
+        dialect=dialect,
     )
     if refused is not None:
         return refused
@@ -169,6 +204,22 @@ def run_followup_sql(
     )
 
 
+def _followup_relation(
+    grantable: set[str] | None, prior: dict[str, Any] | None
+) -> str | None:
+    """A granted base table for a follow-up constant. None if the space grants none.
+
+    The figure is already known. The statement still has to read a granted
+    table, or the grant check refuses it.
+    """
+    grants = {str(name).strip() for name in (grantable or ()) if str(name).strip()}
+    cited = [str(name).strip() for name in ((prior or {}).get("grounded_tables") or [])]
+    for name in [item for item in cited if item in grants] + sorted(grants):
+        if name.isidentifier():
+            return name
+    return None
+
+
 def maybe_followup(
     question: str,
     *,
@@ -177,6 +228,8 @@ def maybe_followup(
     session_id: str | None = None,
     warehouse: Path | None = None,
     tables: list[str] | None = None,
+    grantable: set[str] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """Envelope for a follow-up, or None when this ask is not a follow-up."""
     if tables:
@@ -196,7 +249,17 @@ def maybe_followup(
                 why="average of them: no prior numeric values",
             )
         expr = " + ".join(f"{n:.10g}" for n in nums)
-        sql = f"SELECT ROUND(({expr}) / {len(nums)}.0, 2) AS average_myr"
+        relation = _followup_relation(grantable, prior)
+        if relation is None:
+            return _abstain(
+                space_id=space_id,
+                session_id=session_id,
+                why="average of them: no granted table",
+            )
+        sql = (
+            f"SELECT ROUND(({expr}) / {len(nums)}.0, 2) AS average_myr "
+            f"FROM {relation} LIMIT 1"
+        )
         try:
             rows, refused = _followup_execute(
                 sql,
@@ -204,6 +267,8 @@ def maybe_followup(
                 space_id=space_id,
                 session_id=session_id,
                 question=question,
+                grantable=grantable,
+                dialect=dialect,
             )
         except Exception:  # noqa: BLE001
             return _abstain(
@@ -230,15 +295,27 @@ def maybe_followup(
             session_id=session_id,
             why="add N: prior turn was not a single scalar",
         )
-    sql = f"SELECT ROUND({nums[0]:.10g} + {delta:.10g}, 2) AS adjusted_myr"
+    relation = _followup_relation(grantable, prior)
+    if relation is None:
+        return _abstain(
+            space_id=space_id,
+            session_id=session_id,
+            why="add N: no granted table",
+        )
+    sql = (
+        f"SELECT ROUND({nums[0]:.10g} + {delta:.10g}, 2) AS adjusted_myr "
+        f"FROM {relation} LIMIT 1"
+    )
     try:
         rows, refused = _followup_execute(
             sql,
             warehouse=warehouse,
             space_id=space_id,
             session_id=session_id,
-            question=question,
-        )
+        question=question,
+        grantable=grantable,
+        dialect=dialect,
+    )
     except Exception:  # noqa: BLE001
         return _abstain(
             space_id=space_id,

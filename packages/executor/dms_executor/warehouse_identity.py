@@ -17,6 +17,7 @@ into the file chat actually reads.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -26,9 +27,11 @@ from typing import TypedDict
 import duckdb
 
 from dms_executor.bronze import _ensure_registry
-from dms_executor.demo_warehouse import warehouse_path
+from dms_executor.demo_warehouse import connect_file, connect_serving, warehouse_path
 from dms_executor.duckdb_scalar import scalar_int
 from dms_executor.lake_schema import ensure_lake_schemas
+
+logger = logging.getLogger(__name__)
 
 # Always quoted. Ingest stems keep leading digits (15_q3_sales_export_Q3).
 _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
@@ -107,7 +110,7 @@ def list_bronze_readonly(path: Path) -> list[BronzeRow]:
     db = Path(path)
     if not db.is_file():
         return []
-    con = duckdb.connect(str(db), read_only=True)
+    con = connect_serving(db)
     try:
         rows = con.execute(
             """
@@ -237,7 +240,7 @@ def sync_bronze_to_serving(
         # Windows exclusive lock: Cortex holds the serving file. connect()
         # throws before ATTACH, so it must sit inside this try or ingest 500s
         # after bronze already landed.
-        con = duckdb.connect(str(dst))
+        con = connect_file(dst, write=True)
         ensure_lake_schemas(con)
         _ensure_registry(con)
         con.execute(f"ATTACH '{src.as_posix()}' AS ingest_wh (READ_ONLY)")
@@ -325,6 +328,37 @@ def sync_bronze_to_serving(
     finally:
         if con is not None:
             con.close()
+
+
+def serving_sync_state(ingest: Path | None = None) -> tuple[str, str]:
+    """``(state, detail)`` for a receipt after bronze landed: sync, then say how it went.
+
+    ``not_attempted`` (no serving warehouse named, sync off, or under pytest),
+    ``not_needed`` (one file), ``ok``, or ``failed`` with the reason. The
+    customer reads the receipt; nobody reads the warning (R-0011).
+    """
+    return sync_receipt_state(maybe_sync_bronze_to_serving(ingest))
+
+
+def sync_receipt_state(synced: SyncResult | None) -> tuple[str, str]:
+    """The receipt's ``(state, detail)`` for one sync outcome (see ``serving_sync_state``)."""
+    if synced is None:
+        return "not_attempted", "no serving warehouse configured"
+    if synced.ok:
+        return ("not_needed" if synced.status == "same_file" else "ok"), synced.status
+    detail = (
+        synced.error
+        or (f"not copied: {', '.join(synced.skipped)}" if synced.skipped else "")
+        or f"{synced.status}: {synced.serving} was not updated"
+    )[:300]
+    logger.warning(
+        "bronze landed in %s but chat serving %s was not updated (%s): %s",
+        synced.ingest,
+        synced.serving,
+        synced.status,
+        synced.error or "run python scripts/sync_bronze_to_serving.py",
+    )
+    return "failed", detail
 
 
 def maybe_sync_bronze_to_serving(ingest: Path | None = None) -> SyncResult | None:

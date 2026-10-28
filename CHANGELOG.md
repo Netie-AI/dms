@@ -2,6 +2,126 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - DEF-VALIDATE-02: plain aggregates are not measure drift
+
+- **Flag.** `DMS_DEF_VALIDATE` stays default 0. The change runs only when it is on.
+- **Measures.** `COUNT(*)` and `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` of one approved attribute or key, at a grain reached only through approved links, pass. Provenance is `derived:<agg>(<table>.<col>)`. The decision is the sqlglot tree.
+- **Drift.** An alias that redefines an approved measure name, an aggregate over a column outside the ontology, and a nested or mixed-grain aggregate still reconfirm `measure_drift`.
+- **Grant.** `ungranted` stays a direct abstain when the grant check fails. A granted table or column missing from the approved ontology reconfirms `not_in_ontology`. That code's disposition is `offer`. The envelope `code` is the identifier `not_in_ontology`, so #477 can park the SQL and Yes can stamp `yes:definition:not_in_ontology`.
+- **Stack.** Rebased onto main `6bbc372e` (#480 GRADE-AO-01). PR base is `main`. Pin `279cbd85` was not edited.
+- **WRONG risk.** More answers are served when the flag is on. The armed 52 run is the judge. This change does not run it.
+- **Suite.** Clean tree `f5a8707`: `3633 passed, 44 skipped, 33 xfailed`, exit 0, 1433.83s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS. The docs commit that records this is later than `f5a8707`.
+
+## 2026-10-28 - GRADE-AO-01: compile, steward-approve, grade the persisted store
+
+- **Compile.** `scripts/verify/onto_compile.py` needs `DATABASE_URL`, `DMS_AO_COMPILE=1`, and `DMS_ONTO_PG=1`. It stores a proposed version and does not approve. A missing tenant row is inserted. No demo ontology payload.
+- **Steward.** `onto_steward.py approve-version` is the only scripted approval. It requires `--approval-ref`, refuses an empty actor and the settings default actor, stores the ref in provenance, and logs the action. `grade52` never calls it.
+- **Grade.** `grade52 --armed` with `DMS_ONTO_FROM_DATA=1` reads approved items from the Postgres store before the first question. Zero approved objects exits with `no approved ontology version`. `--all-flags` applies `ARMED_ALL_FLAGS_ON`, including `DMS_RECONFIRM_RUN_HELD=1`. Plain `--armed` leaves those flags off.
+- **Stack.** Rebased onto main `df1f37f5` (#477). Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `b445494`: `3617 passed, 44 skipped, 33 xfailed`, exit 0, 1427.52s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. Postgres 16.15, alembic `0008_ontology_approval_ref`: `tests/test_grade_ao_01.py` `tests/test_onto_pg_01.py` `tests/test_onto_data_01.py` `tests/test_ao_key_01.py` with `DMS_ONTO_PG=1` were `26 passed, 0 skipped`. n=348 not run. Not PASS.
+
+## 2026-10-28 - RECONFIRM-YES-01 rebased onto main 5980eef8
+
+- **Base.** #479 is merged (`5980eef8`, ONTO-PG-01). The RECONFIRM-YES commits replayed onto that tip. No code conflict.
+- **Suite.** Clean tree `e7028c7`: `3609 passed, 43 skipped, 33 xfailed`, exit 0, 1248.81s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - RECONFIRM-YES-01 rebased onto main 9abbe9b6
+
+- **Base.** #476 is merged (`9abbe9b6`, AO-KEY-01). The two RECONFIRM-YES commits replayed onto that tip. No code conflict.
+- **Suite.** Clean tree `9666b0f`: `3603 passed, 41 skipped, 33 xfailed`, exit 0, 1246.22s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - RECONFIRM-YES-01: Yes runs the held SQL, Chat shows the card
+
+- **Flag.** `DMS_RECONFIRM_RUN_HELD` defaults to 0. Off, Yes still re-asks the suggested question.
+- **Hold.** A def_validate reconfirm stores the SQL, the grantable set, the definition, and the reason code on the pending entry. Rows and secrets are not stored.
+- **Yes.** With the flag on, Yes re-runs the grant check and the read-only check, then executes that SQL once. The answer sets `reconfirm_accepted` and provenance `yes:definition:<code>`, then `maybe_save_checked_sql`. An ungranted SQL at Yes time abstains. No still answers `not found in the database`.
+- **Chat.** The reconfirm card (reason, definition, Yes, No) renders above Details. Ids: `chat-reconfirm-yes`, `chat-reconfirm-no`. Studio ids stay on the result view.
+- **Suite.** Clean tree `9cbcb15`: `3600 passed, 41 skipped, 33 xfailed`, exit 0, 1291.33s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - DEF-VALIDATE-01: check generated SQL against the ontology store
+
+- **Gate.** `DMS_DEF_VALIDATE` defaults to 0. On, AI-generated SQL is checked with sqlglot against `Ontology.from_store`: tables, columns, join edges, and measure expressions. The join read uses the vendored auto-ontology extractor.
+- **Outcomes.** A pass executes. An undeclared join, a measure expression that is not approved, or a revoked item returns the #464 reconfirm envelope and shows the definition used. A PII-tagged column or an ungranted column abstains.
+- **Provenance.** Every answer on this path carries the ontology version id and the item ids.
+- **Stack.** Rebased onto main `ba9afb3d` (#475). PR base is `main`. Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `28935a2`: `1 failed, 3594 passed, 41 skipped, 33 xfailed`, exit 1, 1493s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. The failure is `test_sixty_ungranted_names_scrub_under_200ms` at 0.241s. That test alone passed. n=348 not run. Not PASS.
+
+## 2026-10-28 - GRAIN-AI-01: question-to-grain reading, flag off
+
+- **Flag.** `DMS_GRAIN_AI` defaults to 0. Off, `detect_supply_chain_grains` and `SUPPLY_CHAIN_GRAINS` stay the ask path.
+- **On.** Grain candidates are approved items from `Ontology.from_store`. Two OpenVault readings (role alias `grain`, no model id) return grains and evidence spans. Low confidence or a split returns the #464 reconfirm envelope. No word list.
+- **Plug.** `load_understand_question` calls `ai_first.understand_question` on this base (main `5522d7a`). The thin stand-in remains the ImportError fallback. `reading` stays None until the model sends a sentence.
+- **Stack.** Rebased onto main `5522d7a` after #473 squash-merged. The ONTO-DATA commits are not on this branch. Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `60192e3`: `3589 passed, 41 skipped, 33 xfailed`, exit 0, 1252.29s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - ONTO-DATA-01 rebased onto main 8dd1e80
+
+- **Base.** #471 is merged (`8dd1e80f`). The two ONTO-DATA commits replayed onto that tip. `STATUS.md` was the only conflict.
+- **Suite.** Clean tree `967c6cb`: `3583 passed, 41 skipped, 33 xfailed`, exit 0, 1271s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+- **Stacked writers.** GRAIN-AI-01 (`cursor/grain-ai-01-e63b`, `194e26b`) and DEF-VALIDATE-01 (`cursor/def-validate-01-6520`, `3e01caa`) still sit on the pre-rebase tip `28824f9`. They should rebase onto this branch.
+
+## 2026-10-28 - ONTO-DATA-01: ontology as revocable data
+
+- **Store.** Alembic `0007_ontology_data` (revision 0003 is already `document_chunks`) adds `dms.ontology_versions` and `dms.ontology_items`. Kind is object, link, measure, grain, or pii. Status is proposed, approved, or revoked. Payload is JSON. Source, provenance, created_by, approved_by, and ts are on each item.
+- **Routes.** `POST /v1/ontology/data/compile` stores the AO-VENDOR-01 `compile_source` proposal as proposed. `GET /v1/ontology/data/diff` compares that proposal with approved items. Approve and revoke are per item. A caller without the steward grant gets 403.
+- **Serve.** `Ontology.from_store` serves approved items only. `DMS_ONTO_FROM_DATA` defaults to 0. On, the ask does not call `demo_ontology` or read `SUPPLY_CHAIN_GRAINS`. Off, existing ontology tests stay on the same path.
+- **Stack.** Built on #471 (`cursor/ao-vendor-01-8b00`). Rebase onto main `c7d29ed2` after #471 merges. `DMS_AI_FIRST` stays default off. Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `c7921b2`: `3565 passed, 41 skipped, 33 xfailed`, exit 0, 1276s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - AO-VENDOR-01: vendored auto-ontology compile, flag off
+
+- **Pin.** NVIDIA `auto-ontology` `eb8dd0621d07db3033fe3fddc68f62ff72614610` copied under `packages/ao_vendor`. Apache-2.0. No git dependency. UI, auth, Helm, MCP, and apache/ossie are not included. Changes are in `packages/ao_vendor/MODIFICATIONS.md`.
+- **Compile.** `DMS_AO_COMPILE` defaults to 0. On, `compile_source` returns an `OntologyProposal` with status `proposed` and `served` false. The LLM call is OpenVault FreeRoute, role alias `ontology`, and does not name a model. Prove pin `279cbd85` was not edited.
+- **Suite.** Clean tree `8deab9a`: `3559 passed, 41 skipped, 33 xfailed`, exit 0. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - WRONG-TRAP-01 rebased onto c7d29ed
+
+- **Compile.** A compile serve abstains `ungrounded_measure:<name>` when that measure exists and the question does not name it. A binder lock, a rank window the binder already resolved, or a token in the measure name still compiles. A grain word that is only in the description does not. `DMS_AI_FIRST` stays off. On, an ungrounded multi-grain compile is not recorded as an example.
+- **Stamps.** Every compile origin drops served model credit. A model-SQL abstain with an empty origin gets `plan_origin=generate_sql`.
+- **grade52.** Grader 4. Printed `wrong` includes `refusal_wrong`. `not_scored` lists pin_mismatch ids. The tries line names `omitted_pin_mismatch`.
+- **Suite.** `DMS_SKIP_CONTROL_PLANE_TESTS=1 DMS_DEMO_FALLBACK=0`: 3573 passed, 41 skipped, 33 xfailed. Exit 0.
+- **Stub.** `grade52.py --main` at `7392972`: 52 correct=43 wrong=0 reconfirm=5, paths ai=0 rule=43 L1=23 compile=20, stamp_contradiction=0, metric ai_share=0/43 wrong=0. `--ai-first`: correct=0 wrong=0 reconfirm=48, ai_share=0/0. Label, not a score. Armed 52 was not re-run. Not PASS.
+
+## 2026-10-28 - AI-SQL-SHIFT stub lines on the rebase
+
+- **Flag off.** `grade52 --main` at `36f7bca`: 52 correct=43 wrong=0 reconfirm=5, paths ai=0 rule=43 L1=23 compile=20, metric ai_share=0/43 wrong=0. refusal_ok=3, refusal_wrong=0, gold_broken=1. Label, not a score.
+- **Flag on.** `grade52 --main --ai-first`: 52 correct=0 wrong=0 reconfirm=48, paths ai=0 rule=0, metric ai_share=0/0 wrong=0. refusal_ok=3, refusal_wrong=0, gold_broken=1. `0/0` is not a share. Not PASS.
+- **Suite.** `DMS_SKIP_CONTROL_PLANE_TESTS=1 DMS_DEMO_FALLBACK=0`: 3565 passed, 41 skipped, 33 xfailed. n=348 not run.
+
+## 2026-10-28 - AI-SQL-SHIFT stage 1 rebased onto main
+
+- **Flag.** `DMS_AI_FIRST` stays default off. Off, the ask path matches main: VQ-RAG (`embedder=`), the live harness (`demo_gate=`, pacer), and the DuckDB 2.0 stated-value probe.
+- **On.** A granted L1 phrase and a compile that would have been submitted are prompt examples. They are not submitted and not served. Ungranted, hostile, and other direct refusals stay direct. A contract SQL that would have been served is not the answer.
+- **Understanding.** `understand_question` in `dms_executor.ai_first` is the step a later GRAIN-AI ticket calls. It joins active examples onto the question and leaves `reading` empty. No word list. No model name.
+- **Pin.** Cortex scan sha `279cbd85` is unchanged. Example rows are not an Insights body field. `model` and `strict` stay stripped.
+- **Not this change.** The flag is not default on. No UI card. No durable example store. Not a live-model score. Not PASS.
+
+## 2026-10-18 - SQL-VOTE: merge main after #421
+
+- **Base.** #421 is on main (`89aea317`). This branch merges main's tip `d1f8eeb` (that commit plus #452). `serve_gap` grant checks stay. Equal rows, one call cap, and `build_abstain` stay. Not PASS.
+
+## 2026-10-18 - SQL-VOTE: equal rows, one call cap, abstain through the builder
+
+- **Agreement.** Equal rows from two different instructions agree. The SQL does not have to match. Both statements must pass `validate_compiled_sql`, and each must read at least one granted table. `SELECT 3` does not agree.
+- **Cap.** The first reading, the second reading, and every retry share one `insights_call_cap`. A later call is not sent once the cap is spent.
+- **Abstain.** Comparison rows that do not run go through `build_abstain`. Not a raw abstain dict.
+- **Base.** DMS #421 is still open. This branch stays on `cursor/grant-struct-01`, not main. Not PASS.
+
+## 2026-10-18 - SQL-VOTE: plan-then-solve, not a reading=2 suffix
+
+- **Framing.** Reading 1 asks for one SELECT. Reading 2 asks for a JSON plan of tables, joins, measure, and filters from the ontology, then for SQL that follows that plan. A short suffix is not a second instruction. The insights body still sends `model_preference=free+normal` and has no temperature or seed, so no second model is set.
+- **Retry.** The second reading feeds back a pre-run refusal, an EXPLAIN failure, and an empty result. The next SQL still goes through `validate_compiled_sql`. Hostile SQL is not fed back.
+- **Stub.** `scripts/score_sql_vote.py --self-check` covers 10 pre-run refusals, 7 EXPLAIN failures, and 4 empty results, all marked recovered. That is not the held-out split.
+- **Harness.** `scripts/verify/sql_vote_heldout.py --live` compares n=348 against main when the Mini-Dev DBs and the route env vars are set. They are not set here. Not PASS.
+
+## 2026-10-18 - SQL-VOTE: second reading retries, equivalent SQL can agree
+
+- **Base.** DMS #421 is open. This change sits on `cursor/grant-struct-01`, not on main.
+- **Second reading.** A served model SQL is not the answer until a second reading, with a different prompt hash, returns the same rows. That reading uses the extract loop's retry budget (`MAX_SQL_RETRIES`, `insights_call_cap`) and `validate_compiled_sql`. A retry does not skip the checker.
+- **Agreement.** Normalized identical SQL plus equal rows counts, when the prompts differ. The same prompt does not count.
+- **Split.** Disagreement is a reconfirm: why, closest question, and Yes. It does not serve the number and it does not ledger it.
+- **Measure.** Held-out n=348 was not run here. No BIRD databases and no model route. `scripts/score_sql_vote.py --self-check` is a four-row stub. Not PASS.
+
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 
 - **Cause.** Section 2.1 still sent the 2-min walk to the 2026-09-13 trycloudflare host. Epic #8 records the durable origin as `https://studio.netie.ai`. That temp host is rotate-risk, not the walk.

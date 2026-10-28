@@ -6,6 +6,7 @@ F83: pack hit Cortex-submits SQL and appends the ledger; no local DuckDB fallbac
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -220,25 +221,22 @@ def _live_client(
     return TestClient(app)
 
 
-def test_pack_hits_when_space_grants_warehouse_aliases() -> None:
+def test_pack_misses_when_space_grants_only_prefixed_names() -> None:
+    """A prefixed name is a different relation. It does not cover the bare table."""
     grant = {
         "warehouse_inventory",
         "warehouse_locations",
         "warehouse_suppliers",
         "warehouse_transactions",
     }
-    hit = lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=grant)
-    assert hit is not None
-    assert hit.metric_id == "spend_by_country"
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=grant, dialect="duckdb") is None
     ops = {
         "warehouse_inventory",
         "warehouse_locations",
         "warehouse_shipments",
     }
-    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
-    stock = lookup_pack_metric(STOCK_BY_CATEGORY_Q, grantable=ops)
-    assert stock is not None
-    assert stock.metric_id == "stock_value_by_category"
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops, dialect="duckdb") is None
+    assert lookup_pack_metric(STOCK_BY_CATEGORY_Q, grantable=ops, dialect="duckdb") is None
 
 
 def test_finance_spend_by_country_is_governed_metric(
@@ -398,7 +396,7 @@ def test_scalar_total_spend_then_add_2000(
 def test_followup_without_prior_abstains() -> None:
     from dms_executor.session_followup import maybe_followup
 
-    env = maybe_followup("average of them", prior=None, session_id="ses_none")
+    env = maybe_followup("average of them", prior=None, session_id="ses_none", dialect="duckdb")
     assert env is not None
     assert env["abstained"] is True
     assert env["badge"] == "ABSTAIN"
@@ -434,54 +432,52 @@ def test_cortex_fallback_spend_does_not_f32_demote(
     assert len(cortex.asks) == 1
 
 
-def test_quoted_warehouse_schema_spend_does_not_f32_demote(
+def test_unbound_or_ungranted_catalog_name_is_refused(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Non-pack ask: quoted warehouse.inventory join plus bronze grant soup stays certified."""
-    cortex = _LakeSpendAskCortex(
-        sql_used=(
-            'SELECT s.country, ROUND(SUM(i.quantity_kg * i.unit_cost_myr), 2) '
-            'AS total_spend_myr FROM "warehouse"."inventory" AS i '
-            'JOIN "warehouse"."suppliers" AS s ON i.supplier_id = s.supplier_id '
-            "GROUP BY s.country ORDER BY total_spend_myr DESC"
+    """Main's :479 certified a qualifier the catalog does not bind.
+
+    ``pack.duckdb`` is database ``pack``. ``"warehouse"."inventory"`` is
+    unbound. ``"pack"."shipments"`` binds and Finance does not grant it.
+    Both refuse. The name is not a user-facing field.
+    """
+    cases = (
+        (
+            'SELECT 1 FROM "warehouse"."inventory"',
+            "sql_relation_unresolved",
+            ("warehouse", "inventory"),
+            "ses_cq_unbound",
         ),
-        sources=[
-            {
-                "ref_id": "src_inv",
-                "container": "warehouse_inventory",
-                "kind": "sql",
-                "row_count": 3,
-                "contribution": 0.5,
-            },
-            {
-                "ref_id": "src_sup",
-                "container": "warehouse_suppliers",
-                "kind": "sql",
-                "row_count": 3,
-                "contribution": 0.5,
-            },
-        ],
-        audit_id="aud_cq_quoted_wh",
-        token="dt_cq_quoted_wh",
+        (
+            'SELECT 1 FROM "pack"."shipments"',
+            "sql_relation_not_granted",
+            ("pack", "shipments"),
+            "ses_cq_ungranted_qual",
+        ),
     )
-    client = _live_client(warehouse, minter, monkeypatch, cortex)
-    r = client.post(
-        "/v1/chat/ask",
-        json={
-            "question": "Show total spend by supplier country from the lake",
-            "space_id": FINANCE,
-            "session_id": "ses_cq_quoted_wh",
-        },
-    )
-    assert r.status_code == 200, r.text
-    env = r.json()
-    assert_envelope_valid(env)
-    assert env["abstained"] is False
-    assert env["badge"] == "L0_CERTIFIED"
-    assert env["rows"]
-    assert "20,516.00" in env["text"] or "20516" in env["text"]
-    assert "scope conflict" not in env["text"].lower()
-    assert len(cortex.asks) == 1
+    for sql, reason, hidden, session_id in cases:
+        cortex = _LakeSpendAskCortex(sql_used=sql)
+        client = _live_client(warehouse, minter, monkeypatch, cortex)
+        response = client.post(
+            "/v1/chat/ask",
+            json={
+                "question": "Show total spend by supplier country from the lake",
+                "space_id": FINANCE,
+                "session_id": session_id,
+            },
+        )
+        assert response.status_code == 200, response.text
+        env = response.json()
+        assert_envelope_valid(env)
+        assert env["abstained"] is True, sql
+        assert env["badge"] == "ABSTAIN", sql
+        assert env["sql_used"] is None, sql
+        assert env["rows"] == [], sql
+        blob = json.dumps(env)
+        assert reason in blob, sql
+        assert "explain:" not in blob, sql
+        for name in hidden:
+            assert name not in blob, (sql, name)
 
 
 _VQ03_CASES = (
@@ -505,13 +501,13 @@ def test_vq03_exact_asks_hit_pack_and_traps_miss() -> None:
     ops = {"locations", "inventory", "shipments"}
     for question, space, metric_id in _VQ03_CASES:
         grant = finance if space == FINANCE else ops
-        hit = lookup_pack_metric(question, grantable=grant)
+        hit = lookup_pack_metric(question, grantable=grant, dialect="duckdb")
         assert hit is not None, question
         assert hit.metric_id == metric_id
-    assert lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance) is None
-    assert lookup_pack_metric(DELAYED_COUNT_TRAP_Q, grantable=ops) is None
-    assert lookup_pack_metric(SHIPMENT_COST_Q, grantable=finance) is None
-    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops) is None
+    assert lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance, dialect="duckdb") is None
+    assert lookup_pack_metric(DELAYED_COUNT_TRAP_Q, grantable=ops, dialect="duckdb") is None
+    assert lookup_pack_metric(SHIPMENT_COST_Q, grantable=finance, dialect="duckdb") is None
+    assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops, dialect="duckdb") is None
     assert is_uncertified_paraphrase(HOW_FULL_TRAP_Q)
     assert is_uncertified_paraphrase(DELAYED_COUNT_TRAP_Q)
     assert not is_uncertified_paraphrase(CAPACITY_UTILISATION_Q)
@@ -573,6 +569,7 @@ def test_vq03_finance_ops_asks_are_governed_metric(
             if space == FINANCE
             else {"locations", "inventory", "shipments"}
         ),
+        dialect="duckdb",
     )
     assert hit is not None
     assert submitted == hit.sql

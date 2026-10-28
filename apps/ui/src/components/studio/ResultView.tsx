@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SimpleChart } from "@/components/SimpleChart";
 import { copyText } from "@/lib/copilotPrompts";
+import { postAskConfirm } from "@/lib/api";
 import { splitInsights } from "@/lib/splitInsights";
 import { isAbstain, namedAbstainReason, type AbstainFields } from "./abstainReason";
 import { chartFromRows } from "./chartShape";
@@ -29,6 +30,13 @@ export type StudioAskEnvelope = AbstainFields & {
   engine_timezone_after?: string | null;
   contract?: string | null;
   cortex_sha?: string | null;
+  reconfirm?: {
+    reason_code?: string;
+    reason_text?: string;
+    suggested_question?: string;
+    definition?: string;
+    token?: string;
+  } | null;
 };
 
 const PAGE_SIZE = 10;
@@ -45,13 +53,43 @@ type Props = {
 export function ResultView({ envelope }: Props) {
   const [page, setPage] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [follow, setFollow] = useState<StudioAskEnvelope | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    setFollow(null);
+    setConfirmError(null);
+  }, [envelope]);
   if (!envelope) return null;
+  const shown = follow ?? envelope;
 
-  const abstained = isAbstain(envelope);
-  const rows = abstained ? [] : listRows(envelope.rows);
-  const spec = abstained ? null : chartFromRows(rows);
-  const { prose, insights } = splitInsights(typeof envelope.text === "string" ? envelope.text : "");
-  const sql = typeof envelope.sql_used === "string" ? envelope.sql_used : "";
+  const offer = shown.reconfirm;
+  const suggestion =
+    offer != null && typeof offer.suggested_question === "string"
+      ? offer.suggested_question.trim()
+      : "";
+  const reconfirm =
+    offer != null && typeof offer.token === "string" && offer.token.length > 0 && suggestion.length > 0;
+  const abstained = isAbstain(shown);
+
+  async function choose(yes: boolean) {
+    if (!offer || typeof offer.token !== "string") return;
+    setConfirming(true);
+    setConfirmError(null);
+    try {
+      const next = (await postAskConfirm({ token: offer.token, yes })) as StudioAskEnvelope;
+      setFollow(next);
+      setPage(0);
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : "confirm failed");
+    } finally {
+      setConfirming(false);
+    }
+  }
+  const rows = abstained || reconfirm ? [] : listRows(shown.rows);
+  const spec = abstained || reconfirm ? null : chartFromRows(rows);
+  const { prose, insights } = splitInsights(typeof shown.text === "string" ? shown.text : "");
+  const sql = typeof shown.sql_used === "string" ? shown.sql_used : "";
   const offset = page * PAGE_SIZE;
   const pageRows = rows.slice(offset, offset + PAGE_SIZE);
 
@@ -64,7 +102,53 @@ export function ResultView({ envelope }: Props) {
         Ask result
       </p>
 
-      {abstained ? (
+      {reconfirm && offer ? (
+        <div
+          data-testid="studio-reconfirm"
+          className="mt-3 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-3"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+            Reconfirm
+          </p>
+          <p data-testid="studio-reconfirm-reason" className="mt-2 text-sm text-[var(--color-ink)]">
+            {offer.reason_text || offer.reason_code}
+          </p>
+          <p data-testid="studio-reconfirm-suggestion" className="mt-2 text-sm font-medium text-[var(--color-ink)]">
+            {offer.suggested_question}
+          </p>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              data-testid="studio-reconfirm-yes"
+              disabled={confirming}
+              onClick={() => {
+                void choose(true);
+              }}
+              className="border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)]"
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              data-testid="studio-reconfirm-no"
+              disabled={confirming}
+              onClick={() => {
+                void choose(false);
+              }}
+              className="border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1 text-sm text-[var(--color-ink)] hover:border-[var(--color-accent)]"
+            >
+              No
+            </button>
+          </div>
+          {confirmError ? (
+            <p data-testid="studio-reconfirm-error" className="mt-2 text-xs text-[var(--color-danger)]">
+              {confirmError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {!reconfirm && abstained ? (
         <div
           data-testid="studio-abstain"
           className="mt-3 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-3"
@@ -73,10 +157,11 @@ export function ResultView({ envelope }: Props) {
             Abstained
           </p>
           <p data-testid="studio-abstain-reason" className="mt-2 text-sm font-medium text-[var(--color-ink)]">
-            {namedAbstainReason(envelope)}
+            {namedAbstainReason(shown)}
           </p>
         </div>
-      ) : (
+      ) : null}
+      {!reconfirm && !abstained ? (
         <div data-testid="studio-insight" className="mt-3 text-sm text-[var(--color-ink)]">
           {prose ? <p className="whitespace-pre-wrap">{prose}</p> : null}
           {insights.length > 0 ? (
@@ -87,7 +172,7 @@ export function ResultView({ envelope }: Props) {
             </ul>
           ) : null}
         </div>
-      )}
+      ) : null}
 
       <div className="mt-4">
         <div className="flex items-center justify-between gap-2">
@@ -149,7 +234,7 @@ export function ResultView({ envelope }: Props) {
         </div>
       ) : null}
 
-      <StampsPanel envelope={envelope} />
+      <StampsPanel envelope={shown} />
     </section>
   );
 }

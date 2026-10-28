@@ -90,6 +90,14 @@ export type AnswerEnvelope = {
   served_model?: string | null;
   /** Named abstain when the writer set it. Other names live in assumptions. */
   abstain_reason?: string | null;
+  /** Set when the ladder ended without a checked answer and the user can confirm. */
+  reconfirm?: {
+    reason_code: string;
+    reason_text: string;
+    suggested_question: string;
+    token: string;
+    definition?: string;
+  } | null;
 };
 
 export type SpaceSummary = {

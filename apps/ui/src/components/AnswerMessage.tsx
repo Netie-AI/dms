@@ -20,6 +20,7 @@ import {
   type BiTarget,
 } from "@/lib/biExport";
 import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
+import { postAskConfirm } from "@/lib/api";
 import {
   csvDownloadName,
   isSummaryExport,
@@ -123,8 +124,32 @@ function renderWithValues(
   return parts.length ? parts : [text];
 }
 
+function reconfirmCard(envelope: AnswerEnvelope): {
+  token: string;
+  reason: string;
+  suggestion: string;
+  definition: string;
+} | null {
+  const offer = envelope.reconfirm;
+  if (offer == null || typeof offer.token !== "string" || offer.token.length === 0) return null;
+  const suggestion =
+    typeof offer.suggested_question === "string" ? offer.suggested_question.trim() : "";
+  const definition = typeof offer.definition === "string" ? offer.definition.trim() : "";
+  if (!suggestion && !definition) return null;
+  const reasonText = typeof offer.reason_text === "string" ? offer.reason_text.trim() : "";
+  return {
+    token: offer.token,
+    reason: reasonText || offer.reason_code,
+    suggestion,
+    definition,
+  };
+}
+
 export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const { selectValue, setSourcePanelOpen, ask, suggestions, productMode } = useApp();
+  const [follow, setFollow] = useState<AnswerEnvelope | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [showSql, setShowSql] = useState(false);
   const [showLayer, setShowLayer] = useState(false);
   const [showCopilot, setShowCopilot] = useState(false);
@@ -140,6 +165,11 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const [checkNote, setCheckNote] = useState<string | null>(null);
   const [confirmLeft, setConfirmLeft] = useState<number | null>(null);
   const confirmFired = useRef(false);
+  useEffect(() => {
+    setFollow(null);
+    setConfirmError(null);
+  }, [envelope]);
+
   const rows = envelope.rows ?? [];
   const { prose, insights } = splitInsights(envelope.text);
   const receipt = auditReceiptLines(envelope);
@@ -295,6 +325,26 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     } finally {
       setDrillBusy(false);
     }
+  }
+
+  const offer = reconfirmCard(envelope);
+
+  async function choose(yes: boolean) {
+    if (!offer) return;
+    setConfirming(true);
+    setConfirmError(null);
+    try {
+      const next = await postAskConfirm({ token: offer.token, yes });
+      setFollow(next);
+    } catch (err) {
+      setConfirmError(err instanceof Error ? err.message : "confirm failed");
+    } finally {
+      setConfirming(false);
+    }
+  }
+
+  if (follow) {
+    return <AnswerMessage envelope={follow} />;
   }
 
   return (
@@ -656,6 +706,63 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           )}
         </div>
       )}
+      {offer ? (
+        <div
+          data-testid="chat-reconfirm"
+          className="mt-4 border border-[var(--color-line)] bg-[var(--color-panel)] px-4 py-3.5"
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+            Reconfirm
+          </p>
+          {offer.reason && offer.reason !== envelope.text.trim() ? (
+            <p data-testid="chat-reconfirm-reason" className="mt-2 text-sm leading-relaxed text-[var(--color-ink)]">
+              {offer.reason}
+            </p>
+          ) : null}
+          {offer.definition ? (
+            <p
+              data-testid="chat-reconfirm-definition"
+              className="mt-2 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2 text-sm leading-relaxed text-[var(--color-ink)]"
+            >
+              {offer.definition}
+            </p>
+          ) : null}
+          {offer.suggestion ? (
+            <p data-testid="chat-reconfirm-suggestion" className="mt-2 text-sm font-medium leading-relaxed text-[var(--color-ink)]">
+              {offer.suggestion}
+            </p>
+          ) : null}
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              data-testid="chat-reconfirm-yes"
+              disabled={confirming}
+              onClick={() => {
+                void choose(true);
+              }}
+              className="border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-sm font-medium text-[var(--color-ink)] disabled:opacity-50"
+            >
+              Yes
+            </button>
+            <button
+              type="button"
+              data-testid="chat-reconfirm-no"
+              disabled={confirming}
+              onClick={() => {
+                void choose(false);
+              }}
+              className="border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm text-[var(--color-ink)] disabled:opacity-50"
+            >
+              No
+            </button>
+          </div>
+          {confirmError ? (
+            <p data-testid="chat-reconfirm-error" className="mt-2 text-xs text-[var(--color-danger)]">
+              {confirmError}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <AnswerDetails envelope={envelope}>
         <ResultView envelope={envelope} />
       </AnswerDetails>

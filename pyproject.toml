@@ -85,6 +85,7 @@ pythonpath = [
   "packages/cortex_client",
   "packages/executor",
   "packages/ledger",
+  "packages/ao_vendor",
 ]
 
 [tool.mypy]

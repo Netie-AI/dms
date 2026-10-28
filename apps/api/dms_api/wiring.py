@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import dms_executor
@@ -10,6 +11,8 @@ from dms_core.ask import AskServicePort
 from dms_core.pipelines import GoldMetricDef
 from dms_ledger import append_event
 from fastapi import HTTPException
+
+logger = logging.getLogger(__name__)
 
 
 def build_ask_service(
@@ -41,6 +44,16 @@ def bronze_list(*, space_id: str | None = None):
 
 def warehouse_tables(*, space_id: str | None = None):
     return dms_executor.list_warehouse_tables(space_id=space_id)
+
+
+def sql_tables_read(sql: str | None) -> tuple[str, ...]:
+    """BANK-02 - tables an executed statement reads, via the executor's one parser."""
+    return dms_executor.tables_read_by_sql(sql)
+
+
+def sql_tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
+    """BANK-02 - ``(tables, approximate)``. Never parses an unbounded statement."""
+    return dms_executor.tables_read_checked_by_sql(sql)
 
 
 def reveal_origin_uri(path: str) -> dict[str, Any]:
@@ -122,6 +135,18 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     return env
 
 
+def scrub_ask_envelope(env: dict[str, Any]) -> dict[str, Any]:
+    """Scrub an ask envelope built outside ``live_ask``. Opens no connection.
+
+    Routes stay off ``dms_executor``. No turn resolved a grant set for
+    these, so nothing is granted. Loop SQL and ``raw_reply`` are not
+    rewritten.
+    """
+    if not isinstance(env, dict):
+        return env
+    return dms_executor.hide_echo(env, "")
+
+
 def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
@@ -166,6 +191,7 @@ def register_verified_query(
         question=question,
         sql=sql,
         synonyms=synonyms,
+        dialect=dms_executor.SERVING_DIALECT,
     )
 
 
@@ -254,6 +280,14 @@ def sql_source_ingest(
     # the same outcome as one measured and found broken. The rows landed and
     # their provenance is real - only the join is in question.
     links = dms_executor.verify_source_links(extract)
+    # F-b: SQL-source bronze reaches Cortex's serving warehouse the same way a
+    # Studio upload does; before this only batch ingest synced it.
+    sync_state, sync_detail = (
+        dms_executor.serving_sync_state() if extract.pulls else ("not_attempted", "nothing landed")
+    )
+    ontology = _derive_space_ontology(
+        extract.manifest_entry, kind=kind, host=host, database=database, space_id=space_id
+    )
     return {
         "source": extract.source,
         "tables": [
@@ -263,14 +297,201 @@ def sql_source_ingest(
                 "row_count": p.row_count,
                 "truncated": p.truncated,
                 "extracted_at": p.extracted_at,
+                # F-e: landed types from the source's declared types; any column
+                # left VARCHAR is named with the reason.
+                "column_types": dict(p.column_types),
+                "untyped_columns": dict(p.untyped_columns),
+                "note": p.note,
             }
             for p in extract.pulls
         ],
+        "serving_sync": {"state": sync_state, "detail": sync_detail},
         "skipped": list(extract.skipped),
         "declared_primary_keys": len(extract.keys.primary_keys),
         "declared_foreign_keys": len(extract.keys.foreign_keys),
         "links": links,
+        "ontology": ontology,
     }
+
+
+def _derive_space_ontology(
+    entry: dict[str, Any],
+    *,
+    kind: str,
+    host: str,
+    database: str,
+    space_id: str | None,
+) -> dict[str, Any]:
+    """ONTO-DERIVE-01: derive, verify, store the Space's ontology from this pull.
+
+    Never fails the ingest (the rows landed and their provenance is real), and
+    never hides a failure: the receipt says ``derived: false`` and why.
+    """
+    if not space_id:
+        return {"derived": False, "reason": "no space_id: an ontology belongs to a Space"}
+    try:
+        catalog = dms_executor.bronze_catalog(entry)
+        return dms_executor.derive_and_store(
+            catalog,
+            space_id=dms_executor.canonical_space_id(space_id),
+            identity=dms_executor.source_identity(kind, host, database, catalog),
+            warehouse=dms_executor.warehouse_path(),
+        )
+    except Exception as exc:  # noqa: BLE001 - named on the receipt, never raised
+        logger.warning("ontology derive failed for %s: %s", space_id, exc)
+        return {"derived": False, "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+
+def space_ontology(space_id: str) -> dict[str, Any]:
+    """GET view: every source's ontology for the Space, status per object and link."""
+    try:
+        views = dms_executor.space_ontology_views(dms_executor.canonical_space_id(space_id))
+    except Exception as exc:  # noqa: BLE001 - named, never a bare 500
+        raise _store_unavailable(exc) from None
+    return {
+        "space_id": space_id,
+        "derived": bool(views),
+        "ontologies": views,
+        **(
+            {}
+            if views
+            else {
+                "reason": "no ontology has been derived for this Space; ingest a SQL "
+                "source into it or POST .../ontology/derive"
+            }
+        ),
+    }
+
+
+def space_ontology_rederive(
+    space_id: str,
+    *,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Re-derive for an existing Space. Never pulls rows.
+
+    With ``source`` (a SQL connection): read the source catalog (keys only) and
+    match it to the tables already landed for this Space from that source.
+    Without: re-measure every stored catalog against the bronze rows as they
+    are now. A Space with neither is a named 409.
+    """
+    canon = dms_executor.canonical_space_id(space_id)
+    warehouse = dms_executor.warehouse_path()
+    try:
+        return _rederive(space_id, canon, warehouse, source)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the store, never a bare 500
+        raise _store_unavailable(exc) from None
+
+
+def _store_unavailable(exc: Exception) -> HTTPException:
+    logger.warning("ontology store unavailable: %s", exc)
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "ontology_store_unavailable",
+            "message": "the Space ontology store could not be read or written just now",
+        },
+    )
+
+
+def _rederive(
+    space_id: str, canon: str, warehouse: Any, source: dict[str, Any] | None
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    if source is not None:
+        try:
+            cfg = dms_executor.SourceConfig(**source)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422, detail={"code": "bad_request", "message": str(exc)}
+            ) from None
+        try:
+            keys = dms_executor.list_source_keys(cfg)
+        except Exception as exc:  # noqa: BLE001 - any driver failure is the source's
+            message = (
+                str(exc)
+                if isinstance(exc, dms_executor.SourceConnectionError)
+                else f"could not read keys from {cfg.describe()} ({type(exc).__name__})"
+            )
+            raise HTTPException(
+                status_code=502, detail={"code": "source_unreachable", "message": message}
+            ) from None
+        prefix = cfg.describe() + "#"
+        tables = []
+        for pull in dms_executor.list_source_pulls(space_id=canon):
+            ref = str(pull.get("ref") or "")
+            if not ref.startswith(prefix):
+                continue
+            schema, _, name = ref[len(prefix):].partition(".")
+            tables.append(
+                {
+                    "schema": schema,
+                    "table": name,
+                    "path": pull["bronze_table"],
+                    "truncated": bool(pull.get("truncated")),
+                }
+            )
+        if not tables:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_landed_tables",
+                    "message": f"nothing from {cfg.describe()} has been ingested into this Space",
+                },
+            )
+        catalog = dms_executor.bronze_catalog(
+            {
+                "source": cfg.describe(),
+                "tables": tables,
+                "primary_keys": {k: list(v) for k, v in keys.primary_keys.items()},
+                "foreign_keys": [
+                    {
+                        "name": fk.name,
+                        "from_table": fk.from_table,
+                        "from_column": fk.from_column,
+                        "to_table": fk.to_table,
+                        "to_column": fk.to_column,
+                    }
+                    for fk in sorted(keys.foreign_keys, key=lambda f: (f.name, f.ordinal))
+                ],
+            }
+        )
+        results.append(
+            dms_executor.derive_and_store(
+                catalog,
+                space_id=canon,
+                identity=dms_executor.source_identity(
+                    cfg.kind, cfg.host, cfg.database, catalog
+                ),
+                warehouse=warehouse,
+            )
+        )
+    else:
+        for identity, catalog in dms_executor.stored_catalogs_by_source(canon):
+            results.append(
+                dms_executor.derive_and_store(
+                    catalog, space_id=canon, identity=identity, warehouse=warehouse
+                )
+            )
+        if not results:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_catalog",
+                    "message": "this Space has no stored source catalog; send the source "
+                    "connection to read its keys",
+                },
+            )
+    return {"space_id": space_id, "rederived": len(results), "ontologies": results}
+
+
+def bind_ontology_store(database_url: str, tenant_id: str) -> None:
+    """Durable ontology store for a Postgres-bound API (same tenant as Spaces)."""
+    from dms_core.control_plane.onto_store import PostgresOntologyStore
+
+    dms_executor.set_ontology_store(PostgresOntologyStore(database_url, tenant_id=tenant_id))
 
 
 def xlsx_orch_golden(
@@ -431,15 +652,53 @@ def gold_sign_metric(
     return signed.to_dict()
 
 
-def health_pack_name() -> str:
-    """``curated_ceo`` when the fixture files exist, otherwise ``absent``.
+def health_pack_fields() -> dict[str, str]:
+    """Pack identity for /health.
 
-    /health must not advertise a pack the image does not have.
+    ``curated_ceo`` when both files load. ``absent`` when a file is not on disk.
+    ``unreadable`` when a file is on disk but cannot be used, with ``pack_error``
+    set to the exception class. The class only: a parser message quotes the file.
     """
     try:
-        return "curated_ceo" if dms_executor.curated_pack_present() else "absent"
+        status = dms_executor.curated_pack_status()
     except Exception:  # noqa: BLE001 - health must stay up
-        return "absent"
+        return {"pack": "absent"}
+    if status.name == "unreadable" and status.error_class:
+        return {"pack": "unreadable", "pack_error": status.error_class}
+    return {"pack": status.name}
+
+
+def health_pack_name() -> str:
+    """``curated_ceo``, ``absent``, or ``unreadable``. See ``health_pack_fields``."""
+    return health_pack_fields()["pack"]
+
+
+def compile_ontology_proposal(
+    *,
+    actor: str,
+    tenant_id: str,
+    space_id: str | None = None,
+) -> dict[str, Any]:
+    """Run AO-VENDOR-01 ``compile_source`` and store the proposal as proposed.
+
+    Flag off returns status ``off`` and writes nothing. A proposal is never
+    stored with ``served`` true.
+    """
+    import duckdb
+    from dms_core.control_plane.onto_data import store_proposal
+
+    path = dms_executor.warehouse_path()
+    conn = dms_executor.connect_serving(path) if path.is_file() else duckdb.connect()
+    try:
+        proposal = dms_executor.compile_source(conn)
+    finally:
+        conn.close()
+    return store_proposal(
+        proposal.to_json(),
+        created_by=actor,
+        space_id=space_id,
+        tenant_id=tenant_id,
+    )
 
 
 def engine_clock_fields() -> dict[str, str]:

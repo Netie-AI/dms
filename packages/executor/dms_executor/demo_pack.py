@@ -16,12 +16,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic, TypeVar
 
+from dms_executor.abstain import build_abstain
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.grant_struct import (
+    customer_grant_reason,
+    relation_gap,
+    serve_gap,
+    sql_refusal_envelope,
+    structural_grant_stop,
+)
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
 from dms_executor.verified_queries import rows_from_submit_result
 
@@ -171,10 +178,140 @@ def curated_pack_present() -> bool:
     """True when both curated_ceo fixture files are on disk.
 
     A missing file is an empty pack, same as ``curated_l0_question_norms``.
-    It is not an error and it is not read at import.
+    It is not an error and it is not read at import. On disk is not readable:
+    ``curated_pack_status`` is the health check.
     """
     root = _score_fixture_dir()
     return (root / "questions.yaml").is_file() and (root / "oracles.yaml").is_file()
+
+
+_T = TypeVar("_T")
+
+
+_PACK_FILES = ("questions.yaml", "oracles.yaml")
+
+_PackKey = tuple[tuple[int, int] | None, ...]
+
+
+def _pack_file_key() -> _PackKey:
+    """``(mtime_ns, size)`` per pack file, ``None`` for a file not on disk."""
+    root = _score_fixture_dir()
+    key: list[tuple[int, int] | None] = []
+    for name in _PACK_FILES:
+        try:
+            st = (root / name).stat()
+        except OSError:
+            key.append(None)
+            continue
+        key.append((st.st_mtime_ns, st.st_size))
+    return tuple(key)
+
+
+class _HitCache(Generic[_T]):
+    """Remember one successful non-empty load while the pack files are unchanged.
+
+    The slot is keyed on each file's modification time and size, read before
+    the load. A changed time or size, or a file that is gone, drops the slot
+    and loads again. Empty results are not stored.
+    """
+
+    def __init__(self, load: Callable[[], _T]) -> None:
+        self._load = load
+        self._hit: _T | None = None
+        self._key: _PackKey | None = None
+
+    def cache_clear(self) -> None:
+        self._hit = None
+        self._key = None
+
+    def __call__(self) -> _T:
+        key = _pack_file_key()
+        if self._hit is not None and self._key == key:
+            return self._hit
+        self.cache_clear()
+        loaded = self._load()
+        if loaded and None not in key:
+            self._hit = loaded
+            self._key = key
+        return loaded
+
+
+@dataclass(frozen=True)
+class PackStatus:
+    """``name`` is ``curated_ceo``, ``absent``, or ``unreadable``.
+
+    ``error_class`` is the exception class for ``unreadable`` and nothing else.
+    It is never the message, which can quote the file.
+    """
+
+    name: str
+    error_class: str | None = None
+
+
+def _require_question_list(data: dict[str, Any]) -> None:
+    rows = data.get("questions", [])
+    if rows is None:
+        return
+    if not isinstance(rows, list) or any(not isinstance(item, dict) for item in rows):
+        raise ValueError("pack document has the wrong shape")
+
+
+def _require_oracle_map(data: dict[str, Any]) -> None:
+    rows = data.get("oracles", {})
+    if rows is None:
+        return
+    if not isinstance(rows, dict) or any(
+        item is not None and not isinstance(item, dict) for item in rows.values()
+    ):
+        raise ValueError("pack document has the wrong shape")
+
+
+def _read_pack_file(
+    path: Path,
+    require: Callable[[dict[str, Any]], None],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """``(doc, None)`` when the file loads, ``(None, None)`` when it is not on disk.
+
+    ``(None, error_class)`` when it is on disk but cannot be used. The class
+    name only.
+    """
+    if not path.is_file():
+        return None, None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        return None, type(exc).__name__
+    try:
+        import yaml
+
+        data = yaml.safe_load(text)
+    except Exception as exc:  # noqa: BLE001 - invalid YAML is an unreadable pack
+        return None, type(exc).__name__
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return None, "ValueError"
+    try:
+        require(data)
+    except ValueError:
+        return None, "ValueError"
+    return data, None
+
+
+def _inspect_pack() -> tuple[PackStatus, dict[str, Any], dict[str, Any]]:
+    root = _score_fixture_dir()
+    questions, q_err = _read_pack_file(root / "questions.yaml", _require_question_list)
+    oracles, o_err = _read_pack_file(root / "oracles.yaml", _require_oracle_map)
+    if q_err or o_err:
+        return PackStatus("unreadable", q_err or o_err), {}, {}
+    if questions is None or oracles is None:
+        return PackStatus("absent"), {}, {}
+    return PackStatus("curated_ceo"), questions, oracles
+
+
+def curated_pack_status() -> PackStatus:
+    """Loaded, absent, or unreadable. Does not cache a miss."""
+    return _inspect_pack()[0]
 
 
 def _collapse_sql(raw: object) -> str:
@@ -219,14 +356,11 @@ def load_score_pack_metrics(
 
     Reads the curated_ceo fixture (question + oracle SQL). An id not in
     ``ids`` is not a metric. Same question text keeps the first metric.
+    A missing or unreadable pack is an empty tuple, same as an absent one.
     """
-    root = _score_fixture_dir()
-    if not curated_pack_present():
+    status, questions, oracles = _inspect_pack()
+    if status.name != "curated_ceo":
         return ()
-    import yaml
-
-    questions = yaml.safe_load((root / "questions.yaml").read_text(encoding="utf-8")) or {}
-    oracles = yaml.safe_load((root / "oracles.yaml").read_text(encoding="utf-8")) or {}
     oracle_rows = oracles.get("oracles") or {}
     taken = {_norm(m.question) for m in base}
     extra: list[PackMetric] = []
@@ -260,10 +394,11 @@ def load_score_pack_metrics(
 PACK_METRICS: tuple[PackMetric, ...] = _BASE_PACK_METRICS
 
 
-@lru_cache(maxsize=1)
-def score_pack_exact_metrics() -> tuple[PackMetric, ...]:
-    """Loaded on the first pack lookup. A missing pack is an empty tuple."""
+def _load_exact_metrics() -> tuple[PackMetric, ...]:
     return load_score_pack_metrics()
+
+
+score_pack_exact_metrics = _HitCache(_load_exact_metrics)
 
 
 def __getattr__(name: str) -> Any:
@@ -326,11 +461,12 @@ def maybe_uncertified_refuse_ask(
     """
     if not is_uncertified_paraphrase(question):
         return None
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        question=question,
+        stage="demo_pack",
         answer_id="ans_uncertified_paraphrase",
         text=uncertified_refuse_text(question),
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
         sql_used=None,
@@ -343,7 +479,6 @@ def maybe_uncertified_refuse_ask(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
         suggestions=(
             [CAPACITY_UTILISATION_Q]
             if _norm(question) == _norm(HOW_FULL_TRAP_Q)
@@ -351,6 +486,17 @@ def maybe_uncertified_refuse_ask(
         ),
     )
     assert_envelope_valid(env)
+    return _stamp_l1(env)
+
+
+def _stamp_l1(env: dict[str, Any]) -> dict[str, Any]:
+    """L1 only when this path executed SQL. A no-SQL abstain keeps abstain:<stage>."""
+    from dms_executor.route_stamp import ROUTE_L1, stamp_route
+
+    sql_used = env.get("sql_used")
+    if not isinstance(sql_used, str) or not sql_used.strip():
+        return env
+    stamp_route(env, ROUTE_L1)
     return env
 
 
@@ -358,11 +504,9 @@ def _as_of() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _grant_covers(table: str, allowed: set[str]) -> bool:
-    """True when the Space grant names the table or its Cortex warehouse_ alias."""
-    if table in allowed:
-        return True
-    return f"warehouse_{table}" in allowed
+def _grant_covers(table: str, allowed: set[str], *, dialect: str | None) -> bool:
+    """True when ``relation_gap`` grants ``table``. A missing dialect covers nothing."""
+    return relation_gap(table, grantable=set(allowed), dialect=dialect) is None
 
 
 def match_pack_phrase(
@@ -387,25 +531,28 @@ def lookup_pack_metric(
     *,
     grantable: set[str] | None = None,
     tables: list[str] | None = None,
+    dialect: str | None = None,
 ) -> PackMetric | None:
     """Return the pack metric when the phrase matches and grants cover it.
 
     The phrase set is the ten base metrics plus the score-pack allowlist.
     A Space that does not grant every table the SQL names is not a hit here
     (Warehouse Ops vs suppliers). ``maybe_pack_ask`` names that as ``grants
-    fail`` instead of treating it as no match. Cortex ``warehouse_<table>``
-    aliases count as the same grant. Column presence is Cortex's job on
-    submit -- do not probe the thin DMS local file.
+    fail`` instead of treating it as no match. Column presence is Cortex's
+    job on submit -- do not probe the thin DMS local file.
     """
     hit = match_pack_phrase(question, tables=tables)
     if hit is None:
         return None
     allowed = grantable if grantable is not None else set()
-    if any(not _grant_covers(t, allowed) for t in hit.tables):
+    if any(not _grant_covers(t, allowed, dialect=dialect) for t in hit.tables):
         return None
     try:
         reject_hostile_chat_sql(hit.sql)
     except SecurityEvent:
+        return None
+    gap = serve_gap(hit.sql, grantable=set(allowed), dialect=dialect)
+    if gap:
         return None
     return hit
 
@@ -414,31 +561,26 @@ def _curated_pack_path() -> Path:
     return _score_fixture_dir() / "questions.yaml"
 
 
-@lru_cache(maxsize=1)
-def curated_l0_question_norms() -> frozenset[str]:
+def _load_l0_norms() -> frozenset[str]:
     """Normalised curated_ceo questions whose expect is l0.
 
-    The file is the score pack. A missing file means this process cannot
-    tell a curated l0 ask from any other question.
+    A missing or unreadable file means this process cannot tell a curated l0
+    ask from any other question. An empty result is not cached.
     """
-    path = _curated_pack_path()
-    if not path.is_file():
+    doc, err = _read_pack_file(_curated_pack_path(), _require_question_list)
+    if err or doc is None:
         return frozenset()
-    try:
-        import yaml
-    except ImportError:
-        return frozenset()
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     norms: set[str] = set()
-    for row in data.get("questions") or []:
-        if not isinstance(row, dict):
-            continue
+    for row in doc.get("questions") or []:
         if str(row.get("expect") or "").lower() != "l0":
             continue
         n = _norm(str(row.get("question") or ""))
         if n:
             norms.add(n)
     return frozenset(norms)
+
+
+curated_l0_question_norms = _HitCache(_load_l0_norms)
 
 
 def is_curated_l0_without_pack_metric(question: str) -> bool:
@@ -468,11 +610,12 @@ def curated_pack_metric_miss(
         "so the pack lookup did not match. "
         "This is not a generic generative abstain."
     )
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        question=question,
+        stage="demo_pack",
         answer_id="ans_curated_step",
         text=text,
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
         sql_used=None,
@@ -482,10 +625,9 @@ def curated_pack_metric_miss(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
 
 
 def _curated_step_refusal(
@@ -494,6 +636,7 @@ def _curated_step_refusal(
     *,
     space_id: str | None,
     session_id: str | None,
+    grant_code: str | None = None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. The phrase matched; this later step did not.
 
@@ -506,11 +649,12 @@ def _curated_step_refusal(
         f"but a later step failed: {failed_step}. "
         "I am not answering from a generative fallback."
     )
-    env = build_answer_envelope(
+    env = build_abstain(
+        reason="abstain",
+        question=question,
+        stage="demo_pack",
         answer_id="ans_curated_step",
         text=text,
-        badge="ABSTAIN",
-        abstained=True,
         values=[],
         rows=[],
         sql_used=None,
@@ -520,10 +664,10 @@ def _curated_step_refusal(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        question=question,
+        abstain_reason=grant_code,
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
 
 
 def envelope_from_pack_submit(
@@ -566,7 +710,30 @@ def envelope_from_pack_submit(
         grounded_tables=list(metric.tables),
     )
     assert_envelope_valid(env)
-    return env
+    return _stamp_l1(env)
+
+
+def _grant_miss_code(
+    gap: str | None,
+    phrase: PackMetric,
+    grantable: set[str] | None,
+    dialect: str | None,
+) -> str | None:
+    """The grant checker's code when this pack SQL is not granted.
+
+    ``None`` when the miss is not a grant miss. The customer sentence stays
+    the curated step text; this is only the code.
+    """
+    if isinstance(gap, str) and gap:
+        shown = customer_grant_reason(gap)
+        if shown in {"ungranted", "sql_relation_not_granted"}:
+            return shown
+    allowed = set(grantable or ())
+    for table in phrase.tables:
+        rel = relation_gap(table, grantable=allowed, dialect=dialect)
+        if rel == "sql_relation_not_granted":
+            return rel
+    return None
 
 
 def maybe_pack_ask(
@@ -578,6 +745,7 @@ def maybe_pack_ask(
     tables: list[str] | None = None,
     submit: Callable[[str], Any] | None = None,
     ledger_append: Callable[[dict[str, Any]], Any] | None = None,
+    dialect: str | None = None,
 ) -> dict[str, Any] | None:
     """L1 envelope when the demo pack matches and Cortex executed the SQL.
 
@@ -588,6 +756,15 @@ def maybe_pack_ask(
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
         return None
+    gap = serve_gap(phrase.sql, grantable=set(grantable or ()), dialect=dialect)
+    if gap and structural_grant_stop(gap):
+        return sql_refusal_envelope(
+            reason=gap,
+            space_id=space_id,
+            session_id=session_id,
+            route="governed_metric",
+            question=question,
+        )
     try:
         reject_hostile_chat_sql(phrase.sql)
     except SecurityEvent:
@@ -596,10 +773,17 @@ def maybe_pack_ask(
         question,
         grantable=grantable,
         tables=tables,
+        dialect=dialect,
     )
     if hit is None:
+        # The prose stays for the curated step. The grant code goes through
+        # build_abstain, so a grant miss is not offered as another question.
         return _curated_step_refusal(
-            question, "grants fail", space_id=space_id, session_id=session_id
+            question,
+            "grants fail",
+            space_id=space_id,
+            session_id=session_id,
+            grant_code=_grant_miss_code(gap, phrase, grantable, dialect),
         )
     if submit is None or ledger_append is None:
         return _curated_step_refusal(

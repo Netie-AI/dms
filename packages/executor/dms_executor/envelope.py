@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
+from dms_executor import executed_trace
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
 
@@ -887,6 +889,13 @@ def orphan_money_figures(
     return [n for n in _money_like(text or "") if not any(_close(n, h) for h in have)]
 
 
+def _cell_float(val: Any) -> float | None:
+    """A numeric cell. SQL DECIMAL arrives as Decimal, not float."""
+    if isinstance(val, bool) or not isinstance(val, (int, float, Decimal)):
+        return None
+    return float(val)
+
+
 def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
     """Numeric facts a listing may honestly render from the result set.
 
@@ -899,8 +908,9 @@ def _row_grounded_candidates(rows: list[dict[str, Any]]) -> list[float]:
     for row in rows[:50]:
         nums: list[float] = []
         for val in row.values():
-            if isinstance(val, (int, float)) and not isinstance(val, bool):
-                nums.append(float(val))
+            num = _cell_float(val)
+            if num is not None:
+                nums.append(num)
         out.extend(nums)
         for i, a in enumerate(nums):
             for b in nums[i + 1 :]:
@@ -1099,11 +1109,11 @@ def _full_numeric_column_sums(rows: list[dict[str, Any]]) -> list[float]:
         col: list[float] = []
         ok = True
         for row in rows:
-            val = row.get(key)
-            if isinstance(val, bool) or not isinstance(val, (int, float)):
+            num = _cell_float(row.get(key))
+            if num is None:
                 ok = False
                 break
-            col.append(float(val))
+            col.append(num)
         if ok and col:
             out.append(sum(col))
     return out
@@ -1224,10 +1234,13 @@ def build_audit_receipt(
             (a for a in assumptions if str(a).strip()),
             "abstained; badge=ABSTAIN",
         )
+        # Names, not literals: a literal ABSTAIN dict is a second builder.
+        abstain_badge = "ABSTAIN"
+        abstain_flag = True
         unsure = {
             "status": "abstain",
-            "abstained": True,
-            "badge": "ABSTAIN",
+            "abstained": abstain_flag,
+            "badge": abstain_badge,
             "why": str(why_unsure),
         }
     else:
@@ -1294,9 +1307,9 @@ def _ensure_values(
     idx = len(out)
     for row in rows[:50]:
         for key, val in row.items():
-            if not isinstance(val, (int, float)) or isinstance(val, bool):
+            fv = _cell_float(val)
+            if fv is None:
                 continue
-            fv = float(val)
             if any(abs(fv - s) < 1e-9 for s in seen):
                 continue
             out.append({"id": f"v{idx}", "value": fv, "label": str(key)})
@@ -1327,7 +1340,7 @@ def chart_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         (
             k
             for k in keys
-            if isinstance(rows[0].get(k), (int, float)) and not isinstance(rows[0].get(k), bool)
+            if _cell_float(rows[0].get(k)) is not None
         ),
         None,
     )
@@ -1366,6 +1379,7 @@ def build_answer_envelope(
     cascade_path: bool = False,
     exclude_reasons: list[Any] | None = None,
     column_schema: dict[str, Any] | None = None,
+    _from_builder: bool = False,
 ) -> dict[str, Any]:
     """Sole envelope constructor — badge and abstained stay in lockstep."""
     badge_norm_probe = normalize_badge(badge, abstained=False)
@@ -1623,6 +1637,9 @@ def build_answer_envelope(
         from dms_executor.sql_currency import served_column_sources
 
         column_sources = served_column_sources(str(sql_used), schema=column_schema)
+    # BANK-02: a path that ran its SQL locally recorded nothing in the audit trace; take
+    # the statement now, before it is masked, so the audit scrub sees the real text.
+    executed_trace.record_unmasked(str(sql_used) if sql_used else None, len(rows_out or []))
     masked = fail_closed_mask_payload(
         text=text or "",
         rows=rows_out,
@@ -1736,7 +1753,25 @@ def build_answer_envelope(
         env["constraint_trace"] = trace_out
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
-    return mask_unknown_keys(env)
+    masked = mask_unknown_keys(env)
+    # Lazy: this module must not import the quarantine filter at load.
+    from dms_executor.skills_quarantine import config_stamp
+
+    stamp = config_stamp()
+    if stamp:
+        masked["skills_quarantine"] = stamp
+    if abstained and not _from_builder:
+        from dms_executor.abstain import build_abstain
+
+        build_abstain(
+            reason="envelope_demoted",
+            question=question or "",
+            sql=sql_out if isinstance(sql_out, str) else None,
+            retries=0,
+            stage="envelope",
+            demote=masked,
+        )
+    return masked
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:
@@ -1834,13 +1869,22 @@ def reserved_as_of_abstain(
     route: str = "generated",
     question: str | None = None,
     ask_mode: str = "live",
+    sql: str | None = None,
+    retries: int = 0,
+    stage: str | None = None,
 ) -> dict[str, Any]:
     """Named ABSTAIN. $as_of was a placeholder. Zero rows. SQL did not run."""
-    env = build_answer_envelope(
+    from dms_executor.abstain import build_abstain
+
+    env = build_abstain(
+        reason=RESERVED_PARAM_AS_OF,
+        question=question or "",
+        sql=sql,
+        retries=retries,
+        stage=stage or route or "reserved_as_of",
+        abstain_reason=RESERVED_PARAM_AS_OF,
         answer_id="ans_reserved_as_of",
         text=RESERVED_PARAM_AS_OF,
-        badge="ABSTAIN",
-        abstained=True,
         assumptions=[RESERVED_PARAM_AS_OF],
         rows=[],
         values=[],
@@ -1849,11 +1893,10 @@ def reserved_as_of_abstain(
         session_id=session_id,
         ask_mode=ask_mode,
         route=route,
-        question=question,
     )
-    env["abstain_reason"] = RESERVED_PARAM_AS_OF
     assert_envelope_valid(env)
     # No SQL ran. Drop any leftover so this answer does not keep the previous clock.
+    # build_abstain already wrote abstain:<stage>.
     clear_engine_clock()
     return env
 

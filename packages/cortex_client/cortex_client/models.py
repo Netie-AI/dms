@@ -1,4 +1,4 @@
-"""Pydantic request/response shapes for cortex-contract 1.2.0 wire calls.
+"""Pydantic request/response shapes for cortex-contract 1.5.0 wire calls.
 
 Manifest / SubmitRequest / QueryResult live in ``cortex_contract`` — import those
 from the pinned package, do not duplicate.
@@ -6,7 +6,7 @@ from the pinned package, do not duplicate.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,6 +16,11 @@ class AskRequest(BaseModel):
     space_id: str | None = None
     tenant_id: str | None = None
     session_id: str | None = None
+    #: 1.5.0: the tables, columns and joins this question may use (AskPayload).
+    #: Cortex runs its plan and SQL ladder only when this is set. Not sent when None.
+    dms_payload: dict[str, Any] | None = None
+    #: 1.5.0: the answer to a prior reconfirm. Not sent when None.
+    plan_sql_confirm: Literal["yes", "no"] | None = None
 
 
 class AskResponse(BaseModel):
@@ -42,6 +47,15 @@ class AskResponse(BaseModel):
     exclude_reasons: list[Any] | None = None
     #: Engine unsure flag. True demotes to ABSTAIN; False/None is not a badge.
     unsure: bool | None = None
+    #: 1.5.0 plan and SQL ladder: the rung that produced the answer, the
+    #: model calls per step, and the closest runnable question when it would
+    #: abstain. Read by nothing yet; the envelope mapping is WIRE-01c.
+    plan_sql_rung: str | None = None
+    model_calls: dict[str, int] | None = None
+    reconfirm: dict[str, Any] | None = None
+    served_provider: str | None = None
+    served_model: str | None = None
+    served_local: bool | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> AskResponse:  # type: ignore[override]
@@ -97,11 +111,16 @@ class LedgerAppendRequest(BaseModel):
 class LedgerAppendResponse(BaseModel):
     entry_id: str
     hash: str
+    #: The entry's position in the chain (contract LedgerEntry.seq), when the engine says.
+    seq: int | None = None
 
 
 class LedgerVerifyResponse(BaseModel):
     ok: bool = False
+    #: Contract ChainVerification.broken_at (a seq), as text; None when intact.
     first_break: str | None = None
+    #: Entries verified. Contract 1.2.0 does not report it, so None means "unknown",
+    #: not zero; only an engine that sends a count gives an int.
     checked: int | None = None
 
 
