@@ -7,8 +7,8 @@ Append-only. Never edited, only added to. Newest first.
 - **Gate.** `DMS_DEF_VALIDATE` defaults to 0. On, AI-generated SQL is checked with sqlglot against `Ontology.from_store`: tables, columns, join edges, and measure expressions. The join read uses the vendored auto-ontology extractor.
 - **Outcomes.** A pass executes. An undeclared join, a measure expression that is not approved, or a revoked item returns the #464 reconfirm envelope and shows the definition used. A PII-tagged column or an ungranted column abstains.
 - **Provenance.** Every answer on this path carries the ontology version id and the item ids.
-- **Stack.** Rebased onto main `5522d7a8` (#473 squash). Replayed ONTO-DATA commits are not on this branch. PR base is `main`. Pin `279cbd85` was not edited.
-- **Suite.** Clean tree `7a97834`: `3589 passed, 41 skipped, 33 xfailed`, exit 0, 1613s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+- **Stack.** Rebased onto main `ba9afb3d` (#475). PR base is `main`. Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `28935a2`: `1 failed, 3594 passed, 41 skipped, 33 xfailed`, exit 1, 1493s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. The failure is `test_sixty_ungranted_names_scrub_under_200ms` at 0.241s. That test alone passed. n=348 not run. Not PASS.
 
 ## 2026-10-28 - GRAIN-AI-01: question-to-grain reading, flag off
 
