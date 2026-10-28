@@ -1,27 +1,25 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-20, VQ-RAG-01
+**Last updated:** 2026-10-28, AI-SQL-SHIFT rebase onto `f41c0240`
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_VQ_RAG` default off. Replay stays off-flag. Few-shot when on. n=348 not run. Not PASS.
+**Tip:** `DMS_AI_FIRST` default off. Flag off matches the main stub line. n=348 not run. Not PASS.
 
 ## Direction
 
-AI-first, DB-GPT/Genie-style text-to-SQL. The model writes the SQL from ontology, schema, and verified-example context, then executes, checks, and retries.
+AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 
-Escalation ladder: plan-then-solve, error-fed self-correct, stronger model via an OpenVault tier, then reconfirm with the closest answerable question and a Yes button.
-
-Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules. DMS never holds or routes provider keys. Routing lives in OpenVault.
+Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm with Yes. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not route provider keys.
 
 ## 52 pack - number of record (STUB)
 
-STUB: an in-process TestClient that replays recorded Cortex responses, not a live-model run. Layout copy-only: the shipped image does not copy `tests/`, so the score-pack fixture is absent. Graded by `scripts/verify/grade52.py` (on main via #432).
+STUB at `36f7bca`, `grade52 --main`. In-process replay, not a live model. Label, not a score. Not PASS.
 
-| Main | 52: correct / wrong / abstain | 45 | Served paths |
-|------|------|------|------|
-| `57d85c52` (`tests/fixtures/ask_guide/copy_only_57d85c52.jsonl`) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
-| this branch stub-exec `--main`. Not a score. | 43 / 0 / 0 reconfirm=5 | 36 / 0 / 0 | ai=0 rule=43 |
+| Run | 52 included | paths | metric |
+|-----|-------------|-------|--------|
+| flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-Copy-only row: refusal_ok=8, refusal_wrong=0, gold_broken=1. stub-exec flag off and on: refusal_ok=3, refusal_wrong=0, gold_broken=1, wrong_ub95=6.7%, coverage 43/43, split ai=0 rule=43 unattributed=0 abstain=9. Not PASS.
+Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43. Suite 3565 passed, 41 skipped, 33 xfailed. n=348 not run.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 

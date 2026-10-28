@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - AI-SQL-SHIFT stub lines on the rebase
+
+- **Flag off.** `grade52 --main` at `36f7bca`: 52 correct=43 wrong=0 reconfirm=5, paths ai=0 rule=43 L1=23 compile=20, metric ai_share=0/43 wrong=0. refusal_ok=3, refusal_wrong=0, gold_broken=1. Label, not a score.
+- **Flag on.** `grade52 --main --ai-first`: 52 correct=0 wrong=0 reconfirm=48, paths ai=0 rule=0, metric ai_share=0/0 wrong=0. refusal_ok=3, refusal_wrong=0, gold_broken=1. `0/0` is not a share. Not PASS.
+- **Suite.** `DMS_SKIP_CONTROL_PLANE_TESTS=1 DMS_DEMO_FALLBACK=0`: 3565 passed, 41 skipped, 33 xfailed. n=348 not run.
+
 ## 2026-10-28 - AI-SQL-SHIFT stage 1 rebased onto main
 
 - **Flag.** `DMS_AI_FIRST` stays default off. Off, the ask path matches main: VQ-RAG (`embedder=`), the live harness (`demo_gate=`, pacer), and the DuckDB 2.0 stated-value probe.
