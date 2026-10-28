@@ -2,8 +2,11 @@
 
 A ladder that ends without a checked answer returns ``reconfirm`` on the
 envelope: why it would abstain, the question the model wrote, and a token.
-Yes runs that question through the normal ask ladder. No answers
-``not found in the database`` and appends one pipeline-failure record.
+Yes runs that question through the normal ask ladder. When
+``DMS_RECONFIRM_RUN_HELD`` is on and the pending entry holds validated
+SQL, Yes runs that SQL after the grant check and the read-only check.
+No answers ``not found in the database`` and appends one pipeline-failure
+record.
 
 Ungranted tables, PII, and destructive SQL stay a direct abstain. They do
 not get a reconfirm.
@@ -22,15 +25,24 @@ from typing import Any
 _NOT_FOUND = "not found in the database"
 _LOCK = threading.Lock()
 _PENDING: dict[str, dict[str, Any]] = {}
+_HOLDS: dict[str, dict[str, Any]] = {}
 _DECLINES = 0
+# ponytail: process dict, oldest dropped at 64. Upgrade: tie the hold to the ask deadline.
+_HOLD_CAP = 64
 
 Complete = Callable[[str], str]
+
+
+def reconfirm_run_held_enabled() -> bool:
+    """True only when ``DMS_RECONFIRM_RUN_HELD`` is the digit 1. Unset is off."""
+    return os.environ.get("DMS_RECONFIRM_RUN_HELD", "0").strip() == "1"
 
 
 def _reset_reconfirm() -> None:
     global _DECLINES
     with _LOCK:
         _PENDING.clear()
+        _HOLDS.clear()
         _DECLINES = 0
 
 
@@ -345,6 +357,66 @@ def take_pending(token: str) -> dict[str, Any] | None:
         return _PENDING.pop(str(token or ""), None)
 
 
+def park_def_validate_hold(
+    env: dict[str, Any],
+    *,
+    sql: str,
+    grantable: set[str],
+) -> None:
+    """Remember SQL for a def_validate reconfirm. Rows and secrets stay out.
+
+    The client envelope keeps the definition. The SQL lives in this process
+    until ``apply_reconfirm`` copies it onto the pending entry.
+    """
+    block = env.get("reconfirm")
+    if not isinstance(block, dict):
+        return
+    statement = str(sql or "").strip()
+    definition = block.get("definition")
+    code = block.get("code")
+    if not statement or not isinstance(definition, str) or not definition.strip():
+        return
+    if not isinstance(code, str) or not code.strip():
+        return
+    from dms_core.ids import mint_id
+
+    hold_id = mint_id("hld")
+    payload = {
+        "sql": statement,
+        "grantable": sorted({str(name) for name in grantable if str(name).strip()}),
+        "definition": definition.strip(),
+        "reason_code": code.strip(),
+    }
+    with _LOCK:
+        if len(_HOLDS) >= _HOLD_CAP:
+            _HOLDS.pop(next(iter(_HOLDS)))
+        _HOLDS[hold_id] = payload
+    block["hold_id"] = hold_id
+
+
+def take_hold(hold_id: str) -> dict[str, Any] | None:
+    with _LOCK:
+        found = _HOLDS.pop(str(hold_id or ""), None)
+    return dict(found) if isinstance(found, dict) else None
+
+
+def held_ready(pending: dict[str, Any]) -> bool:
+    """True when the pending entry has SQL to run, not only a question to re-ask."""
+    sql = pending.get("sql")
+    grantable = pending.get("grantable")
+    code = pending.get("reason_code")
+    definition = pending.get("definition")
+    return (
+        isinstance(sql, str)
+        and bool(sql.strip())
+        and isinstance(grantable, list)
+        and isinstance(code, str)
+        and bool(code.strip())
+        and isinstance(definition, str)
+        and bool(definition.strip())
+    )
+
+
 def _direct_envelope(env: dict[str, Any], question: str, reason: str) -> dict[str, Any]:
     if _unchecked(env):
         # Leave the ladder's reason in place. A short head would hide it.
@@ -420,17 +492,33 @@ def apply_reconfirm(
                 )
             except Exception:
                 suggested = ""
-    token = _save_pending(
-        {
-            "suggested_question": suggested,
-            "question": question,
-            "reason_code": reason,
-            "space_id": space_id,
-            "session_id": session_id,
-            "tables": list(tables) if tables else None,
-            "ask_path": ask_path,
-        }
-    )
+    prior = env.get("reconfirm")
+    hold: dict[str, Any] | None = None
+    definition = ""
+    if isinstance(prior, dict):
+        raw_def = prior.get("definition")
+        if isinstance(raw_def, str) and raw_def.strip():
+            definition = raw_def.strip()
+        hold_id = prior.get("hold_id")
+        if isinstance(hold_id, str) and hold_id:
+            hold = take_hold(hold_id)
+            if hold is not None and isinstance(hold.get("definition"), str):
+                definition = str(hold["definition"]).strip() or definition
+    pending: dict[str, Any] = {
+        "suggested_question": suggested,
+        "question": question,
+        "reason_code": reason,
+        "space_id": space_id,
+        "session_id": session_id,
+        "tables": list(tables) if tables else None,
+        "ask_path": ask_path,
+    }
+    if hold is not None:
+        pending["sql"] = hold["sql"]
+        pending["grantable"] = list(hold["grantable"])
+        pending["definition"] = hold["definition"]
+        pending["reason_code"] = hold["reason_code"]
+    token = _save_pending(pending)
     out = dict(env)
     block: dict[str, Any] = {
         "reason_code": reason,
@@ -438,11 +526,12 @@ def apply_reconfirm(
         "suggested_question": suggested,
         "token": token,
     }
-    prior = env.get("reconfirm")
     if isinstance(prior, dict):
         closest = prior.get("closest_question")
         if isinstance(closest, str) and closest.strip():
             block["closest_question"] = closest.strip()
+    if definition:
+        block["definition"] = definition
     out["reconfirm"] = block
     from cortex_client.compute import recorded_model_calls
 

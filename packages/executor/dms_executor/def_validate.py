@@ -607,6 +607,7 @@ def _reconfirm_env(
     block = env.get("reconfirm")
     if isinstance(block, dict):
         block["definition"] = definition
+        block["code"] = code
     env["text"] = (
         f"{code}: {definition} Closest answerable question: {question}. Yes runs that question."
     )

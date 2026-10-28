@@ -2,6 +2,24 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - RECONFIRM-YES-01 rebased onto main 5980eef8
+
+- **Base.** #479 is merged (`5980eef8`, ONTO-PG-01). The RECONFIRM-YES commits replayed onto that tip. No code conflict.
+- **Suite.** Clean tree `e7028c7`: `3609 passed, 43 skipped, 33 xfailed`, exit 0, 1248.81s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - RECONFIRM-YES-01 rebased onto main 9abbe9b6
+
+- **Base.** #476 is merged (`9abbe9b6`, AO-KEY-01). The two RECONFIRM-YES commits replayed onto that tip. No code conflict.
+- **Suite.** Clean tree `9666b0f`: `3603 passed, 41 skipped, 33 xfailed`, exit 0, 1246.22s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
+## 2026-10-28 - RECONFIRM-YES-01: Yes runs the held SQL, Chat shows the card
+
+- **Flag.** `DMS_RECONFIRM_RUN_HELD` defaults to 0. Off, Yes still re-asks the suggested question.
+- **Hold.** A def_validate reconfirm stores the SQL, the grantable set, the definition, and the reason code on the pending entry. Rows and secrets are not stored.
+- **Yes.** With the flag on, Yes re-runs the grant check and the read-only check, then executes that SQL once. The answer sets `reconfirm_accepted` and provenance `yes:definition:<code>`, then `maybe_save_checked_sql`. An ungranted SQL at Yes time abstains. No still answers `not found in the database`.
+- **Chat.** The reconfirm card (reason, definition, Yes, No) renders above Details. Ids: `chat-reconfirm-yes`, `chat-reconfirm-no`. Studio ids stay on the result view.
+- **Suite.** Clean tree `9cbcb15`: `3600 passed, 41 skipped, 33 xfailed`, exit 0, 1291.33s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
 ## 2026-10-28 - DEF-VALIDATE-01: check generated SQL against the ontology store
 
 - **Gate.** `DMS_DEF_VALIDATE` defaults to 0. On, AI-generated SQL is checked with sqlglot against `Ontology.from_store`: tables, columns, join edges, and measure expressions. The join read uses the vendored auto-ontology extractor.

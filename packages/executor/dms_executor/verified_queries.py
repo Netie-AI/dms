@@ -544,6 +544,17 @@ def _schema_hash(
     return fingerprint if isinstance(fingerprint, str) else ""
 
 
+def _provenance_ok(provenance: str) -> bool:
+    """``yes:reconfirm``, ``yes:vote``, or ``yes:definition:<code>``."""
+    if provenance in _SAVE_PROVENANCE:
+        return True
+    prefix = "yes:definition:"
+    if not provenance.startswith(prefix):
+        return False
+    code = provenance[len(prefix) :]
+    return bool(code) and code.isidentifier()
+
+
 def maybe_save_checked_sql(
     *,
     question: str,
@@ -562,7 +573,7 @@ def maybe_save_checked_sql(
     """
     if not vq_rag_enabled() or abstained:
         return None
-    if provenance not in _SAVE_PROVENANCE:
+    if not _provenance_ok(provenance):
         return None
     if (served_route or "").strip() in _SKIP_ROUTES:
         return None

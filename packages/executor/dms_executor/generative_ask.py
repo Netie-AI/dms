@@ -1576,6 +1576,12 @@ def _run_extract_loop(
         if gated is not None:
             held["provenance"] = gated.provenance
             if gated.outcome != "pass":
+                if gated.outcome == "reconfirm" and isinstance(gated.envelope, dict):
+                    from dms_executor.reconfirm import park_def_validate_hold
+
+                    park_def_validate_hold(
+                        gated.envelope, sql=sql, grantable=grantable
+                    )
                 held["env"] = gated.envelope
                 return gated.reason
             held.pop("env", None)
@@ -2374,6 +2380,12 @@ def maybe_generative_ask(
         if gated is not None and gated.outcome != "pass":
             gate_state["provenance"] = gated.provenance
             if isinstance(gated.envelope, dict):
+                if gated.outcome == "reconfirm":
+                    from dms_executor.reconfirm import park_def_validate_hold
+
+                    park_def_validate_hold(
+                        gated.envelope, sql=sql, grantable=allowed
+                    )
                 return _stamp(gated.envelope)
             return _stamp(
                 _abstain(

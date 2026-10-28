@@ -1529,14 +1529,25 @@ class Executor:
         return peek_pending(token)
 
     def confirm_reconfirm(self, token: str, yes: bool) -> dict[str, Any]:
-        """Yes re-runs the suggested question on the normal ladder. No logs a ticket."""
-        from dms_executor.reconfirm import decline_envelope, take_pending
+        """Yes re-runs the suggested question on the normal ladder. No logs a ticket.
+
+        With ``DMS_RECONFIRM_RUN_HELD`` on, a pending entry that holds validated
+        SQL runs that SQL after a fresh grant check and read-only check.
+        """
+        from dms_executor.reconfirm import (
+            decline_envelope,
+            held_ready,
+            reconfirm_run_held_enabled,
+            take_pending,
+        )
 
         pending = take_pending(token)
         if pending is None:
             raise KeyError(token)
         if not yes:
             return decline_envelope(pending)
+        if reconfirm_run_held_enabled() and held_ready(pending):
+            return self._run_held_sql(pending)
         suggested = str(pending.get("suggested_question") or "").strip()
         if not suggested:
             raise ValueError("empty suggestion")
@@ -1574,6 +1585,104 @@ class Executor:
                 or str(offered.get("badge") or "") == "ABSTAIN",
             )
         return offered
+
+    def _run_held_sql(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """Execute SQL the user confirmed. Grant and read-only checks run again."""
+        from datetime import UTC, datetime
+
+        from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+        from dms_executor.generative_ask import validate_compiled_sql
+        from dms_executor.grant_struct import serve_gap
+        from dms_executor.sql_loop import run_readonly
+
+        sql = str(pending.get("sql") or "").strip()
+        raw_grants = pending.get("grantable")
+        grantable = (
+            {str(name) for name in raw_grants if str(name).strip()}
+            if isinstance(raw_grants, list)
+            else set()
+        )
+        code = str(pending.get("reason_code") or "").strip()
+        question = str(
+            pending.get("suggested_question") or pending.get("question") or ""
+        ).strip()
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        provenance = f"yes:definition:{code}"
+
+        def abstain(reason: str) -> dict[str, Any]:
+            env = build_abstain(
+                reason=reason,
+                question=question,
+                stage="reconfirm_yes",
+                answer_id="ans_reconfirm_yes",
+                text=(
+                    "I cannot run that query against the granted tables, "
+                    "so I am not answering it."
+                ),
+                abstain_reason=reason,
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[reason],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
+            return env
+
+        gap = serve_gap(sql, grantable=grantable, dialect=self.dialect)
+        why = validate_compiled_sql(
+            sql,
+            grantable=grantable,
+            warehouse=self._warehouse,
+            dialect=self.dialect,
+        )
+        if gap or why:
+            return abstain(gap or why or "ungranted")
+        warehouse = self._warehouse
+        if warehouse is None or not Path(warehouse).is_file():
+            return abstain("warehouse_missing")
+        rows, err = run_readonly(sql, Path(warehouse))
+        if err or rows is None:
+            return abstain(err or "execute_failed")
+        env = build_answer_envelope(
+            answer_id="ans_reconfirm_yes",
+            text="The confirmed query ran.",
+            badge="L2_VALIDATED",
+            abstained=False,
+            rows=rows,
+            sql_used=sql,
+            assumptions=[provenance],
+            as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="generated",
+            question=question,
+        )
+        assert_envelope_valid(env)
+        abstained = env.get("abstained") is True or str(env.get("badge") or "") == "ABSTAIN"
+        if not abstained:
+            env["reconfirm_accepted"] = True
+            env["provenance"] = provenance
+        route = env.get("served_route")
+        maybe_save_checked_sql(
+            question=question,
+            sql=sql,
+            space_id=space_id,
+            warehouse=warehouse,
+            grantable=grantable,
+            dialect=self.dialect,
+            provenance=provenance,
+            served_route=route.strip() if isinstance(route, str) else "",
+            abstained=abstained,
+        )
+        return env
 
     def take_executed(self) -> ExecutedTrace:
         """What the last ``live_ask`` on this thread ran: statements with row counts,

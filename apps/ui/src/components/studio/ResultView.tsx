@@ -34,6 +34,7 @@ export type StudioAskEnvelope = AbstainFields & {
     reason_code?: string;
     reason_text?: string;
     suggested_question?: string;
+    definition?: string;
     token?: string;
   } | null;
 };
