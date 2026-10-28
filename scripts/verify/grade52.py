@@ -55,7 +55,9 @@ back to the spine. grade52 never approves. The artifact then records
 id beside ``paths_served``. Every armed artifact also records
 ``ov_calls_by_caller_role`` from the OpenVault usage ledger window of the
 run (Cortex versus DMS-direct grain and ontology), so a model mismatch is
-counted per role.
+counted per role. ``--all-flags`` applies ``ARMED_ALL_FLAGS_ON`` for that
+run, including ``DMS_RECONFIRM_RUN_HELD=1``. Plain ``--armed`` leaves those
+flags off.
 
 The risk line states what a score supports: per route, served answers with
 gold, how many were wrong, and the exact one-sided 95 percent upper bound on
@@ -75,6 +77,7 @@ Usage:
     python scripts/verify/grade52.py --envelopes RUN1 --envelopes RUN2 --envelopes RUN3 --gate
     python scripts/verify/grade52.py --envelopes PATH --baseline OLD/grade52.json
     python scripts/verify/grade52.py --armed --layout copy-only
+    python scripts/verify/grade52.py --armed --layout copy-only --all-flags
 """
 
 from __future__ import annotations
@@ -2578,15 +2581,51 @@ def read_ov_calls(openvault_url: str, since: float) -> dict[str, Any]:
     return ov_calls_by_caller_role(rows)
 
 
+# Armed landing with every current product flag on. Each still defaults off
+# in the product. Plain ``--armed`` and ``--main`` do not apply this set.
+# ``DMS_DEMO_FALLBACK`` stays 0. ``DMS_ASK_CLARIFY`` and ``DMS_CLOOP_B`` stay unset.
+ARMED_ALL_FLAGS_ON: dict[str, str] = {
+    "DMS_AI_FIRST": "1",
+    "DMS_AO_COMPILE": "1",
+    "DMS_DEF_VALIDATE": "1",
+    "DMS_DEMO_FALLBACK": "0",
+    "DMS_GRAIN_AI": "1",
+    "DMS_ONTO_FROM_DATA": "1",
+    "DMS_ONTO_PG": "1",
+    "DMS_RECONFIRM_RUN_HELD": "1",
+    "DMS_VQ_RAG": "1",
+}
+
+
+def apply_armed_all_flags_on() -> None:
+    """Write ``ARMED_ALL_FLAGS_ON`` into the process env. Does not approve."""
+    for name, value in ARMED_ALL_FLAGS_ON.items():
+        os.environ[name] = value
+
+
+def _prepare_armed_flags(*, all_flags: bool) -> None:
+    """Flag-off armed scrub, then the all-flags-on config when requested."""
+    os.environ.pop("DMS_ASK_CLARIFY", None)
+    os.environ.pop("DMS_CLOOP_B", None)
+    os.environ.pop("DMS_AI_FIRST", None)
+    os.environ["DMS_DEMO_FALLBACK"] = "0"
+    if all_flags:
+        apply_armed_all_flags_on()
+
+
 def armed_replay(
-    layout: str = "copy-only", cfg: ArmedConfig | None = None
+    layout: str = "copy-only",
+    cfg: ArmedConfig | None = None,
+    *,
+    all_flags: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every pack question through the real ask path against a live Cortex.
 
     Order: settings, Cortex health and FreeRoute posture, one OpenVault mint,
     then 52 asks with flags off (the stub's flag set, without its credential
-    scrub), then the armed checks. Returns ``{id, env, served}`` records and
-    the capture header fields.
+    scrub), then the armed checks. ``all_flags`` applies ``ARMED_ALL_FLAGS_ON``
+    after that scrub, so ``DMS_RECONFIRM_RUN_HELD`` is 1 for the landing run.
+    Returns ``{id, env, served}`` records and the capture header fields.
     """
     if layout not in LAYOUTS:
         raise SystemExit("grade52: layout must be one of " + ", ".join(LAYOUTS))
@@ -2597,10 +2636,7 @@ def armed_replay(
     if len(questions) != 52:
         raise SystemExit(f"pack size {len(questions)} != 52")
     posture = armed_preflight(cfg)
-    os.environ.pop("DMS_ASK_CLARIFY", None)
-    os.environ.pop("DMS_CLOOP_B", None)
-    os.environ.pop("DMS_AI_FIRST", None)
-    os.environ["DMS_DEMO_FALLBACK"] = "0"
+    _prepare_armed_flags(all_flags=all_flags)
     onto_fields: dict[str, Any] | None = None
     if _onto_from_data_on():
         onto_fields = approved_ontology_precheck()
@@ -2747,16 +2783,19 @@ def grade_main(mode: str | None = None, *, ai_first: bool = False) -> dict[str, 
     )
 
 
-def grade_armed(layout: str = "copy-only", **finish: Any) -> dict[str, Any]:
+def grade_armed(
+    layout: str = "copy-only", *, all_flags: bool = False, **finish: Any
+) -> dict[str, Any]:
     """Armed capture of this checkout against a live Cortex, then the grade.
 
     Settings are refused before the product sha is read, so a missing key
     never reaches the network. The capture (env, model SQL, rows, answer text
-    per question) is written beside the artifact.
+    per question) is written beside the artifact. ``all_flags`` applies
+    ``ARMED_ALL_FLAGS_ON`` before the first question.
     """
     cfg = armed_config()
     sha = product_sha()
-    records, meta = armed_replay(layout, cfg=cfg)
+    records, meta = armed_replay(layout, cfg=cfg, all_flags=all_flags)
     dest = _artifact_dir() / "grade52.armed.jsonl"
     capture = write_capture(records, {"dms_sha": sha, **meta}, dest)
     print(f"armed capture: {capture}")
@@ -3460,6 +3499,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=LAYOUTS,
         help="--armed only: copy-only (the API image, default) or full-tree",
     )
+    parser.add_argument(
+        "--all-flags",
+        action="store_true",
+        help="--armed only: apply ARMED_ALL_FLAGS_ON (includes DMS_RECONFIRM_RUN_HELD=1)",
+    )
     args = parser.parse_args(argv)
     sources = int(args.main) + int(args.envelopes is not None) + int(args.armed)
     if sources > 1:
@@ -3468,6 +3512,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("grade52: --baseline and --gate grade --envelopes or --armed")
     if args.layout and not args.armed:
         raise SystemExit("grade52: --layout is for --armed; a capture carries its own layout")
+    if args.all_flags and not args.armed:
+        raise SystemExit("grade52: --all-flags is for --armed")
     if args.ai_first and not args.main:
         raise SystemExit("grade52: --ai-first is the stub switch for --main")
     if args.self_test or sources == 0:
@@ -3479,7 +3525,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.envelopes is not None:
         report = grade_runs(args.envelopes, baseline=baseline)
     elif args.armed:
-        report = grade_armed(args.layout or "copy-only", baseline=baseline)
+        report = grade_armed(
+            args.layout or "copy-only", all_flags=bool(args.all_flags), baseline=baseline
+        )
     elif args.main:
         grade_main(ai_first=bool(args.ai_first))
     if args.gate and report is not None:

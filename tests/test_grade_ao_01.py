@@ -217,6 +217,31 @@ def test_grade52_never_approves() -> None:
     assert "onto_steward" not in text
 
 
+def test_armed_all_flags_on_includes_reconfirm_run_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The armed all-flags-on config turns the held-SQL Yes flag on. Default stays off."""
+    assert grade52.ARMED_ALL_FLAGS_ON["DMS_RECONFIRM_RUN_HELD"] == "1"
+    assert grade52.ARMED_ALL_FLAGS_ON["DMS_DEMO_FALLBACK"] == "0"
+    held = "DMS_RECONFIRM_RUN_HELD"
+    monkeypatch.delenv(held, raising=False)
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    try:
+        grade52._prepare_armed_flags(all_flags=False)
+        assert os.environ.get(held) is None
+        assert os.environ["DMS_DEMO_FALLBACK"] == "0"
+        grade52._prepare_armed_flags(all_flags=True)
+        assert os.environ[held] == "1"
+        assert os.environ["DMS_AI_FIRST"] == "1"
+        assert os.environ["DMS_ONTO_FROM_DATA"] == "1"
+    finally:
+        for name in grade52.ARMED_ALL_FLAGS_ON:
+            if name != "DMS_DEMO_FALLBACK":
+                os.environ.pop(name, None)
+    with pytest.raises(SystemExit, match="--all-flags is for --armed"):
+        grade52.main(["--all-flags"])
+
+
 def _database_url() -> str:
     return os.environ.get("DATABASE_URL", "").strip()
 
