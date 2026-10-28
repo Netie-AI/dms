@@ -257,6 +257,11 @@ class OntologyDataStore:
         rows.sort(key=lambda row: (row.ts, row.id))
         return [_public_item(row) for row in rows]
 
+    def revoked_items(self) -> list[dict[str, Any]]:
+        rows = [row for row in self._items.values() if row.status == "revoked"]
+        rows.sort(key=lambda row: (row.ts, row.id))
+        return [_public_item(row) for row in rows]
+
     def diff(self, version_id: str | None = None) -> dict[str, Any]:
         proposed = [row for row in self._items.values() if row.status == "proposed"]
         if version_id is None and self._versions:
@@ -309,6 +314,10 @@ def reset_ontology_data_store() -> None:
 
 def approved_items() -> list[dict[str, Any]]:
     return ontology_data_store().approved_items()
+
+
+def revoked_items() -> list[dict[str, Any]]:
+    return ontology_data_store().revoked_items()
 
 
 def store_proposal(

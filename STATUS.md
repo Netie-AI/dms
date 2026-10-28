@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, GRAIN-AI-01
+**Last updated:** 2026-10-28, DEF-VALIDATE-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_GRAIN_AI` default 0. On, grains come from approved items and an OpenVault reading (role `grain`). Split or low confidence is reconfirm. On main `5522d7a`. Suite on `60192e3`: 3589 passed, 41 skipped, 33 xfailed. n=348 not run. Not PASS.
+**Tip:** `DMS_DEF_VALIDATE` default 0. Generated SQL is checked against approved ontology items when on. Rebased onto main `ba9afb3d`. PR base is main. Clean tree `28935a2`: 1 failed, 3594 passed, 41 skipped, 33 xfailed, exit 1, 1493s. The failure is the 200ms name scrub. Alone it passed. n=348 not run. Not PASS.
 
 ## Direction
 

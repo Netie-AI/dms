@@ -620,6 +620,7 @@ class Ontology:
                     item_id = row.get("id")
                     if isinstance(item_id, str):
                         served.append(item_id)
+                    _remember_approved(onto, row)
         onto.__dict__["_served_ids"] = tuple(served)
         return onto
 
@@ -2017,6 +2018,75 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     for table_name, column_name in rows:
         out.setdefault(str(table_name), set()).add(str(column_name))
     return out
+
+
+def _bare_relation(relation: str) -> str:
+    text = str(relation or "").strip().strip('"')
+    if not text or text.startswith("("):
+        return ""
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text.casefold()
+
+
+def _payload_columns(payload: Mapping[str, Any]) -> set[str]:
+    cols: set[str] = set()
+    for key in ("key", "business_key"):
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            cols.update(str(c).strip().casefold() for c in raw if str(c).strip())
+    raw_attrs = payload.get("attributes")
+    if isinstance(raw_attrs, list):
+        for attr in raw_attrs:
+            if isinstance(attr, str) and attr.strip():
+                cols.add(attr.strip().casefold())
+            elif isinstance(attr, dict):
+                for field in ("source_column", "column", "name"):
+                    val = attr.get(field)
+                    if isinstance(val, str) and val.strip():
+                        cols.add(val.strip().casefold())
+                        break
+    return cols
+
+
+def _remember_approved(onto: Ontology, row: Mapping[str, Any]) -> None:
+    """Keep item ids, versions, and declared columns for DEF-VALIDATE-01.
+
+    ``from_store`` still serves approved items only. Revoked rows are absent.
+    """
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return
+    item_id = row.get("id")
+    if isinstance(item_id, str) and item_id:
+        onto.__dict__.setdefault("_item_meta", []).append(
+            {
+                "id": item_id,
+                "version_id": str(row.get("version_id") or ""),
+                "kind": str(row.get("kind") or ""),
+                "payload": dict(payload),
+            }
+        )
+    kind = str(row.get("kind") or "")
+    rel_cols: dict[str, set[str]] = onto.__dict__.setdefault("_relation_columns", {})
+    if kind == "object":
+        rel = _bare_relation(str(payload.get("relation") or ""))
+        if rel:
+            rel_cols.setdefault(rel, set()).update(_payload_columns(payload))
+        return
+    if kind != "link":
+        return
+    for side, cols_key in (("from_object", "from_columns"), ("to_object", "to_columns")):
+        obj = onto.objects.get(str(payload.get(side) or ""))
+        raw_cols = payload.get(cols_key)
+        if obj is None or not isinstance(raw_cols, list):
+            continue
+        rel = _bare_relation(obj.relation)
+        if not rel:
+            continue
+        rel_cols.setdefault(rel, set()).update(
+            str(c).strip().casefold() for c in raw_cols if str(c).strip()
+        )
 
 
 def _apply_stored_item(onto: Ontology, row: Mapping[str, Any]) -> bool:
