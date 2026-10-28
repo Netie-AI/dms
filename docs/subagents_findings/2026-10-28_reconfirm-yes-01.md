@@ -7,3 +7,5 @@ Main idea: `DMS_RECONFIRM_RUN_HELD` defaults to 0. A def_validate reconfirm park
 Clean tree `9cbcb15`, branched from main `1ad4e2c`. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`: `3600 passed, 41 skipped, 33 xfailed`, exit 0, 1291.33s. n=348 not run. Not PASS.
 
 Rebased onto main `9abbe9b6` (#476 AO-KEY-01). No code conflict. Clean tree `9666b0f`: `3603 passed, 41 skipped, 33 xfailed`, exit 0, 1246.22s. Same env. n=348 not run. Not PASS.
+
+Rebased onto main `5980eef8` (#479 ONTO-PG-01). No code conflict. Clean tree `e7028c7`: `3609 passed, 43 skipped, 33 xfailed`, exit 0, 1248.81s. Same env. n=348 not run. Not PASS.
