@@ -1,27 +1,45 @@
-"""Revocable ontology items (ONTO-DATA-01).
+"""Revocable ontology items (ONTO-DATA-01, ONTO-PG-01).
 
 Rows match alembic ``0007_ontology_data`` (revision 0003 is already
-``document_chunks``). ``Ontology.from_store`` reads ``approved_items``.
+``document_chunks``) plus ``approval_ref`` from ``0008_ontology_approval_ref``.
+``Ontology.from_store`` reads ``ontology_data_store().approved_items``.
 
-ponytail: in-memory, one process, gone on restart. Upgrade path: a Postgres
-store with these methods over ``dms.ontology_versions`` and
-``dms.ontology_items`` when ``DATABASE_URL`` is bound.
+Swap: in-memory, or Postgres over ``dms.ontology_versions`` and
+``dms.ontology_items``. Not a new port. ``DMS_ONTO_PG`` defaults off. On, and
+only when ``DATABASE_URL`` is set, the factory returns
+``PostgresOntologyDataStore``. Otherwise the in-memory store.
+
+ponytail: ``deny_steward`` is process-local on either store. Upgrade path: a
+membership read.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+import psycopg
+
+from dms_core.control_plane.session import set_tenant_context
 
 KINDS = ("object", "link", "measure", "grain", "pii")
 STATUSES = ("proposed", "approved", "revoked")
 
 _LOCK = threading.Lock()
+#: Same default as ``Settings.dms_tenant_id``. Used only when the flag is on.
+_DEFAULT_TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+_CONNECT_TIMEOUT_S = 3
+
+_ITEM_COLUMNS = (
+    "id::text, tenant_id::text, version_id::text, kind, payload, status, "
+    "source, provenance, created_by::text, approved_by, approval_ref, ts"
+)
 
 
 def _now() -> str:
@@ -142,6 +160,7 @@ class ItemRow:
     created_by: str
     approved_by: str | None
     ts: str
+    approval_ref: str | None = None
 
 
 def _public_item(row: ItemRow) -> dict[str, Any]:
@@ -155,8 +174,80 @@ def _public_item(row: ItemRow) -> dict[str, Any]:
         "provenance": dict(row.provenance),
         "created_by": row.created_by,
         "approved_by": row.approved_by,
+        "approval_ref": row.approval_ref,
         "ts": row.ts,
     }
+
+
+def _diff_rows(
+    versions: Mapping[str, VersionRow],
+    items: Mapping[str, ItemRow],
+    version_id: str | None,
+) -> dict[str, Any]:
+    proposed = [row for row in items.values() if row.status == "proposed"]
+    if version_id is None and versions:
+        version_id = max(versions.values(), key=lambda row: (row.ts, row.id)).id
+    if version_id is not None:
+        proposed = [row for row in proposed if row.version_id == version_id]
+    approved = [row for row in items.values() if row.status == "approved"]
+    approved_by_id = {item_identity(row.kind, row.payload): row for row in approved}
+    proposed_ids: set[str] = set()
+    proposed_only: list[dict[str, Any]] = []
+    changed: list[dict[str, Any]] = []
+    same: list[dict[str, Any]] = []
+    for row in proposed:
+        ident = item_identity(row.kind, row.payload)
+        proposed_ids.add(ident)
+        other = approved_by_id.get(ident)
+        public = _public_item(row)
+        if other is None:
+            proposed_only.append(public)
+        elif _canon(other.payload) != _canon(row.payload):
+            changed.append(public)
+        else:
+            same.append(public)
+    approved_only = [
+        _public_item(row)
+        for row in approved
+        if item_identity(row.kind, row.payload) not in proposed_ids
+    ]
+    return {
+        "version_id": version_id,
+        "proposed_only": proposed_only,
+        "approved_only": approved_only,
+        "changed": changed,
+        "same": same,
+    }
+
+
+def _uuid_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    try:
+        return str(UUID(raw))
+    except ValueError:
+        return None
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value:
+        parsed = json.loads(value)
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _iso(value: Any) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat()
+    return str(value)
 
 
 class OntologyDataStore:
@@ -242,8 +333,29 @@ class OntologyDataStore:
             return None
         row.status = "approved"
         row.approved_by = actor
+        row.approval_ref = str(uuid4())
         row.ts = _now()
         return row
+
+    def approve_version(self, version_id: str, actor: str) -> int:
+        """Approve every proposed item of one version. One in-memory pass.
+
+        Unknown version raises ``KeyError``. A version with no proposed items
+        returns 0. Every item written here shares one ``approval_ref``.
+        """
+        if version_id not in self._versions:
+            raise KeyError(version_id)
+        ref = str(uuid4())
+        now = _now()
+        count = 0
+        for row in self._items.values():
+            if row.version_id == version_id and row.status == "proposed":
+                row.status = "approved"
+                row.approved_by = actor
+                row.approval_ref = ref
+                row.ts = now
+                count += 1
+        return count
 
     def revoke(self, item_id: str, *, actor: str) -> ItemRow | None:
         row = self._items.get(item_id)
@@ -265,53 +377,400 @@ class OntologyDataStore:
         return [_public_item(row) for row in rows]
 
     def diff(self, version_id: str | None = None) -> dict[str, Any]:
-        proposed = [row for row in self._items.values() if row.status == "proposed"]
-        if version_id is None and self._versions:
-            version_id = max(self._versions.values(), key=lambda row: (row.ts, row.id)).id
-        if version_id is not None:
-            proposed = [row for row in proposed if row.version_id == version_id]
-        approved = [row for row in self._items.values() if row.status == "approved"]
-        approved_by_id = {item_identity(row.kind, row.payload): row for row in approved}
-        proposed_ids: set[str] = set()
-        proposed_only: list[dict[str, Any]] = []
-        changed: list[dict[str, Any]] = []
-        same: list[dict[str, Any]] = []
-        for row in proposed:
-            ident = item_identity(row.kind, row.payload)
-            proposed_ids.add(ident)
-            other = approved_by_id.get(ident)
-            public = _public_item(row)
-            if other is None:
-                proposed_only.append(public)
-            elif _canon(other.payload) != _canon(row.payload):
-                changed.append(public)
-            else:
-                same.append(public)
-        approved_only = [
-            _public_item(row)
-            for row in approved
-            if item_identity(row.kind, row.payload) not in proposed_ids
-        ]
+        return _diff_rows(self._versions, self._items, version_id)
+
+
+class PostgresOntologyDataStore:
+    """``dms.ontology_versions`` and ``dms.ontology_items`` under RLS.
+
+    Each method opens its own connection, sets ``dms.tenant_id`` for that
+    transaction, and commits. A proposal stored on one connection is visible
+    to ``approve_version`` and ``approved_items`` on later connections.
+    """
+
+    def __init__(self, conninfo: str, *, tenant_id: UUID | str) -> None:
+        self._conninfo = conninfo
+        self._tenant_id = str(UUID(str(tenant_id)))
+        self._denied: set[str] = set()
+
+    def deny_steward(self, actor_id: str) -> None:
+        self._denied.add(actor_id)
+
+    def holds_steward_grant(self, *, role: str, actor_id: str) -> bool:
+        if (role or "").strip().lower() != "steward":
+            return False
+        if not (actor_id or "").strip():
+            return False
+        return actor_id not in self._denied
+
+    def _connect(self) -> psycopg.Connection:
+        return psycopg.connect(self._conninfo, connect_timeout=_CONNECT_TIMEOUT_S)
+
+    def _tenant(self, tenant_id: str | None) -> str:
+        return _uuid_text(tenant_id) or self._tenant_id
+
+    def store_proposal(
+        self,
+        body: Mapping[str, Any],
+        *,
+        created_by: str,
+        space_id: str | None = None,
+        tenant_id: str = "",
+    ) -> dict[str, Any]:
+        if body.get("served"):
+            raise ValueError("an ontology proposal is never served")
+        status = str(body.get("status") or "")
+        if status != "proposed":
+            return {
+                "status": status or "off",
+                "served": False,
+                "version_id": None,
+                "items": [],
+            }
+        tenant = self._tenant(tenant_id)
+        created = _uuid_text(created_by)
+        space = _uuid_text(space_id)
+        now = datetime.now(UTC)
+        ts = _iso(now)
+        version = VersionRow(
+            id=str(uuid4()),
+            tenant_id=tenant,
+            space_id=space,
+            source="ao-vendor",
+            provenance={
+                "vendor_sha": str(body.get("vendor_sha") or ""),
+                "served": False,
+            },
+            created_by=created_by,
+            ts=ts,
+        )
+        rows: list[ItemRow] = []
+        for kind, payload in items_from_proposal(body):
+            if kind not in KINDS:
+                continue
+            rows.append(
+                ItemRow(
+                    id=str(uuid4()),
+                    tenant_id=tenant,
+                    version_id=version.id,
+                    kind=kind,
+                    payload=dict(payload),
+                    status="proposed",
+                    source="ao-vendor",
+                    provenance={"vendor_sha": str(body.get("vendor_sha") or "")},
+                    created_by=created_by,
+                    approved_by=None,
+                    ts=ts,
+                )
+            )
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            conn.execute(
+                """
+                INSERT INTO dms.ontology_versions (
+                  id, tenant_id, space_id, source, provenance, created_by, ts
+                ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                """,
+                (
+                    version.id,
+                    tenant,
+                    space,
+                    version.source,
+                    json.dumps(version.provenance),
+                    created,
+                    now,
+                ),
+            )
+            for row in rows:
+                conn.execute(
+                    """
+                    INSERT INTO dms.ontology_items (
+                      id, tenant_id, version_id, kind, payload, status, source,
+                      provenance, created_by, approved_by, approval_ref, ts
+                    ) VALUES (
+                      %s, %s, %s, %s, %s::jsonb, 'proposed', %s,
+                      %s::jsonb, %s, NULL, NULL, %s
+                    )
+                    """,
+                    (
+                        row.id,
+                        tenant,
+                        row.version_id,
+                        row.kind,
+                        json.dumps(row.payload),
+                        row.source,
+                        json.dumps(row.provenance),
+                        created,
+                        now,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
         return {
-            "version_id": version_id,
-            "proposed_only": proposed_only,
-            "approved_only": approved_only,
-            "changed": changed,
-            "same": same,
+            "status": "proposed",
+            "served": False,
+            "version_id": version.id,
+            "items": [_public_item(row) for row in rows],
         }
 
+    def approve(self, item_id: str, *, actor: str) -> ItemRow | None:
+        item = _uuid_text(item_id)
+        if item is None:
+            return None
+        tenant = self._tenant(None)
+        ref = str(uuid4())
+        now = datetime.now(UTC)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            fetched = conn.execute(
+                f"""
+                UPDATE dms.ontology_items
+                   SET status = 'approved',
+                       approved_by = %s,
+                       approval_ref = %s,
+                       ts = %s
+                 WHERE id = %s
+                RETURNING {_ITEM_COLUMNS}
+                """,
+                (actor, ref, now, item),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        if fetched is None:
+            return None
+        return _item_from_db(fetched)
 
-_STORE = OntologyDataStore()
+    def approve_version(self, version_id: str, actor: str) -> int:
+        """Approve every proposed item of one version in one transaction.
+
+        Unknown version raises ``KeyError``. A version with no proposed items
+        returns 0. The version row is locked, then every proposed item is
+        updated with the same ``approved_by`` and ``approval_ref``.
+        """
+        try:
+            version = str(UUID(str(version_id)))
+        except ValueError:
+            raise KeyError(version_id) from None
+        tenant = self._tenant(None)
+        ref = str(uuid4())
+        now = datetime.now(UTC)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            found = conn.execute(
+                """
+                SELECT id FROM dms.ontology_versions
+                 WHERE id = %s
+                   FOR UPDATE
+                """,
+                (version,),
+            ).fetchone()
+            if found is None:
+                raise KeyError(version_id)
+            updated = conn.execute(
+                """
+                UPDATE dms.ontology_items
+                   SET status = 'approved',
+                       approved_by = %s,
+                       approval_ref = %s,
+                       ts = %s
+                 WHERE version_id = %s
+                   AND tenant_id = %s
+                   AND status = 'proposed'
+                """,
+                (actor, ref, now, version, tenant),
+            )
+            count = int(updated.rowcount)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return count
+
+    def revoke(self, item_id: str, *, actor: str) -> ItemRow | None:
+        item = _uuid_text(item_id)
+        if item is None:
+            return None
+        tenant = self._tenant(None)
+        now = datetime.now(UTC)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            current = conn.execute(
+                f"""
+                SELECT {_ITEM_COLUMNS}
+                  FROM dms.ontology_items
+                 WHERE id = %s
+                """,
+                (item,),
+            ).fetchone()
+            if current is None:
+                conn.rollback()
+                return None
+            row = _item_from_db(current)
+            provenance = {**row.provenance, "revoked_by": actor}
+            fetched = conn.execute(
+                f"""
+                UPDATE dms.ontology_items
+                   SET status = 'revoked',
+                       provenance = %s::jsonb,
+                       ts = %s
+                 WHERE id = %s
+                RETURNING {_ITEM_COLUMNS}
+                """,
+                (json.dumps(provenance), now, row.id),
+            ).fetchone()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        if fetched is None:
+            return None
+        return _item_from_db(fetched)
+
+    def approved_items(self) -> list[dict[str, Any]]:
+        return [_public_item(row) for row in self._items_by_status("approved")]
+
+    def revoked_items(self) -> list[dict[str, Any]]:
+        return [_public_item(row) for row in self._items_by_status("revoked")]
+
+    def diff(self, version_id: str | None = None) -> dict[str, Any]:
+        tenant = self._tenant(None)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            versions = {
+                row.id: row
+                for row in (
+                    _version_from_db(record)
+                    for record in conn.execute(
+                        """
+                        SELECT id::text, tenant_id::text, space_id::text, source,
+                               provenance, created_by::text, ts
+                          FROM dms.ontology_versions
+                        """
+                    ).fetchall()
+                )
+            }
+            items = {
+                row.id: row
+                for row in (
+                    _item_from_db(record)
+                    for record in conn.execute(
+                        f"SELECT {_ITEM_COLUMNS} FROM dms.ontology_items"
+                    ).fetchall()
+                )
+            }
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return _diff_rows(versions, items, version_id)
+
+    def _items_by_status(self, status: str) -> list[ItemRow]:
+        tenant = self._tenant(None)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            fetched = conn.execute(
+                f"""
+                SELECT {_ITEM_COLUMNS}
+                  FROM dms.ontology_items
+                 WHERE status = %s
+                 ORDER BY ts, id
+                """,
+                (status,),
+            ).fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return [_item_from_db(record) for record in fetched]
 
 
-def ontology_data_store() -> OntologyDataStore:
-    return _STORE
+def _version_from_db(record: tuple[Any, ...]) -> VersionRow:
+    return VersionRow(
+        id=str(record[0]),
+        tenant_id=str(record[1] or ""),
+        space_id=None if record[2] is None else str(record[2]),
+        source=str(record[3]),
+        provenance=_as_dict(record[4]),
+        created_by=str(record[5] or ""),
+        ts=_iso(record[6]),
+    )
+
+
+def _item_from_db(record: tuple[Any, ...]) -> ItemRow:
+    approved_by = record[9]
+    approval_ref = record[10]
+    return ItemRow(
+        id=str(record[0]),
+        tenant_id=str(record[1] or ""),
+        version_id=str(record[2]),
+        kind=str(record[3]),
+        payload=_as_dict(record[4]),
+        status=str(record[5]),
+        source=str(record[6]),
+        provenance=_as_dict(record[7]),
+        created_by=str(record[8] or ""),
+        approved_by=None if approved_by is None else str(approved_by),
+        ts=_iso(record[11]),
+        approval_ref=None if approval_ref is None else str(approval_ref),
+    )
+
+
+_MEMORY = OntologyDataStore()
+_PG: PostgresOntologyDataStore | None = None
+_PG_KEY: tuple[str, str] | None = None
+
+
+def onto_pg_enabled() -> bool:
+    """True only when ``DMS_ONTO_PG`` is the digit 1. Unset is off."""
+    return os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+
+
+def ontology_data_store() -> OntologyDataStore | PostgresOntologyDataStore:
+    """In-memory store, or Postgres when the flag is on and a URL is bound.
+
+    ``DMS_ONTO_PG`` defaults off. A set ``DATABASE_URL`` alone does not switch
+    the store. With the flag on and no URL, the store stays in memory.
+    """
+    global _PG, _PG_KEY
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not onto_pg_enabled() or not url:
+        return _MEMORY
+    tenant = os.environ.get("DMS_TENANT_ID", "").strip() or _DEFAULT_TENANT
+    key = (url, tenant)
+    if _PG is None or _PG_KEY != key:
+        _PG = PostgresOntologyDataStore(url, tenant_id=tenant)
+        _PG_KEY = key
+    return _PG
 
 
 def reset_ontology_data_store() -> None:
-    global _STORE
+    global _MEMORY, _PG, _PG_KEY
     with _LOCK:
-        _STORE = OntologyDataStore()
+        _MEMORY = OntologyDataStore()
+        _PG = None
+        _PG_KEY = None
 
 
 def approved_items() -> list[dict[str, Any]]:
