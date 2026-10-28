@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - ONTO-DATA-01 rebased onto main 8dd1e80
+
+- **Base.** #471 is merged (`8dd1e80f`). The two ONTO-DATA commits replayed onto that tip. `STATUS.md` was the only conflict.
+- **Suite.** Clean tree `967c6cb`: `3583 passed, 41 skipped, 33 xfailed`, exit 0, 1271s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+- **Stacked writers.** GRAIN-AI-01 (`cursor/grain-ai-01-e63b`, `194e26b`) and DEF-VALIDATE-01 (`cursor/def-validate-01-6520`, `3e01caa`) still sit on the pre-rebase tip `28824f9`. They should rebase onto this branch.
+
 ## 2026-10-28 - ONTO-DATA-01: ontology as revocable data
 
 - **Store.** Alembic `0007_ontology_data` (revision 0003 is already `document_chunks`) adds `dms.ontology_versions` and `dms.ontology_items`. Kind is object, link, measure, grain, or pii. Status is proposed, approved, or revoked. Payload is JSON. Source, provenance, created_by, approved_by, and ts are on each item.
