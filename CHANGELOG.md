@@ -8,7 +8,7 @@ Append-only. Never edited, only added to. Newest first.
 - **Outcomes.** A pass executes. An undeclared join, a measure expression that is not approved, or a revoked item returns the #464 reconfirm envelope and shows the definition used. A PII-tagged column or an ungranted column abstains.
 - **Provenance.** Every answer on this path carries the ontology version id and the item ids.
 - **Stack.** Built on #473 (`cursor/onto-data-01-b817`), stacked on #471. Rebase onto main `c7d29ed2` after those merge. Pin `279cbd85` was not edited.
-- **Suite.** Not run on this commit. n=348 not run. Not PASS.
+- **Suite.** Clean tree `f96651a`, two runs, both exit 1: `1 failed, 3570 passed, 41 skipped, 33 xfailed` (1894s, then 1678s). The failure is `test_serving_abstain_tickets_follow_the_flag`: a 1s clock returned `serving_deadline_reserve` instead of `serving_deadline_exceeded`. That test alone passed in 2.43s. n=348 not run. Not PASS.
 
 ## 2026-10-28 - GRAIN-AI-01: question-to-grain reading, flag off
 
