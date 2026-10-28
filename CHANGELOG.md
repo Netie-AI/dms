@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - DEF-VALIDATE-02: plain aggregates are not measure drift
+
+- **Flag.** `DMS_DEF_VALIDATE` stays default 0. The change runs only when it is on.
+- **Measures.** `COUNT(*)` and `COUNT`/`SUM`/`AVG`/`MIN`/`MAX` of one approved attribute or key, at a grain reached only through approved links, pass. Provenance is `derived:<agg>(<table>.<col>)`. The decision is the sqlglot tree.
+- **Drift.** An alias that redefines an approved measure name, an aggregate over a column outside the ontology, and a nested or mixed-grain aggregate still reconfirm `measure_drift`.
+- **Grant.** `ungranted` stays a direct abstain when the grant check fails. A granted table or column missing from the approved ontology reconfirms `not_in_ontology`. That code's disposition is `offer`. The envelope `code` is the identifier `not_in_ontology`, so #477 can park the SQL and Yes can stamp `yes:definition:not_in_ontology`.
+- **Stack.** Rebased onto main `6bbc372e` (#480 GRADE-AO-01). PR base is `main`. Pin `279cbd85` was not edited.
+- **WRONG risk.** More answers are served when the flag is on. The armed 52 run is the judge. This change does not run it.
+- **Suite.** Not yet re-run on this head. n=348 not run. Not PASS.
+
 ## 2026-10-28 - GRADE-AO-01: compile, steward-approve, grade the persisted store
 
 - **Compile.** `scripts/verify/onto_compile.py` needs `DATABASE_URL`, `DMS_AO_COMPILE=1`, and `DMS_ONTO_PG=1`. It stores a proposed version and does not approve. A missing tenant row is inserted. No demo ontology payload.
