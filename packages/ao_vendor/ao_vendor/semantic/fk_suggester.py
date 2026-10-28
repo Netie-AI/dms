@@ -185,11 +185,18 @@ def suggest_potential_foreign_keys(
     if result is None:
         return PotentialFkResult()
 
+    pk_column_names: list[str] = []
+    seen_pk: set[str] = set()
+    for raw_name in result.pk_column_names:
+        name = raw_name.strip()
+        if not name or name in seen_pk:
+            continue
+        seen_pk.add(name)
+        pk_column_names.append(name)
     llm_pk_names = {
         name
-        for raw_name in result.pk_column_names
-        if (name := raw_name.strip())
-        and (profiling.get(name) or {}).get("is_unique") is not False
+        for name in pk_column_names
+        if (profiling.get(name) or {}).get("is_unique") is not False
     }
     allowed = {col["name"] for col in candidates}
     filtered: list[PotentialFkSuggestion] = []
@@ -227,4 +234,5 @@ def suggest_potential_foreign_keys(
         suggestions=filtered,
         is_junction_table=result.is_junction_table,
         junction_table_rationale=result.junction_table_rationale.strip(),
+        pk_column_names=pk_column_names,
     )

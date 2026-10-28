@@ -17,6 +17,17 @@ _FK_KEYS = ("source_table", "source_column", "target_table", "target_column")
 _JOIN_KEYS = ("left_table", "left_column", "right_table", "right_column")
 _TERM_KEYS = ("name", "table", "description")
 _ATTR_KEYS = ("table", "term", "source_column", "display_name")
+_TERM_ITEM: dict[str, Any] = {
+    "type": "object",
+    "required": ["name", "table", "description", "key"],
+    "properties": {
+        "key": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1,
+        },
+    },
+}
 
 #: Shape of ``OntologyProposal.to_json`` after a compile. ``served`` is false.
 PROPOSAL_JSON_SCHEMA: dict[str, Any] = {
@@ -30,16 +41,21 @@ PROPOSAL_JSON_SCHEMA: dict[str, Any] = {
         "inferred_fks",
         "declared_fks",
         "joins",
+        "unkeyed",
     ],
     "properties": {
         "status": {"const": "proposed"},
         "served": {"const": False},
         "vendor_sha": {"type": "string", "minLength": 40},
-        "terms": {"type": "array"},
+        "terms": {"type": "array", "items": _TERM_ITEM},
         "attributes": {"type": "array"},
         "inferred_fks": {"type": "array"},
         "declared_fks": {"type": "array"},
         "joins": {"type": "array"},
+        "unkeyed": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+        },
     },
 }
 
@@ -61,6 +77,7 @@ class OntologyProposal:
     declared_fks: tuple[dict[str, Any], ...]
     joins: tuple[dict[str, Any], ...]
     served: bool = False
+    unkeyed: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.served:
@@ -80,6 +97,7 @@ class OntologyProposal:
             declared_fks=empty,
             joins=empty,
             served=False,
+            unkeyed=(),
         )
 
     @classmethod
@@ -97,6 +115,7 @@ class OntologyProposal:
             declared_fks=_rows(payload.get("declared_fks")),
             joins=_rows(payload.get("joins")),
             served=False,
+            unkeyed=_names(payload.get("unkeyed")),
         )
         check_proposal_schema(proposal.to_json())
         return proposal
@@ -111,6 +130,7 @@ class OntologyProposal:
             "inferred_fks": [dict(row) for row in self.inferred_fks],
             "declared_fks": [dict(row) for row in self.declared_fks],
             "joins": [dict(row) for row in self.joins],
+            "unkeyed": list(self.unkeyed),
         }
 
 
@@ -142,9 +162,30 @@ def check_proposal_schema(data: dict[str, Any]) -> None:
     _objects(data["inferred_fks"], _FK_KEYS)
     _objects(data["declared_fks"], _FK_KEYS)
     _objects(data["joins"], _JOIN_KEYS)
+    key_schema = PROPOSAL_JSON_SCHEMA["properties"]["terms"]["items"]["properties"]["key"]
+    min_items = int(key_schema["minItems"])
     for term in data["terms"]:
         if not isinstance(term.get("attributes"), list):
             raise ValueError("term attributes")
+        key = term.get("key")
+        if (
+            not isinstance(key, list)
+            or len(key) < min_items
+            or any(not isinstance(col, str) or not col for col in key)
+        ):
+            raise ValueError("term key")
+    _names(data["unkeyed"])
+
+
+def _names(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError("proposal unkeyed")
+    names: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise ValueError("proposal unkeyed")
+        names.append(item)
+    return tuple(names)
 
 
 def _rows(value: Any) -> tuple[dict[str, Any], ...]:

@@ -37,9 +37,22 @@ def compile_catalog(conn: Any, *, transport: Any = None) -> dict[str, Any]:
         attributes: list[dict[str, Any]] = []
         suggestions: list[dict[str, Any]] = []
         junctions: list[dict[str, Any]] = []
+        unkeyed: list[str] = []
         for table in by_table:
             compiled = process_table(table["table"], table["ctx"], conn=conn)
-            terms.extend(compiled.terms)
+            key = _term_key(
+                table["table"].get("pk") or [],
+                compiled.pk_column_names,
+                table["ctx"].get("columns") or [],
+            )
+            if key:
+                for term in compiled.terms:
+                    term["key"] = list(key)
+                terms.extend(compiled.terms)
+            elif compiled.terms:
+                name = str(table["table"].get("name") or "").strip()
+                if name and name not in unkeyed:
+                    unkeyed.append(name)
             attributes.extend(compiled.attributes)
             suggestions.extend(compiled.fk_suggestions)
             if compiled.is_junction:
@@ -75,9 +88,32 @@ def compile_catalog(conn: Any, *, transport: Any = None) -> dict[str, Any]:
             "declared_fks": declared,
             "joins": _joins_from_declared(declared),
             "bridge_attributes": bridges,
+            "unkeyed": unkeyed,
         }
     finally:
         reset_client(token)
+
+
+def _term_key(
+    declared: list[Any],
+    model_names: list[Any],
+    columns: list[dict[str, Any]],
+) -> list[str]:
+    """Declared catalog PK, else PK columns from the compile's FkAndPkResult.
+
+    The model list is the reading ``process_table`` already made. This does
+    not call again. A name that is not a column of this table is dropped.
+    """
+    keys = [str(name).strip() for name in declared if str(name).strip()]
+    if keys:
+        return keys
+    known = {str(col.get("name")) for col in columns if col.get("name")}
+    out: list[str] = []
+    for raw in model_names:
+        name = str(raw).strip()
+        if name and name in known and name not in out:
+            out.append(name)
+    return out
 
 
 def _group(catalog: dict[str, Any]) -> list[dict[str, Any]]:
