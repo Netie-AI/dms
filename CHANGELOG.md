@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - GRADE-AO-01: compile, steward-approve, grade the persisted store
+
+- **Compile.** `scripts/verify/onto_compile.py` needs `DATABASE_URL`, `DMS_AO_COMPILE=1`, and `DMS_ONTO_PG=1`. It stores a proposed version and does not approve. A missing tenant row is inserted. No demo ontology payload.
+- **Steward.** `onto_steward.py approve-version` is the only scripted approval. It requires `--approval-ref`, refuses an empty actor and the settings default actor, stores the ref in provenance, and logs the action. `grade52` never calls it.
+- **Grade.** `grade52 --armed` with `DMS_ONTO_FROM_DATA=1` reads approved items from the Postgres store before the first question. Zero approved objects exits with `no approved ontology version`. `--all-flags` applies `ARMED_ALL_FLAGS_ON`, including `DMS_RECONFIRM_RUN_HELD=1`. Plain `--armed` leaves those flags off.
+- **Stack.** Rebased onto main `df1f37f5` (#477). Pin `279cbd85` was not edited.
+- **Suite.** Clean tree `b445494`: `3617 passed, 44 skipped, 33 xfailed`, exit 0, 1427.52s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. Postgres 16.15, alembic `0008_ontology_approval_ref`: `tests/test_grade_ao_01.py` `tests/test_onto_pg_01.py` `tests/test_onto_data_01.py` `tests/test_ao_key_01.py` with `DMS_ONTO_PG=1` were `26 passed, 0 skipped`. n=348 not run. Not PASS.
+
 ## 2026-10-28 - RECONFIRM-YES-01 rebased onto main 5980eef8
 
 - **Base.** #479 is merged (`5980eef8`, ONTO-PG-01). The RECONFIRM-YES commits replayed onto that tip. No code conflict.
