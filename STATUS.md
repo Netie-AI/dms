@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, AO-VENDOR-01 rebased onto WRONG-TRAP-01 `07d130fa`
+**Last updated:** 2026-10-28, ONTO-DATA-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_AI_FIRST` default off. `DMS_AO_COMPILE` default 0. Vendored auto-ontology `eb8dd062` proposes only. Compile abstains `ungrounded_measure` when the question does not name the measure. Armed 52 not re-run. Not PASS.
+**Tip:** `DMS_ONTO_FROM_DATA` default 0. Approved items only when on. Rebased onto main `8dd1e80f`. Suite 3583 passed, 41 skipped, 33 xfailed. n=348 not run. Not PASS.
 
 ## Direction
 

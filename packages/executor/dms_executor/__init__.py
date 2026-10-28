@@ -31,6 +31,7 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
+from dms_executor.ao_compile import compile_source
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import (
     IngestReceipt,
@@ -78,6 +79,7 @@ from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     SERVING_DIALECT,
     ReservedParamError,
+    connect_serving,
     ensure_demo_warehouse,
     execute_sql,
     read_health_engine_clock,
@@ -1240,8 +1242,11 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+        from dms_executor.ontology import Ontology, onto_from_data_enabled
+
+        data_onto = Ontology.from_store() if onto_from_data_enabled() else None
         space_onto = None
-        if allow_gen and not is_demo_space(space_id):
+        if data_onto is None and allow_gen and not is_demo_space(space_id):
             # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
             # one and never another Space's. A store that cannot be read is a
             # named ABSTAIN: answering without the join rules it holds would
@@ -1291,8 +1296,8 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
-                ontology=space_onto,
-                demo_ontology_allowed=space_onto is None,
+                ontology=data_onto if data_onto is not None else space_onto,
+                demo_ontology_allowed=data_onto is None and space_onto is None,
                 # Extract and EXPLAIN run on the DuckDB serving copy
                 # (connect_serving), not on the source connector in self.dialect.
                 dialect=SERVING_DIALECT,
@@ -1893,6 +1898,8 @@ __all__ = [
     "canonical_space_id",
     "is_demo_space",
     "default_readable_tables",
+    "compile_source",
+    "connect_serving",
     "warehouse_path",
     "serving_sync_state",
     "infer_contract",
