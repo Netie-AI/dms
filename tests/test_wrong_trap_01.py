@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from cortex_client.compute import begin_answer_model_calls
 from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import load_verified_ontology, maybe_generative_ask
@@ -93,6 +94,7 @@ def _payload(metric_id: str | None) -> dict[str, Any]:
 
 
 def _ask(tmp_path: Path, question: str, metric_id: str | None) -> dict[str, Any]:
+    begin_answer_model_calls()
     db, onto = _onto(tmp_path)
     submitted: list[str] = []
 

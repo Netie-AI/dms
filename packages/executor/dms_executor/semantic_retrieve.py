@@ -676,7 +676,8 @@ def question_grounds_measure(
     name = str(measure_name or "").strip()
     if not name or onto is None or name not in onto.measures:
         return False
-    if _locked_measure(question) == name:
+    # Lock and rank-window already name a measure. That is the binder, not a new phrase.
+    if str(intent_slots(question, onto).get("measure") or "") == name:
         return True
     measure = onto.measures[name]
     asked = ranked_measure_tokens(question)
@@ -691,7 +692,12 @@ def question_grounds_measure(
             if part
         )
     )
-    return bool((asked & body) - _dimension_tokens(onto, measure.grain))
+    # A grain word that is also the measure name (customer_count) still names it.
+    # A grain word that only appears in the description (warehouse on utilisation)
+    # does not.
+    named = ranked_measure_tokens(measure.name)
+    dims = _dimension_tokens(onto, measure.grain) - named
+    return bool((asked & body) - dims)
 
 
 def shape_from_metric_id(metric_id: str) -> dict[str, Any]:

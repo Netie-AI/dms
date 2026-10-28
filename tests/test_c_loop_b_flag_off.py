@@ -14,9 +14,11 @@ Against main 57d85c52, as_of stays masked. ``checker_version`` is not
 masked: it may differ, it must equal the sha256 of the current
 ``sql_grounds.py``, and it is the only field that may differ.
 
-The fixture bytes were captured from ce08153. checker_version is the
-sha256 of sql_grounds.py, which now reads SERVING_DIALECT. Every other
-field is that capture.
+The fixture bytes were captured from ce08153, then plan_origin was set
+to generate_sql on model-SQL abstains that left the origin empty. That
+origin is what stops an ontology_plan abstain beside a served model from
+reading as a compile. checker_version is the sha256 of sql_grounds.py,
+which now reads SERVING_DIALECT. Every other field is that capture.
 """
 
 from __future__ import annotations
@@ -41,7 +43,7 @@ _BASELINE = "ce08153c7f74418db33a38c0372d675e567d7040"
 # Main 57d85c52 fixture. Swapping the live checker hash back to this value
 # reproduces that file byte for byte. The grant check does not own the stamp.
 _MAIN_CHECKER = "5d5a8179d2938cfe57d30ebda7004e400ea86653aeba391244c252d7f1281d61"
-_MAIN_FIXTURE_SHA = "3881294637d9e3ef55e6aac7517f09084f03f5303f4b0624f466095b612527f1"
+_MAIN_FIXTURE_SHA = "b3c261a76b63726f4e3f57eb18595fb863cdda58c94e065c9343edc93e247975"
 _CHECKER_FIELD = "served_check_shadow.checker_version"
 _SQL = "SELECT location_code FROM locations WHERE is_cold_storage = TRUE"
 _CLOCK = {
