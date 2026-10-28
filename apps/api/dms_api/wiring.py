@@ -673,6 +673,34 @@ def health_pack_name() -> str:
     return health_pack_fields()["pack"]
 
 
+def compile_ontology_proposal(
+    *,
+    actor: str,
+    tenant_id: str,
+    space_id: str | None = None,
+) -> dict[str, Any]:
+    """Run AO-VENDOR-01 ``compile_source`` and store the proposal as proposed.
+
+    Flag off returns status ``off`` and writes nothing. A proposal is never
+    stored with ``served`` true.
+    """
+    import duckdb
+    from dms_core.control_plane.onto_data import store_proposal
+
+    path = dms_executor.warehouse_path()
+    conn = dms_executor.connect_serving(path) if path.is_file() else duckdb.connect()
+    try:
+        proposal = dms_executor.compile_source(conn)
+    finally:
+        conn.close()
+    return store_proposal(
+        proposal.to_json(),
+        created_by=actor,
+        space_id=space_id,
+        tenant_id=tenant_id,
+    )
+
+
 def engine_clock_fields() -> dict[str, str]:
     """Best-effort engine date for /health. Omitted when the warehouse is down."""
     try:

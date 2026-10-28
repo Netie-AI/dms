@@ -212,6 +212,7 @@ jobs:
           DMS_SKIP_CONTROL_PLANE_TESTS: "1"
         run: |
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
           python -m pytest tests/ -q --tb=short
 
       - name: grade52 metric self-test (stack-free, not a score)

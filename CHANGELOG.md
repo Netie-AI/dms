@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - ONTO-DATA-01: ontology as revocable data
+
+- **Store.** Alembic `0007_ontology_data` (revision 0003 is already `document_chunks`) adds `dms.ontology_versions` and `dms.ontology_items`. Kind is object, link, measure, grain, or pii. Status is proposed, approved, or revoked. Payload is JSON. Source, provenance, created_by, approved_by, and ts are on each item.
+- **Routes.** `POST /v1/ontology/data/compile` stores the AO-VENDOR-01 `compile_source` proposal as proposed. `GET /v1/ontology/data/diff` compares that proposal with approved items. Approve and revoke are per item. A caller without the steward grant gets 403.
+- **Serve.** `Ontology.from_store` serves approved items only. `DMS_ONTO_FROM_DATA` defaults to 0. On, the ask does not call `demo_ontology` or read `SUPPLY_CHAIN_GRAINS`. Off, existing ontology tests stay on the same path.
+- **Stack.** Built on #471 (`cursor/ao-vendor-01-8b00`). Rebase onto main `c7d29ed2` after #471 merges. `DMS_AI_FIRST` stays default off. Pin `279cbd85` was not edited.
+- **Suite.** Full `pytest tests/` not recorded in this commit yet. Not PASS.
+
 ## 2026-10-28 - AO-VENDOR-01: vendored auto-ontology compile, flag off
 
 - **Pin.** NVIDIA `auto-ontology` `eb8dd0621d07db3033fe3fddc68f62ff72614610` copied under `packages/ao_vendor`. Apache-2.0. No git dependency. UI, auth, Helm, MCP, and apache/ossie are not included. Changes are in `packages/ao_vendor/MODIFICATIONS.md`.

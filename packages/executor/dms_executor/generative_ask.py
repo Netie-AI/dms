@@ -99,6 +99,7 @@ from dms_executor.ontology import (
     demo_ontology,
     detect_supply_chain_grains,
     missing_join_for_ungranted,
+    onto_from_data_enabled,
     try_compile_multi_grain,
 )
 from dms_executor.route_stamp import (
@@ -465,6 +466,9 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
         return None
     if onto is not None:
         target = onto
+        declared = True
+    elif onto_from_data_enabled():
+        target = Ontology.from_store()
         declared = True
     else:
         target = demo_ontology(Path(warehouse))
