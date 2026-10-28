@@ -117,6 +117,7 @@ from dms_executor.semantic_retrieve import (
     bind_plan,
     intent_slots,
     load_measure_aliases,
+    question_grounds_measure,
     retrieve_short_context,
     slots_for_measure,
 )
@@ -356,12 +357,11 @@ def with_served_attribution(
     An envelope whose ``plan_origin`` names a DMS compile credits no model:
     DMS wrote the served SQL, not the model. ``served_attribution`` is
     ``missing`` when a generate call may have reached a model (nothing it
-    wrote was served), else ``none``. A multi-grain ``ontology_compile``
-    drops the copied model fields, because that path replaced the model's
-    SQL. A ranking compile keeps them: its route stamp is compile, and a
-    model name beside that stamp does not change the route. ``generate_legs``
-    still records the call. Every ask envelope passes here, so a later copy
-    of the payload cannot re-credit a multi-grain compile.
+    wrote was served), else ``none``. Every compile origin, ranking included,
+    drops the copied model fields. The route stamp stays compile, and a model
+    name on that stamp would claim the model wrote SQL it did not.
+    ``generate_legs`` still records the call. Every ask envelope passes here,
+    so a later copy of the payload cannot re-credit a compile.
     """
     if not isinstance(env, dict):
         return env
@@ -377,11 +377,8 @@ def with_served_attribution(
     env["served_attribution"] = served_attribution(payload)
     origin = str(env.get("plan_origin") or "")
     if origin in COMPILE_PLAN_ORIGINS:
-        # Ranking keeps the copied served_* fields (#439). The route stamp is
-        # compile, so the name does not make the answer a model answer.
-        if origin != PLAN_ORIGIN_ONTOLOGY_RANKING:
-            for key in MODEL_CREDIT_KEYS:
-                env.pop(key, None)
+        for key in MODEL_CREDIT_KEYS:
+            env.pop(key, None)
         called = generate_model_called(payload)
         env["served_attribution"] = SERVED_ATTR_MISSING if called else SERVED_ATTR_NONE
     return env
@@ -1328,6 +1325,15 @@ def _try_multi_grain_envelope(
         )
     from dms_executor.ai_first import ai_first_enabled, compile_example, note_example
 
+    ungrounded = _ungrounded_measure(q, multi.measure, onto)
+    if ungrounded:
+        # Do not serve it, and do not hand it to the model as an example.
+        if ai_first_enabled():
+            return None
+        return _abstain(
+            q, ungrounded,
+            space_id=space_id, session_id=session_id, plan_source=source,
+        )
     if ai_first_enabled():
         note_example(
             compile_example(
@@ -1442,6 +1448,22 @@ def rank_window_ask(
         lead=lead,
         served_route=ROUTE_LADDER,
     )
+
+
+def _ungrounded_measure(question: str, measure: str | None, onto: Ontology | None) -> str | None:
+    """Gap when a compile would serve a measure the question does not name.
+
+    None when there is no measure to judge, or the question grounds it in
+    the ontology or the columns the measure expression reads. The caller
+    abstains. Reconfirm offers Yes. This is not a phrase list.
+    """
+    name = str(measure or "").strip()
+    # A name the ontology does not declare is unknown_measure, owned by compile.
+    if not name or onto is None or name not in onto.measures:
+        return None
+    if question_grounds_measure(question, name, onto):
+        return None
+    return f"ungrounded_measure:{name}"
 
 
 def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery | Refusal:
@@ -2106,6 +2128,16 @@ def maybe_generative_ask(
         env["generate_legs"] = generate_legs_view(
             setup_src, validate_reason=validate_why
         )
+        # ontology_plan with no origin is Cortex's label for model SQL.
+        # Leaving the origin empty makes that label look like a compile
+        # beside the model that was called.
+        if (
+            env.get("abstained") is True
+            and str(env.get("plan_source") or "") == PLAN_SOURCE_ONTOLOGY
+            and not str(env.get("plan_origin") or "").strip()
+            and generate_model_called(setup_src)
+        ):
+            with_plan_origin(env, PLAN_ORIGIN_GENERATE_SQL)
         stamped = with_served_attribution(env, setup_src)
         if not isinstance(stamped, dict):
             return stamped
@@ -2542,6 +2574,18 @@ def maybe_generative_ask(
                 )
             )
 
+    ungrounded = _ungrounded_measure(q, plan.measure, onto)
+    if ungrounded:
+        return _stamp(
+            _abstain(
+                q,
+                ungrounded,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                notes=trail_notes,
+            )
+        )
     compiled = _compile_maybe_unverified(onto, plan)
     if isinstance(compiled, Refusal):
         return _stamp(
