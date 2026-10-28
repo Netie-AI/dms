@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-10-28, ONTO-DATA-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_ONTO_FROM_DATA` default 0. Approved items only when on. Stacked on #471. Suite not recorded yet. Not PASS.
+**Tip:** `DMS_ONTO_FROM_DATA` default 0. Approved items only when on. Stacked on #471. Suite 3565 passed, 41 skipped, 33 xfailed. n=348 not run. Not PASS.
 
 ## Direction
 

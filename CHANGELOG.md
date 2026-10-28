@@ -8,7 +8,7 @@ Append-only. Never edited, only added to. Newest first.
 - **Routes.** `POST /v1/ontology/data/compile` stores the AO-VENDOR-01 `compile_source` proposal as proposed. `GET /v1/ontology/data/diff` compares that proposal with approved items. Approve and revoke are per item. A caller without the steward grant gets 403.
 - **Serve.** `Ontology.from_store` serves approved items only. `DMS_ONTO_FROM_DATA` defaults to 0. On, the ask does not call `demo_ontology` or read `SUPPLY_CHAIN_GRAINS`. Off, existing ontology tests stay on the same path.
 - **Stack.** Built on #471 (`cursor/ao-vendor-01-8b00`). Rebase onto main `c7d29ed2` after #471 merges. `DMS_AI_FIRST` stays default off. Pin `279cbd85` was not edited.
-- **Suite.** Full `pytest tests/` not recorded in this commit yet. Not PASS.
+- **Suite.** Clean tree `c7921b2`: `3565 passed, 41 skipped, 33 xfailed`, exit 0, 1276s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
 
 ## 2026-10-28 - AO-VENDOR-01: vendored auto-ontology compile, flag off
 
