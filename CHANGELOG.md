@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - WRONG-TRAP-01 rebased onto c7d29ed
+
+- **Compile.** A compile serve abstains `ungrounded_measure:<name>` when that measure exists and the question does not name it. A binder lock, a rank window the binder already resolved, or a token in the measure name still compiles. A grain word that is only in the description does not. `DMS_AI_FIRST` stays off. On, an ungrounded multi-grain compile is not recorded as an example.
+- **Stamps.** Every compile origin drops served model credit. A model-SQL abstain with an empty origin gets `plan_origin=generate_sql`.
+- **grade52.** Grader 4. Printed `wrong` includes `refusal_wrong`. `not_scored` lists pin_mismatch ids. The tries line names `omitted_pin_mismatch`.
+- **Suite.** `DMS_SKIP_CONTROL_PLANE_TESTS=1 DMS_DEMO_FALLBACK=0`: 3573 passed, 41 skipped, 33 xfailed. Exit 0.
+- **Stub.** `grade52.py --main` at `7392972`: 52 correct=43 wrong=0 reconfirm=5, paths ai=0 rule=43 L1=23 compile=20, stamp_contradiction=0, metric ai_share=0/43 wrong=0. `--ai-first`: correct=0 wrong=0 reconfirm=48, ai_share=0/0. Label, not a score. Armed 52 was not re-run. Not PASS.
+
 ## 2026-10-28 - AI-SQL-SHIFT stub lines on the rebase
 
 - **Flag off.** `grade52 --main` at `36f7bca`: 52 correct=43 wrong=0 reconfirm=5, paths ai=0 rule=43 L1=23 compile=20, metric ai_share=0/43 wrong=0. refusal_ok=3, refusal_wrong=0, gold_broken=1. Label, not a score.

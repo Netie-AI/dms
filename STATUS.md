@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, AI-SQL-SHIFT rebase onto `f41c0240`
+**Last updated:** 2026-10-28, WRONG-TRAP-01 rebased onto `c7d29ed2`
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_AI_FIRST` default off. Flag off matches the main stub line. n=348 not run. Not PASS.
+**Tip:** `DMS_AI_FIRST` default off. Compile abstains `ungrounded_measure` when the question does not name the measure. Stub is not a score. Armed 52 not re-run. Not PASS.
 
 ## Direction
 
@@ -12,14 +12,14 @@ Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm wit
 
 ## 52 pack - number of record (STUB)
 
-STUB at `36f7bca`, `grade52 --main`. In-process replay, not a live model. Label, not a score. Not PASS.
+STUB at `7392972`, `grade52 --main`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
 | flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43. Suite 3565 passed, 41 skipped, 33 xfailed. n=348 not run.
+Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43, tries omitted_pin_mismatch=0. Suite 3573 passed, 41 skipped, 33 xfailed. n=348 not run. Armed 52 not re-run.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
