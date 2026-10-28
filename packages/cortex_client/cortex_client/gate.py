@@ -77,9 +77,11 @@ def compliance_gate(
     if r.status_code >= 400:
         return ComplianceDecision(allowed=False, reason="gate_refused", action=action)
 
-    body = r.json() if r.content else {}
+    body: dict[str, Any] = r.json() if r.content else {}
     # Choose wraps the verdict; a bare {"status", "executable"} body is read as-is.
-    verdict = body.get("verdict") if isinstance(body.get("verdict"), dict) else body
+    verdict = body.get("verdict")
+    if not isinstance(verdict, dict):
+        verdict = body
     status = str(verdict.get("status") or "").lower()
     executable = verdict.get("executable")
     allowed = executable is True or status in {"ok", "allowed", "pass", "passed"}
