@@ -10,7 +10,7 @@ Append-only. Never edited, only added to. Newest first.
 - **Grant.** `ungranted` stays a direct abstain when the grant check fails. A granted table or column missing from the approved ontology reconfirms `not_in_ontology`. That code's disposition is `offer`. The envelope `code` is the identifier `not_in_ontology`, so #477 can park the SQL and Yes can stamp `yes:definition:not_in_ontology`.
 - **Stack.** Rebased onto main `6bbc372e` (#480 GRADE-AO-01). PR base is `main`. Pin `279cbd85` was not edited.
 - **WRONG risk.** More answers are served when the flag is on. The armed 52 run is the judge. This change does not run it.
-- **Suite.** Not yet re-run on this head. n=348 not run. Not PASS.
+- **Suite.** Clean tree `f5a8707`: `3633 passed, 44 skipped, 33 xfailed`, exit 0, 1433.83s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS. The docs commit that records this is later than `f5a8707`.
 
 ## 2026-10-28 - GRADE-AO-01: compile, steward-approve, grade the persisted store
 
