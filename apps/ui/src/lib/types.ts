@@ -96,6 +96,7 @@ export type AnswerEnvelope = {
     reason_text: string;
     suggested_question: string;
     token: string;
+    definition?: string;
   } | null;
 };
 
