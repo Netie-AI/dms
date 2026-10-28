@@ -606,9 +606,9 @@ class Ontology:
         Does not call ``demo_ontology`` and does not read ``SUPPLY_CHAIN_GRAINS``.
         """
         if items is None:
-            from dms_core.control_plane.onto_data import approved_items
+            from dms_core.control_plane.onto_data import ontology_data_store
 
-            items = approved_items()
+            items = ontology_data_store().approved_items()
         onto = cls()
         served: list[str] = []
         approved = [row for row in items if str(row.get("status") or "") == "approved"]
