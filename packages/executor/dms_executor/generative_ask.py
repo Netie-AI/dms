@@ -1564,9 +1564,9 @@ def _run_extract_loop(
         return query_sql_from_payload(body) or insights_query_sql(body)
 
     def check(sql: str) -> str | None:
-        from dms_executor.def_validate import gate_generated_sql
+        from dms_executor.def_validate import validate_generated_sql
 
-        gated = gate_generated_sql(
+        gated = validate_generated_sql(
             sql,
             grantable=grantable,
             question=question,
@@ -2362,9 +2362,9 @@ def maybe_generative_ask(
                     space_id=space_id, session_id=session_id, plan_source=source,
                 )
             )
-        from dms_executor.def_validate import gate_generated_sql
+        from dms_executor.def_validate import validate_generated_sql
 
-        gated = gate_generated_sql(
+        gated = validate_generated_sql(
             sql,
             grantable=allowed,
             question=q,

@@ -25,6 +25,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError, TokenError
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
 from dms_executor.ontology import Ontology, _bare_relation
 
 
@@ -41,7 +42,7 @@ class DefVerdict:
     provenance: dict[str, Any]
 
 
-def gate_generated_sql(
+def validate_generated_sql(
     sql: str,
     *,
     grantable: set[str],
@@ -264,8 +265,8 @@ def _parse(
     except ImportError:
         return None
     try:
-        extracted = extract_tables_and_columns(sql, ["duckdb"], {})
-        tree = sqlglot.parse_one(sql, read="duckdb")
+        extracted = extract_tables_and_columns(sql, [SERVING_DIALECT], {})
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
     except (SQLSyntaxError, ParseError, TokenError, ValueError):
         return None
     if tree is None:
@@ -415,14 +416,14 @@ def _norm_node(node: exp.Expression) -> str | None:
             col.set("table", None)
             if col.name:
                 col.set("this", exp.to_identifier(col.name.casefold()))
-        return cloned.sql(dialect="duckdb", normalize=True).casefold()
+        return cloned.sql(dialect=SERVING_DIALECT, normalize=True).casefold()
     except (ParseError, TokenError, ValueError):
         return None
 
 
 def _norm_text(text: str) -> str | None:
     try:
-        tree = sqlglot.parse_one(text, read="duckdb")
+        tree = sqlglot.parse_one(text, read=SERVING_DIALECT)
     except (ParseError, TokenError, ValueError):
         return None
     if tree is None:
