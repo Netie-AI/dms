@@ -263,25 +263,41 @@ def _insights_compute_seam(
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
-    onto = ontology
+    onto: dict[str, Any] | None = ontology
     feedback = None
     asked = question
     examples = ""
+    ai_rows: list[dict[str, Any]] = []
     # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
     # stays quiet because the key is removed before the POST.
+    # verified_examples is the same kind of lift: question text, not a body field.
+    from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
+
     _hidden = {"sql_loop_feedback", "sql_vote_prompt", "sql_vote_kind", "vq_examples"}
-    if isinstance(ontology, dict) and _hidden.intersection(ontology):
-        onto = {k: v for k, v in ontology.items() if k not in _hidden}
-        raw = ontology.get("sql_loop_feedback")
-        feedback = raw if isinstance(raw, dict) else None
-        vote_prompt = ontology.get("sql_vote_prompt")
-        if isinstance(vote_prompt, str) and vote_prompt.strip():
-            asked = vote_prompt
-        raw_examples = ontology.get("vq_examples")
-        if isinstance(raw_examples, str) and raw_examples.strip():
-            examples = raw_examples.strip()
+    if isinstance(ontology, dict) and (
+        _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
+    ):
+        from cortex_client.compute import lift_verified_examples
+
+        lifted, ai_rows = lift_verified_examples(ontology)
+        if isinstance(lifted, dict) and _hidden.intersection(lifted):
+            raw = lifted.get("sql_loop_feedback")
+            feedback = raw if isinstance(raw, dict) else None
+            vote_prompt = lifted.get("sql_vote_prompt")
+            if isinstance(vote_prompt, str) and vote_prompt.strip():
+                asked = vote_prompt
+            raw_examples = lifted.get("vq_examples")
+            if isinstance(raw_examples, str) and raw_examples.strip():
+                examples = raw_examples.strip()
+            onto = {k: v for k, v in lifted.items() if k not in _hidden}
+        else:
+            onto = lifted
     if examples:
         asked = f"{asked.rstrip()}\nExamples:\n{examples}"
+    if ai_rows:
+        from dms_executor.ai_first import understand_question
+
+        asked = str(understand_question(asked, examples=ai_rows)["question"])
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
@@ -743,6 +759,7 @@ class Executor:
             control_token = bind_ask_control(ctrl)
         ctrl.deadline = deadline
         ctrl.start()
+        example_token = None
         # NAME-ECHO-01: the grant set grantable_tables resolves in this turn is
         # recorded here, so the scrub and the served-SQL check read it rather
         # than opening a connection of their own.
@@ -750,6 +767,10 @@ class Executor:
         from dms_executor.route_stamp import freeze_route
 
         try:
+            from dms_executor.ai_first import ai_first_enabled, begin_example_turn
+
+            if ai_first_enabled():
+                example_token = begin_example_turn()
             try:
                 try:
                     env = self._live_ask(
@@ -887,6 +908,10 @@ class Executor:
                 hide_echo(masked, "", grants=turn_grants())
             return masked
         finally:
+            if example_token is not None:
+                from dms_executor.ai_first import end_example_turn
+
+                end_example_turn(example_token)
             end_grant_turn(grant_turn)
             if own_control and control_token is not None:
                 reset_ask_control(control_token)
@@ -1033,30 +1058,60 @@ class Executor:
 
             # Phrase match + a failed later step is a named refusal (not None).
             # None means the phrase missed, so generative / contract ask may run.
+            # DMS_AI_FIRST: a granted phrase is an example, not a submit.
+            # A grant miss or a hostile phrase still goes through maybe_pack_ask.
             raise_if_ask_stopped()
-            pack_env = maybe_pack_ask(
-                question,
-                space_id=space_id,
-                session_id=session_id,
-                grantable=set(space_grants()),
-                tables=tables,
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
-                ledger_append=lambda payload: self._ledger_verified_query(
-                    asset_sql=str(payload.get("sql") or ""),
-                    run_id=str(payload.get("run_id") or ""),
+            from dms_executor.ai_first import (
+                ai_first_enabled,
+                note_example,
+                pack_example,
+            )
+            from dms_executor.demo_pack import lookup_pack_metric, match_pack_phrase
+            from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
+
+            held_pack = False
+            if ai_first_enabled():
+                phrase = match_pack_phrase(question, tables=tables)
+                if phrase is not None:
+                    hit = lookup_pack_metric(
+                        question,
+                        grantable=set(space_grants()),
+                        tables=tables,
+                        dialect=self.dialect,
+                    )
+                    hostile = False
+                    if hit is not None:
+                        try:
+                            reject_hostile_chat_sql(hit.sql)
+                        except SecurityEvent:
+                            hostile = True
+                    if hit is not None and not hostile:
+                        note_example(pack_example(hit, space_id))
+                        held_pack = True
+            if not held_pack:
+                pack_env = maybe_pack_ask(
+                    question,
                     space_id=space_id,
                     session_id=session_id,
-                    event_type="ask.governed_metric",
-                ),
-                dialect=self.dialect,
-            )
-            if pack_env is not None and not (
-                armed_product and pack_env.get("abstained") is True
-            ):
-                self._store_turn(session_id, space_id, pack_env)
-                return pack_env
+                    grantable=set(space_grants()),
+                    tables=tables,
+                    submit=lambda sql: self._submit_verified_sql(
+                        sql, space_id=space_id, session_id=session_id, tables=tables
+                    ),
+                    ledger_append=lambda payload: self._ledger_verified_query(
+                        asset_sql=str(payload.get("sql") or ""),
+                        run_id=str(payload.get("run_id") or ""),
+                        space_id=space_id,
+                        session_id=session_id,
+                        event_type="ask.governed_metric",
+                    ),
+                    dialect=self.dialect,
+                )
+                if pack_env is not None and not (
+                    armed_product and pack_env.get("abstained") is True
+                ):
+                    self._store_turn(session_id, space_id, pack_env)
+                    return pack_env
 
         if not armed_product:
             refuse_env = maybe_uncertified_refuse_ask(
@@ -1393,6 +1448,20 @@ class Executor:
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
+        # DMS_AI_FIRST still ran the contract grant check above. An ungranted,
+        # hostile, numeric, or unverified-join SQL stayed a direct abstain.
+        # A SQL that would have been served is not the answer.
+        from dms_executor.ai_first import ai_first_enabled, no_model_envelope
+
+        if ai_first_enabled() and not getattr(resp, "abstained", False):
+            env = attach_cascade(
+                no_model_envelope(
+                    question, space_id=space_id, session_id=session_id
+                ),
+                cascade,
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,

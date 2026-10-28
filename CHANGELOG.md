@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - AI-SQL-SHIFT stage 1 rebased onto main
+
+- **Flag.** `DMS_AI_FIRST` stays default off. Off, the ask path matches main: VQ-RAG (`embedder=`), the live harness (`demo_gate=`, pacer), and the DuckDB 2.0 stated-value probe.
+- **On.** A granted L1 phrase and a compile that would have been submitted are prompt examples. They are not submitted and not served. Ungranted, hostile, and other direct refusals stay direct. A contract SQL that would have been served is not the answer.
+- **Understanding.** `understand_question` in `dms_executor.ai_first` is the step a later GRAIN-AI ticket calls. It joins active examples onto the question and leaves `reading` empty. No word list. No model name.
+- **Pin.** Cortex scan sha `279cbd85` is unchanged. Example rows are not an Insights body field. `model` and `strict` stay stripped.
+- **Not this change.** The flag is not default on. No UI card. No durable example store. Not a live-model score. Not PASS.
+
 ## 2026-10-18 - SQL-VOTE: merge main after #421
 
 - **Base.** #421 is on main (`89aea317`). This branch merges main's tip `d1f8eeb` (that commit plus #452). `serve_gap` grant checks stay. Equal rows, one call cap, and `build_abstain` stay. Not PASS.

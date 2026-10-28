@@ -1122,6 +1122,27 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
+    from dms_executor.ai_first import (
+        NO_MODEL_SQL,
+        ai_first_enabled,
+        compile_example,
+        note_example,
+    )
+
+    if ai_first_enabled() and served_route in {ROUTE_COMPILE, ROUTE_LADDER}:
+        note_example(
+            compile_example(
+                sql, question=question, space_id=space_id, route=served_route
+            )
+        )
+        return _abstain(
+            question,
+            NO_MODEL_SQL,
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+            notes=notes,
+        )
     try:
         result = submit(sql)
     except OpenVaultTokenError:
@@ -1305,6 +1326,15 @@ def _try_multi_grain_envelope(
             q, gap or f"validate:{why}",
             space_id=space_id, session_id=session_id, plan_source=source,
         )
+    from dms_executor.ai_first import ai_first_enabled, compile_example, note_example
+
+    if ai_first_enabled():
+        note_example(
+            compile_example(
+                multi.sql, question=q, space_id=space_id, route=ROUTE_COMPILE
+            )
+        )
+        return None
     return _submit_validated(
         multi.sql,
         question=q,
@@ -1387,6 +1417,15 @@ def rank_window_ask(
         f"Ranks {win.label} of {noun}; ranks 1-{win.offset} are excluded. "
         f"{reading[:1].upper()}{reading[1:]}."
     )
+    from dms_executor.ai_first import ai_first_enabled, compile_example, note_example
+
+    if ai_first_enabled():
+        note_example(
+            compile_example(
+                compiled.sql, question=q, space_id=space_id, route=ROUTE_LADDER
+            )
+        )
+        return None
     return _submit_validated(
         compiled.sql,
         question=q,
@@ -1996,6 +2035,30 @@ def maybe_generative_ask(
         if block:
             insights_ctx = dict(insights_ctx)
             insights_ctx["vq_examples"] = block
+    from dms_executor.ai_first import ai_first_enabled, with_examples
+
+    held_preview: dict[str, Any] | None = None
+    if ai_first_enabled():
+        # Compile seeds known before the model call. A success is an example
+        # (the helper returns None). An abstain is kept and returned once
+        # the envelope stamp exists. understand_question runs in the Insights
+        # seam when these rows are lifted onto the question.
+        preview = _try_multi_grain_envelope(
+            q,
+            onto=onto,
+            payload=None,
+            allowed=allowed,
+            lake=lake,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            dialect=dialect,
+        )
+        if preview is not None:
+            held_preview = preview
+        insights_ctx = with_examples(insights_ctx)
+        ctx = with_examples(ctx)
     vote_budget: AskCallBudget | None = None
     if cloop_b_enabled() and not ontology_ranked_lane_enabled():
         # Direct SQL. Reading 2 is a different instruction under the same cap.
@@ -2003,7 +2066,9 @@ def maybe_generative_ask(
         insights_ctx["sql_vote_kind"] = "direct"
         vote_budget = AskCallBudget()
     try:
-        if vote_budget is not None and not vote_budget.take():
+        if held_preview is not None:
+            payload = None
+        elif vote_budget is not None and not vote_budget.take():
             payload = None
         else:
             payload = compute(insights_ctx)
@@ -2054,7 +2119,13 @@ def maybe_generative_ask(
                 stamped["index_stamp"] = index_stamp
             # Through PII-01, not after it. Hint values are already tokens.
             stamped = mask_unknown_keys(stamped)
+        from dms_executor.ai_first import stamp_examples
+
+        stamp_examples(stamped)
         return freeze_route(stamped)
+
+    if held_preview is not None:
+        return _stamp(with_plan_origin(held_preview, PLAN_ORIGIN_ONTOLOGY_COMPILE))
 
     if verify_cache_missing:
         return _stamp(

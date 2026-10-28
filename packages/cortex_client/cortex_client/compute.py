@@ -975,6 +975,44 @@ def classify_insights_fail(
     return INSIGHTS_FAIL_EMPTY
 
 
+def lift_verified_examples(
+    ontology: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Lift example rows off the catalog. They are not an Insights body field.
+
+    Cortex pin 279cbd85 drops unknown keys on some routes and 422s others.
+    The rows ride in the question text, which that pin already accepts.
+    """
+    from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
+
+    if not isinstance(ontology, dict) or VERIFIED_EXAMPLES_FIELD not in ontology:
+        return ontology, []
+    onto = dict(ontology)
+    raw = onto.pop(VERIFIED_EXAMPLES_FIELD, None)
+    rows = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    return (onto or None), rows
+
+
+def question_with_examples(question: str, examples: list[dict[str, Any]]) -> str:
+    """Append example SQL to the question. A revoked row is skipped.
+
+    The text does not choose an answer. The caller still has to write SQL
+    and pass the checker. Repeating the same SQL is a no-op.
+    """
+    blocks: list[str] = []
+    for ex in examples:
+        if ex.get("revoked") is True:
+            continue
+        sql = str(ex.get("sql") or "").strip()
+        if not sql or sql in question:
+            continue
+        asked = str(ex.get("question") or "").strip()
+        blocks.append(f"example_question: {asked}\nexample_sql:\n{sql}")
+    if not blocks:
+        return question
+    return question + "\n\nverified_examples:\n" + "\n\n".join(blocks) + "\n"
+
+
 def _split_schema_context(
     ontology: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -1027,11 +1065,14 @@ def _insights_body(
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
     onto, schema_context = _split_schema_context(ontology)
+    onto, examples = lift_verified_examples(onto)
     evidence = None
     if isinstance(onto, dict) and NAME_MASK_KEY in onto:
         onto = dict(onto)
         evidence = onto.pop(NAME_MASK_KEY, None)
     asked = _masked_model_question(asked, evidence if isinstance(evidence, Mapping) else None)
+    if examples:
+        asked = question_with_examples(asked, examples)
     body: dict[str, Any] = {
         "intent": asked,
         "question": asked,
