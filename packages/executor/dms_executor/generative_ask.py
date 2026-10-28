@@ -1282,10 +1282,18 @@ def _try_multi_grain_envelope(
     """
     lock = _multi_grain_measure(q, onto, payload)
     multi = try_compile_multi_grain(
-        onto, lock or None, q, grantable=allowed, dialect=dialect
+        onto,
+        lock or None,
+        q,
+        grantable=allowed,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
     )
     if multi is None:
         return None
+    if isinstance(multi, dict):
+        return multi
     source = PLAN_SOURCE_ONTOLOGY
     if isinstance(multi, Refusal):
         return _abstain(
@@ -1322,7 +1330,13 @@ def _try_multi_grain_envelope(
             question=q,
         )
     if why:
-        gap = missing_join_for_ungranted(why, detect_supply_chain_grains(q))
+        from dms_executor.grain_ai import grain_ai_enabled
+
+        if grain_ai_enabled():
+            used = tuple(path.grain for path in multi.where_paths)
+        else:
+            used = detect_supply_chain_grains(q)
+        gap = missing_join_for_ungranted(why, used)
         return _abstain(
             q, gap or f"validate:{why}",
             space_id=space_id, session_id=session_id, plan_source=source,
