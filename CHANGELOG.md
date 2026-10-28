@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-28 - AO-VENDOR-01: vendored auto-ontology compile, flag off
+
+- **Pin.** NVIDIA `auto-ontology` `eb8dd0621d07db3033fe3fddc68f62ff72614610` copied under `packages/ao_vendor`. Apache-2.0. No git dependency. UI, auth, Helm, MCP, and apache/ossie are not included. Changes are in `packages/ao_vendor/MODIFICATIONS.md`.
+- **Compile.** `DMS_AO_COMPILE` defaults to 0. On, `compile_source` returns an `OntologyProposal` with status `proposed` and `served` false. The LLM call is OpenVault FreeRoute, role alias `ontology`, and does not name a model. Prove pin `279cbd85` was not edited.
+- **Suite.** Clean tree `8deab9a`: `3559 passed, 41 skipped, 33 xfailed`, exit 0. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+
 ## 2026-10-28 - WRONG-TRAP-01 rebased onto c7d29ed
 
 - **Compile.** A compile serve abstains `ungrounded_measure:<name>` when that measure exists and the question does not name it. A binder lock, a rank window the binder already resolved, or a token in the measure name still compiles. A grain word that is only in the description does not. `DMS_AI_FIRST` stays off. On, an ungrounded multi-grain compile is not recorded as an example.

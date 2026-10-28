@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, WRONG-TRAP-01 rebased onto `c7d29ed2`
+**Last updated:** 2026-10-28, AO-VENDOR-01 rebased onto WRONG-TRAP-01 `07d130fa`
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_AI_FIRST` default off. Compile abstains `ungrounded_measure` when the question does not name the measure. Stub is not a score. Armed 52 not re-run. Not PASS.
+**Tip:** `DMS_AI_FIRST` default off. `DMS_AO_COMPILE` default 0. Vendored auto-ontology `eb8dd062` proposes only. Compile abstains `ungrounded_measure` when the question does not name the measure. Armed 52 not re-run. Not PASS.
 
 ## Direction
 
