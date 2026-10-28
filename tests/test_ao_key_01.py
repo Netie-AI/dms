@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from typing import Any
 
 import duckdb
+import psycopg
 import pytest
 from dms_core.control_plane.onto_data import (
     items_from_proposal,
@@ -18,11 +20,34 @@ from dms_executor.ontology import Ontology
 from test_ao_vendor_01 import _recorded
 
 
+def _clear_pg_ontology() -> None:
+    """The flag-on store is durable. A test starts from an empty tenant."""
+    if os.environ.get("DMS_ONTO_PG", "0").strip() != "1":
+        return
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        return
+    from dms_core.control_plane.onto_data import _DEFAULT_TENANT
+    from dms_core.control_plane.session import set_tenant_context
+
+    tenant = os.environ.get("DMS_TENANT_ID", "").strip() or _DEFAULT_TENANT
+    conn = psycopg.connect(url)
+    try:
+        set_tenant_context(conn, tenant, role="admin")
+        conn.execute("DELETE FROM dms.ontology_items")
+        conn.execute("DELETE FROM dms.ontology_versions")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture(autouse=True)
 def _reset_store() -> Iterator[None]:
     reset_ontology_data_store()
+    _clear_pg_ontology()
     yield
     reset_ontology_data_store()
+    _clear_pg_ontology()
 
 
 def test_round_trip_from_store_has_three_objects_and_three_links(

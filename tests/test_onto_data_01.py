@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import ModuleType
 from typing import Any
 
 import duckdb
+import psycopg
 import pytest
 from cortex_client.models import AskResponse
 from cortex_contract.execution import Manifest
@@ -88,11 +90,34 @@ def _install_compile(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _clear_pg_ontology() -> None:
+    """The flag-on store is durable. A test starts from an empty tenant."""
+    if os.environ.get("DMS_ONTO_PG", "0").strip() != "1":
+        return
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        return
+    from dms_core.control_plane.onto_data import _DEFAULT_TENANT
+    from dms_core.control_plane.session import set_tenant_context
+
+    tenant = os.environ.get("DMS_TENANT_ID", "").strip() or _DEFAULT_TENANT
+    conn = psycopg.connect(url)
+    try:
+        set_tenant_context(conn, tenant, role="admin")
+        conn.execute("DELETE FROM dms.ontology_items")
+        conn.execute("DELETE FROM dms.ontology_versions")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture(autouse=True)
 def _reset_store() -> Iterator[None]:
     reset_ontology_data_store()
+    _clear_pg_ontology()
     yield
     reset_ontology_data_store()
+    _clear_pg_ontology()
 
 
 def test_migration_0007_upgrades_and_downgrades() -> None:
@@ -199,7 +224,10 @@ def test_revoke_removed_from_next_ask(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_ungranted_steward_is_403() -> None:
     client = TestClient(create_app())
-    ontology_data_store().deny_steward(get_settings().dms_actor_user_id)
+    store = ontology_data_store()
+    before_approved = {row["id"] for row in store.approved_items()}
+    before_proposed = {row["id"] for row in store.diff()["proposed_only"]}
+    store.deny_steward(get_settings().dms_actor_user_id)
     routes = (
         ("post", "/v1/ontology/data/compile"),
         ("get", "/v1/ontology/data/diff"),
@@ -210,7 +238,8 @@ def test_ungranted_steward_is_403() -> None:
         res = getattr(client, method)(path)
         assert res.status_code == 403, res.text
         assert res.json()["detail"] == "steward_grant_required"
-    assert ontology_data_store()._items == {}  # type: ignore[attr-defined]
+    assert {row["id"] for row in store.approved_items()} == before_approved
+    assert {row["id"] for row in store.diff()["proposed_only"]} == before_proposed
 
 
 def test_flag_off_load_verified_still_calls_demo_ontology(

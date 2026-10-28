@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, RECONFIRM-YES-01
+**Last updated:** 2026-10-28, GRADE-AO-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_RECONFIRM_RUN_HELD` default 0. On, a def_validate hold: Yes re-checks grants and read-only, then runs that SQL once (`yes:definition:<code>`). Flag off still re-asks. Chat shows Yes above Details. Rebased onto main `5980eef8` (#479). Draft PR #477. Suite on `e7028c7`: 3609 passed, 43 skipped, 33 xfailed, exit 0, 1248.81s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. n=348 not run. Not PASS.
+**Tip:** Draft PR #480. Flags stay default 0. `--all-flags` applies `ARMED_ALL_FLAGS_ON`, including `DMS_RECONFIRM_RUN_HELD=1`. Rebased onto main `df1f37f5` (#477). Suite on `b445494`: 3617 passed, 44 skipped, 33 xfailed, exit 0, 1427.52s. `DMS_SKIP_CONTROL_PLANE_TESTS=1`, `DMS_DEMO_FALLBACK=0`. Postgres 16.15, alembic `0008_ontology_approval_ref`, four ontology files with `DMS_ONTO_PG=1`: 26 passed, 0 skipped. n=348 not run. Not PASS.
 
 ## Direction
 
