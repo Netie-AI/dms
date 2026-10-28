@@ -189,7 +189,7 @@ jobs:
           python -m pip install --upgrade pip wheel build
           python -m build --wheel ./_cortex/packages/cortex_contract
           pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
-          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger"
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
           pip install -e ".[dev]"
           pip install fastapi uvicorn httpx pydantic-settings cryptography
 
@@ -201,7 +201,7 @@ jobs:
 
       - name: Import linter
         run: |
-          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger"
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           lint-imports
 
       - name: Invariant + unit tests
@@ -211,7 +211,7 @@ jobs:
           # Add a postgres service job before flipping this off.
           DMS_SKIP_CONTROL_PLANE_TESTS: "1"
         run: |
-          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger"
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           python -m pytest tests/ -q --tb=short
 
       - name: grade52 metric self-test (stack-free, not a score)
