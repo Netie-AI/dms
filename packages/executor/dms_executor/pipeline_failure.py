@@ -85,6 +85,7 @@ _CODES = frozenset(
         "loop_exhausted",
         "multi_statement",
         "no_sql",
+        "not_in_ontology",
         "ontology",
         "openvault_mint",
         "path_not_allowed",
