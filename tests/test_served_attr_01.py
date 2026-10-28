@@ -223,10 +223,10 @@ def test_ranking_after_model_call_reports_served_fields(
     assert env["served_route"] == "ontology_compile"
     assert env["ladder_rung"] == "compile"
     # A model call happened. The served SQL is the ontology compile, not that
-    # model's SQL, so credit is missing. The copied served_* fields stay.
+    # model's SQL, so the envelope does not name the model. The leg still does.
     assert env["served_attribution"] == "missing"
-    assert env["served_model"] == _SERVED["served_model"]
-    # The copied model name does not make the compile route contradictory.
+    assert "served_model" not in env
+    assert "served_provider" not in env
     assert route_of(env) == "ontology_compile"
     assert env["generate_legs"]["legs"][0] == {"returned": "nothing", **_SERVED}
 

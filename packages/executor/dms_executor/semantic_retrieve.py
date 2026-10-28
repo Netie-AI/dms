@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from cortex_client.compute import pack_id_shape
+from cortex_client.compute import pack_id_shape, ranked_measure_tokens
 from cortex_client.qualifiers import parse_rank_window, rank_window_group, rank_window_measure
 from dms_core.pii import column_is_pii, sanitize_retrieve_parts
 
@@ -635,6 +635,65 @@ def _group_from_hints(question: str) -> list[list[str]] | None:
     return unique
 
 
+def _dimension_tokens(onto: Ontology | None, grain: str) -> set[str]:
+    """Tokens that name the grain, not the measure.
+
+    Object, key, grain alias, and a dimension hint whose words are that
+    grain. A hint that also carries a measure word ("category sales") keeps
+    only the grain word.
+    """
+    out: set[str] = set()
+    obj = onto.objects.get(grain) if onto is not None else None
+    if obj is not None:
+        out |= ranked_measure_tokens(obj.name)
+        for col in (*obj.key, *getattr(obj, "business_key", ())):
+            out |= ranked_measure_tokens(str(col))
+    if onto is not None:
+        for alias, dest in onto.grain_aliases.items():
+            if dest == grain:
+                out |= ranked_measure_tokens(alias)
+    for needles, obj_name, col in _DIM_HINTS:
+        if obj_name != grain:
+            continue
+        anchor = ranked_measure_tokens(obj_name) | ranked_measure_tokens(col)
+        for needle in needles:
+            words = ranked_measure_tokens(needle)
+            hit = words & anchor
+            out |= hit or words
+    return out
+
+
+def question_grounds_measure(
+    question: str, measure_name: str, onto: Ontology | None
+) -> bool:
+    """True when this question names ``measure_name`` in the ontology or schema.
+
+    A retrieve lock is a name the ontology binder already accepted. Otherwise
+    the question must share a token with the measure name, its description,
+    or a column its expression reads. A token that only names the grain
+    (warehouse for location) does not name the measure. No phrase table.
+    """
+    name = str(measure_name or "").strip()
+    if not name or onto is None or name not in onto.measures:
+        return False
+    if _locked_measure(question) == name:
+        return True
+    measure = onto.measures[name]
+    asked = ranked_measure_tokens(question)
+    body = ranked_measure_tokens(
+        " ".join(
+            part
+            for part in (
+                measure.name,
+                measure.description or "",
+                measure.expression or "",
+            )
+            if part
+        )
+    )
+    return bool((asked & body) - _dimension_tokens(onto, measure.grain))
+
+
 def shape_from_metric_id(metric_id: str) -> dict[str, Any]:
     """Group/limit/keep_gt encoded in a Cortex pack metric id. No SQL."""
     return pack_id_shape(metric_id)
@@ -813,6 +872,7 @@ __all__ = [
     "intent_slots",
     "load_measure_aliases",
     "load_ontology_spine",
+    "question_grounds_measure",
     "question_tokens",
     "retrieve_short_context",
     "shape_from_metric_id",

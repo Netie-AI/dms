@@ -140,7 +140,8 @@ _BUCKET_KEYS = (
 )
 # Bump when a bucket rule or the row comparison changes. A baseline graded by
 # another version is not comparable and is refused.
-GRADER_VERSION = 3
+# 4: printed wrong includes refusal_wrong. not_scored lists pin_mismatch ids.
+GRADER_VERSION = 4
 CONFIDENCE = 0.95
 # Higher is worse. A case's worst-of-runs bucket is the one ranked highest.
 _SEVERITY = {
@@ -1314,6 +1315,9 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
     dest = _artifact_dir() / name
     slim_cases = []
     for item in report["cases"]:
+        reason = ""
+        for row in not_scored_entries([item]):
+            reason = row["reason"]
         slim_cases.append(
             {
                 "id": item["id"],
@@ -1327,10 +1331,12 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
                 "as_of": item["as_of"],
                 "pack_gold_served": bool(item.get("pack_gold_served")),
                 "served_n": item.get("served_n"),
+                "not_scored": reason or None,
                 **({"runs": item["runs"]} if "runs" in item else {}),
             }
         )
-    without = report["without_pack_gold_served"]
+    without = dict(report["without_pack_gold_served"])
+    without["wrong"] = headline_wrong(without)
     body = {
         "mode": report["mode"],
         "run": run_label(report),
@@ -1343,7 +1349,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "n": report["n"],
         "graded": report["graded"],
         "correct": report["correct"],
-        "wrong": report["wrong"],
+        "wrong": headline_wrong(report),
         "reconfirm": report["reconfirm"],
         "abstain": report["abstain"],
         "refusal_ok": report["refusal_ok"],
@@ -1357,6 +1363,8 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "empty_gold_served": report["empty_gold_served"],
         "score": True,
         "grader_version": GRADER_VERSION,
+        "tries": tries_line(report["cases"]),
+        "not_scored": not_scored_entries(report["cases"]),
         "risk": risk_bounds(report["cases"]),
         "runs": int(report.get("runs") or 1),
         "unstable": int(report.get("unstable") or 0),
@@ -1460,27 +1468,73 @@ def split_line(report: Mapping[str, Any]) -> str:
 
 
 def tries_line(cases: Sequence[Mapping[str, Any]]) -> str:
-    """Correct on the first generate, and correct only after a retry. Mismatches are out."""
+    """Correct on the first generate, and correct only after a retry.
+
+    A correct answer whose served model is not the requested pin is omitted.
+    ``correct_first + correct_retry`` is less than ``correct`` by that count.
+    """
     first = 0
     retry = 0
+    omitted = 0
     for item in cases:
-        if item.get("bucket") != BUCKET_CORRECT or item.get("pin_mismatch"):
+        if item.get("bucket") != BUCKET_CORRECT:
+            continue
+        if item.get("pin_mismatch"):
+            omitted += 1
             continue
         if int(item.get("model_calls") or 0) > 1:
             retry += 1
         else:
             first += 1
-    return f"tries correct_first={first} correct_retry={retry}"
+    line = f"tries correct_first={first} correct_retry={retry} omitted_pin_mismatch={omitted}"
+    if omitted:
+        line += " reason=pin_mismatch_not_in_tries"
+    return line
+
+
+def not_scored_entries(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Per question the tries line left out, with the pin that did not match."""
+    rows: list[dict[str, str]] = []
+    for item in cases:
+        if not item.get("pin_mismatch"):
+            continue
+        requested = str(item.get("model_requested") or "missing")
+        served = str(item.get("served_model") or "missing")
+        rows.append(
+            {
+                "id": str(item.get("id") or ""),
+                "reason": f"pin_mismatch:{requested}/{served}",
+            }
+        )
+    return rows
 
 
 def not_scored_line(cases: Sequence[Mapping[str, Any]]) -> str:
-    """Served model differs from the requested pin. Not in the tries counts."""
-    mismatched = sum(1 for item in cases if item.get("pin_mismatch"))
-    return f"not_scored pin_mismatch={mismatched}"
+    """Served model differs from the requested pin. Not in the tries counts.
+
+    The count is followed by each question id and its pin_mismatch reason.
+    """
+    rows = not_scored_entries(cases)
+    head = f"not_scored pin_mismatch={len(rows)}"
+    if not rows:
+        return head
+    shown = " ".join(
+        f"{row['id']}={row['reason']}" if row["id"] else row["reason"] for row in rows
+    )
+    return f"{head} {shown}"
+
+
+def headline_wrong(report: Mapping[str, Any]) -> int:
+    """Wrong served answers. A trap that was served counts. The WRONG=0 bar reads this."""
+    return _bucket_count(report, "wrong") + _bucket_count(report, "refusal_wrong")
 
 
 def summary_line(report: Mapping[str, Any]) -> str:
-    """One score line. The buckets are disjoint and add up to n."""
+    """One score line. The buckets are disjoint and add up to n.
+
+    Printed ``wrong`` is bucket wrong plus refusal_wrong, so a served trap
+    is not a zero on the WRONG=0 bar. ``refusal_wrong`` stays on the line.
+    """
     _require_label(report)
     counts = {key: _bucket_count(report, key) for key in _BUCKET_KEYS}
     if sum(counts.values()) != int(report["n"]):
@@ -1489,9 +1543,10 @@ def summary_line(report: Mapping[str, Any]) -> str:
     head = f"sha={report['dms_sha']}"
     if isinstance(layout, str) and layout:
         head += f" layout={layout}"
+    shown_wrong = counts["wrong"] + counts["refusal_wrong"]
     return (
         f"{head} pack_gold_served={report['pack_gold_served']} "
-        f"{report['n']}: correct={counts['correct']} wrong={counts['wrong']} "
+        f"{report['n']}: correct={counts['correct']} wrong={shown_wrong} "
         f"reconfirm={counts['reconfirm']} abstain={counts['abstain']} "
         f"refusal_ok={counts['refusal_ok']} "
         f"refusal_wrong={counts['refusal_wrong']} empty_gold={counts['empty_gold']} "
@@ -3146,10 +3201,35 @@ def self_test() -> dict[str, str]:
         "model_calls": 0,
     }
     sample = [first, retried, mismatched, abstained, refused]
-    if tries_line(sample) != "tries correct_first=1 correct_retry=1":
+    if tries_line(sample) != (
+        "tries correct_first=1 correct_retry=1 omitted_pin_mismatch=1 "
+        "reason=pin_mismatch_not_in_tries"
+    ):
         raise SystemExit(f"self-test: tries line drifted ({tries_line(sample)})")
-    if not_scored_line(sample) != "not_scored pin_mismatch=1":
-        raise SystemExit("self-test: pin mismatch was scored")
+    mismatched["id"] = "cq_pin"
+    if not_scored_line(sample) != (
+        "not_scored pin_mismatch=1 "
+        "cq_pin=pin_mismatch:openai/gpt-oss-120b/openai/gpt-oss-20b"
+    ):
+        raise SystemExit(f"self-test: pin mismatch was scored ({not_scored_line(sample)})")
+    shown = summary_line(
+        {
+            "mode": MODE_SERVED,
+            "dms_sha": "0" * 40,
+            "pack_gold_served": "included",
+            "n": 2,
+            "correct": 1,
+            "wrong": 0,
+            "reconfirm": 0,
+            "abstain": 0,
+            "refusal_ok": 0,
+            "refusal_wrong": 1,
+            "empty_gold": 0,
+            "gold_broken": 0,
+        }
+    )
+    if "wrong=1" not in shown or "refusal_wrong=1" not in shown:
+        raise SystemExit(f"self-test: refusal_wrong was not in headline wrong ({shown})")
     parts = abstain_part_counts(sample)
     if parts["abstain"] + parts["refusal_ok"] != 2 or sum(parts.values()) != 2:
         raise SystemExit(f"self-test: abstain parts do not add up ({parts})")
@@ -3252,8 +3332,11 @@ def main(argv: list[str] | None = None) -> int:
     elif args.main:
         grade_main(ai_first=bool(args.ai_first))
     if args.gate and report is not None:
-        if int(report["wrong"]) + int(report["refusal_wrong"]) > 0:
-            print(f"gate FAIL wrong={report['wrong']} refusal_wrong={report['refusal_wrong']}")
+        if headline_wrong(report) > 0:
+            print(
+                f"gate FAIL wrong={headline_wrong(report)} "
+                f"refusal_wrong={report['refusal_wrong']}"
+            )
             return 1
     return 0
 
