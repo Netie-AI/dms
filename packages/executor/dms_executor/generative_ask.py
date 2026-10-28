@@ -1556,12 +1556,29 @@ def _run_extract_loop(
 ) -> dict[str, Any]:
     """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
 
+    held: dict[str, Any] = {}
+
     def model_sql(body: dict[str, Any] | None) -> str | None:
         if not isinstance(body, dict):
             return None
         return query_sql_from_payload(body) or insights_query_sql(body)
 
     def check(sql: str) -> str | None:
+        from dms_executor.def_validate import gate_generated_sql
+
+        gated = gate_generated_sql(
+            sql,
+            grantable=grantable,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if gated is not None:
+            held["provenance"] = gated.provenance
+            if gated.outcome != "pass":
+                held["env"] = gated.envelope
+                return gated.reason
+            held.pop("env", None)
         if is_multi_statement(sql, dialect):
             return "multi_statement"
         if space_onto is not None:
@@ -1602,7 +1619,7 @@ def _run_extract_loop(
         )
 
     def submit_sql(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
-        return _submit_validated(
+        env = _submit_validated(
             sql,
             question=question,
             space_id=space_id,
@@ -1617,6 +1634,10 @@ def _run_extract_loop(
             plan_origin=PLAN_ORIGIN_GENERATE_SQL,
             served_route=_sql_route(payload),
         )
+        prov = held.get("provenance")
+        if isinstance(prov, dict):
+            env["ontology_provenance"] = dict(prov)
+        return env
 
     def abstain(
         reason: str,
@@ -1625,8 +1646,11 @@ def _run_extract_loop(
         sql: str | None = None,
         retries: int = 0,
     ) -> dict[str, Any]:
+        held_env = held.get("env")
+        if isinstance(held_env, dict):
+            return held_env
         if reason == RESERVED_PARAM_AS_OF:
-            return reserved_as_of_abstain(
+            env = reserved_as_of_abstain(
                 space_id=space_id,
                 session_id=session_id,
                 route="generated",
@@ -1635,20 +1659,25 @@ def _run_extract_loop(
                 retries=retries,
                 stage="extract_loop",
             )
-        # The loop outcome the customer reads stays the bare checker code.
-        # The ticket keeps the relation serve_gap named (NAME-ECHO-01).
-        ticket_reason = _grant_ticket_reason(reason, sql, grantable, dialect)
-        return _abstain(
-            question,
-            reason,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=PLAN_SOURCE_ONTOLOGY,
-            sql=sql,
-            retries=retries,
-            stage="extract_loop",
-            ticket_reason=ticket_reason,
-        )
+        else:
+            # The loop outcome the customer reads stays the bare checker code.
+            # The ticket keeps the relation serve_gap named (NAME-ECHO-01).
+            ticket_reason = _grant_ticket_reason(reason, sql, grantable, dialect)
+            env = _abstain(
+                question,
+                reason,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=PLAN_SOURCE_ONTOLOGY,
+                sql=sql,
+                retries=retries,
+                stage="extract_loop",
+                ticket_reason=ticket_reason,
+            )
+        prov = held.get("provenance")
+        if isinstance(prov, dict) and isinstance(env, dict):
+            env["ontology_provenance"] = dict(prov)
+        return env
 
     def empty_answer(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         # Reached only when empty_result_reason returns None (VALUE-EXISTS-01).
@@ -1676,6 +1705,9 @@ def _run_extract_loop(
         route = _sql_route(payload)
         if route:
             stamp_route(stamped, route)
+        prov = held.get("provenance")
+        if isinstance(prov, dict):
+            stamped["ontology_provenance"] = dict(prov)
         return stamped
 
     # Rows only. The customer submit waits until the second reading agrees,
@@ -1694,7 +1726,7 @@ def _run_extract_loop(
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=attempts,
-        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF, "pii", "def_validate"}),
         budget=budget,
     )
     if first.get("abstained") or not first.get("rows"):
@@ -1820,7 +1852,7 @@ def _second_reading(
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=second_attempts,
-        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF}),
+        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF, "pii", "def_validate"}),
         recover_failures=True,
         budget=budget,
     )
@@ -2139,6 +2171,8 @@ def maybe_generative_ask(
     trail_notes: list[str] = []
     validate_why: str | None = None
     loop_attempts: list[dict[str, Any]] = []
+    gate_state: dict[str, Any] = {}
+
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
         env = with_setup_fields(env, setup_src)
         if not isinstance(env, dict):
@@ -2172,6 +2206,9 @@ def maybe_generative_ask(
         from dms_executor.ai_first import stamp_examples
 
         stamp_examples(stamped)
+        prov = gate_state.get("provenance")
+        if isinstance(prov, dict) and isinstance(stamped, dict):
+            stamped["ontology_provenance"] = dict(prov)
         return freeze_route(stamped)
 
     if held_preview is not None:
@@ -2325,6 +2362,31 @@ def maybe_generative_ask(
                     space_id=space_id, session_id=session_id, plan_source=source,
                 )
             )
+        from dms_executor.def_validate import gate_generated_sql
+
+        gated = gate_generated_sql(
+            sql,
+            grantable=allowed,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if gated is not None and gated.outcome != "pass":
+            gate_state["provenance"] = gated.provenance
+            if isinstance(gated.envelope, dict):
+                return _stamp(gated.envelope)
+            return _stamp(
+                _abstain(
+                    q,
+                    gated.reason or "def_validate",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    sql=sql,
+                )
+            )
+        if gated is not None:
+            gate_state["provenance"] = gated.provenance
         why = validate_compiled_sql(
             sql, grantable=allowed, warehouse=lake, dialect=dialect
         )
