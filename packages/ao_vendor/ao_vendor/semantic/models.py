@@ -171,6 +171,13 @@ class PotentialFkResult(BaseModel):
         default="",
         description="Brief reason for the junction-table decision.",
     )
+    pk_column_names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Primary-key column names from the same FkAndPkResult reading. "
+            "Empty when that reading named none."
+        ),
+    )
 
 
 class FkAndPkResult(BaseModel):

@@ -87,7 +87,9 @@ def items_from_proposal(body: Mapping[str, Any]) -> list[tuple[str, dict[str, An
                 attributes.append(attr)
                 seen.add(mark)
         raw_key = term.get("key")
-        key_cols = [str(c) for c in raw_key] if isinstance(raw_key, list) else []
+        key_cols = [str(c) for c in raw_key if str(c).strip()] if isinstance(raw_key, list) else []
+        if not key_cols:
+            continue
         rows.append(
             (
                 "object",

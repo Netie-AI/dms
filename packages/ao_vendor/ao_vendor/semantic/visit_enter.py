@@ -40,6 +40,7 @@ class CompiledTable:
     terms: list[dict[str, Any]] = field(default_factory=list)
     attributes: list[dict[str, Any]] = field(default_factory=list)
     fk_suggestions: list[dict[str, Any]] = field(default_factory=list)
+    pk_column_names: list[str] = field(default_factory=list)
     is_junction: bool = False
     junction_rationale: str = ""
 
@@ -116,6 +117,7 @@ def process_table(
     compiled = CompiledTable(
         is_junction=is_junction,
         junction_rationale=fk_result.junction_table_rationale,
+        pk_column_names=list(fk_result.pk_column_names),
         fk_suggestions=[
             {
                 "table_name": table_name,
