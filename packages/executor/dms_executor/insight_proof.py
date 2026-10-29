@@ -48,7 +48,7 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 
 import httpx
 
@@ -69,8 +69,14 @@ STAGE = "insight_proof"
 PROOF_COLUMNS = ("label", "value", "share_pct", "cum_share_pct", "grouped_total")
 PROOF_SCOPE = (
     "figures are cells of the executed SQL; grouped total conserved against a no-join "
-    "raw total; executed twice with equal result_hash; result_hash covers rows before "
-    "PII masking; contract 1.2.0 cannot read a ledger entry back"
+    "raw total; no per-key part of the measure is negative; executed twice with equal "
+    "rows in the same order; result_hash covers rows before PII masking and ignores "
+    "order; a null watermark means a refresh during the proof could not be checked; "
+    "contract 1.2.0 cannot read a ledger entry back"
+)
+WATERMARK_UNKNOWN_ASSUMPTION = (
+    "no ingest watermark is recorded for at least one table read, so a source refresh "
+    "during the proof could not be ruled out"
 )
 MAX_COMPILES = 200
 MAX_LABELS = 50
@@ -117,6 +123,14 @@ REFUSALS: dict[str, str] = {
     "too_few_groups": (
         "Fewer than two labelled groups came back, so there is nothing to compare."
     ),
+    "empty_fact": (
+        "The measure has no figure to total in its table, so there is nothing to "
+        "compare. No figure was returned."
+    ),
+    "result_out_of_order": (
+        "The query result did not come back in the order it asked for, so a ranking "
+        "read from it would not be true. It was not shown."
+    ),
     "too_many_groups": (
         "More than fifty labelled groups came back, too many for a share statement "
         "to be useful."
@@ -156,7 +170,8 @@ _IDENT = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 _TOP_KEYS = frozenset(
     {
         "v", "insight_id", "kind", "sql_hash", "raw_total_sql", "raw_total_sql_hash",
-        "result_hash", "reexec_result_hash", "raw_total", "grouped_total", "tolerance",
+        "result_hash", "reexec_result_hash", "order_hash", "parts_sql_hash",
+        "negative_parts", "raw_total", "grouped_total", "tolerance",
         "conserves", "n_groups", "executed_at", "reexecuted_at", "watermarks",
         "definition", "executions", "ledger", "scope",
     }
@@ -242,7 +257,12 @@ def headline_numbers_backed(
     )
     for label in labels:
         if label:
-            text = text.replace(label, " ")
+            # Whole-token only: label ``73`` must not eat the ``73`` of ``73.9``.
+            text = re.sub(
+                r"(?<![A-Za-z0-9_.,])" + re.escape(label) + r"(?![A-Za-z0-9_]|[.,]\d)",
+                " ",
+                text,
+            )
     cells = _numeric_cells(rows)
     allowed = {int(x) for x in allowed_ints}
     unbacked: list[str] = []
@@ -262,7 +282,7 @@ def headline_numbers_backed(
 # --------------------------------------------------------------------------
 
 
-def _finite(x: Any) -> bool:
+def _finite(x: Any) -> TypeGuard[int | float]:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(float(x))
 
 
@@ -270,11 +290,34 @@ def _bad(msg: str) -> ProofShapeError:
     return ProofShapeError(msg)
 
 
-def assert_proof_shape(proof: Any, *, onto: Ontology | None = None) -> None:
-    """Raise ``ProofShapeError`` unless ``proof`` is exactly the proof grammar.
+def order_hash(rows: Sequence[Any]) -> str:
+    """sha256 of result rows IN ORDER: one ``item_result_hash`` per row, in sequence."""
+    from dms_executor.skills_quarantine import item_result_hash
 
-    With ``onto`` the definition text must equal the ontology's measure verbatim.
+    return hashlib.sha256(
+        "\x1e".join(item_result_hash([row]) for row in rows).encode("utf-8")
+    ).hexdigest()
+
+
+def assert_proof_shape(
+    proof: Any,
+    *,
+    onto: Ontology | None = None,
+    sql: str | None = None,
+    rows: Sequence[Mapping[str, Any]] | None = None,
+) -> None:
+    """Raise ``ProofShapeError`` unless ``proof`` is the proof grammar and self-consistent.
+
+    Shape: closed keys, hashes, UTC timestamps, identifiers, finite numbers.
+    Consistency: conserves within tolerance, both runs and both executions share
+    one result_hash, row counts agree with ``n_groups``, no negative part.
+    With ``onto`` the definition text must equal the ontology's measure verbatim;
+    with ``sql`` the sql_hash must hash it; with ``rows`` (the unmasked result)
+    result_hash, order_hash and n_groups must describe them. Without ``sql`` and
+    ``rows`` the hashes are only checked against each other, not against data.
     """
+    from dms_executor.skills_quarantine import item_content_hash
+
     if not isinstance(proof, dict) or set(proof) != _TOP_KEYS:
         extra = sorted(set(proof) - _TOP_KEYS) if isinstance(proof, dict) else []
         raise _bad(f"proof keys are not the proof grammar (extra: {extra})")
@@ -286,7 +329,8 @@ def assert_proof_shape(proof: Any, *, onto: Ontology | None = None) -> None:
         r"ins_[0-9a-f]{16}", proof["insight_id"]
     ):
         raise _bad("insight_id")
-    for key in ("sql_hash", "raw_total_sql_hash", "result_hash", "reexec_result_hash"):
+    for key in ("sql_hash", "raw_total_sql_hash", "result_hash", "reexec_result_hash",
+                "order_hash", "parts_sql_hash"):
         if not isinstance(proof[key], str) or not _HEX64.fullmatch(proof[key]):
             raise _bad(f"{key} is not hex64")
     for key in ("executed_at", "reexecuted_at"):
@@ -348,8 +392,6 @@ def assert_proof_shape(proof: Any, *, onto: Ontology | None = None) -> None:
         or len(raw_sql) <= len(prefix) + 2
     ):
         raise _bad("raw_total_sql is not the definition's no-join total")
-    from dms_executor.skills_quarantine import item_content_hash
-
     if item_content_hash(raw_sql) != proof["raw_total_sql_hash"]:
         raise _bad("raw_total_sql_hash does not hash raw_total_sql")
 
@@ -365,6 +407,37 @@ def assert_proof_shape(proof: Any, *, onto: Ontology | None = None) -> None:
             raise _bad("execution result_hash is not hex64")
         if not isinstance(run["row_count"], int) or isinstance(run["row_count"], bool):
             raise _bad("execution row_count is not an int")
+
+    # Integrity, not only shape: the fields must agree with each other.
+    if proof["conserves"] is not True:
+        raise _bad("a proof that does not conserve is not a proof")
+    slack = float(proof["tolerance"]) + 1e-6
+    if abs(float(proof["raw_total"]) - float(proof["grouped_total"])) > slack:
+        raise _bad("grouped_total does not conserve raw_total within tolerance")
+    if float(proof["raw_total"]) <= 0:
+        raise _bad("raw_total is not positive")
+    if proof["result_hash"] != proof["reexec_result_hash"]:
+        raise _bad("the two runs do not share a result_hash")
+    if [r["result_hash"] for r in execs] != [proof["result_hash"], proof["reexec_result_hash"]]:
+        raise _bad("executions disagree with the top-level hashes")
+    if any(r["row_count"] != proof["n_groups"] for r in execs):
+        raise _bad("n_groups disagrees with the executions' row_count")
+    if proof["n_groups"] < 2:
+        raise _bad("n_groups is below two")
+    if type(proof["negative_parts"]) is not int or proof["negative_parts"] != 0:
+        raise _bad("negative_parts must be the integer 0")
+    if sql is not None and item_content_hash(sql) != proof["sql_hash"]:
+        raise _bad("sql_hash does not hash the executed SQL")
+    if rows is not None:
+        from dms_executor.skills_quarantine import item_result_hash
+
+        projected = [{c: r[c] for c in PROOF_COLUMNS} for r in rows]
+        if item_result_hash(projected) != proof["result_hash"]:
+            raise _bad("result_hash does not hash the rows")
+        if order_hash(projected) != proof["order_hash"]:
+            raise _bad("order_hash does not hash the rows in order")
+        if len(projected) != proof["n_groups"]:
+            raise _bad("n_groups disagrees with the rows")
 
 
 # --------------------------------------------------------------------------
@@ -451,6 +524,58 @@ def _wrapper_sql(compiled_sql: str, dim_alias: str, measure: str) -> str:
     )
 
 
+def _parts_sql(m: Measure, fact_rel: str, key: list[str]) -> str | None:
+    """Count of fact keys whose own contribution to ``m`` is negative. None: no key."""
+    cols = [c for c in key if str(c).strip()]
+    if not cols:
+        return None
+    by = ", ".join(f"f.{_q(c)}" for c in cols)
+    return (
+        f"SELECT COUNT(*) AS negative_parts FROM (SELECT {m.expression} AS part "
+        f"FROM {fact_rel} f GROUP BY {by}) p WHERE p.part < 0"
+    )
+
+
+def _in_declared_order(rows: Sequence[Mapping[str, Any]]) -> bool:
+    """True when ``rows`` are in the wrapper's ORDER BY and their cells agree.
+
+    Labelled rows first, value non-increasing, the NULL label last, cum_share_pct
+    non-decreasing and within rounding of the running share_pct sum, each
+    share_pct within rounding of its value over grouped_total, the last cum 100.
+    Python checks the cells here; it never prints a figure it computed.
+    """
+    if not rows:
+        return False
+    seen_null = False
+    prev_value: float | None = None
+    prev_cum = -math.inf
+    running = 0.0
+    for i, row in enumerate(rows):
+        cells = [x for x in (row.get(c) for c in PROOF_COLUMNS[1:]) if _finite(x)]
+        if len(cells) != len(PROOF_COLUMNS) - 1:
+            return False
+        value, share, cum, total = cells
+        if float(total) <= 0:
+            return False
+        if row.get("label") is None:
+            seen_null = True
+        elif seen_null:
+            return False
+        else:
+            if prev_value is not None and float(value) > prev_value + 1e-9:
+                return False
+            prev_value = float(value)
+        if float(cum) < prev_cum - 1e-9:
+            return False
+        prev_cum = float(cum)
+        if abs(float(share) - 100.0 * float(value) / float(total)) > 0.05 + 1e-6:
+            return False
+        running += float(share)
+        if abs(float(cum) - running) > 0.05 * (i + 2) + 1e-6:
+            return False
+    return abs(prev_cum - 100.0) <= 0.05 + 1e-6
+
+
 def _dim_label(obj: str, attr: str, grain: str) -> str:
     """``location_code`` for a column already named after its object, else ``Obj.attr``."""
     if obj == grain:
@@ -467,21 +592,86 @@ def _bare(relation: str) -> str:
     return text.rsplit(".", 1)[-1].strip('"').casefold()
 
 
-def _pii_columns(onto: Ontology, obj: str) -> set[str]:
-    rel = _bare(onto.objects[obj].relation)
-    out: set[str] = set()
+class _AllColumns(frozenset):
+    """Fail closed: every column of the object is treated as personal data."""
+
+    def __contains__(self, item: object) -> bool:
+        return True
+
+
+_ALL_PII = _AllColumns()
+
+
+def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
+    """Output names of a subquery relation that carry a ``marked`` column.
+
+    Over-approximates: an alias is tainted when its expression mentions a tainted
+    name anywhere in the statement, to a fixpoint, so ``name AS tname`` and a
+    nested re-alias both carry the mark. None when the relation does not parse.
+    """
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import SqlglotError
+
+    text = relation.strip()
+    while text.startswith("(") and text.endswith(")"):
+        text = text[1:-1].strip()
+    try:
+        tree = sqlglot.parse_one(text, read="duckdb")
+    except (SqlglotError, ValueError):
+        return None
+    if tree is None:
+        return None
+    tainted = set(marked)
+    aliases = list(tree.find_all(exp.Alias))
+    changed = True
+    while changed:
+        changed = False
+        for node in aliases:
+            out = str(node.alias or "").casefold()
+            if not out or out in tainted:
+                continue
+            used = {str(c.name).casefold() for c in node.this.find_all(exp.Column)}
+            if isinstance(node.this, exp.Column):
+                used.add(str(node.this.name).casefold())
+            if used & tainted:
+                tainted.add(out)
+                changed = True
+    return tainted
+
+
+def _pii_columns(onto: Ontology, obj: str) -> Collection[str]:
+    """Casefolded columns of ``obj`` a steward marked as personal data.
+
+    A pii item applies when the table it names is one the object's relation
+    reads (``relation_tables``, subqueries included), or when it names no
+    table. An object whose tables cannot be resolved, or whose subquery does
+    not parse, is all-PII: nothing of it is grouped by.
+    """
+    relation = str(onto.objects[obj].relation or "")
+    tables = relation_tables(relation)
+    marked: set[str] = set()
     for payload in onto.__dict__.get("_pii", []) or []:
         if not isinstance(payload, dict):
             continue
-        relation = _bare(str(payload.get("relation") or payload.get("table") or ""))
+        rel = _bare(str(payload.get("relation") or payload.get("table") or ""))
         column = str(payload.get("column") or "").strip().casefold()
         name = str(payload.get("name") or "")
         if not column and "." in name:
             left, right = name.split(".", 1)
-            relation, column = _bare(left), right.strip().casefold()
-        if column and (not relation or relation == rel):
-            out.add(column)
-    return out
+            rel, column = _bare(left), right.strip().casefold()
+        if not column:
+            continue
+        if not tables:
+            return _ALL_PII
+        if not rel or rel in tables:
+            marked.add(column)
+    if not marked:
+        return marked
+    if relation.strip().startswith("(") or " " in relation.strip():
+        tainted = _subquery_taint(relation, marked)
+        return _ALL_PII if tainted is None else tainted
+    return marked
 
 
 def _item_meta(onto: Ontology) -> list[dict[str, Any]]:
@@ -847,18 +1037,31 @@ def _prove_candidate(
     pending: list[tuple[float, ProvenInsight]] = []
     executed_trace.begin()
     try:
-        fact_rel = ctx.onto.objects[m.grain].relation
+        fact = ctx.onto.objects[m.grain]
+        fact_rel = fact.relation
         raw_sql = f"SELECT {m.expression} AS raw_total FROM {fact_rel} f"
+        parts_sql = _parts_sql(m, fact_rel, list(fact.key))
         sql = _wrapper_sql(compiled.sql, f"{obj}_{attr}", m.name)
         before = _read_marks(ctx.watermarks, ctx.warehouse, tables)
         try:
             raw_rows = _submit_rows(ctx.submit, raw_sql)
             raw_cell = raw_rows[0].get("raw_total") if raw_rows else None
-            if raw_cell is None:
-                raise _Refused("too_few_groups")
+            if raw_cell is None or not _finite(raw_cell):
+                _refuse(ctx, m.name, "empty_fact")
+                return "measure_signed"
             raw_total = float(raw_cell)
             if raw_total <= 0:
-                _refuse(ctx, m.name, "signed_measure", evidence={"raw_total": raw_total})
+                _refuse(ctx, m.name, "signed_measure")
+                return "measure_signed"
+            # A positive total and positive group sums can still net negative parts
+            # (a return inside a territory). One part per fact key, none below zero.
+            if parts_sql is None:
+                _refuse(ctx, m.name, "signed_measure")
+                return "measure_signed"
+            parts_rows = _submit_rows(ctx.submit, parts_sql)
+            neg_cell = parts_rows[0].get("negative_parts") if parts_rows else None
+            if not _finite(neg_cell) or int(neg_cell) != 0:
+                _refuse(ctx, m.name, "signed_measure")
                 return "measure_signed"
             run1 = _project(_submit_rows(ctx.submit, sql))
             executed_at = _now_z()
@@ -872,7 +1075,7 @@ def _prove_candidate(
         values = [r["value"] for r in run1]
         if any(not _finite(v) for v in values):
             # A group with no figure cannot add back to the total.
-            _refuse(ctx, candidate, "not_conserved", evidence={"raw_total": raw_total})
+            _refuse(ctx, candidate, "not_conserved")
             return "refused"
         groups = len(run1)
         grouped_sum = sum(float(v) for v in values)
@@ -886,16 +1089,22 @@ def _prove_candidate(
             and abs(next(iter(cell_totals)) - raw_total) <= slack
         )
         if not conserves:
-            _refuse(ctx, candidate, "not_conserved",
-                    evidence={"raw_total": raw_total, "grouped_total": grouped_sum})
+            _refuse(ctx, candidate, "not_conserved")
             return "refused"
         if grouped_sum <= 0 or any(float(v) < 0 for v in values):
-            _refuse(ctx, candidate, "signed_measure", evidence={"raw_total": raw_total})
+            _refuse(ctx, candidate, "signed_measure")
             return "refused"
         h1, h2 = item_result_hash(run1), item_result_hash(run2)
-        if h1 != h2 or not rows_equal(run1, run2):
+        o1, o2 = order_hash(run1), order_hash(run2)
+        if h1 != h2 or o1 != o2 or not rows_equal(run1, run2):
             _refuse(ctx, candidate, "result_changed_between_runs",
-                    evidence={"result_hash": h1, "reexec_result_hash": h2})
+                    evidence={"result_hash": h1, "reexec_result_hash": h2,
+                              "order_hash": o1, "reexec_order_hash": o2})
+            return "refused"
+        # The templates read rows by position, so the order the SQL asked for is
+        # checked here, on both runs, before any sentence is written.
+        if not (_in_declared_order(run1) and _in_declared_order(run2)):
+            _refuse(ctx, candidate, "result_out_of_order")
             return "refused"
         if before != after:
             _refuse(ctx, candidate, "source_refreshed_during_proof")
@@ -909,6 +1118,9 @@ def _prove_candidate(
             "raw_total_sql_hash": item_content_hash(raw_sql),
             "result_hash": h1,
             "reexec_result_hash": h2,
+            "order_hash": o2,
+            "parts_sql_hash": item_content_hash(parts_sql),
+            "negative_parts": 0,
             "raw_total": raw_total,
             "grouped_total": float(next(iter(cell_totals))),
             "tolerance": round(tol, 6),
@@ -1019,6 +1231,8 @@ def _emit(
     assumptions = [m.description or f"measure {m.name}", CONSERVATION_ASSUMPTION]
     if ctx.source == "demo_ontology":
         assumptions.append(DEMO_ASSUMPTION)
+    if any(stamp is None for stamp in proof_base["watermarks"].values()):
+        assumptions.append(WATERMARK_UNKNOWN_ASSUMPTION)
     env = build_answer_envelope(
         answer_id=insight_id,
         text=headline,
@@ -1055,7 +1269,7 @@ def _emit(
         return None
     proof = {**proof_base, "insight_id": insight_id, "kind": kind}
     try:
-        assert_proof_shape(proof, onto=ctx.onto)
+        assert_proof_shape(proof, onto=ctx.onto, sql=sql, rows=rows)
     except ProofShapeError:
         _refuse(ctx, where, "envelope_invalid:proof_shape")
         return None
