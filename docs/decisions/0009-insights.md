@@ -48,19 +48,33 @@ closed code and a fixed customer sentence:
    equal a row cell or one of the integers `k` and `n` that the template states.
 2. **Conservation.** The grouped total equals a raw total computed with no join, within
    `0.005 * groups + 0.005`. That bound is the most rounding the 2 dp measure can explain.
-3. **Run twice.** The wrapper goes through the injected `submit` twice. Both runs must
-   return the same `item_result_hash`, and `sql_vote.rows_equal` must agree.
+   The raw total must be positive, and so must every part: the measure is computed once
+   per fact key (`GROUP BY` the fact's declared key) and no part may be below zero. A
+   return of -1000 netted inside a positive territory is `signed_measure`, not a share.
+3. **Run twice, in order.** The wrapper goes through the injected `submit` twice. Both
+   runs must return the same `item_result_hash` (row set), the same `order_hash` (rows in
+   sequence), and `sql_vote.rows_equal` must agree. The templates read rows by position,
+   so both runs must also be in the order the SQL asked for: value non-increasing, the
+   NULL label last, `cum_share_pct` non-decreasing and within rounding of the running
+   `share_pct` sum, each `share_pct` within rounding of its value over the total.
+   Otherwise `result_out_of_order`.
 4. **No refresh mid-proof.** Ingest watermarks are read before the raw total and after
    the second run, and must match. An unknown watermark is recorded as null and is never
-   claimed fresh.
+   claimed fresh. When any watermark is unknown (the demo lake has no bronze registry),
+   the envelope says so in `assumptions`: the refresh check did not run.
 5. **The proof is a sibling of the envelope.** It is never a key in it. Its grammar is
    closed (`assert_proof_shape`): hashes, UTC timestamps, identifiers, closed enums,
-   finite numbers, and definition text copied verbatim from the ontology.
+   finite numbers, and definition text copied verbatim from the ontology. It is also
+   self-consistent (conserves within tolerance, one result hash across both runs and both
+   executions, row counts equal `n_groups`, no negative part), and given the SQL and the
+   rows it checks `sql_hash`, `result_hash` and `order_hash` against them.
 6. **Badge by provenance.** A steward-approved item (`Ontology.from_store`) is
    `L1_GOVERNED_METRIC`. The built-in demo ontology is `L2_VALIDATED` and says so in
    `assumptions`.
-7. **Refusals.** `non_additive`, `volatile_measure`, `signed_measure`, `pii_dimension`
-   (never executed), `ungranted` (zero submits), `measure_revoked`, `not_conserved`,
+7. **Refusals.** `non_additive`, `volatile_measure`, `signed_measure`, `empty_fact`,
+   `pii_dimension` (never executed; a pii item matches every table an object's relation
+   reads, subqueries included, aliases of a marked column carry the mark, and an object
+   whose tables cannot be resolved is all-PII), `result_out_of_order`, `ungranted` (zero submits), `measure_revoked`, `not_conserved`,
    `result_changed_between_runs`, `source_refreshed_during_proof`, `headline_unbacked`,
    `too_few_groups`, `too_many_groups`, `cortex_unavailable`, `cortex_submit_failed`,
    `envelope_invalid`, `insights_budget`, `ontology_unverified`, `no_approved_measure`.

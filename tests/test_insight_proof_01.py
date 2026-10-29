@@ -357,6 +357,62 @@ def test_proof_shape_rejects_free_text_and_extra_keys(
             ip.assert_proof_shape(bad)
 
 
+def test_proof_check_rejects_an_inconsistent_proof(
+    run_a: tuple[ip.InsightRun, _Stub],
+) -> None:
+    got = _by_text(run_a[0], _A_HEADLINE)
+    proof = got.proof
+    ip.assert_proof_shape(proof, sql=got.sql, rows=got.rows)
+    execs = proof["executions"]
+    for bad in (
+        {**proof, "raw_total": 1.0, "grouped_total": 999999.0},
+        {**proof, "conserves": False},
+        {**proof, "result_hash": "0" * 64},
+        {**proof, "reexec_result_hash": "f" * 64},
+        {**proof, "n_groups": 77},
+        {**proof, "negative_parts": 1},
+        {**proof, "negative_parts": 0.0},
+        {**proof, "executions": [{**execs[0], "result_hash": "1" * 64}, execs[1]]},
+    ):
+        with pytest.raises(ip.ProofShapeError):
+            ip.assert_proof_shape(bad)
+    with pytest.raises(ip.ProofShapeError):
+        ip.assert_proof_shape({**proof, "sql_hash": "a" * 64}, sql=got.sql)
+    swapped = [got.rows[0], got.rows[2], got.rows[1], *got.rows[3:]]
+    with pytest.raises(ip.ProofShapeError, match="order_hash"):
+        ip.assert_proof_shape(proof, rows=swapped)
+    with pytest.raises(ip.ProofShapeError, match="result_hash"):
+        ip.assert_proof_shape(proof, rows=got.rows[:-1])
+
+
+def test_unknown_watermarks_are_said_in_the_assumptions(
+    run_a: tuple[ip.InsightRun, _Stub], sales_wh: Path
+) -> None:
+    for p in run_a[0].proven:
+        assert set(p.proof["watermarks"].values()) == {None}
+        assert ip.WATERMARK_UNKNOWN_ASSUMPTION in p.envelope["assumptions"]
+
+    def steady(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
+        return {"orders": {"extracted_at": "2026-10-29 01:00:00"},
+                "territory": {"extracted_at": "2026-10-29 01:00:00"}}
+
+    run = _run(sales_wh, _Stub(sales_wh), set(_B_GRANTS),
+               onto=Ontology.from_store(items=_items()), watermarks=steady)
+    assert run.proven
+    for p in run.proven:
+        assert ip.WATERMARK_UNKNOWN_ASSUMPTION not in p.envelope["assumptions"]
+
+    def partial(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
+        return {"orders": {"extracted_at": "2026-10-29 01:00:00"}}
+
+    run = _run(sales_wh, _Stub(sales_wh), set(_B_GRANTS),
+               onto=Ontology.from_store(items=_items()), watermarks=partial)
+    assert run.proven
+    for p in run.proven:
+        assert p.proof["watermarks"]["territory"] is None
+        assert ip.WATERMARK_UNKNOWN_ASSUMPTION in p.envelope["assumptions"]
+
+
 # --------------------------------------------------------------------------
 # grounding
 # --------------------------------------------------------------------------
@@ -413,10 +469,83 @@ def test_demo_refusals_name_the_reason(run_a: tuple[ip.InsightRun, _Stub]) -> No
 def test_net_movement_is_refused_after_its_raw_total(run_a: tuple[ip.InsightRun, _Stub]) -> None:
     run, stub = run_a
     entry = next(r for r in run.refused if r["candidate"] == "net_movement_kg")
-    assert entry["evidence"]["raw_total"] == -3520.0
+    assert entry["code"] == "signed_measure"
+    _assert_refused_envelope(entry)
     raw_calls = [c for c in stub.calls if "AS raw_total" in c and "WRITE_OFF" in c]
     assert len(raw_calls) == 1
+    assert not any("AS negative_parts" in c and "WRITE_OFF" in c for c in stub.calls)
     assert not any("WITH g AS" in c and "WRITE_OFF" in c for c in stub.calls)
+
+
+def test_refusal_records_carry_no_figures(run_a: tuple[ip.InsightRun, _Stub],
+                                          sales_wh: Path) -> None:
+    """A refusal carries its code, its envelope and at most hashes: never a figure."""
+    tampered = _run(sales_wh, _Stub(sales_wh, tamper_run2=True), set(_B_GRANTS),
+                    onto=Ontology.from_store(items=_items()))
+    for entry in list(run_a[0].refused) + list(tampered.refused):
+        for value in (entry.get("evidence") or {}).values():
+            assert isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value), entry
+    assert any(r.get("evidence") for r in tampered.refused)
+
+
+def test_an_empty_fact_is_not_too_few_groups(sales_wh: Path) -> None:
+    class _NullTotal(_Stub):
+        def __call__(self, sql: str) -> Any:
+            if "AS raw_total" in sql:
+                self.calls.append(sql)
+                return SimpleNamespace(ok=True, output={"rows": [{"raw_total": None}]})
+            return super().__call__(sql)
+
+    stub = _NullTotal(sales_wh)
+    run = _run(sales_wh, stub, set(_B_GRANTS), onto=Ontology.from_store(items=_items()))
+    assert run.proven == ()
+    assert _codes(run) == {"order_amount": "empty_fact"}
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+        assert entry["envelope"]["text"].startswith("The measure has no figure to total")
+    assert not any("WITH g AS" in c for c in stub.calls)
+
+
+def _seed_mixed_sign(path: Path) -> Path:
+    _seed_sales(path)
+    con = connect_file(path, write=True)
+    try:
+        con.execute("DELETE FROM Sales.Orders")
+        # North nets 1700 - 1000 = 700 and South 50 - 10 = 40: every group sum is
+        # positive, and so is the total, but two orders are returns.
+        con.execute("INSERT INTO Sales.Orders VALUES (1,1,1700),(2,1,-1000),(3,2,50),"
+                    "(4,3,30),(5,4,20),(7,2,-10),(6,NULL,100)")
+    finally:
+        con.close()
+    return path
+
+
+def test_negative_parts_inside_positive_groups_are_signed(tmp_path: Path) -> None:
+    wh = _seed_mixed_sign(tmp_path / "mixed.duckdb")
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_B_GRANTS), onto=Ontology.from_store(items=_items()))
+    assert run.status == "refused"
+    assert run.proven == ()
+    assert _codes(run) == {"order_amount": "signed_measure"}
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    texts = json.dumps([r["envelope"] for r in run.refused])
+    for leaked in ("North", "83.1", "11.2"):
+        assert leaked not in texts
+    parts = [c for c in stub.calls if "AS negative_parts" in c]
+    assert len(parts) == 1
+    assert 'GROUP BY f."order_id"' in parts[0]
+    assert not any("WITH g AS" in c for c in stub.calls)
+
+
+def test_a_positive_measure_records_zero_negative_parts(
+    run_b: tuple[ip.InsightRun, _Stub],
+) -> None:
+    run, stub = run_b
+    got = _by_text(run, _B_CONCENTRATION)
+    assert got.proof["negative_parts"] == 0
+    parts = [c for c in stub.calls if "AS negative_parts" in c]
+    assert parts and got.proof["parts_sql_hash"] == item_content_hash(parts[0])
 
 
 def test_run2_differs_from_run1(sales_wh: Path) -> None:
@@ -486,6 +615,101 @@ def test_pii_dimension_never_executes(sales_wh: Path) -> None:
     assert not any('"name"' in c or ".name" in c or "_name" in c for c in stub.calls)
 
 
+@pytest.mark.parametrize(
+    ("relation", "column", "candidate"),
+    [
+        ("(SELECT territory_id, name FROM Sales.Territory)", "name",
+         "order_amount by Territory.name"),
+        ("(SELECT territory_id, name AS tname FROM Sales.Territory)", "tname",
+         "order_amount by Territory.tname"),
+        ("(SELECT territory_id, label FROM (SELECT territory_id, UPPER(name) AS label "
+         "FROM Sales.Territory) t)", "label", "order_amount by Territory.label"),
+    ],
+)
+def test_pii_on_a_subquery_relation_never_executes(
+    tmp_path: Path, relation: str, column: str, candidate: str
+) -> None:
+    """A pii item on Sales.Territory binds an object that reads it through a subquery."""
+    wh = _seed_sales(tmp_path / "pii_subq.duckdb")
+    items = _items(pii_on_name=True)
+    for it in items:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = relation
+            it["payload"]["attributes"] = ["territory_id", column]
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_B_GRANTS), onto=Ontology.from_store(items=items))
+    assert run.proven == ()
+    assert _codes(run)[candidate] == "pii_dimension"
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    shown = json.dumps([r["envelope"] for r in run.refused])
+    for name in ("North", "South", "East", "West", "86.4", "9.1"):
+        assert name not in shown
+    assert not any("WITH g AS" in c for c in stub.calls)
+
+
+def test_pii_on_an_unresolvable_relation_is_all_pii() -> None:
+    onto = Ontology.from_store(items=_items(pii_on_name=True))
+    onto.objects["Territory"] = ip.replace(onto.objects["Territory"], relation="")
+    assert "anything" in ip._pii_columns(onto, "Territory")
+    assert "name" in ip._pii_columns(onto, "Territory")
+
+
+class _Reorder(_Stub):
+    """Honest cells, but rows 1 and 2 of the wrapper come back out of ORDER BY order."""
+
+    def __init__(self, warehouse: Path, *, only_run2: bool) -> None:
+        super().__init__(warehouse)
+        self.only_run2 = only_run2
+        self._n = 0
+
+    def __call__(self, sql: str) -> Any:
+        got = super().__call__(sql)
+        rows = list(got.output["rows"])
+        if sql.lstrip().upper().startswith("WITH G AS"):
+            self._n += 1
+            if (not self.only_run2 or self._n % 2 == 0) and len(rows) > 2:
+                rows[1], rows[2] = rows[2], rows[1]
+        return SimpleNamespace(ok=True, output={"rows": rows})
+
+
+@pytest.mark.parametrize("only_run2", [True, False])
+def test_rows_out_of_order_never_make_a_headline(demo_wh: Path, only_run2: bool) -> None:
+    run = _run(demo_wh, _Reorder(demo_wh, only_run2=only_run2), set(DEMO_TABLES))
+    texts = [p.envelope["text"] for p in run.proven]
+    # The verifier's false sentences at 56d30ad, each made of real cells.
+    for false in (
+        "2 of 5 location_code values (WH-B, WH-A) carry 92.7 pct of stock_value_myr",
+        "2 of 5 location_code values (WH-B, WH-E) carry 93.4 pct of outbound_kg",
+        "2 of 4 lot.category values (PACKAGING, RAW) carry 96.3 pct of outbound_kg",
+    ):
+        assert false not in texts
+    assert _A_HEADLINE not in texts
+    codes = {r["code"] for r in run.refused}
+    assert ("result_changed_between_runs" if only_run2 else "result_out_of_order") in codes
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    # Whatever is still proven had at most two rows to swap, and states the true share.
+    for p in run.proven:
+        rows = p.envelope["rows"]
+        assert len(rows) <= 2
+        assert_envelope_valid(p.envelope)
+
+
+def test_honest_order_states_the_true_share(run_a: tuple[ip.InsightRun, _Stub]) -> None:
+    """Oracle: every concentration states the true top-k share of its own rows."""
+    run, _ = run_a
+    for p in run.proven:
+        if p.kind != "concentration":
+            continue
+        rows = p.envelope["rows"]
+        labelled = [r for r in rows if r["label"] is not None]
+        total = sum(float(r["value"]) for r in rows)
+        true = round(100.0 * sum(float(r["value"]) for r in labelled[: p.k]) / total, 1)
+        names = ", ".join(str(r["label"]) for r in labelled[: p.k])
+        assert f"({names}) carry {true:.1f} pct" in p.envelope["text"]
+
+
 def test_ungranted_fact_never_submits(sales_wh: Path) -> None:
     stub = _Stub(sales_wh)
     run = _run(sales_wh, stub, {"Sales.Territory"}, onto=Ontology.from_store(items=_items()))
@@ -536,6 +760,21 @@ def test_labels_with_digits_are_not_flagged() -> None:
     assert ip.headline_numbers_backed(text, rows, {1, 2}) == []
     text2 = "1 of 2 cctv_camera_id values (CAM-B-01) carry 38.8 pct of stock_value_myr"
     assert ip.headline_numbers_backed(text2, rows, {1, 2}) == []
+
+
+def test_a_numeric_label_does_not_hide_an_unbacked_figure() -> None:
+    rows = [
+        {"label": "73", "value": 6.0, "share_pct": 60.0, "cum_share_pct": 60.0,
+         "grouped_total": 10.0},
+        {"label": "B", "value": 4.0, "share_pct": 40.0, "cum_share_pct": 100.0,
+         "grouped_total": 10.0},
+    ]
+    assert ip.headline_numbers_backed(
+        "73 alone is 73.9 pct of m across 2 x values", rows, {1, 2}) == ["73.9"]
+    assert ip.headline_numbers_backed(
+        "73 alone is 60.0 pct of m across 2 x values", rows, {1, 2}) == []
+    assert ip.headline_numbers_backed(
+        "1 of 2 x values (73) carry 60.0 pct of m", rows, {1, 2}) == []
 
 
 def test_integer_formatter_proves_nothing(

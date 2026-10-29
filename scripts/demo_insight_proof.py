@@ -112,10 +112,11 @@ def main(argv: list[str] | None = None) -> int:
         same = "==" if proof["result_hash"] == proof["reexec_result_hash"] else "!="
         print(f"  result_hash {proof['result_hash']} {same} reexec_result_hash "
               f"{proof['reexec_result_hash']}")
+        print(f"  order_hash {proof['order_hash']}  negative_parts {proof['negative_parts']}")
         print(f"  watermarks {proof['watermarks']}  ledger {proof['ledger']}")
         try:
             assert_envelope_valid(env)
-            ip.assert_proof_shape(proof)
+            ip.assert_proof_shape(proof, sql=p.sql, rows=p.rows)
         except (AssertionError, ip.ProofShapeError) as exc:
             ok = False
             print(f"  FAIL {type(exc).__name__}: {exc}")
@@ -128,8 +129,7 @@ def main(argv: list[str] | None = None) -> int:
                   f"result_hash {ev.get('result_hash')} != reexec_result_hash "
                   f"{ev.get('reexec_result_hash')}")
             continue
-        extra = f" (raw total {ev['raw_total']:,.2f})" if "raw_total" in ev else ""
-        print(f"  refused {r['candidate']} {r['code']}{extra}")
+        print(f"  refused {r['candidate']} {r['code']}")
         if r["envelope"].get("abstained") is not True:
             ok = False
             print("  FAIL refusal envelope is not abstained")
