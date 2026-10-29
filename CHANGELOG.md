@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-29 - ACT-01: governed action core behind DMS_ACTIONS
+
+- **Flag.** `DMS_ACTIONS` defaults 0; only `1` is on. No route. Nothing on main calls the new code. With the flag off, propose, apply, decline and record refuse with `ActionsDisabled`.
+- **Schema.** Alembic `0009_action_writeback` on `0008_ontology_approval_ref`: `dms.action_proposals`, `dms.action_writeback` (DMS-owned; no DELETE grant), `dms.action_decisions` (append-only: SELECT and INSERT only). RLS ENABLE + FORCE. No cross-schema FK.
+- **Action.** One code-declared type, `inventory.set_reorder_level`. Writes the writeback table only, never a source system or an Excel file. Every apply needs a steward `approval_ref`. The plain amend confirm refuses an action version (`ActionRequiresApply`).
+- **Proof.** Apply checks token and pinned spec digest, checks the before-state hash (ABA-safe), writes, re-reads and verifies the after-state hash. Refusals roll back to a savepoint. The decision points at `dms.ledger_ref`; the Cortex append is ACT-02.
+- **Decision.** DR-0008 is Proposed and needs the founder stamp. DR-0007 is reserved for the #440 / #461 DR-0006 renumber.
+- **Tests.** At `641bce4`, Postgres 16 (scratch container): the ticket command (`tests/test_act_01_spec.py`, `tests/control_plane/test_act_01_writeback.py`, `test_proposals.py`, `test_amend_receipt.py`, `tests/invariants`) was `137 passed`. One file per process, the same files plus `test_amend_space_scope.py`, `test_rls.py`, `test_verify_ledger.py` and `test_ask_audit_pg.py` all passed. `scripts/verify/act_01_writeback_demo.py` printed `ACT-01 PROOF OK @641bce4c`. The full suite was not run. Not PASS.
+
 ## 2026-10-28 - DEF-VALIDATE-02: plain aggregates are not measure drift
 
 - **Flag.** `DMS_DEF_VALIDATE` stays default 0. The change runs only when it is on.
