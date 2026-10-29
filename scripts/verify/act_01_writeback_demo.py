@@ -13,6 +13,14 @@ creates the database when it is missing and runs ``alembic upgrade head``.
 Every run seeds a fresh tenant, so reruns do not see each other. The Cortex
 ledger entry ids are fake (``led_demo_*``): ACT-01 has no route and no ledger
 append; ACT-02 does. Exits non-zero on any mismatch.
+
+The demo database is dropped at the end unless ``--keep`` is passed. Migration
+0001 grants the cluster-wide ``dms_viewer`` / ``dms_steward`` / ``dms_admin``
+roles in every database it runs in, and ``tests/control_plane/conftest.py``
+drops those roles before each session. A leftover demo database holding grants
+makes that DROP ROLE fail, which errors every control-plane test on the same
+server. Point ``ACT01_DEMO_URL`` at a scratch server when other sessions share
+the default one.
 """
 
 from __future__ import annotations
@@ -73,12 +81,35 @@ def upgrade_head(url: str) -> str:
     return ",".join(heads)
 
 
+def drop_database(url: str) -> None:
+    import psycopg
+    from psycopg import sql
+
+    name = _db_name(url)
+    with psycopg.connect(_with_db(url, "postgres"), autocommit=True, connect_timeout=5) as c:
+        c.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
+    print(f"dropped database {name} (pass --keep to keep it)")
+
+
 def main() -> int:
     url = os.environ.get("ACT01_DEMO_URL", DEFAULT_URL).strip()
-    if _db_name(url) == "dms":
+    keep = "--keep" in sys.argv[1:]
+    name = _db_name(url)
+    if name == "dms":
         print("REFUSED: the demo does not run against the database named 'dms'.")
         return 2
+    if not name.startswith("dms_act_demo"):
+        # The demo creates and drops its database; it only does that to its own.
+        print(f"REFUSED: database {name!r} is not a dms_act_demo* demo database.")
+        return 2
+    try:
+        return _run(url)
+    finally:
+        if not keep:
+            drop_database(url)
 
+
+def _run(url: str) -> int:
     sha = subprocess.run(
         ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
