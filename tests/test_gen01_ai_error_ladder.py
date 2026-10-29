@@ -14,6 +14,7 @@ model inlines DATE '2026-10-09'.
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterator
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -33,10 +34,13 @@ from cortex_client.models import (
     LedgerAppendResponse,
 )
 from cortex_contract.execution import Manifest, QueryResult
+from dms_api.app import create_app
 from dms_executor import Executor
 from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse, sql_has_reserved_as_of
+from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.semantic_retrieve import load_measure_aliases
+from fastapi.testclient import TestClient
 from oracle_row_match import run_oracle_select  # noqa: E402
 
 _FIXTURE = Path(__file__).resolve().parents[0] / "fixtures" / "curated_ceo"
@@ -183,7 +187,10 @@ def _client_cls(box: _Box) -> type:
                     box.status,
                     {"detail": [{"type": "value_error", "msg": "validation"}]},
                 )
-            asked = str(json.get("question") or "").split("\n", 1)[0].strip()
+            # SQL-VOTE (#463) wraps the ask in a reading prompt. The ask is the
+            # line after the last "Question:" marker.
+            raw = str(json.get("question") or "")
+            asked = raw.rsplit("Question:\n", 1)[-1].split("\n", 1)[0].strip()
             sql = box.sql_for[asked]
             return _Resp(
                 200,
@@ -434,8 +441,15 @@ def test_correct_model_sql_serves_via_the_ladder(
 def test_ai_error_retries_once_then_serves_correct_sql(
     db: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The failed call, the retry, and the second reading are three calls.
+
+    The one cap defaults to 2, so a recovered retry cannot also be voted
+    (see test_route_ladder_retry_does_not_exceed_the_one_call_cap). Raising
+    the cap to 3 is what lets this serve.
+    """
     _flags_off(monkeypatch)
     monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "3")
     box = _Box()
     box.mode = "retry"
     box.status = 422
@@ -445,7 +459,7 @@ def test_ai_error_retries_once_then_serves_correct_sql(
     row = _case("cq_chemicals_list")
     env = _ask(exe, row)
     generate = [item for item in box.posts if str(item["url"]).endswith("/v1/insights")]
-    assert len(generate) == 2
+    assert len(generate) == 3
     feedback = generate[1]["json"].get("sql_feedback") or {}
     assert feedback.get("reason") == "insights_ai_error"
     assert isinstance(generate[1]["json"].get("ontology"), dict)
@@ -498,3 +512,186 @@ def test_curated_52_ai_error_has_no_wrong_l2(
     assert counts["wrong"] == 0, counts
     assert named_bad == []
     assert counts == {"correct": 23, "wrong": 0, "abstain": 29}
+
+
+# ---------------------------------------------------------------------------
+# Customer envelope (CLAUDE.md rules 10 and 10a). Everything below goes through
+# POST /v1/chat/ask and asserts the DMS envelope the customer reads: badge,
+# abstained, rows and the rendered text. The Executor-level tests above stay as
+# the cheaper inner check; they are necessary and not sufficient.
+# ---------------------------------------------------------------------------
+
+_ABSTAIN_TEXT = "exact-match miss"
+
+
+@pytest.fixture
+def live_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from dms_api import settings as settings_mod
+
+    monkeypatch.setenv("DMS_ASK_MODE", "live")
+    monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    settings_mod.get_settings.cache_clear()
+    yield
+    settings_mod.get_settings.cache_clear()
+
+
+def _route_client(
+    db: Path, monkeypatch: pytest.MonkeyPatch, box: _Box, *, api_key: str | None = _KEY
+) -> TestClient:
+    """The app boots on the real httpx. Only then is generate faked."""
+    app = create_app()
+    exe = _executor(db, api_key=api_key)
+    app.state.ask_service = exe
+    app.state.cortex = exe._cortex
+    monkeypatch.setattr("cortex_client.compute.httpx.Client", _client_cls(box))
+    return TestClient(app)
+
+
+def _post_ask(client: TestClient, row: dict[str, Any]) -> dict[str, Any]:
+    res = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": str(row["question"]),
+            "space_id": str(row["space_id"]),
+            "session_id": f"ses_{row['id']}",
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert_envelope_valid(body)
+    return body
+
+
+def _generate_posts(box: _Box) -> list[dict[str, Any]]:
+    return [p for p in box.posts if str(p["url"]).endswith("/v1/insights")]
+
+
+def _assert_no_wrong_figure(body: dict[str, Any], gold: list[dict[str, Any]]) -> None:
+    """Abstain with no rows, no L2, and none of the gold or wrong figures in prose."""
+    assert body["abstained"] is True
+    assert body["badge"] != "L2_VALIDATED"
+    assert body["badge"] == "ABSTAIN"
+    assert not body.get("rows")
+    text = str(body.get("text") or "")
+    assert _ABSTAIN_TEXT in text, text
+    assert "Found " not in text, text
+    assert "row(s)" not in text, text
+    assert "sku-" not in text.casefold(), text
+    for cell in _flat(gold):
+        assert cell not in text.casefold(), (cell, text)
+
+
+@pytest.mark.parametrize("status", [422, 500])
+@pytest.mark.parametrize("case_id", _NAMED)
+def test_route_ai_error_wrong_to_abstain(
+    db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    live_settings: None,
+    status: int,
+    case_id: str,
+) -> None:
+    """Generate 422/500 on a curated ask. The customer gets an abstain, never an L2.
+
+    On main 58fcaa5 cq_chemicals_list answers "Found 1 row(s). product_sku=SKU-GAMMA"
+    under L2_VALIDATED while the generate call fails.
+    """
+    _flags_off(monkeypatch)
+    box = _Box()
+    box.mode = "error"
+    box.status = status
+    client = _route_client(db, monkeypatch, box)
+    row = _case(case_id)
+    body = _post_ask(client, row)
+    assert _generate_posts(box), "the route never reached generate"
+    _assert_no_wrong_figure(body, _gold(db, row["sql"]))
+
+
+@pytest.mark.parametrize("status", [422, 500])
+def test_route_ai_error_with_the_ladder_on_abstains_when_retry_errors(
+    db: Path, monkeypatch: pytest.MonkeyPatch, live_settings: None, status: int
+) -> None:
+    """DMS_CLOOP_B=1: one retry, a second AI-call error, an abstain on the envelope."""
+    _flags_off(monkeypatch)
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    box = _Box()
+    box.mode = "error"
+    box.status = status
+    client = _route_client(db, monkeypatch, box)
+    row = _case("cq_chemicals_list")
+    body = _post_ask(client, row)
+    assert len(_generate_posts(box)) == 2
+    _assert_no_wrong_figure(body, _gold(db, row["sql"]))
+
+
+def test_route_ladder_serves_correct_sql_after_one_ai_error(
+    db: Path, monkeypatch: pytest.MonkeyPatch, live_settings: None
+) -> None:
+    """422 then correct SQL, with room in the one cap for both readings.
+
+    The cap is 3: the failed call, the retry, and the second reading. The
+    rendered text and the rows both carry the gold value.
+    """
+    _flags_off(monkeypatch)
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "3")
+    box = _Box()
+    box.mode = "retry"
+    box.status = 422
+    box.sql_for = {row["question"]: _model_sql(row["sql"]) for row in (_case(i) for i in _NAMED)}
+    client = _route_client(db, monkeypatch, box)
+    row = _case("cq_chemicals_list")
+    body = _post_ask(client, row)
+    gold = _gold(db, row["sql"])
+    assert body["abstained"] is False
+    assert body["badge"] == "L2_VALIDATED"
+    assert _flat(body.get("rows")) == _flat(gold)
+    text = str(body.get("text") or "")
+    for cell in _flat(gold):
+        assert cell in text.casefold(), (cell, text)
+    generate = _generate_posts(box)
+    assert len(generate) == 3
+    assert (generate[1]["json"].get("sql_feedback") or {}).get("reason") == "insights_ai_error"
+
+
+def test_route_ladder_retry_does_not_exceed_the_one_call_cap(
+    db: Path, monkeypatch: pytest.MonkeyPatch, live_settings: None
+) -> None:
+    """Default cap 2: the failed call plus the retry spend it. No second reading.
+
+    The retry recovers SQL, but the vote has no call left, so the customer gets
+    an abstain and not a one-reading L2. No third generate call is made.
+    """
+    _flags_off(monkeypatch)
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    monkeypatch.delenv("DMS_INSIGHTS_CALL_CAP", raising=False)
+    box = _Box()
+    box.mode = "retry"
+    box.status = 422
+    box.sql_for = {row["question"]: _model_sql(row["sql"]) for row in (_case(i) for i in _NAMED)}
+    client = _route_client(db, monkeypatch, box)
+    row = _case("cq_chemicals_list")
+    body = _post_ask(client, row)
+    assert len(_generate_posts(box)) == 2
+    _assert_no_wrong_figure(body, _gold(db, row["sql"]))
+
+
+def test_route_correct_model_sql_serves_rows_and_text(
+    db: Path, monkeypatch: pytest.MonkeyPatch, live_settings: None
+) -> None:
+    """No AI error: model SQL serves through the route with matching rows and text."""
+    _flags_off(monkeypatch)
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    box = _Box()
+    box.mode = "sql"
+    box.sql_for = {row["question"]: _model_sql(row["sql"]) for row in (_case(i) for i in _NAMED)}
+    client = _route_client(db, monkeypatch, box)
+    for case_id in _NAMED:
+        row = _case(case_id)
+        body = _post_ask(client, row)
+        gold = _gold(db, row["sql"])
+        assert body["abstained"] is False, case_id
+        assert body["badge"] == "L2_VALIDATED", case_id
+        assert _flat(body.get("rows")) == _flat(gold), case_id
+        text = str(body.get("text") or "").casefold()
+        for cell in _flat(gold):
+            assert cell in text, (case_id, cell, text)

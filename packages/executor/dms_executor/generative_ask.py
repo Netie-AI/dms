@@ -39,13 +39,11 @@ from cortex_client.compute import (
     gen01_rules_enabled,
     generate_model_called,
     insights_budget_stop,
-    insights_call_cap,
     insights_fail_reason,
     insights_query_sql,
     insights_was_reached,
     ontology_ranked_lane_enabled,
     query_plan_from_insights_ranking,
-    recorded_model_calls,
     typed_query_plan,
 )
 from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
@@ -1939,20 +1937,25 @@ def _ladder_after_ai_error(
     grantable: set[str],
     declared: Ontology | None,
     declared_violations: list[Violation],
+    space_onto: Ontology | None = None,
     space_id: str | None,
     session_id: str | None,
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
+    budget: AskCallBudget,
 ) -> dict[str, Any]:
     """Retry generate once, then the extract checker. No rule-builder compile.
 
     The retry carries the same schema and ontology context as the first
-    call. A second AI-call error, or SQL the checker will not accept,
+    call (``ctx`` is the Insights context the first call was made with).
+    ``budget`` is the ask's one cap: the opening call already took a call,
+    the retry takes from what is left, and the extract loop shares the same
+    budget. A second AI-call error, or SQL the checker will not accept,
     abstains. It does not compile a ranked ontology plan.
     """
     current: dict[str, Any] | None = payload
-    if recorded_model_calls() < insights_call_cap():
+    if budget.take():
         nxt_ctx = dict(ctx)
         nxt_ctx["sql_loop_feedback"] = {
             "previous_sql": "",
@@ -1979,11 +1982,13 @@ def _ladder_after_ai_error(
             grantable=grantable,
             declared=declared,
             declared_violations=declared_violations,
+            space_onto=space_onto,
             space_id=space_id,
             session_id=session_id,
             submit=submit,
             ledger_append=ledger_append,
             attempts=attempts,
+            budget=budget,
         )
     return _abstain(
         question,
@@ -1991,7 +1996,7 @@ def _ladder_after_ai_error(
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_ONTOLOGY,
-        retries=1 if recorded_model_calls() > 1 else 0,
+        retries=1 if budget.used > 1 else 0,
         stage="extract_loop",
     )
 
@@ -2328,10 +2333,14 @@ def maybe_generative_ask(
         if cloop_b_enabled():
             if compute is None or submit is None or ledger_append is None:
                 return None
+            if vote_budget is None:
+                # The ranked lane made the opening call without a budget.
+                vote_budget = AskCallBudget()
+                vote_budget.take()
             return _stamp(
                 _ladder_after_ai_error(
                     question=q,
-                    ctx=ctx,
+                    ctx=insights_ctx,
                     payload=payload,
                     compute=compute,
                     warehouse=lake,
@@ -2339,11 +2348,13 @@ def maybe_generative_ask(
                     grantable=allowed,
                     declared=declared,
                     declared_violations=declared_violations,
+                    space_onto=space_onto,
                     space_id=space_id,
                     session_id=session_id,
                     submit=submit,
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
+                    budget=vote_budget,
                 )
             )
         return _stamp(
