@@ -376,6 +376,8 @@ def test_proof_check_rejects_an_inconsistent_proof(
     ):
         with pytest.raises(ip.ProofShapeError):
             ip.assert_proof_shape(bad)
+    with pytest.raises(ip.ProofShapeError, match="before executed_at"):
+        ip.assert_proof_shape({**proof, "executed_at": "2030-01-01T00:00:00Z"})
     with pytest.raises(ip.ProofShapeError):
         ip.assert_proof_shape({**proof, "sql_hash": "a" * 64}, sql=got.sql)
     swapped = [got.rows[0], got.rows[2], got.rows[1], *got.rows[3:]]
@@ -582,6 +584,34 @@ def test_a_refresh_during_the_proof_refuses(sales_wh: Path) -> None:
     assert {r["code"] for r in run.refused} == {"source_refreshed_during_proof"}
 
 
+def test_a_refresh_under_a_mixed_case_registry_name_refuses(sales_wh: Path) -> None:
+    """A registry keyed 'Orders' still matches the casefolded table the relation reads."""
+    stamps = iter(["2026-10-29T01:00:00Z", "2026-10-29T01:05:00Z"] * 10)
+
+    def moving(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
+        stamp = next(stamps)
+        return {"Orders": {"extracted_at": stamp}, "Territory": {"extracted_at": stamp}}
+
+    stub = _Stub(sales_wh)
+    run = _run(sales_wh, stub, set(_B_GRANTS), onto=Ontology.from_store(items=_items()),
+               watermarks=moving)
+    assert run.proven == ()
+    assert {r["code"] for r in run.refused} == {"source_refreshed_during_proof"}
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+
+    def steady(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
+        return {"Orders": {"extracted_at": "2026-10-29 01:00:00"},
+                "TERRITORY": {"extracted_at": "2026-10-29 01:00:00"}}
+
+    run = _run(sales_wh, _Stub(sales_wh), set(_B_GRANTS),
+               onto=Ontology.from_store(items=_items()), watermarks=steady)
+    got = _by_text(run, _B_CONCENTRATION)
+    assert got.proof["watermarks"] == {"orders": "2026-10-29T01:00:00Z",
+                                       "territory": "2026-10-29T01:00:00Z"}
+    assert ip.WATERMARK_UNKNOWN_ASSUMPTION not in got.envelope["assumptions"]
+
+
 def test_a_steady_watermark_is_recorded(sales_wh: Path) -> None:
     def steady(*, path: Path | None = None) -> dict[str, dict[str, Any]]:
         return {"orders": {"extracted_at": "2026-10-29 01:00:00"}}
@@ -624,6 +654,14 @@ def test_pii_dimension_never_executes(sales_wh: Path) -> None:
          "order_amount by Territory.tname"),
         ("(SELECT territory_id, label FROM (SELECT territory_id, UPPER(name) AS label "
          "FROM Sales.Territory) t)", "label", "order_amount by Territory.label"),
+        # Positional renames make no exp.Alias: they fail closed (verify round 2).
+        ("(SELECT territory_id, region FROM Sales.Territory AS t(territory_id, region))",
+         "region", "order_amount by Territory.region"),
+        ("(SELECT * FROM Sales.Territory AS t(territory_id, region))",
+         "region", "order_amount by Territory.region"),
+        ("(SELECT territory_id, region FROM (SELECT 0 AS territory_id, 'x' AS region "
+         "UNION ALL SELECT territory_id, name FROM Sales.Territory) u)",
+         "region", "order_amount by Territory.region"),
     ],
 )
 def test_pii_on_a_subquery_relation_never_executes(
@@ -646,6 +684,47 @@ def test_pii_on_a_subquery_relation_never_executes(
     for name in ("North", "South", "East", "West", "86.4", "9.1"):
         assert name not in shown
     assert not any("WITH g AS" in c for c in stub.calls)
+
+
+def test_a_renamed_relation_without_pii_still_proves(tmp_path: Path) -> None:
+    """Control: the fail-closed rename rule binds only when a pii item touches the table."""
+    wh = _seed_sales(tmp_path / "rename_ok.duckdb")
+    items = _items()
+    for it in items:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = (
+                "(SELECT territory_id, region FROM Sales.Territory AS t(territory_id, region))")
+            it["payload"]["attributes"] = ["territory_id", "region"]
+    run = _run(wh, _Stub(wh), set(_B_GRANTS), onto=Ontology.from_store(items=items))
+    got = _by_text(
+        run, "2 of 4 Territory.region values (North, South) carry 86.4 pct of order_amount")
+    assert_envelope_valid(got.envelope)
+    assert _tuples(got.envelope["rows"])[0][:3] == ("North", 900.0, 81.8)
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        "(SELECT territory_id, region FROM Sales.Territory AS t(territory_id, region))",
+        "(SELECT * FROM Sales.Territory)",
+        "(SELECT t.* EXCLUDE (territory_id) FROM Sales.Territory t)",
+        "(SELECT territory_id, name FROM Sales.Territory UNION SELECT 1, 'x')",
+        "(SELECT territory_id, UPPER(name) FROM Sales.Territory)",
+        "(SELECT * FROM (VALUES (1, 'x')) v(territory_id, region))",
+        # A CTE name is not a granted table, so end to end this is 'ungranted' first.
+        "(WITH c(territory_id, region) AS (SELECT territory_id, name FROM Sales.Territory) "
+        "SELECT territory_id, region FROM c)",
+    ],
+)
+def test_pii_taint_fails_closed_on_renames_it_does_not_model(relation: str) -> None:
+    assert ip._subquery_taint(relation, {"name"}) is None
+
+
+def test_pii_taint_keeps_explicit_aliases() -> None:
+    got = ip._subquery_taint(
+        "(SELECT territory_id, name AS tname FROM Sales.Territory)", {"name"})
+    assert got is not None and {"name", "tname"} <= set(got)
+    assert "territory_id" not in got
 
 
 def test_pii_on_an_unresolvable_relation_is_all_pii() -> None:
@@ -726,10 +805,19 @@ def test_ungranted_dimension_never_submits(sales_wh: Path) -> None:
     assert stub.calls == []
 
 
-def test_volatile_expression_refuses(sales_wh: Path) -> None:
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "SUM(CASE WHEN CURRENT_DATE > DATE '2020-01-01' THEN f.amount END)",
+        "ROUND(SUM(f.amount * (CASE WHEN CURRENT_TIME IS NOT NULL THEN 1 ELSE 1 END)), 2)",
+        "ROUND(SUM(f.amount * (CASE WHEN LOCALTIMESTAMP IS NOT NULL THEN 1 ELSE 1 END)), 2)",
+        "ROUND(SUM(f.amount * (CASE WHEN get_current_time() IS NOT NULL THEN 1 ELSE 1 END)), 2)",
+        "ROUND(SUM(f.amount * (CASE WHEN uuid() IS NOT NULL THEN 1 ELSE 1 END)), 2)",
+    ],
+)
+def test_volatile_expression_refuses(sales_wh: Path, expression: str) -> None:
     stub = _Stub(sales_wh)
-    onto = Ontology.from_store(items=_items(
-        expression="SUM(CASE WHEN CURRENT_DATE > DATE '2020-01-01' THEN f.amount END)"))
+    onto = Ontology.from_store(items=_items(expression=expression))
     run = _run(sales_wh, stub, set(_B_GRANTS), onto=onto)
     assert _codes(run)["order_amount"] == "volatile_measure"
     assert stub.calls == []

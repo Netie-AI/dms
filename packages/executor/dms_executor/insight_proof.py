@@ -163,7 +163,14 @@ REFUSALS: dict[str, str] = {
 
 # scripts/brief.py _NUMBER: a numeric token not glued to a word, bare integers included.
 _NUMBER = re.compile(r"(?<![A-Za-z_\d.,])\d[\d,]*(?:\.\d+)?(?![A-Za-z_\d])")
-_VOLATILE = re.compile(r"CURRENT_DATE|CURRENT_TIMESTAMP|NOW\s*\(|TODAY\s*\(|RANDOM\s*\(", re.I)
+# Clock, randomness and sequence reads. CURRENT_TIME also covers CURRENT_TIMESTAMP
+# and get_current_time(stamp); LOCALTIME covers LOCALTIMESTAMP.
+_VOLATILE = re.compile(
+    r"CURRENT_DATE|CURRENT_TIME|LOCALTIME|TRANSACTION_TIMESTAMP|STATEMENT_TIMESTAMP"
+    r"|CLOCK_TIMESTAMP|NOW\s*\(|TODAY\s*\(|RANDOM\s*\(|SETSEED\s*\(|UUID\s*\("
+    r"|GEN_RANDOM_UUID|NEXTVAL\s*\(|CURRVAL\s*\(",
+    re.I,
+)
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _ISO_Z = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z")
 _IDENT = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
@@ -286,6 +293,10 @@ def _finite(x: Any) -> TypeGuard[int | float]:
     return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(float(x))
 
 
+def _parse_z(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp[:-1] + "+00:00")
+
+
 def _bad(msg: str) -> ProofShapeError:
     return ProofShapeError(msg)
 
@@ -336,6 +347,8 @@ def assert_proof_shape(
     for key in ("executed_at", "reexecuted_at"):
         if not isinstance(proof[key], str) or not _ISO_Z.fullmatch(proof[key]):
             raise _bad(f"{key} is not ISO-8601 UTC")
+    if _parse_z(proof["reexecuted_at"]) < _parse_z(proof["executed_at"]):
+        raise _bad("reexecuted_at is before executed_at")
     for key in ("raw_total", "grouped_total", "tolerance"):
         if not _finite(proof[key]):
             raise _bad(f"{key} is not a finite number")
@@ -607,7 +620,12 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
 
     Over-approximates: an alias is tainted when its expression mentions a tainted
     name anywhere in the statement, to a fixpoint, so ``name AS tname`` and a
-    nested re-alias both carry the mark. None when the relation does not parse.
+    nested re-alias both carry the mark. None (all-PII) when the relation does
+    not parse, or when it renames by position or by expansion, which the walker
+    does not model: a table or CTE alias column list (``t(id, region)``), a star,
+    a set operation, PIVOT/UNPIVOT, VALUES, UNNEST or LATERAL, or an unaliased
+    computed projection that reads a tainted name. Mirrors def_validate, where a
+    star over a pii table fails closed.
     """
     import sqlglot
     from sqlglot import exp
@@ -621,6 +639,10 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
     except (SqlglotError, ValueError):
         return None
     if tree is None:
+        return None
+    if tree.find(exp.Star, exp.SetOperation, exp.Pivot, exp.Values, exp.Unnest, exp.Lateral):
+        return None
+    if any(ta.columns for ta in tree.find_all(exp.TableAlias)):
         return None
     tainted = set(marked)
     aliases = list(tree.find_all(exp.Alias))
@@ -637,6 +659,12 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
             if used & tainted:
                 tainted.add(out)
                 changed = True
+    for select in tree.find_all(exp.Select):
+        for proj in select.expressions:
+            if isinstance(proj, (exp.Alias, exp.Column)):
+                continue
+            if {str(c.name).casefold() for c in proj.find_all(exp.Column)} & tainted:
+                return None
     return tainted
 
 
@@ -839,9 +867,13 @@ def _read_marks(
         got = {}
     if not isinstance(got, Mapping):
         got = {}
+    # relation_tables() names are casefolded; a registry may store 'Orders'.
+    folded: dict[str, Any] = {}
+    for name, rec in got.items():
+        folded.setdefault(str(name).casefold(), rec)
     out: dict[str, Any] = {}
     for t in tables:
-        rec = got.get(t)
+        rec = got.get(t, folded.get(str(t).casefold()))
         out[t] = rec.get("extracted_at") if isinstance(rec, Mapping) else None
     return out
 
