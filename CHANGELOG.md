@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-02 fix 4: a verbatim approval_ref carries no NRIC or card
+
+- **approval_ref.** Since fix 3 keeps the ref verbatim, a ticket-shaped ref that embeds an NRIC (`CHG-900101-14-5678`, `NRIC900101145678`, even after a letter prefix) or a Luhn-valid card number (`REF-4111-1111-1111-1111`) is refused with 400 `approval_ref_invalid` before any write, instead of reaching the immutable ledger as given. Ordinary numeric tickets (`CHG-2026-1030-4417`, `INC-60123456789`) are kept. No new refusal code. DR-0008 item 8 updated (still Proposed).
+
 ## 2026-10-30 - ACT-02 fix 3: identifiers are kept verbatim, one actor spelling, a dead record is voided
 
 - **Evidence ids.** The PII masker no longer runs over the evidence keys `audit_id` and `reverts_decision_id` (it rewrote about 3% of UUID4 and 7% of 64-hex ids, so the pinned `evidence_audit_id` pointed at nothing and the proposal could never be applied). They are kept verbatim and shape-checked; a non-id value is refused at propose (400 `evidence_id_invalid`, a new refusal code).

@@ -196,9 +196,15 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
    200 characters (letters, digits, `_ . / : # -`) with at least one letter, and one the
    secret scrubber would change is refused: 400 `approval_ref_invalid` (or
    `approval_ref_too_long`), before any read or write. That refuses an email, a spaced
-   narrative, and a bare NRIC, phone or card number. Disclosed limit: a ticket-shaped ref
-   that embeds a personal number after a letter prefix (`CAB-900101-14-5678`) is not
-   detected and is stored as given; the steward types the ref. Whether free text should
+   narrative, and a bare NRIC, phone or card number. Because the ref is stored as given,
+   a ticket-shaped ref that embeds an NRIC (a valid YYMMDD-NN-NNNN digit run, with or
+   without dashes, even after a letter prefix: `CAB-900101-14-5678`) or a Luhn-valid
+   card number (13-16 digits, or 4-4-4-N grouped by `-`) is refused with the same 400
+   `approval_ref_invalid`. Only those two classes are checked: the masker's account and
+   phone classes match ordinary numeric tickets (`CHG-2026-1030-4417`,
+   `INC-60123456789`), which are kept. Disclosed limit: a personal number in any other
+   form (a passport number, an account number) inside a ticket-shaped ref is stored as
+   given; the steward types the ref. Whether free text should
    instead stay DMS-side only, or be hashed, is open for the PRD Agent. A configured actor that is not a UUID is
    refused (`steward_identity_invalid`). The decline route passes the reason to the core
    decline, which binds it with the actor and `approval_ref` (item 7 above); the ledger
