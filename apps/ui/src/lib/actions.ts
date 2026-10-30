@@ -233,7 +233,7 @@ export const REFUSAL_TEXT: Record<string, string> = {
   commit_outcome_unknown:
     "A ledger entry was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.",
   ledger_entry_reused:
-    "The ledger returned an entry that already backs another receipt; a void entry was requested and nothing changed.",
+    "The ledger returned an entry id that already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it.",
   // lookups (404 / 422)
   space_id_invalid: "The Space id is not valid.",
   space_not_found: "That Space does not exist in this tenant.",
@@ -305,6 +305,9 @@ export function describeRefusal(code: string, detail?: RefusalDetail | null): st
   }
   if (c === "record_failed_after_append" && detail?.cortex_entry_id) {
     return `Ledger entry ${detail.cortex_entry_id} was written but the database failed before the decision was recorded; a void entry was requested and nothing changed.`;
+  }
+  if (c === "ledger_entry_reused" && typeof detail?.reused_entry_id === "string" && detail.reused_entry_id) {
+    return `The ledger returned entry ${detail.reused_entry_id}, which already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it.`;
   }
   if (c === "commit_outcome_unknown" && detail?.cortex_entry_id) {
     return `Ledger entry ${detail.cortex_entry_id} was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.`;

@@ -128,6 +128,22 @@ describe("refusals", () => {
     expect(s).not.toContain("Applied");
   });
 
+  it("ledger_entry_reused names the earlier entry and never says it was voided", () => {
+    const s = describeRefusal("ledger_entry_reused", {
+      code: "ledger_entry_reused",
+      reused_entry_id: "e1",
+      voided: false,
+    });
+    expect(s).toBe(
+      "The ledger returned entry e1, which already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it.",
+    );
+    expect(s).not.toContain("void entry was requested");
+    expect(s).not.toContain("Applied");
+    expect(describeRefusal("ledger_entry_reused")).toBe(
+      "The ledger returned an entry id that already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it.",
+    );
+  });
+
   it("approval_ref_invalid says what a ref must look like", () => {
     const s = describeRefusal("approval_ref_invalid", { code: "approval_ref_invalid", max: 200 });
     expect(s).toContain("one ticket or change id");

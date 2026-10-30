@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-31 - ACT-03 fix: the reused-entry refusal claims no void
+
+- **UI.** The `ledger_entry_reused` sentence no longer says "a void entry was requested": the route now appends no void for it (ACT-02 fix 5). With `reused_entry_id` it names the entry: "The ledger returned entry e1, which already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it." No refusal code was added or removed.
+
 ## 2026-10-31 - ACT-02 fix 5: a reused entry id is never voided
 
 - **Reused entry id.** When Cortex returns an entry id that already backs an earlier, committed decision (`LedgerEntryReused`), apply and decline no longer append `action.*.void` naming that id (it put "did not commit" on the ledger over a real decision). They answer 409 `ledger_entry_reused` with `reused_entry_id` and `voided: false`, roll back, and append nothing. The entry Cortex really wrote for the refused attempt cannot be named, so it is disclosed as an orphan. Other refusals after the append (`receipt_mismatch`) still void the entry they name. DR-0008 item 4 updated (still Proposed).

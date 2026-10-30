@@ -123,4 +123,18 @@ describe("ActionCard", () => {
     );
     expect(html).not.toContain("Applied");
   });
+
+  it("ledger_entry_reused refusal names the earlier entry and claims no void", () => {
+    const html = view("CAB-2", {
+      code: "ledger_entry_reused",
+      detail: { code: "ledger_entry_reused", reused_entry_id: "e1", voided: false },
+    });
+    const text = html.split('data-testid="action-refusal"')[1]?.split(">")[1]?.split("<")[0];
+    proof("ledger_entry_reused refusal", text);
+    expect(text).toBe(
+      "The ledger returned entry e1, which already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it.",
+    );
+    expect(html).not.toContain("void entry was requested");
+    expect(html).not.toContain("Applied");
+  });
 });
