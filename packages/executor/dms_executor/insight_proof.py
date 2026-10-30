@@ -1930,7 +1930,8 @@ def _receipt(
     served = replace(p, envelope=env, proof=proof, trace=trace)
     try:
         assert_envelope_valid(env)
-        assert_proof_shape(proof, sql=p.sql, rows=p.rows, label=p.dimension)
+        assert_proof_shape(proof, sql=p.sql, rows=p.rows, label=p.dimension,
+                           insight_id=p.insight_id, kind=p.kind)
     except (AssertionError, ProofShapeError):
         return demote_insight(served, "envelope_invalid:receipt", orphan_ledger_entry=entry_id)
     return served
