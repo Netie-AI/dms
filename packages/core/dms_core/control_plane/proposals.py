@@ -33,6 +33,14 @@ class ActionRequiresApply(ConflictError):
     """
 
 
+class ActionVersionFixed(ConflictError):
+    """A governed action proposal has exactly one version (ACT-01).
+
+    A second version could carry the same spec with re-pointed precondition
+    hashes, evidence or summary. A changed action is a new proposal.
+    """
+
+
 def _token_for(proposal_id: UUID, version_num: int, diff: dict[str, Any]) -> str:
     payload = json.dumps(
         {"proposal_id": str(proposal_id), "version": version_num, "diff": diff},
@@ -50,7 +58,13 @@ def create_proposal_version(
     diff: dict[str, Any],
     status: str = "pending_confirm",
 ) -> dict[str, Any]:
-    """Insert a new version; supersede prior active versions (invalidates tokens)."""
+    """Insert a new version; supersede prior active versions (invalidates tokens).
+
+    A governed action proposal (``dms.action_proposals``) takes no new version:
+    ActionVersionFixed.
+    """
+    if _is_action_proposal(conn, proposal_id):
+        raise ActionVersionFixed("an action proposal has one version; propose a new action")
     conn.execute(
         """
         UPDATE dms.proposal_versions

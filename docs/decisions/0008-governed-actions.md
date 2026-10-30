@@ -49,15 +49,28 @@ a customer's SQL Server, a customer's Excel file (hard rule 5), or a ledger of i
 3. **No auto-apply (no L3).** Every apply needs a human steward and an `approval_ref` of
    at least three characters. The plain amend confirm refuses an action version
    (`ActionRequiresApply`), so no other path can flip one to `applied`.
-4. **Apply proves itself.** Under the proposal advisory lock and `FOR UPDATE`, the apply
-   checks the stored diff against its token and the pinned spec digest, checks that the
-   cell is still in the state the proposal was made against (ABA-safe: an absent row is
-   row_version 0), writes, re-reads, and refuses unless the re-read state hash equals the
-   one the proposal promised. Any refusal rolls back to a savepoint.
+4. **Apply proves itself.** The confirm runs under the proposal advisory lock, which is
+   released when the confirm returns; the precondition and the write are serialised by
+   the row locks (`FOR UPDATE` on the version and the cell). The apply checks the stored
+   diff against its token, the pinned spec digest and the pinned whole-diff digest and
+   version id, and recomputes the expected hashes and summary from the spec. It then
+   checks that the cell is still in the state the proposal was made against (ABA-safe: an
+   absent row is row_version 0), writes, re-reads, and refuses unless the re-read state
+   hash equals the one the proposal promised. Any refusal rolls back to a savepoint. An
+   action proposal has exactly one version (`ActionVersionFixed`): a changed action is a
+   new proposal.
 5. **One ledger.** The decision row is append-only (SELECT and INSERT only) and holds a
    `ledger_seq` pointer into `dms.ledger_ref`. The Cortex append happens in ACT-02, in the
    same transaction, so a failed append leaves no write. `before_hash` and `after_hash`
    are state digests, not a chain.
+6. **The receipt is rebuilt, not trusted.** `record_decision` re-reads the version (its
+   status must be `applied` or `rejected` to match the decision), its pins and, for an
+   apply, the writeback row that version last wrote, and refuses (`ReceiptMismatch`) a
+   caller record that differs in any field. The Space is the proposal's own. One Cortex
+   entry id backs one pointer (`LedgerEntryReused`). Evidence, `approval_ref` and the
+   reason are secret-scrubbed and PII-masked before the append-only row, as
+   `0005_ask_audit` stores a question. The actor is recorded and must not be blank or the
+   shipped default (DR-0004 Option A: one configured steward identity, no dual control).
 
 ## Consequences
 

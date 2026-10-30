@@ -17,8 +17,11 @@ import pytest
 from dms_core.control_plane.action_types import state_hash, validate_spec
 from dms_core.control_plane.actions import (
     ActionsDisabled,
+    ActorRequired,
     ApprovalRefRequired,
+    LedgerEntryReused,
     PreconditionFailed,
+    ReceiptMismatch,
     TokenDiffMismatch,
     VerifyFailed,
     apply_action_version,
@@ -32,12 +35,15 @@ from dms_core.control_plane.actions import (
 from dms_core.control_plane.advisory_lock import AdvisoryLockTimeout
 from dms_core.control_plane.proposals import (
     ActionRequiresApply,
+    ActionVersionFixed,
     ConflictError,
     StaleTokenError,
+    _token_for,
     confirm_proposal_version,
     create_proposal_version,
     decline_proposal_version,
 )
+from dms_core.control_plane.seed import USER_ID as SEED_USER_ID
 from dms_core.control_plane.session import set_tenant_context
 
 pytestmark = pytest.mark.usefixtures("migrated_db")
@@ -436,6 +442,7 @@ def test_decline(conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]) ->
         tenant_id=tid,
         idempotency_token=third["idempotency_token"],
         approval_ref="CAB-DECLINE-1",
+        actor_id="steward-1",
     )
     assert declined["rows_changed"] == 0 and declined["verified"] is False
     rec = record_decision(
@@ -510,11 +517,11 @@ def test_record_decision_links_ledger(
             INSERT INTO dms.action_decisions (
               id, tenant_id, proposal_id, proposal_version_id, decision, action_type,
               object_type, object_key, field, op, before, after, before_hash, after_hash,
-              rows_changed, verified, approval_ref, cortex_entry_id, ledger_seq
+              rows_changed, verified, approval_ref, actor_id, cortex_entry_id, ledger_seq
             ) VALUES (
               %s, %s, %s, %s, 'applied', 'inventory.set_reorder_level',
               'inventory_item', %s::jsonb, 'reorder_level_kg', 'set', '{}'::jsonb,
-              '{}'::jsonb, 'x', 'y', 1, false, 'CAB-1', 'led_7', %s
+              '{}'::jsonb, 'x', 'y', 1, false, 'CAB-1', 'steward-1', 'led_7', %s
             )
             """,
             (uuid.uuid4(), tid, ver[1], ver[0], json.dumps(KEY), rec["ledger_seq"]),
@@ -586,5 +593,446 @@ def test_clear_restores_source(conn: psycopg.Connection, two_tenants: dict[str, 
     conn.rollback()
 
 
-def test_verify_failed_is_an_error_type() -> None:
-    assert issubclass(VerifyFailed, Exception)
+def _cell(value: str | None, row_version: int) -> dict[str, Any]:
+    return {
+        "object_type": "inventory_item",
+        "object_key": dict(KEY),
+        "field": "reorder_level_kg",
+        "value": value,
+        "row_version": row_version,
+    }
+
+
+def _decisions(conn: psycopg.Connection, tid: uuid.UUID) -> list[tuple[Any, ...]]:
+    set_tenant_context(conn, tid, role="viewer")
+    rows = conn.execute(
+        """
+        SELECT decision, after->>'value', after_hash, verified, rows_changed, approval_ref,
+               actor_id, cortex_entry_id
+          FROM dms.action_decisions WHERE tenant_id = %s ORDER BY decided_at
+        """,
+        (tid,),
+    ).fetchall()
+    conn.rollback()
+    return rows
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_forged_applied_receipt_refused(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    """A caller record for a version that was never applied is not stored.
+
+    Before the fix, record_decision stored decision='applied', verified, value
+    9999 for a pending version, and the real receipt could then never be written.
+    """
+    tid = two_tenants["alpha"]
+    prop = _propose(conn, two_tenants)
+    set_tenant_context(conn, tid, role="steward")
+    ver = conn.execute(
+        "SELECT id, proposal_id FROM dms.proposal_versions WHERE idempotency_token = %s",
+        (prop["idempotency_token"],),
+    ).fetchone()
+    assert ver is not None
+    forged = {
+        "proposal_id": ver[1],
+        "version_id": ver[0],
+        "version_num": 1,
+        "action_type": "inventory.set_reorder_level",
+        "object_type": "inventory_item",
+        "object_key": dict(KEY),
+        "field": "reorder_level_kg",
+        "op": "set",
+        "before": {"value": None, "row_version": 0, "source_value": "400"},
+        "after": {"value": "9999", "row_version": 1, "source_value": "400"},
+        "before_hash": prop["diff"]["expected_before_hash"],
+        "after_hash": "deadbeef",
+        "verified": True,
+        "rows_changed": 1,
+        "approval_ref": "CAB-FORGED",
+        "evidence": {"audit_id": "ask_0001"},
+        "actor_id": "steward-1",
+    }
+    with pytest.raises(ReceiptMismatch) as info:
+        record_decision(conn, forged, decision="applied", cortex_entry_id="led_forged")
+    assert info.value.field == "decision"
+    assert str(info.value) == "receipt_mismatch: decision (version is pending_confirm, not applied)"
+    conn.rollback()
+    assert _decisions(conn, tid) == []
+    assert _status(conn, tid, prop["idempotency_token"]) == "pending_confirm"
+    conn.rollback()
+
+    # The real apply's receipt is still writable, and it is the re-read row.
+    result = _apply(conn, tid, prop["idempotency_token"])
+    # A record that claims another value for a real apply is refused too.
+    with pytest.raises(ReceiptMismatch) as info:
+        record_decision(
+            conn,
+            {**result, "after": {**result["after"], "value": "9999"}},
+            decision="applied",
+            cortex_entry_id="led_forged_2",
+        )
+    assert info.value.field == "after"
+    rec = record_decision(conn, result, decision="applied", cortex_entry_id="led_real")
+    conn.commit()
+    assert _decisions(conn, tid) == [
+        (
+            "applied",
+            "450",
+            state_hash(_cell("450", 1)),
+            True,
+            1,
+            "CAB-2026-10-29",
+            "steward-1",
+            "led_real",
+        )
+    ]
+    got = get_decision(conn, tenant_id=tid, decision_id=rec["decision_id"])
+    assert got is not None and got["after"] == {
+        "value": "450",
+        "row_version": 1,
+        "source_value": "400",
+    }
+    conn.rollback()
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_applied_write_cannot_be_recorded_as_declined(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    tid = two_tenants["alpha"]
+    prop = _propose(conn, two_tenants)
+    result = _apply(conn, tid, prop["idempotency_token"])
+    as_declined = {**result, "after": None, "after_hash": None, "verified": False}
+    as_declined["rows_changed"] = 0
+    with pytest.raises(ReceiptMismatch) as info:
+        record_decision(conn, as_declined, decision="declined", cortex_entry_id="led_lie")
+    assert info.value.field == "decision"
+    assert "version is applied, not rejected" in str(info.value)
+    conn.commit()
+    assert _rows(conn, tid) == [("450", 1)]
+    conn.rollback()
+    assert _decisions(conn, tid) == []
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_stale_action_cannot_be_rearmed_with_a_new_version(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    """Proposal B (made against an absent row) cannot be re-pointed at the applied 450."""
+    tid = two_tenants["alpha"]
+    prop_a = _propose(conn, two_tenants, value="450")
+    prop_b = _propose(conn, two_tenants, value="500")
+    _apply(conn, tid, prop_a["idempotency_token"])
+    conn.commit()
+
+    rearmed = dict(prop_b["diff"])
+    rearmed["before"] = {"value": "450", "row_version": 1, "source_value": "400"}
+    rearmed["expected_before_hash"] = state_hash(_cell("450", 1))
+    rearmed["expected_after_hash"] = state_hash(_cell("500", 2))
+    rearmed["evidence"] = {"audit_id": "ask_FORGED"}
+    rearmed["summary"] = "Set reorder_level_kg for inventory_item SKU-BETA @ WH-B: -> 5"
+
+    # Through the public core function: an action proposal takes no second version.
+    set_tenant_context(conn, tid, role="steward")
+    with pytest.raises(ActionVersionFixed) as info:
+        create_proposal_version(
+            conn, proposal_id=prop_b["proposal_id"], tenant_id=tid, diff=rearmed
+        )
+    assert str(info.value) == "an action proposal has one version; propose a new action"
+    conn.rollback()
+
+    # Written straight into the row with a recomputed token: the pinned digest refuses.
+    set_tenant_context(conn, tid, role="steward")
+    token = _token_for(prop_b["proposal_id"], 1, rearmed)
+    conn.execute(
+        """
+        UPDATE dms.proposal_versions SET diff = %s::jsonb, idempotency_token = %s
+         WHERE idempotency_token = %s
+        """,
+        (json.dumps(rearmed), token, prop_b["idempotency_token"]),
+    )
+    conn.commit()
+    with pytest.raises(TokenDiffMismatch) as tdm:
+        _apply(conn, tid, token)
+    assert str(tdm.value) == "diff does not match the digest pinned at propose"
+    conn.rollback()
+    assert _rows(conn, tid) == [("450", 1)]
+    assert _status(conn, tid, token) == "pending_confirm"
+    conn.rollback()
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_decision_space_is_the_proposals(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    tid = two_tenants["alpha"]
+    set_tenant_context(conn, tid, role="admin")
+    space_a = conn.execute(
+        "SELECT id FROM dms.spaces WHERE tenant_id = %s ORDER BY name LIMIT 1", (tid,)
+    ).fetchone()
+    assert space_a is not None
+    space_b = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO dms.spaces (id, tenant_id, name, created_by) VALUES (%s, %s, %s, %s)",
+        (space_b, tid, f"space-b2-{space_b.hex[:8]}", two_tenants["user"]),
+    )
+    spec = validate_spec(
+        {"action_type": "inventory.set_reorder_level", "object_key": dict(KEY), "value": "450"}
+    )
+    set_tenant_context(conn, tid, role="steward")
+    prop = propose_action(
+        conn,
+        tenant_id=tid,
+        space_id=space_a[0],
+        actor_id=two_tenants["user"],
+        spec=spec,
+        source_value="400",
+    )
+    conn.commit()
+    result = _apply(conn, tid, prop["idempotency_token"])
+    with pytest.raises(ReceiptMismatch) as info:
+        record_decision(
+            conn, result, decision="applied", cortex_entry_id="led_sp", space_id=space_b
+        )
+    assert info.value.field == "space_id"
+    rec = record_decision(conn, result, decision="applied", cortex_entry_id="led_sp")
+    conn.commit()
+    got = get_decision(conn, tenant_id=tid, decision_id=rec["decision_id"])
+    assert got is not None and got["space_id"] == space_a[0]
+    set_tenant_context(conn, tid, role="viewer")
+    in_b = conn.execute(
+        "SELECT count(*) FROM dms.action_decisions WHERE space_id = %s", (space_b,)
+    ).fetchone()
+    assert in_b is not None and in_b[0] == 0
+    conn.rollback()
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_receipt_holds_no_pii_or_secret(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    """Evidence, approval_ref and reason are scrubbed and masked before the append-only row."""
+    tid = two_tenants["alpha"]
+    set_tenant_context(conn, tid, role="steward")
+    spec = validate_spec(
+        {
+            "action_type": "inventory.set_reorder_level",
+            "object_key": dict(KEY),
+            "value": "450",
+            "reason": "per 900101-14-5678",
+        }
+    )
+    prop = propose_action(
+        conn,
+        tenant_id=tid,
+        space_id=None,
+        actor_id=two_tenants["user"],
+        spec=spec,
+        source_value="400",
+        evidence={
+            "audit_id": "ask_0001",
+            "question": "reorder for 900101-14-5678, mail jian@example.com, password=hunter2xyz",
+        },
+    )
+    conn.commit()
+    result = _apply(conn, tid, prop["idempotency_token"], ref="CAB jian@example.com")
+    assert result["approval_ref"] == "CAB DMSMASK_email_01"
+    assert result["evidence"]["question"] == (
+        "reorder for DMSMASK_nric_01, mail DMSMASK_email_01, password=[redacted]"
+    )
+    rec = record_decision(conn, result, decision="applied", cortex_entry_id="led_pii")
+    conn.commit()
+    set_tenant_context(conn, tid, role="viewer")
+    stored = conn.execute(
+        """
+        SELECT d.approval_ref, d.evidence->>'question', v.diff->>'reason', d.evidence::text,
+               v.diff::text
+          FROM dms.action_decisions d
+          JOIN dms.proposal_versions v ON v.id = d.proposal_version_id
+         WHERE d.id = %s
+        """,
+        (rec["decision_id"],),
+    ).fetchone()
+    conn.rollback()
+    assert stored is not None
+    assert stored[:3] == (
+        "CAB DMSMASK_email_01",
+        "reorder for DMSMASK_nric_01, mail DMSMASK_email_01, password=[redacted]",
+        "per DMSMASK_nric_01",
+    )
+    for text in stored:
+        for leaked in ("900101-14-5678", "jian@example.com", "hunter2xyz"):
+            assert leaked not in text
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_actor_required_and_recorded(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    tid = two_tenants["alpha"]
+    prop = _propose(conn, two_tenants)
+    for actor in (None, "", "  ", "None", str(SEED_USER_ID), SEED_USER_ID, "​"):
+        set_tenant_context(conn, tid, role="steward")
+        with pytest.raises(ActorRequired) as info:
+            apply_action_version(
+                conn,
+                tenant_id=tid,
+                idempotency_token=prop["idempotency_token"],
+                actor_id=actor,  # type: ignore[arg-type]
+                approval_ref="CAB-2026-10-29",
+            )
+        assert info.value.code == "actor_required"
+        conn.rollback()
+        set_tenant_context(conn, tid, role="steward")
+        with pytest.raises(ActorRequired):
+            decline_action_version(
+                conn,
+                tenant_id=tid,
+                idempotency_token=prop["idempotency_token"],
+                approval_ref="CAB-2026-10-29",
+                actor_id=actor,  # type: ignore[arg-type]
+            )
+        conn.rollback()
+    assert _rows(conn, tid) == []
+    assert _status(conn, tid, prop["idempotency_token"]) == "pending_confirm"
+    conn.rollback()
+    result = _apply(conn, tid, prop["idempotency_token"])
+    assert result["actor_id"] == "steward-1"
+    with pytest.raises(ActorRequired):
+        record_decision(
+            conn, {**result, "actor_id": None}, decision="applied", cortex_entry_id="led_a0"
+        )
+    record_decision(conn, result, decision="applied", cortex_entry_id="led_actor")
+    conn.commit()
+    assert [r[6] for r in _decisions(conn, tid)] == ["steward-1"]
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_one_ledger_entry_backs_one_decision(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    tid = two_tenants["alpha"]
+    first = _propose(conn, two_tenants)
+    record_decision(
+        conn,
+        _apply(conn, tid, first["idempotency_token"]),
+        decision="applied",
+        cortex_entry_id="led_once",
+    )
+    conn.commit()
+    second = _propose(conn, two_tenants, op="clear", value=None)
+    result = _apply(conn, tid, second["idempotency_token"])
+    with pytest.raises(LedgerEntryReused) as info:
+        record_decision(conn, result, decision="applied", cortex_entry_id="led_once")
+    assert str(info.value) == "cortex entry 'led_once' already backs a pointer"
+    conn.rollback()
+    assert [(r[0], r[7]) for r in _decisions(conn, tid)] == [("applied", "led_once")]
+    assert _rows(conn, tid) == [("450", 1)]
+    conn.rollback()
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_decline_checks_the_ref_before_it_flips(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    tid = two_tenants["alpha"]
+    prop = _propose(conn, two_tenants)
+    for ref in ("", "  ", "​​​", "a​​b"):
+        set_tenant_context(conn, tid, role="steward")
+        with pytest.raises(ApprovalRefRequired) as info:
+            decline_action_version(
+                conn,
+                tenant_id=tid,
+                idempotency_token=prop["idempotency_token"],
+                approval_ref=ref,
+                actor_id="steward-1",
+            )
+        assert str(info.value) == "approval_ref must have at least 3 visible characters"
+        conn.commit()  # a caller that commits after catching it changes nothing
+        assert _status(conn, tid, prop["idempotency_token"]) == "pending_confirm"
+        conn.rollback()
+    assert _decisions(conn, tid) == []
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_invisible_approval_ref_refused_in_code_and_table(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    tid = two_tenants["alpha"]
+    prop = _propose(conn, two_tenants)
+    for ref in ("​​​", "﻿⁠‍", " 　x"):
+        with pytest.raises(ApprovalRefRequired):
+            _apply(conn, tid, prop["idempotency_token"], ref=ref)
+        conn.rollback()
+    assert _rows(conn, tid) == []
+    # The table refuses one written past the code, too.
+    result = _apply(conn, tid, prop["idempotency_token"])
+    rec = record_decision(conn, result, decision="applied", cortex_entry_id="led_inv")
+    conn.commit()
+    set_tenant_context(conn, tid, role="steward")
+    got = get_decision(conn, tenant_id=tid, decision_id=rec["decision_id"])
+    assert got is not None
+    seq = conn.execute(
+        "INSERT INTO dms.ledger_ref (tenant_id, cortex_entry_id) VALUES (%s, 'led_inv2') "
+        "RETURNING seq",
+        (tid,),
+    ).fetchone()
+    assert seq is not None
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(
+            """
+            INSERT INTO dms.action_decisions (
+              id, tenant_id, proposal_id, proposal_version_id, decision, action_type,
+              object_type, object_key, field, op, rows_changed, verified, approval_ref,
+              actor_id, cortex_entry_id, ledger_seq
+            ) VALUES (
+              %s, %s, %s, %s, 'declined', 'inventory.set_reorder_level', 'inventory_item',
+              %s::jsonb, 'reorder_level_kg', 'set', 0, false, %s, 'steward-1', 'led_inv2', %s
+            )
+            """,
+            (
+                uuid.uuid4(),
+                tid,
+                got["proposal_id"],
+                uuid.uuid4(),
+                json.dumps(KEY),
+                "​​​",
+                seq[0],
+            ),
+        )
+    conn.rollback()
+
+
+@pytest.mark.usefixtures("actions_on")
+def test_verify_failed_rolls_back(
+    conn: psycopg.Connection, two_tenants: dict[str, uuid.UUID]
+) -> None:
+    """A re-read that does not show the written value refuses, and nothing is kept."""
+    tid = two_tenants["alpha"]
+    prop = _propose(conn, two_tenants)
+    conn.execute(
+        """
+        CREATE FUNCTION dms.act01_test_corrupt() RETURNS trigger
+          LANGUAGE plpgsql AS $$ BEGIN NEW.value := '1'; RETURN NEW; END $$;
+        CREATE TRIGGER act01_test_corrupt BEFORE INSERT OR UPDATE ON dms.action_writeback
+          FOR EACH ROW EXECUTE FUNCTION dms.act01_test_corrupt();
+        """
+    )
+    conn.commit()
+    try:
+        with pytest.raises(VerifyFailed) as info:
+            _apply(conn, tid, prop["idempotency_token"])
+        assert str(info.value) == "re-read shows '1' at row_version 1, wrote '450'"
+        assert info.value.code == "verify_failed"
+        conn.rollback()
+        assert _rows(conn, tid) == []
+        assert _status(conn, tid, prop["idempotency_token"]) == "pending_confirm"
+        conn.rollback()
+    finally:
+        conn.rollback()
+        conn.execute("DROP TRIGGER IF EXISTS act01_test_corrupt ON dms.action_writeback")
+        conn.execute("DROP FUNCTION IF EXISTS dms.act01_test_corrupt()")
+        conn.commit()
+    assert _apply(conn, tid, prop["idempotency_token"])["after"]["value"] == "450"
+    conn.rollback()
