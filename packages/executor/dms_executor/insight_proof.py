@@ -685,11 +685,13 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
     from sqlglot import exp
     from sqlglot.errors import SqlglotError
 
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
     text = relation.strip()
     while text.startswith("(") and text.endswith(")"):
         text = text[1:-1].strip()
     try:
-        tree = sqlglot.parse_one(text, read="duckdb")
+        tree = sqlglot.parse_one(text, read=SERVING_DIALECT)
     except (SqlglotError, ValueError):
         return None
     if tree is None:
