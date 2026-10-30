@@ -272,6 +272,61 @@ def mask_json(value: Any) -> Any:
     return value
 
 
+#: Evidence keys that hold a structural identifier (a ledger pointer, a decision
+#: id). The PII masker is never run over them: it matches digit runs inside ids
+#: (about 3% of UUID4 ids, 7% of 64-hex ids) and a mangled pointer points nowhere.
+#: They are validated by shape instead and kept verbatim.
+EVIDENCE_ID_KEYS = frozenset({"audit_id", "reverts_decision_id"})
+_ID_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+
+
+def mask_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Evidence as stored: identifiers verbatim (shape-checked), everything else masked.
+
+    An identifier key whose value is not an ASCII id of at most 128 characters
+    (letters, digits, ``_ . : -``) is refused (``evidence_id_invalid``) rather
+    than masked: masking could only turn it into a pointer to nothing.
+    Idempotent, like ``mask_json``.
+    """
+    out: dict[str, Any] = {}
+    for key, value in evidence.items():
+        name = str(key)
+        if name in EVIDENCE_ID_KEYS:
+            if not isinstance(value, str) or not _ID_SHAPE.match(value):
+                raise ActionSpecError("evidence_id_invalid", f"evidence {name} is not an id")
+            out[name] = value
+        else:
+            out[mask_text(name)] = mask_json(value)
+    return out
+
+
+APPROVAL_REF_MIN = 3
+APPROVAL_REF_MAX = 200
+_REF_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:#-]*\Z")
+_HAS_LETTER = re.compile(r"[A-Za-z]")
+
+
+def approval_ref_problem(ref: str) -> str | None:
+    """Why an (already stripped) approval reference is refused, or None.
+
+    A ref names a change ticket (``CHG-2026-1030-4417``, ``CAB-1``): it is an
+    identifier, kept verbatim, so it is validated by shape and never PII-masked
+    (masking collapses distinct numeric tickets to one token). The shape: one
+    ASCII token of letters, digits and ``_ . / : # -``, with at least one letter,
+    so a bare NRIC, phone or card number is refused, and an email or a spaced
+    narrative cannot pass. A ref the secret scrubber would change is refused too.
+    Returns ``approval_ref_too_long`` or ``approval_ref_invalid``.
+    """
+    if len(ref) > APPROVAL_REF_MAX:
+        return "approval_ref_too_long"
+    if not _REF_SHAPE.match(ref) or not _HAS_LETTER.search(ref):
+        return "approval_ref_invalid"
+    _clean, hits = scrub_counted(ref)
+    if hits:
+        return "approval_ref_invalid"
+    return None
+
+
 def object_key_hash(object_key: Mapping[str, Any]) -> str:
     return _digest(dict(object_key))
 

@@ -754,21 +754,21 @@ def test_reused_ledger_entry_refused_and_voided(h: Harness) -> None:
 
 
 def test_decline_ledger_payload_and_receipt_are_masked(h: Harness) -> None:
-    """approval_ref and reason reach Cortex and the append-only row masked."""
+    """The reason reaches Cortex and the append-only row masked; the ref verbatim."""
     prop = _ok(h.propose("300"))
     out = _ok(
         h.client.post(
             f"{A}/proposals/{prop['proposal_id']}/decline",
             json={
                 "idempotency_token": prop["idempotency_token"],
-                "approval_ref": "CAB jian@example.com",
+                "approval_ref": "CHG-2026-1030-4417",
                 "reason": "owner 900101-14-5678 said no",
             },
         )
     )
     assert out["status"] == "rejected"
     payload = h.cortex.events[0].payload
-    assert payload["approval_ref"] == "CAB DMSMASK_email_01"
+    assert payload["approval_ref"] == "CHG-2026-1030-4417"
     assert payload["reason"] == "owner DMSMASK_nric_01 said no"
     h.conn.rollback()
     row = h.conn.execute(
@@ -776,7 +776,7 @@ def test_decline_ledger_payload_and_receipt_are_masked(h: Harness) -> None:
         "FROM dms.action_decisions WHERE id = %s",
         (out["decision_id"],),
     ).fetchone()
-    assert row == ("CAB DMSMASK_email_01", "owner DMSMASK_nric_01 said no", str(h.user))
+    assert row == ("CHG-2026-1030-4417", "owner DMSMASK_nric_01 said no", str(h.user))
 
 
 # --- round-3 verifier defects ---------------------------------------------------------
@@ -943,10 +943,14 @@ def test_apply_payload_and_propose_reason_are_masked(h: Harness) -> None:
     """The apply's ledger payload and the propose diff carry no raw PII."""
     prop = _ok(h.propose("450", reason="owner 900101-14-5678 asked"))
     assert prop["diff"]["reason"] == "owner DMSMASK_nric_01 asked"
-    receipt = _ok(h.apply(prop, "CAB jian@example.com"))
-    assert receipt["approval_ref"] == "CAB DMSMASK_email_01"
+    resp = h.apply(prop, "CAB jian@example.com")
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "approval_ref_invalid", "max": 200}
+    assert h.cortex.events == [] and h.writeback() == []
+    receipt = _ok(h.apply(prop, "CAB-2026-10-29"))
+    assert receipt["approval_ref"] == "CAB-2026-10-29"
     payload = h.cortex.events[0].payload
-    assert payload["approval_ref"] == "CAB DMSMASK_email_01"
+    assert payload["approval_ref"] == "CAB-2026-10-29"
     assert "jian@example.com" not in json.dumps(payload)
     assert "900101-14-5678" not in json.dumps(payload)
 
@@ -1006,3 +1010,211 @@ def test_receipt_actor_ref_and_reason_are_the_bound_ones(h: Harness) -> None:
     assert apply_ev.actor == decline_ev.actor == actor
     assert {c["actor"] for c in h.gate.calls} == {actor}
     assert declined["status"] == "rejected"
+
+
+# --- round-4 verifier defects (ACT-02 MEDIUMs) -----------------------------------------
+
+#: Real ids the PII masker used to rewrite: a UUID4 and a 64-hex digest.
+MANGLED_UUID = "ce4c9504-8966-4851-8653-567a9ade70f6"
+MANGLED_HEX = "f5ca38f748a1d6eaf726b8a42fb575c3c71f1864a8143301782de13da2d9202b"
+
+
+@pytest.mark.parametrize("entry", [MANGLED_UUID, MANGLED_HEX])
+def test_evidence_audit_id_is_kept_verbatim_and_applies(h: Harness, entry: str) -> None:
+    """MEDIUM 1: an id the masker would mangle is pinned, re-checked and receipted as is."""
+    h.seed_ask(entry=entry)
+    prop = _ok(h.propose("450", evidence_audit_id=entry))
+    assert prop["diff"]["evidence"]["audit_id"] == entry
+    assert prop["diff"]["evidence"]["question"] == QUESTION
+    h.conn.rollback()
+    pinned = h.conn.execute(
+        "SELECT evidence_audit_id FROM dms.action_proposals WHERE proposal_id = %s",
+        (prop["proposal_id"],),
+    ).fetchone()
+    assert pinned == (entry,)
+
+    receipt = _ok(h.apply(prop, "CAB-1"))
+    assert receipt["status"] == "applied" and receipt["after"]["value"] == "450"
+    assert receipt["evidence"]["audit_id"] == entry
+    assert [e.event_type for e in h.cortex.events] == ["action.apply"]
+    assert h.cortex.events[0].payload["evidence_audit_id"] == entry
+    assert h.writeback() == [("450", 1)]
+    assert [o["value"] for o in h.objects()] == ["450"]
+    h.conn.rollback()
+    stored = h.conn.execute(
+        "SELECT evidence->>'audit_id' FROM dms.action_decisions WHERE id = %s",
+        (receipt["decision_id"],),
+    ).fetchone()
+    assert stored == (entry,)
+
+
+def test_distinct_change_refs_stay_distinct_on_the_ledger(h: Harness) -> None:
+    """MEDIUM 2: two numeric change refs no longer collapse to one masked token."""
+    first = _ok(h.apply(_ok(h.propose("450")), "CHG-2026-1030-4417"))
+    second = _ok(h.apply(_ok(h.propose("500")), "CHG-2026-1031-9999"))
+    assert first["approval_ref"] == "CHG-2026-1030-4417"
+    assert second["approval_ref"] == "CHG-2026-1031-9999"
+    assert [e.payload["approval_ref"] for e in h.cortex.events] == [
+        "CHG-2026-1030-4417",
+        "CHG-2026-1031-9999",
+    ]
+    h.conn.rollback()
+    rows = h.conn.execute(
+        """
+        SELECT d.approval_ref, c.approval_ref
+          FROM dms.action_decisions d
+          JOIN dms.action_confirmations c ON c.version_id = d.proposal_version_id
+         WHERE d.tenant_id = %s
+         ORDER BY d.ledger_seq
+        """,
+        (h.tenant,),
+    ).fetchall()
+    assert rows == [
+        ("CHG-2026-1030-4417", "CHG-2026-1030-4417"),
+        ("CHG-2026-1031-9999", "CHG-2026-1031-9999"),
+    ]
+    assert h.writeback() == [("500", 2)]
+
+
+@pytest.mark.parametrize(
+    "ref",
+    [
+        "CAB jian@example.com",
+        "jian@example.com",
+        "900101-14-5678",
+        "+60123456789",
+        "4111 1111 1111 1111",
+        "CAB-1\u200b",
+        "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+    ],
+)
+def test_ref_that_is_not_a_ticket_is_refused_before_anything(h: Harness, ref: str) -> None:
+    """MEDIUM 2: a ref is validated by shape and refused, never masked into the ledger."""
+    prop = _ok(h.propose("450"))
+    before = h.counts()
+    resp = h.apply(prop, ref)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "approval_ref_invalid", "max": 200}
+    resp = h.client.post(
+        f"{A}/proposals/{prop['proposal_id']}/decline",
+        json={"idempotency_token": prop["idempotency_token"], "approval_ref": ref},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "approval_ref_invalid", "max": 200}
+    assert h.counts() == before
+    assert h.cortex.events == []
+    assert h.writeback() == []
+    assert h.status(prop) == "pending_confirm"
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "{bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
+        "urn:uuid:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB",
+        "  bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb ",
+    ],
+)
+def test_default_actor_in_any_spelling_is_refused(h: Harness, spelling: str) -> None:
+    """MEDIUM 3: the shipped default is compared as a UUID, not as a string."""
+    prop = _ok(h.propose("450"))
+    before = h.counts()
+    h.configure(DMS_ACTOR_USER_ID=spelling)
+    try:
+        resp = h.propose("500")
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"] == {"code": "steward_identity_unset"}
+        resp = h.apply(prop)
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["detail"] == {"code": "steward_identity_unset"}
+    finally:
+        h.configure(DMS_ACTOR_USER_ID=str(h.user))
+    assert h.counts() == before
+    assert h.cortex.events == []
+    assert h.status(prop) == "pending_confirm"
+
+
+def test_actor_spelling_is_canonical_across_gate_ledger_and_rows(h: Harness) -> None:
+    """MEDIUM 3: an uppercase or hyphenless actor is one canonical id everywhere."""
+    canonical = str(h.user)
+    h.configure(DMS_ACTOR_USER_ID=canonical.upper())
+    prop = _ok(h.propose("450"))
+    receipt = _ok(h.apply(prop, "CAB-1"))
+    h.configure(DMS_ACTOR_USER_ID=h.user.hex)
+    declined_prop = _ok(h.propose("500"))
+    _ok(
+        h.client.post(
+            f"{A}/proposals/{declined_prop['proposal_id']}/decline",
+            json={"idempotency_token": declined_prop["idempotency_token"], "approval_ref": "CAB-2"},
+        )
+    )
+    h.configure(DMS_ACTOR_USER_ID=canonical)
+    assert receipt["status"] == "applied"
+    assert {c["actor"] for c in h.gate.calls} == {canonical}
+    assert [e.actor for e in h.cortex.events] == [canonical, canonical]
+    h.conn.rollback()
+    created = h.conn.execute(
+        "SELECT DISTINCT created_by::text FROM dms.proposals WHERE tenant_id = %s", (h.tenant,)
+    ).fetchall()
+    assert created == [(canonical,)]
+    rows = h.conn.execute(
+        """
+        SELECT d.decision, d.actor_id, c.actor_id
+          FROM dms.action_decisions d
+          JOIN dms.action_confirmations c ON c.version_id = d.proposal_version_id
+         WHERE d.tenant_id = %s
+         ORDER BY d.ledger_seq
+        """,
+        (h.tenant,),
+    ).fetchall()
+    assert rows == [("applied", canonical, canonical), ("declined", canonical, canonical)]
+
+
+def _db_dies(*args: Any, **kwargs: Any) -> Any:
+    raise psycopg.OperationalError("server closed the connection unexpectedly")
+
+
+def test_db_dies_in_record_decision_after_append_is_voided_503(h: Harness) -> None:
+    """MEDIUM 4: the known entry is voided by name and the caller gets a named 503."""
+    import dms_api.routes.actions as routes
+
+    real = routes.record_decision
+    prop = _ok(h.propose("450"))
+    before = h.counts()
+    h.monkeypatch.setattr(routes, "record_decision", _db_dies)
+    resp = h.apply(prop, "CAB-1")
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == {"code": "record_failed_after_append", "cortex_entry_id": "e1"}
+    assert [e.event_type for e in h.cortex.events] == ["action.apply", "action.apply.void"]
+    assert h.cortex.events[0].payload["verified"] is True
+    assert h.cortex.events[1].payload == {
+        "entry_id": "e1",
+        "proposal_version_id": h.cortex.events[0].payload["version_id"],
+        "reason": "record_failed",
+    }
+    assert h.counts() == before
+    assert h.writeback() == [] and h.objects() == []
+    assert h.status(prop) == "pending_confirm"
+
+    # The decline route has the same window.
+    resp = h.client.post(
+        f"{A}/proposals/{prop['proposal_id']}/decline",
+        json={"idempotency_token": prop["idempotency_token"], "approval_ref": "CAB-2"},
+    )
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == {"code": "record_failed_after_append", "cortex_entry_id": "e3"}
+    assert [e.event_type for e in h.cortex.events][2:] == [
+        "action.decline",
+        "action.decline.void",
+    ]
+    assert h.cortex.events[3].payload["entry_id"] == "e3"
+    assert h.counts() == before
+    assert h.status(prop) == "pending_confirm"
+
+    # Once the database is back, the same version applies with a fresh entry.
+    h.monkeypatch.setattr(routes, "record_decision", real)
+    receipt = _ok(h.apply(prop, "CAB-1"))
+    assert receipt["after"]["value"] == "450" and receipt["ledger_entry_id"] == "e5"
+    assert h.writeback() == [("450", 1)]
