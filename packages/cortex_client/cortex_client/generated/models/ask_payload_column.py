@@ -19,11 +19,16 @@ class AskPayloadColumn:
         Attributes:
             name (str):
             description (None | str | Unset):
+            masked (bool | None | Unset): 1.9.0 the consumer's mask state for this column. The plan+SQL path samples
+                distinct values of a column into its model prompt only when this is false. True or absent: the column's name and
+                type may reach the prompt, its values never do. A schema_context column this payload does not list has no mask
+                state and is not sampled.
             type_ (None | str | Unset):
      """
 
     name: str
     description: None | str | Unset = UNSET
+    masked: bool | None | Unset = UNSET
     type_: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -40,6 +45,12 @@ class AskPayloadColumn:
         else:
             description = self.description
 
+        masked: bool | None | Unset
+        if isinstance(self.masked, Unset):
+            masked = UNSET
+        else:
+            masked = self.masked
+
         type_: None | str | Unset
         if isinstance(self.type_, Unset):
             type_ = UNSET
@@ -54,6 +65,8 @@ class AskPayloadColumn:
         })
         if description is not UNSET:
             field_dict["description"] = description
+        if masked is not UNSET:
+            field_dict["masked"] = masked
         if type_ is not UNSET:
             field_dict["type"] = type_
 
@@ -76,6 +89,16 @@ class AskPayloadColumn:
         description = _parse_description(d.pop("description", UNSET))
 
 
+        def _parse_masked(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        masked = _parse_masked(d.pop("masked", UNSET))
+
+
         def _parse_type_(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -89,6 +112,7 @@ class AskPayloadColumn:
         ask_payload_column = cls(
             name=name,
             description=description,
+            masked=masked,
             type_=type_,
         )
 
