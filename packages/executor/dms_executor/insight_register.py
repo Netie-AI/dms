@@ -17,7 +17,9 @@ steward saw, then a confirm with a single-use token.
 - ``replay_pin`` checks the approved definition first (no submit when it moved),
   then re-executes the PINNED SQL twice through submit and reports unchanged
   (L0), changed with a label-level drift block (L1), or a named refusal. Every
-  verdict appends one ``insight.replayed`` pointer.
+  verdict appends one ``insight.replayed`` pointer. A Cortex failure is not a
+  verdict: it is ``cortex_unavailable`` / ``cortex_submit_failed`` (a 503) with
+  no append, as at preview and confirm.
 - ``revoke_pin`` appends ``insight.pin_revoked`` and then marks the row; the
   stored headline and approved rows (they carry labels) are cleared with it.
 
@@ -31,8 +33,16 @@ GET /pins withholds the stored headline of a pin whose dimension is now PII.
 The register is ``main._proven_insights`` in the DMS warehouse DuckDB, a
 DMS-owned table on the ``main._verified_queries`` precedent: created under
 ``lake_schema.catalog_lock``, written through ``connect_file(write=True)``, no
-alembic migration. It is the only table this module writes; the ledger is
-Cortex's, reached only through the injected ``ledger_append``.
+alembic migration. Beside it, ``main._proven_insight_receipts`` holds one row
+per ledger receipt a pin, replay or revoke accepted (entry id and seq, both
+unique), so one receipt can never back two of them: a repeat is refused
+``ledger_receipt_invalid:repeated``, the INS-PROOF-02 rule for ``/run`` applied
+across the pin lifecycle. Those two tables are the only ones this module
+writes; the ledger is Cortex's, reached only through the injected
+``ledger_append``.
+
+A register write that raised is never taken as failed on its word: the row is
+re-read and the response reports what the register actually holds.
 
 Every function returns a plain dict: ``{"ok": True, ...}`` or
 ``{"ok": False, "code": <closed code>, ...}``. The route maps codes to HTTP.
@@ -59,6 +69,8 @@ from dms_executor import abstain, bronze
 from dms_executor import insight_proof as ip
 
 TABLE = "main._proven_insights"
+RECEIPTS = "main._proven_insight_receipts"
+REPEATED = "ledger_receipt_invalid:repeated"
 TOKEN_TTL_S = 600
 _USED_MAX = 4096
 _TOKENS_MAX = 4096
@@ -247,6 +259,120 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS _proven_insights_active ON {TABLE} (active_key)"
         )
+        # One row per accepted receipt. Two appends are never one chain position,
+        # so an entry id or a non-null seq seen twice is a replayed receipt.
+        con.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {RECEIPTS} (
+              entry_id VARCHAR PRIMARY KEY,
+              seq BIGINT,
+              event_type VARCHAR NOT NULL,
+              asset_id VARCHAR NOT NULL,
+              recorded_at TIMESTAMPTZ NOT NULL
+            )
+            """
+        )
+        con.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS _proven_insight_receipts_seq ON {RECEIPTS} (seq)"
+        )
+
+
+@dataclass(frozen=True)
+class _Receipt:
+    entry_id: str
+    seq: int | None
+    event_type: str
+    asset_id: str
+
+
+def _receipt_used(con: duckdb.DuckDBPyConnection, rc: _Receipt) -> bool:
+    """Has this receipt already backed a pin, a replay or a revoke?
+
+    The receipts table, and the register's own pointers (a row written before the
+    receipts table existed has no receipt row).
+    """
+    if rc.seq is None:
+        hit = con.execute(
+            f"SELECT 1 FROM {RECEIPTS} WHERE entry_id = ? LIMIT 1", [rc.entry_id]
+        ).fetchone()
+    else:
+        hit = con.execute(
+            f"SELECT 1 FROM {RECEIPTS} WHERE entry_id = ? OR seq = ? LIMIT 1",
+            [rc.entry_id, rc.seq],
+        ).fetchone()
+    if hit is not None:
+        return True
+    return con.execute(
+        f"SELECT 1 FROM {TABLE} WHERE ledger_entry_id = ? OR revoke_ledger_entry_id = ? LIMIT 1",
+        [rc.entry_id, rc.entry_id],
+    ).fetchone() is not None
+
+
+def _write_with_receipt(
+    wh: Path, rc: _Receipt, write: Callable[[duckdb.DuckDBPyConnection], None] | None
+) -> str | None:
+    """Claim the receipt, then the register write, on one write connection.
+
+    ``None``: both returned. ``"repeated"``: the receipt already backs something;
+    nothing was written. ``"conflict"``: the receipt is claimed and the register
+    write hit its UNIQUE rule. ``"unknown"``: something raised, the outcome is not
+    known, and the caller must re-read the register before it answers.
+
+    The receipt is claimed in its own statement before the write, so a receipt
+    whose register write then fails stays spent: it cannot back a retry.
+    """
+    from dms_executor.demo_warehouse import connect_file
+
+    try:
+        con = connect_file(wh, write=True)
+    except Exception:  # noqa: BLE001 - nothing was written, but say "unknown", never "failed"
+        return "unknown"
+    outcome: str | None
+    try:
+        try:
+            _ensure(con)
+            if _receipt_used(con, rc):
+                outcome = "repeated"
+            else:
+                con.execute(
+                    f"INSERT INTO {RECEIPTS} (entry_id, seq, event_type, asset_id, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    [rc.entry_id, rc.seq, rc.event_type, rc.asset_id, _clock()],
+                )
+                outcome = None
+        except duckdb.ConstraintException:
+            outcome = "repeated"  # another process claimed it between check and insert
+        if outcome is None and write is not None:
+            try:
+                write(con)
+            except duckdb.ConstraintException:
+                outcome = "conflict"
+    except Exception:  # noqa: BLE001 - the caller re-reads; it never guesses
+        outcome = "unknown"
+    try:
+        con.close()
+    except Exception:  # noqa: BLE001 - the statements may have landed: re-read
+        if outcome is None:
+            outcome = "unknown"
+    return outcome
+
+
+def _receipt_recorded(wh: Path, rc: _Receipt) -> bool:
+    """After an ``unknown``: is this receipt's row in the receipts table?"""
+    from dms_executor.demo_warehouse import connect_serving
+
+    con = connect_serving(wh)
+    try:
+        try:
+            row = con.execute(
+                f"SELECT event_type, asset_id FROM {RECEIPTS} WHERE entry_id = ?",
+                [rc.entry_id],
+            ).fetchone()
+        except duckdb.CatalogException:
+            return False
+    finally:
+        con.close()
+    return row is not None and tuple(row) == (rc.event_type, rc.asset_id)
 
 
 def _read(wh: Path, where: str, params: Sequence[Any]) -> list[dict[str, Any]]:
@@ -283,37 +409,46 @@ def _active_pin(wh: Path, space: str, sql_hash: str) -> str | None:
     return str(rows[0]["asset_id"]) if rows else None
 
 
-def _insert_pin(wh: Path, row: Mapping[str, Any]) -> None:
-    from dms_executor.demo_warehouse import connect_file
-
+def _insert_pin(wh: Path, row: Mapping[str, Any], rc: _Receipt) -> str | None:
+    """Claim the pin's receipt, then INSERT its row. ``_write_with_receipt`` outcomes."""
     cols = [c for c in _COLUMNS if c in row]
-    con = connect_file(wh, write=True)
-    try:
-        _ensure(con)
+
+    def write(con: duckdb.DuckDBPyConnection) -> None:
         con.execute(
             f"INSERT INTO {TABLE} ({', '.join(cols)}) VALUES ({', '.join('?' for _ in cols)})",
             [row[c] for c in cols],
         )
-    finally:
-        con.close()
+
+    return _write_with_receipt(wh, rc, write)
 
 
-def _mark_revoked(wh: Path, asset_id: str, at: datetime, entry_id: str) -> None:
-    from dms_executor.demo_warehouse import connect_file
+def _mark_revoked(wh: Path, asset_id: str, at: datetime, rc: _Receipt) -> str | None:
+    """Claim the revoke's receipt, then mark the row. ``_write_with_receipt`` outcomes."""
 
-    con = connect_file(wh, write=True)
-    try:
-        _ensure(con)
+    def write(con: duckdb.DuckDBPyConnection) -> None:
         # The headline and the approved rows carry dimension labels; a revoked pin
         # is never served, so it keeps its hashes and ids and drops its labels.
         con.execute(
             f"UPDATE {TABLE} SET revoked_at = ?, revoke_ledger_entry_id = ?, "
             "active_key = NULL, headline = '', approved_rows_json = '[]' "
             "WHERE asset_id = ? AND revoked_at IS NULL",
-            [at, entry_id, asset_id],
+            [at, rc.entry_id, asset_id],
         )
-    finally:
-        con.close()
+
+    return _write_with_receipt(wh, rc, write)
+
+
+def _record_replay(wh: Path, rc: _Receipt) -> str | None:
+    """Claim a replay's receipt. A replay writes no register row."""
+    return _write_with_receipt(wh, rc, None)
+
+
+def _reread_pin(wh: Path, asset_id: str) -> dict[str, Any] | None | str:
+    """The pin as the register holds it now; ``"unreadable"`` if it cannot be read."""
+    try:
+        return _load_pin(wh, asset_id)
+    except Exception:  # noqa: BLE001 - not knowing is reported as not knowing
+        return "unreadable"
 
 
 def _stamp(value: Any) -> str | None:
@@ -612,8 +747,9 @@ def confirm_pin(
         entry_id, seq = got
         approved_at = _clock()
         d = p.proof["definition"]
+        rc = _Receipt(entry_id, seq, PIN_EVENT, asset_id)
         try:
-            _insert_pin(wh, {
+            outcome = _insert_pin(wh, {
                 "asset_id": asset_id,
                 "space_id": space,
                 "insight_id": p.insight_id,
@@ -638,20 +774,34 @@ def confirm_pin(
                 "approved_by": actor,
                 "ledger_entry_id": entry_id,
                 "active_key": _active_key(space, tok.sql_hash),
-            })
-        except duckdb.ConstraintException:
+            }, rc)
+        except Exception:  # noqa: BLE001 - an outcome nobody reported: re-read
+            outcome = "unknown"
+        if outcome == "repeated":
+            # This receipt already backs a pin, a replay or a revoke: it is not
+            # evidence of this append. Nothing was written.
+            return _fail(REPEATED, ledger_entry_id=entry_id)
+        if outcome == "conflict":
             # Another process pinned it between the check and the INSERT.
             return _fail("already_pinned", asset_id=_active_pin(wh, space, tok.sql_hash),
                          orphan_ledger_entry=entry_id)
-        except Exception:  # noqa: BLE001 - the entry exists; say which one has no row
-            return _fail("pin_commit_failed", orphan_ledger_entry=entry_id)
+        if outcome == "unknown":
+            # The write raised, but it may have committed. Report what the register
+            # holds, never a guess: a row with this entry is the pin.
+            now = _reread_pin(wh, asset_id)
+            if now == "unreadable":
+                return _fail("pin_commit_unknown", ledger_entry_id=entry_id)
+            if not (isinstance(now, dict) and now["ledger_entry_id"] == entry_id
+                    and now["revoked_at"] is None):
+                return _fail("pin_commit_failed", orphan_ledger_entry=entry_id)
+            approved_at = now["approved_at"] or approved_at
     env = dict(p.envelope)
     env["audit_id"] = entry_id
     return {
         "ok": True,
         "asset_id": asset_id,
         "insight_id": p.insight_id,
-        "approved_at": _z(approved_at),
+        "approved_at": _stamp(approved_at),
         "approved_by": actor,
         "expected_result_hash": current,
         "ledger_entry_id": entry_id,
@@ -1023,6 +1173,11 @@ def replay_pin(
     if pin is None or pin["revoked_at"] is not None:
         return _fail("pin_not_found")
     done = _execute(executor, pin)
+    infra = str(done.code or "").split(":", 1)[0]
+    if infra in INFRA_CODES:
+        # Cortex, not the data: a 503 as at preview and confirm, and no
+        # ``insight.replayed`` entry records an engine outage as a verdict.
+        return _fail(infra)
     # A revoke may have landed while the SQL ran. Re-read under the lock revoke
     # holds for its own append, so a revoked pin is never served or receipted.
     with _PIN_LOCK:
@@ -1040,9 +1195,25 @@ def replay_pin(
             },
             actor,
         )
-    if isinstance(got, str):
-        return _fail(got)
-    entry_id, seq = got
+        if isinstance(got, str):
+            return _fail(got)
+        entry_id, seq = got
+        rc = _Receipt(entry_id, seq, REPLAY_EVENT, str(pin["asset_id"]))
+        try:
+            outcome = _record_replay(wh, rc)
+        except Exception:  # noqa: BLE001 - an outcome nobody reported: re-read
+            outcome = "unknown"
+        if outcome == "unknown":
+            try:
+                outcome = None if _receipt_recorded(wh, rc) else "unrecorded"
+            except Exception:  # noqa: BLE001 - unreadable is not recorded
+                outcome = "unrecorded"
+    if outcome == "repeated":
+        # The pin's own entry, an earlier replay's, or a revoke's: not this append.
+        return _fail(REPEATED, ledger_entry_id=entry_id)
+    if outcome is not None:
+        # Unrecorded, a later reuse of this receipt could not be caught: not served.
+        return _fail("ledger_receipt_unrecorded", orphan_ledger_entry=entry_id)
     env = dict(done.envelope)
     env["audit_id"] = entry_id
     assert_envelope_valid(env)
@@ -1131,11 +1302,24 @@ def revoke_pin(
         )
         if isinstance(got, str):
             return _fail(got)
-        entry_id, _seq = got
+        entry_id, seq = got
         at = _clock()
+        rc = _Receipt(entry_id, seq, REVOKE_EVENT, str(pin["asset_id"]))
         try:
-            _mark_revoked(wh, str(pin["asset_id"]), at, entry_id)
-        except Exception:  # noqa: BLE001 - the entry exists; say which one has no row
-            return _fail("revoke_commit_failed", orphan_ledger_entry=entry_id)
-    return {"ok": True, "asset_id": pin["asset_id"], "revoked_at": _z(at),
+            outcome = _mark_revoked(wh, str(pin["asset_id"]), at, rc)
+        except Exception:  # noqa: BLE001 - an outcome nobody reported: re-read
+            outcome = "unknown"
+        if outcome == "repeated":
+            return _fail(REPEATED, ledger_entry_id=entry_id)
+        if outcome is not None:
+            # The write raised (or hit a rule), but it may have committed. Report
+            # what the register holds: revoked with this entry is a revoke.
+            now = _reread_pin(wh, str(pin["asset_id"]))
+            if now == "unreadable":
+                return _fail("revoke_commit_unknown", revoke_ledger_entry_id=entry_id)
+            if not (isinstance(now, dict) and now["revoke_ledger_entry_id"] == entry_id
+                    and now["revoked_at"] is not None):
+                return _fail("revoke_commit_failed", orphan_ledger_entry=entry_id)
+            at = now["revoked_at"]
+    return {"ok": True, "asset_id": pin["asset_id"], "revoked_at": _stamp(at),
             "revoke_ledger_entry_id": entry_id}

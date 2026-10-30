@@ -46,7 +46,10 @@ _FLAG = "DMS_INSIGHT_PROOF"
 _B_HEADLINE = "2 of 4 Territory.name values (North, South) carry 86.4 pct of order_amount"
 _A_PART = "carry 73.2 pct of stock_value_myr"
 _B_GRANTS = {"Sales.Orders": "TRUE", "Sales.Territory": "TRUE"}
-_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # settings.dms_actor_user_id default
+#: The configured steward (DR-0004 Option A). The shipped default actor may not
+#: confirm a pin (``steward_identity_unset``), so every pin test configures one.
+_ACTOR = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+_DEFAULT_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # settings.dms_actor_user_id default
 _STAMP_A = "2026-10-01T00:00:00Z"
 _STAMP_B = "2026-10-02T00:00:00Z"
 
@@ -62,11 +65,15 @@ class _Cortex(FakeCortex):
     def __init__(self, warehouse: Path) -> None:
         super().__init__(warehouse)
         self._n = 100
+        #: When set, every append returns this receipt (a replayed or stale one).
+        self.fixed: LedgerAppendResponse | None = None
 
     def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:
         self.ledger.append(req)
         if self.ledger_error is not None:
             raise self.ledger_error
+        if self.fixed is not None:
+            return self.fixed
         self._n += 1
         return LedgerAppendResponse(
             entry_id=f"led_{self._n:06d}", hash=f"{self._n:064x}", seq=self._n
@@ -147,6 +154,7 @@ def flag_on(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     _clear_settings()
     monkeypatch.setenv(_FLAG, "1")
     monkeypatch.setenv("DMS_DEMO_FALLBACK", "0")
+    monkeypatch.setenv("DMS_ACTOR_USER_ID", _ACTOR)
     _clear_settings()
     yield
     _clear_settings()
@@ -252,7 +260,7 @@ def _snapshot(wh: Path) -> dict[tuple[str, str], str]:
         ).fetchall()
         out: dict[tuple[str, str], str] = {}
         for s, t in names:
-            if t == "_proven_insights":
+            if t in ("_proven_insights", "_proven_insight_receipts"):
                 continue
             rows = con.execute(f'SELECT * FROM "{s}"."{t}"').fetchall()
             out[(s, t)] = json.dumps(sorted(map(repr, rows)))
@@ -729,7 +737,7 @@ def test_the_only_table_written_is_the_register(world: _World, tmp_path: Path) -
     counts_after = _counts(world.wh)
     changed = {k for k in set(counts_before) | set(counts_after)
                if counts_before.get(k) != counts_after.get(k)}
-    assert changed == {("main", "_proven_insights")}
+    assert changed == {("main", "_proven_insights"), ("main", "_proven_insight_receipts")}
     assert _snapshot(world.wh) == content_before
     assert not list(tmp_path.rglob("*.xlsx"))
     assert world.cortex.submits
@@ -1150,3 +1158,274 @@ class _MissOnce:
     def __call__(self, *a: Any, **k: Any) -> Any:
         self.calls += 1
         return None if self.calls == 1 else self.real(*a, **k)
+
+
+# --------------------------------------------------------------------------
+# Verify round 2 - the gate identity, receipt reuse, commit-then-raise
+# --------------------------------------------------------------------------
+
+_REPEATED = "ledger_receipt_invalid:repeated"
+
+
+def _receipt(entry_id: str, seq: int | None) -> LedgerAppendResponse:
+    return LedgerAppendResponse(entry_id=entry_id, hash="e" * 64, seq=seq)
+
+
+def test_every_pin_route_names_the_configured_steward_and_the_space_to_f5(
+    world: _World,
+) -> None:
+    """The gate sees the identity the ledger and the register record, and the Space."""
+    asset_id, _pre, got = _pin(world)
+    assert world.replay(asset_id).status_code == 200
+    assert world.pins().status_code == 200
+    assert world.revoke(asset_id).status_code == 200
+    pin_calls = [c for c in world.gate.calls if c["action"] != "insight_proof.run"]
+    assert [c["action"] for c in pin_calls] == [
+        "insight_proof.pin.preview", "insight_proof.pin.confirm", "insight_proof.replay",
+        "insight_proof.pins.read", "insight_proof.revoke",
+    ]
+    for c in pin_calls:
+        assert c["actor"] == _ACTOR, c
+        assert c["metadata"]["filled_template"] == {"space_id": None}, c
+        assert c["metadata"]["task_id"] == c["action"]
+    pin_events = [r for r in world.cortex.ledger if r.event_type in (
+        "insight.pinned", "insight.replayed", "insight.pin_revoked")]
+    assert len(pin_events) == 3 and {r.actor for r in pin_events} == {_ACTOR}
+    assert got["approved_by"] == _ACTOR
+    assert world.cortex.events("insight.pinned")[0].payload["approved_by"] == _ACTOR
+
+
+def test_the_real_gate_puts_the_steward_and_the_space_on_the_wire_for_pins(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cortex_client import gate as gate_mod
+    from cortex_client.gate import ComplianceDecision
+
+    wire: list[dict[str, Any]] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/dms/tasks/gate/check"
+        wire.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "ok"})
+
+    real_client = httpx.Client
+
+    def _client(*a: Any, **k: Any) -> httpx.Client:
+        return real_client(*a, transport=httpx.MockTransport(_handler), **k)
+
+    class _Real(_GateSpy):
+        def __call__(self, **kwargs: Any) -> ComplianceDecision:
+            self.calls.append(kwargs)
+            return gate_mod.compliance_gate(**kwargs)
+
+    wh = _seed_sales(tmp_path / "lake_b.duckdb")
+    w = _build(monkeypatch, wh, approved_store=True, gate=_Real(), grants=_B_GRANTS)
+    monkeypatch.setattr(gate_mod.httpx, "Client", _client)
+    asset_id, _pre, got = _pin(w)
+    assert w.replay(asset_id).status_code == 200
+    assert w.pins().status_code == 200
+    assert w.revoke(asset_id).status_code == 200
+    by_task = {m["task_id"]: m for m in wire}
+    for task in ("insight_proof.pin.preview", "insight_proof.pin.confirm",
+                 "insight_proof.replay", "insight_proof.pins.read", "insight_proof.revoke"):
+        assert by_task[task]["actor"] == _ACTOR, by_task[task]
+        assert by_task[task]["filled_template"] == {"space_id": None}, by_task[task]
+    assert got["approved_by"] == _ACTOR
+    assert w.cortex.events("insight.pinned")[0].actor == _ACTOR
+
+
+def test_the_space_a_token_or_pin_belongs_to_reaches_f5(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """confirm, replay and revoke read the Space from the token or the pin, and send it."""
+    from dms_api import wiring
+
+    asset_id, pre, _ = _pin(world)
+    token = world.preview(pre["proof"]["insight_id"]).json()["token"]
+    monkeypatch.setattr(wiring, "pin_owner_space", lambda *_a, **_k: "spc_owner")
+    world.gate.allowed, world.gate.reason = False, "denied"
+    ledger = len(world.cortex.ledger)
+    for res in (world.confirm(token), world.replay(asset_id), world.revoke(asset_id)):
+        assert res.status_code == 403, res.text
+    for c in world.gate.calls[-3:]:
+        assert c["actor"] == _ACTOR
+        assert c["metadata"]["filled_template"] == {"space_id": "spc_owner"}
+        assert c["metadata"]["space_id"] == "spc_owner"
+    assert len(world.cortex.ledger) == ledger
+
+
+def test_one_receipt_cannot_back_a_pin_a_replay_and_a_revoke(world: _World) -> None:
+    asset_id, _pre, got = _pin(world)
+    pin_entry = got["ledger_entry_id"]
+    # (1) Replay gets the pin's own receipt back: not evidence of this append.
+    world.cortex.fixed = _receipt(pin_entry, None)
+    res = world.replay(asset_id)
+    assert res.status_code == 503, res.text
+    body = res.json()
+    assert body["code"] == _REPEATED and body["ledger_entry_id"] == pin_entry
+    assert "envelope" not in body and "North" not in res.text
+    assert "Unchanged since" not in res.text and "L0_CERTIFIED" not in res.text
+    # (2) Revoke gets the same receipt: refused, and the pin is still active.
+    res = world.revoke(asset_id)
+    assert res.status_code == 503, res.text
+    assert res.json()["code"] == _REPEATED
+    assert [p["asset_id"] for p in world.pins().json()["pins"]] == [asset_id]
+    assert _register_row(world.wh, asset_id)["revoked_at"] is None
+    # (3) A fresh receipt certifies. That replay's receipt cannot back a revoke,
+    # nor can a different entry id at the same chain position (seq).
+    world.cortex.fixed = None
+    ok = world.replay(asset_id)
+    assert ok.status_code == 200, ok.text
+    replay_entry = ok.json()["envelope"]["audit_id"]
+    assert ok.json()["envelope"]["text"].startswith("Unchanged since steward approval")
+    assert ok.json()["envelope"]["badge"] == "L0_CERTIFIED"
+    world.cortex.fixed = _receipt(replay_entry, None)
+    assert world.revoke(asset_id).json()["code"] == _REPEATED
+    world.cortex.fixed = _receipt("led_999999", world.cortex._n)
+    again = world.replay(asset_id)
+    assert again.status_code == 503 and again.json()["code"] == _REPEATED
+    assert world.pins().json()["pins"][0]["asset_id"] == asset_id
+    # (4) Fresh again: revoke lands with its own entry.
+    world.cortex.fixed = None
+    done = world.revoke(asset_id)
+    assert done.status_code == 200, done.text
+    assert done.json()["revoke_ledger_entry_id"] not in (pin_entry, replay_entry)
+    assert world.pins().json()["pins"] == []
+
+
+def test_a_confirm_receipt_already_used_by_another_pin_writes_no_row(world: _World) -> None:
+    first, pre, got = _pin(world)
+    assert world.revoke(first).status_code == 200
+    token = world.preview(pre["proof"]["insight_id"]).json()["token"]
+    world.cortex.fixed = _receipt(got["ledger_entry_id"], None)
+    res = world.confirm(token)
+    assert res.status_code == 503, res.text
+    assert res.json()["code"] == _REPEATED
+    assert "asset_id" not in res.json()
+    assert world.register_rows() == 1
+    assert world.pins().json()["pins"] == []
+
+
+class _CloseRaises:
+    """A write connection whose close() commits (the real close) and then raises."""
+
+    def __init__(self, con: Any) -> None:
+        self._con = con
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._con, name)
+
+    def close(self) -> None:
+        self._con.close()
+        raise OSError("close failed after commit")
+
+
+def _close_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = dw.connect_file
+
+    def wrapped(path: Path, *, write: bool = True) -> Any:
+        con = real(path, write=write)
+        return _CloseRaises(con) if write else con
+
+    monkeypatch.setattr(dw, "connect_file", wrapped)
+
+
+def test_a_pin_write_that_committed_then_raised_reports_the_active_pin(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    iid = _insight_id(world)
+    pre = world.preview(iid).json()
+    _close_raises(monkeypatch)
+    got = world.confirm(pre["token"])
+    assert got.status_code == 200, got.text
+    body = got.json()
+    assert "orphan_ledger_entry" not in body and "code" not in body
+    entry = world.cortex.events("insight.pinned")[-1]
+    assert body["ledger_entry_id"] == f"led_{world.cortex._n:06d}"
+    assert entry.payload["asset_id"] == body["asset_id"]
+    pins = world.pins().json()["pins"]
+    assert [(p["asset_id"], p["ledger_entry_id"]) for p in pins] == [
+        (body["asset_id"], body["ledger_entry_id"])]
+    assert body["approved_at"] == pins[0]["approved_at"]
+    # Revoke under the same fault: the revoke landed, and the response says so.
+    res = world.revoke(body["asset_id"])
+    assert res.status_code == 200, res.text
+    assert res.json()["revoke_ledger_entry_id"] == f"led_{world.cortex._n:06d}"
+    assert "orphan_ledger_entry" not in res.json()
+    assert world.pins().json()["pins"] == []
+    assert world.revoke(body["asset_id"]).json()["code"] == "not_pinned"
+
+
+def test_a_replay_receipt_that_committed_then_raised_is_served(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asset_id, _pre, _ = _pin(world)
+    _close_raises(monkeypatch)
+    res = world.replay(asset_id)
+    assert res.status_code == 200, res.text
+    env = res.json()["envelope"]
+    assert env["badge"] == "L0_CERTIFIED" and env["text"].startswith("Unchanged since")
+    assert env["audit_id"] == f"led_{world.cortex._n:06d}"
+
+
+def test_a_revoke_write_that_did_not_land_still_names_the_orphan(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor import insight_register as ir
+
+    asset_id, _pre, _ = _pin(world)
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(ir, "_mark_revoked", boom)
+    res = world.revoke(asset_id)
+    assert res.status_code == 500, res.text
+    assert res.json()["code"] == "revoke_commit_failed"
+    assert res.json()["orphan_ledger_entry"] == f"led_{world.cortex._n:06d}"
+    assert [p["asset_id"] for p in world.pins().json()["pins"]] == [asset_id]
+
+
+def test_the_shipped_default_actor_cannot_confirm_a_pin(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    iid = _insight_id(world)
+    pre = world.preview(iid).json()
+    monkeypatch.setenv("DMS_ACTOR_USER_ID", _DEFAULT_ACTOR)
+    _clear_settings()
+    gate_calls = len(world.gate.calls)
+    got = world.confirm(pre["token"])
+    assert got.status_code == 403, got.text
+    assert got.json()["code"] == "steward_identity_unset"
+    assert "No steward is configured" in got.json()["message"]
+    assert world.cortex.events("insight.pinned") == [] and world.register_rows() == 0
+    assert len(world.gate.calls) == gate_calls
+    # The token was not spent: once a steward is configured, it pins.
+    monkeypatch.setenv("DMS_ACTOR_USER_ID", _ACTOR)
+    _clear_settings()
+    ok = world.confirm(pre["token"])
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["approved_by"] == _ACTOR
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (lambda: httpx.ConnectError("connection refused"), "cortex_unavailable"),
+        (lambda: RuntimeError("cortex down"), "cortex_submit_failed"),
+    ],
+)
+def test_cortex_down_mid_replay_is_503_with_no_replay_entry(
+    world: _World, error: Any, code: str
+) -> None:
+    asset_id, _pre, _ = _pin(world)
+    world.cortex.submit_error = error()
+    res = world.replay(asset_id)
+    assert res.status_code == 503, res.text
+    assert res.json()["code"] == code
+    assert "envelope" not in res.json() and "verdict" not in res.json()
+    assert world.cortex.events("insight.replayed") == []
+    world.cortex.submit_error = None
+    ok = world.replay(asset_id)
+    assert ok.status_code == 200 and ok.json()["verdict"] == "unchanged"
+    assert len(world.cortex.events("insight.replayed")) == 1

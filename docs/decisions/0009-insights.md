@@ -160,3 +160,28 @@ confirmed it": nothing is auto-pinned, auto-replayed or auto-applied.
   replay whose audit row is dropped is demoted to ABSTAIN `audit_unrecorded` and names its
   orphan entry; confirm reports `audit_recorded`. The replay receipt names the deployment
   actor. One active pin per (space, SQL) is also a UNIQUE index on `active_key`.
+- Verify round 2.
+  - Every pin route (preview, confirm, replay, revoke, the list) calls `compliance_gate`
+    with `actor` = the configured deployment actor and `filled_template.space_id` = the
+    Space (from the request, the token or the pin), exactly as `/run` does. F5 is told who
+    is confirming; it is still F5's decision.
+  - Confirm refuses the shipped default actor (`bbbbbbbb-...`) as `steward_identity_unset`
+    (403) before the gate, the token or any append: with no steward configured, no pin may
+    say a steward approved it (ACT-02 refuses the same case). One configured steward, no
+    dual control.
+  - Receipts are deduplicated across the pin lifecycle. `main._proven_insight_receipts`
+    holds one row per receipt a pin, replay or revoke accepted (entry id primary key,
+    seq unique); the register's own pointers are checked too. A receipt seen before is
+    `ledger_receipt_invalid:repeated` (503) and nothing is written or served. The register
+    and this receipts table are the only tables INS-PROOF-03 writes; a replay now writes
+    one receipts row and no register row.
+  - A register write that raised is re-read before the answer. A pin row (or revoke) that
+    landed is reported as landed (200); only a row that is truly absent is
+    `pin_commit_failed` / `revoke_commit_failed` with its orphan entry; an unreadable
+    register is `pin_commit_unknown` / `revoke_commit_unknown`. A replay whose receipt row
+    cannot be confirmed is `ledger_receipt_unrecorded` (503) and is not served.
+  - A Cortex failure during replay is not a verdict: it is `cortex_unavailable` /
+    `cortex_submit_failed` (503) with no `insight.replayed` append, as at preview and
+    confirm. "Every verdict appends `insight.replayed`" holds for data verdicts only.
+  - Ceiling: receipts from `/run` (`insight.proven`) are deduplicated within one run only;
+    they are not persisted, so a pin route cannot compare against them.

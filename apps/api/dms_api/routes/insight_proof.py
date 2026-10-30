@@ -278,9 +278,18 @@ PIN_STATUS: dict[str, int] = {
     "ledger_receipt_invalid": 503,
     "cortex_unavailable": 503,
     "cortex_submit_failed": 503,
+    "ledger_receipt_unrecorded": 503,
+    "steward_identity_unset": 403,
     "pin_commit_failed": 500,
+    "pin_commit_unknown": 500,
     "revoke_commit_failed": 500,
+    "revoke_commit_unknown": 500,
 }
+
+#: The shipped ``settings.dms_actor_user_id``. DR-0004 Option A names one
+#: configured steward; while the default stands, no steward is configured and a
+#: pin may not claim one approved it (ACT-02 refuses the same case).
+DEFAULT_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
 class PinPreviewIn(BaseModel):
@@ -314,8 +323,29 @@ def _pin_refusal(res: dict[str, Any], key: str | None) -> JSONResponse:
         # The flag was turned off after the app was built: behave as unmounted.
         raise HTTPException(status_code=404, detail="Not Found")
     body = {k: v for k, v in res.items() if k not in ("trace", "envelope")}
-    return JSONResponse(_redacted(jsonable_encoder(body), key),
-                        status_code=PIN_STATUS.get(code, 409))
+    # A suffixed code (``ledger_receipt_invalid:repeated``) maps by its base.
+    status = PIN_STATUS.get(code, PIN_STATUS.get(code.split(":", 1)[0], 409))
+    return JSONResponse(_redacted(jsonable_encoder(body), key), status_code=status)
+
+
+def _gate(action: str, settings: Any, space_id: str | None, cortex: Any) -> Any:
+    """``compliance_gate`` as ``/run`` calls it (INS-PROOF-02 round 2).
+
+    The gate names the one configured actor (DR-0004 Option A), the identity the
+    ledger append, ``approved_by`` and the audit row carry. ``compliance_gate``
+    puts only ``filled_template`` and ``actor`` on the wire, so the Space goes in
+    ``filled_template``, where F5 can scope the task by it.
+    """
+    return compliance_gate(
+        action=action,
+        actor=settings.dms_actor_user_id,
+        metadata={
+            "task_id": action,
+            "space_id": space_id,
+            "filled_template": {"space_id": space_id},
+        },
+        client=cortex,
+    )
 
 
 def _known_space(store: Any, space_id: str | None) -> None:
@@ -325,17 +355,17 @@ def _known_space(store: Any, space_id: str | None) -> None:
 
 @router.post("/pins/preview")
 def insight_proof_pin_preview(
-    body: PinPreviewIn, store: SpaceStoreDep, cortex: CortexDep, ask: AskServiceDep
+    body: PinPreviewIn,
+    settings: SettingsDep,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
 ) -> Any:
     _known_space(store, body.space_id)
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
-    decision = compliance_gate(
-        action="insight_proof.pin.preview",
-        metadata={"task_id": "insight_proof.pin.preview", "space_id": body.space_id},
-        client=cortex,
-    )
+    decision = _gate("insight_proof.pin.preview", settings, body.space_id, cortex)
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     take_executed(ask)
@@ -358,12 +388,16 @@ def insight_proof_pin_confirm(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
+    if str(settings.dms_actor_user_id).strip().lower() == DEFAULT_ACTOR:
+        # Before the gate and the token: nothing is spent, submitted or appended.
+        return JSONResponse(
+            {"ok": False, "code": "steward_identity_unset",
+             "message": "No steward is configured (DMS_ACTOR_USER_ID is the shipped "
+                        "default), so no pin can say a steward approved it."},
+            status_code=403,
+        )
     space_id = wiring.pin_owner_space(ask, token=body.token)
-    decision = compliance_gate(
-        action="insight_proof.pin.confirm",
-        metadata={"task_id": "insight_proof.pin.confirm", "space_id": space_id},
-        client=cortex,
-    )
+    decision = _gate("insight_proof.pin.confirm", settings, space_id, cortex)
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     take_executed(ask)
@@ -404,11 +438,7 @@ def insight_proof_pin_replay(
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
     space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
-    decision = compliance_gate(
-        action="insight_proof.replay",
-        metadata={"task_id": "insight_proof.replay", "space_id": space_id},
-        client=cortex,
-    )
+    decision = _gate("insight_proof.replay", settings, space_id, cortex)
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     take_executed(ask)
@@ -445,11 +475,7 @@ def insight_proof_pin_revoke(
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
     space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
-    decision = compliance_gate(
-        action="insight_proof.revoke",
-        metadata={"task_id": "insight_proof.revoke", "space_id": space_id},
-        client=cortex,
-    )
+    decision = _gate("insight_proof.revoke", settings, space_id, cortex)
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     res = wiring.revoke_pin(ask, cortex, asset_id, actor=settings.dms_actor_user_id)
@@ -461,6 +487,7 @@ def insight_proof_pin_revoke(
 
 @router.get("/pins")
 def insight_proof_pins(
+    settings: SettingsDep,
     store: SpaceStoreDep,
     cortex: CortexDep,
     ask: AskServiceDep,
@@ -470,11 +497,7 @@ def insight_proof_pins(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
-    decision = compliance_gate(
-        action="insight_proof.pins.read",
-        metadata={"task_id": "insight_proof.pins.read", "space_id": space_id},
-        client=cortex,
-    )
+    decision = _gate("insight_proof.pins.read", settings, space_id, cortex)
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     pins = wiring.list_pinned(ask, space_id=space_id)
