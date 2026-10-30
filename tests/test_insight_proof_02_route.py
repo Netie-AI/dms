@@ -49,6 +49,7 @@ _ROW0 = {
     "grouped_total": 29840.0,
 }
 _WAREHOUSE_OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"  # settings.dms_actor_user_id default
 
 # The original, before any test spies on it: FakeCortex is the only executor of figures.
 _CONNECT_SERVING = dw.connect_serving
@@ -71,7 +72,11 @@ class FakeCortex:
         self.binds = 0
         self.ledger: list[LedgerAppendRequest] = []
         self.ledger_error: Exception | None = None
-        self.receipt = LedgerAppendResponse(entry_id=_ENTRY, hash="a" * 64, seq=7)
+        #: Set: every append returns this one receipt (a replayed or stale ledger).
+        #: Unset: each append gets its own chain position, led_000123/seq 7 first.
+        self.receipt: LedgerAppendResponse | None = None
+        #: insight_id -> the receipt its append returned.
+        self.receipts: dict[str, LedgerAppendResponse] = {}
         self.submit_error: Exception | None = None
 
     def submit(self, req: Any) -> QueryResult:
@@ -99,7 +104,12 @@ class FakeCortex:
         self.ledger.append(req)
         if self.ledger_error is not None:
             raise self.ledger_error
-        return self.receipt
+        n = len(self.ledger) - 1
+        got = self.receipt or LedgerAppendResponse(
+            entry_id=f"led_{123 + n:06d}", hash=f"{n + 1:064x}", seq=7 + n
+        )
+        self.receipts[str(req.payload.get("insight_id"))] = got
+        return got
 
 
 class _RaisingStore(InMemoryAskAuditStore):
@@ -263,7 +273,7 @@ def test_flag_on_run_serves_the_proven_insight_with_its_ledger_receipt(world: _W
     )
     assert env["rows"][0] == _ROW0
     assert [r["label"] for r in env["rows"]] == ["WH-B", "WH-E", "WH-A", "WH-C", "WH-D"]
-    assert env["audit_id"] == _ENTRY
+    assert env["audit_id"] == world.cortex.receipts[got["proof"]["insight_id"]].entry_id
     assert env["abstained"] is False
     assert env["badge"] == "L2_VALIDATED"  # demo ontology: never above L2
     # No Python-derived figure: whatever values[] carries is a returned cell.
@@ -271,7 +281,12 @@ def test_flag_on_run_serves_the_proven_insight_with_its_ledger_receipt(world: _W
     assert all(float(v["value"]) in cells for v in env["values"])
     for item in body["insights"]:
         assert_envelope_valid(item["envelope"])
-        assert item["envelope"]["audit_id"] == _ENTRY
+        iid = item["proof"]["insight_id"]
+        assert item["envelope"]["audit_id"] == world.cortex.receipts[iid].entry_id
+    # One chain position per served insight: no two share an entry.
+    audit_ids = [i["envelope"]["audit_id"] for i in body["insights"]]
+    assert len(set(audit_ids)) == len(audit_ids) == len(world.cortex.ledger)
+    assert body["unconfirmed_ledger_appends"] == 0
     assert body["counts"] == {"proven": len(body["insights"]), "refused": len(body["refused"])}
     assert body["counts"]["proven"] >= 1
     assert body["orphan_ledger_entries"] == []
@@ -315,7 +330,11 @@ def test_every_figure_comes_from_two_cortex_submits_and_none_runs_locally(
         assert all(e["engine"] == "submit" for e in execs)
         assert w.cortex.submits.count(env["sql_used"]) == 2
         assert proof["raw_total_sql"] in w.cortex.submits
-        assert proof["ledger"] == {"event_type": "insight.proven", "entry_id": _ENTRY, "seq": 7}
+        led = w.cortex.receipts[proof["insight_id"]]
+        assert proof["ledger"] == {
+            "event_type": "insight.proven", "entry_id": led.entry_id, "seq": led.seq
+        }
+        assert env["audit_id"] == led.entry_id
         ip.assert_proof_shape(proof)
     # Dimension discovery reads the local catalog; no figure statement runs locally.
     assert not [s for s in local if s.lstrip().upper().startswith("WITH G AS")]
@@ -337,7 +356,9 @@ def test_ledger_payload_is_pointers_only(world: _World) -> None:
         req = by_id[proof["insight_id"]]
         payload = req.payload
         assert req.event_type == "insight.proven"
-        assert req.actor is None
+        assert req.actor == _ACTOR  # DR-0004 Option A: the configured deployment actor
+        assert "session_id" not in payload
+        assert payload["session_hash"] == item_content_hash("insights")
         assert payload["result_hash"] == proof["result_hash"]
         assert payload["sql_hash"] == item_content_hash(env["sql_used"])
         assert payload["raw_total_sql_hash"] == proof["raw_total_sql_hash"]
@@ -376,8 +397,9 @@ def test_one_audit_row_per_candidate_and_the_proven_row_points_at_the_entry(
     assert rec.executed_sql == env["sql_used"]
     assert {"inventory"} <= {t.casefold() for t in rec.tables_read}
     assert rec.row_count == len(env["rows"])
-    assert rec.cortex_entry_id == _ENTRY
-    assert rec.ledger_seq == 7
+    led = world.cortex.receipts[proof["insight_id"]]
+    assert rec.cortex_entry_id == led.entry_id == env["audit_id"]
+    assert rec.ledger_seq == led.seq
     assert rec.badge == "validated"
     supplier = next(i for i in body["insights"] if "supplier.country" in i["envelope"]["text"])
     srec = next(r for r in recs if r.question == "insight:" + supplier["proof"]["insight_id"])
@@ -410,7 +432,8 @@ def test_ledger_down_refuses_every_proven_candidate(
                     if r["code"] != "ledger_append_failed")
     assert others == sorted((r["candidate"], r["code"]) for r in up["refused"])
     for r in failed:
-        assert "could not be written to the ledger" in r["text"]
+        assert r["text"] == ip.REFUSALS["ledger_append_failed"]
+    assert body["unconfirmed_ledger_appends"] == len(failed)
     assert not any(
         str(e.get("badge")) in {"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED"}
         for e in _all_envelopes(res.text)
@@ -440,6 +463,182 @@ def test_a_receipt_whose_hash_is_its_entry_id_is_refused(
 
 
 # --------------------------------------------------------------------------
+# 5b. verify round 2: receipts across a run, the session id, the actor
+# --------------------------------------------------------------------------
+
+
+def test_a_replayed_receipt_is_refused_for_every_insight_it_names(
+    flag_on: None, demo_wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One valid-looking receipt for N different appends is not N chain positions."""
+    up = _world(demo_wh, monkeypatch).run().json()
+    assert up["counts"]["proven"] >= 2
+    w = _world(demo_wh, monkeypatch)
+    w.cortex.receipt = LedgerAppendResponse(entry_id=_ENTRY, hash="a" * 64, seq=7)
+    res = w.run()
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["insights"] == []
+    assert body["counts"]["proven"] == 0
+    repeated = [r for r in body["refused"] if r["code"] == "ledger_receipt_invalid:repeated"]
+    assert len(repeated) == len(w.cortex.ledger) == up["counts"]["proven"]
+    for r in repeated:
+        assert r["text"] == ip.REFUSALS["ledger_receipt_invalid"]
+    assert _HEADLINE_PART not in res.text and "73.2" not in res.text
+    for item in up["insights"]:
+        assert item["envelope"]["text"] not in res.text
+    assert body["unconfirmed_ledger_appends"] == len(repeated)
+    assert body["orphan_ledger_entries"] == []
+    recs = w.records()
+    assert len(recs) == len(body["refused"])
+    assert all(r.badge == "abstain" and r.cortex_entry_id == "" for r in recs)
+
+
+def test_a_repeated_entry_id_refuses_both_insights_and_serves_the_rest(
+    flag_on: None, demo_wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = _world(demo_wh, monkeypatch)
+    fresh = w.cortex.ledger_append
+
+    def _second_repeats_first(req: LedgerAppendRequest) -> LedgerAppendResponse:
+        got = fresh(req)
+        if len(w.cortex.ledger) == 2:
+            got = LedgerAppendResponse(entry_id=_ENTRY, hash="f" * 64, seq=8)
+            w.cortex.receipts[str(req.payload["insight_id"])] = got
+        return got
+
+    w.cortex.ledger_append = _second_repeats_first  # type: ignore[method-assign]
+    body = w.run().json()
+    first_two = {str(r.payload["insight_id"]) for r in w.cortex.ledger[:2]}
+    served = {i["proof"]["insight_id"] for i in body["insights"]}
+    assert not served & first_two
+    assert len(served) == len(w.cortex.ledger) - 2 >= 1
+    repeated = [r for r in body["refused"] if r["code"] == "ledger_receipt_invalid:repeated"]
+    assert len(repeated) == 2
+    audit_ids = [i["envelope"]["audit_id"] for i in body["insights"]]
+    assert _ENTRY not in audit_ids and len(set(audit_ids)) == len(audit_ids)
+    for item in body["insights"]:
+        assert_envelope_valid(item["envelope"])
+    recs = {r.question: r for r in w.records()}
+    for iid in first_two:
+        assert recs["insight:" + iid].badge == "abstain"
+        assert recs["insight:" + iid].cortex_entry_id == ""
+
+
+def test_a_repeated_seq_under_distinct_entry_ids_is_refused(
+    flag_on: None, demo_wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = _world(demo_wh, monkeypatch)
+    fresh = w.cortex.ledger_append
+
+    def _same_seq(req: LedgerAppendRequest) -> LedgerAppendResponse:
+        got = fresh(req)
+        return LedgerAppendResponse(entry_id=got.entry_id, hash=got.hash, seq=7)
+
+    w.cortex.ledger_append = _same_seq  # type: ignore[method-assign]
+    body = w.run().json()
+    assert body["insights"] == []
+    codes = [r["code"] for r in body["refused"]]
+    assert codes.count("ledger_receipt_invalid:repeated") == len(w.cortex.ledger) >= 2
+
+
+def test_a_lost_append_response_is_not_reported_as_unwritten(
+    flag_on: None, demo_wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cortex commits, the response is lost: DMS says it does not know, and counts it."""
+    w = _world(demo_wh, monkeypatch)
+    w.cortex.ledger_error = TimeoutError("read timeout after the append committed")
+    body = w.run().json()
+    assert body["insights"] == []
+    failed = [r for r in body["refused"] if r["code"] == "ledger_append_failed"]
+    assert len(failed) == len(w.cortex.ledger) >= 1
+    for r in failed:
+        assert r["text"] == (
+            "The ledger did not confirm the proof was written, so the insight was not shown. "
+            "No figure was returned."
+        )
+        assert "could not be written" not in r["text"]
+    assert body["unconfirmed_ledger_appends"] == len(w.cortex.ledger)
+
+
+def test_session_id_free_text_is_422_and_never_reaches_the_ledger(world: _World) -> None:
+    res = world.run(session_id="jane.doe@example.com ov_live_secret_abcdef0123456789")
+    assert res.status_code == 422
+    assert world.gate.calls == [] and world.cortex.ledger == [] and world.cortex.submits == []
+    assert world.records() == []
+
+
+def test_the_ledger_carries_a_hash_of_the_session_id_never_the_string(world: _World) -> None:
+    secretish = "ov_live_secret_abcdef0123456789"
+    body = world.run(session_id=secretish).json()
+    assert body["insights"]
+    assert len(world.cortex.ledger) == len(body["insights"])
+    for req in world.cortex.ledger:
+        assert secretish not in json.dumps(req.payload)
+        assert req.payload["session_hash"] == item_content_hash(secretish)
+    # The customer still reads the proven headline.
+    got = _proven_by_text(body, _HEADLINE_PART)
+    assert got["envelope"]["text"] == (
+        "2 of 5 location_code values (WH-B, WH-E) carry 73.2 pct of stock_value_myr"
+    )
+
+
+def test_gate_ledger_and_audit_name_the_one_configured_actor(
+    flag_on: None, demo_wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steward = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    monkeypatch.setenv("DMS_ACTOR_USER_ID", steward)
+    _clear_settings()
+    from dms_api.settings import get_settings
+
+    assert get_settings().dms_actor_user_id == steward
+    w = _world(demo_wh, monkeypatch)
+    res = w.run(space_id=_WAREHOUSE_OPS)
+    assert res.status_code == 200, res.text
+    assert [c["actor"] for c in w.gate.calls] == [steward]
+    assert w.gate.calls[0]["metadata"]["filled_template"] == {"space_id": _WAREHOUSE_OPS}
+    assert w.cortex.ledger, res.text
+    assert {req.actor for req in w.cortex.ledger} == {steward}
+    assert w.records() and {r.actor for r in w.records()} == {steward}
+
+
+def test_the_real_gate_puts_the_space_and_the_actor_on_the_wire(
+    flag_on: None, demo_wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``compliance_gate`` forwards only filled_template and actor: both must carry them."""
+    import httpx
+    from cortex_client import gate as gate_mod
+
+    wire: list[dict[str, Any]] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/dms/tasks/gate/check"
+        wire.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "ok"})
+
+    real_client = httpx.Client
+
+    def _client(*a: Any, **k: Any) -> httpx.Client:
+        return real_client(*a, transport=httpx.MockTransport(_handler), **k)
+
+    class _Real(_GateSpy):
+        def __call__(self, **kwargs: Any) -> ComplianceDecision:
+            self.calls.append(kwargs)
+            return gate_mod.compliance_gate(**kwargs)
+
+    w = _world(demo_wh, monkeypatch, gate=_Real())
+    # After create_app: only the gate's own client is routed to the mock.
+    monkeypatch.setattr(gate_mod.httpx, "Client", _client)
+    res = w.run()
+    assert res.status_code == 200, res.text
+    assert len(wire) == 1
+    assert wire[0]["task_id"] == "insight_proof.run"
+    assert wire[0]["filled_template"] == {"space_id": None}
+    assert wire[0]["actor"] == _ACTOR
+    assert _proven_by_text(res.json(), _HEADLINE_PART)
+
+
+# --------------------------------------------------------------------------
 # 6. audit write fails
 # --------------------------------------------------------------------------
 
@@ -455,7 +654,7 @@ def test_an_unrecorded_audit_row_demotes_and_names_the_orphan_entry(
     assert body["insights"] == []
     demoted = [r for r in body["refused"] if r["code"] == "audit_unrecorded"]
     assert demoted and len(demoted) == len(w.cortex.ledger)
-    assert body["orphan_ledger_entries"] == [_ENTRY]
+    assert body["orphan_ledger_entries"] == [r.entry_id for r in w.cortex.receipts.values()]
     assert store.dropped >= len(body["refused"])
     # The demoted envelopes are abstains; the route's JSON carries only text for them.
     assert all(r["text"] == ip.REFUSALS["audit_unrecorded"] for r in demoted)
@@ -500,7 +699,10 @@ def test_no_gate_decision_is_503_with_nothing_run(
     assert w.cortex.submits == [] and w.cortex.ledger == [] and w.cortex.binds == 0
     assert w.records() == []
     assert w.gate.calls[0]["action"] == "insight_proof.run"
-    assert w.gate.calls[0]["metadata"] == {"task_id": "insight_proof.run", "space_id": None}
+    assert w.gate.calls[0]["metadata"] == {
+        "task_id": "insight_proof.run", "space_id": None, "filled_template": {"space_id": None}
+    }
+    assert w.gate.calls[0]["actor"] == _ACTOR
 
 
 def test_a_denied_gate_is_403_with_nothing_run(
@@ -576,7 +778,7 @@ def test_a_row_policy_relation_is_refused_without_a_submit(
     exe.demo_acl = _acl  # type: ignore[method-assign]
     run = ip.prove_for_space(
         exe, space_id=None, session_id="insights_rp", top=6,
-        ledger_append=lambda **_k: LedgerAppendResponse(entry_id=_ENTRY, hash="b" * 64, seq=1),
+        ledger_append=lambda **_k: cortex.ledger_append(LedgerAppendRequest(**_k)),
         watermarks=lambda *, path=None: {},
     )
     codes = {r["candidate"]: r["code"] for r in run.refused}

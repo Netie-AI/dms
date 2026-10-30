@@ -53,6 +53,7 @@ import hashlib
 import math
 import os
 import re
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -171,13 +172,15 @@ REFUSALS: dict[str, str] = {
     "insights_budget": (
         "The insight run reached its limit of compiled breakdowns and stopped."
     ),
+    # Neither sentence says the proof was not written: an append whose response
+    # was lost may have committed, and contract 1.2.0 cannot read it back.
     "ledger_append_failed": (
-        "The proof could not be written to the ledger, so the insight was not shown. "
+        "The ledger did not confirm the proof was written, so the insight was not shown. "
         "No figure was returned."
     ),
     "ledger_receipt_invalid": (
-        "The ledger did not return a valid receipt, so the proof could not be written "
-        "to the ledger and the insight was not shown. No figure was returned."
+        "The ledger returned a receipt that could not be trusted, so the insight was not "
+        "shown. No figure was returned."
     ),
     "audit_unrecorded": (
         "The audit record for this insight could not be written, so it was not shown. "
@@ -1751,6 +1754,8 @@ def ledger_payload(
     Hashes, ids and closed members: no SQL text, no rows, no labels and no
     figure. The two totals stay in the DMS-side proof and are pinned here by
     ``totals_hash``, so a ledger entry never carries a number the customer read.
+    The session id is a client string, so it is written as ``session_hash``:
+    whatever a caller put in it never lands verbatim on an append-only chain.
     """
     from dms_executor.skills_quarantine import item_content_hash
 
@@ -1769,7 +1774,7 @@ def ledger_payload(
         "totals_hash": item_content_hash(totals),
         "conserves": bool(proof["conserves"]),
         "space_id": space_id,
-        "session_id": session_id,
+        "session_hash": item_content_hash(session_id) if session_id else None,
         "measure_item_id": d["item_id"],
         "measure_version_id": d["version_id"],
         "definition_source": d["source"],
@@ -1824,6 +1829,7 @@ def _receipt(
     *,
     space_id: str | None,
     session_id: str | None,
+    actor: str | None,
 ) -> ProvenInsight | dict[str, Any]:
     """Append the pointer; serve only on a valid receipt (the verified-query rule)."""
     from dms_executor.envelope import assert_envelope_valid
@@ -1832,7 +1838,7 @@ def _receipt(
         led = ledger_append(
             event_type=LEDGER_EVENT,
             payload=ledger_payload(p, space_id=space_id, session_id=session_id),
-            actor=None,
+            actor=actor,
         )
     except Exception:  # noqa: BLE001 - no insight is served without a ledger entry
         return demote_insight(p, "ledger_append_failed")
@@ -1921,9 +1927,20 @@ def prove_for_space(
     session_id: str | None,
     top: int = 6,
     ledger_append: Callable[..., Any],
+    actor: str | None = None,
     watermarks: Callable[..., Any] = bronze.lookup_ingest_watermarks,
 ) -> InsightRun:
     """``prove_insights`` over a Space, through Cortex submit, with a ledger pointer each.
+
+    ``actor`` is the one configured deployment actor (DR-0004 Option A); the
+    route passes ``settings.dms_actor_user_id``, the identity its gate call names.
+
+    Receipts are checked across the run as well as one by one. Two appends of
+    different payloads cannot be the same chain position, so an entry id or a
+    non-null seq that comes back for more than one insight is a replayed or
+    stale receipt: every insight that got it is refused
+    ``ledger_receipt_invalid:repeated``, the first one included, because nothing
+    says which of them the entry is.
 
     Grants are the Executor's own turn ACL for the Space (``demo_acl``). A
     relation readable under any predicate other than ``TRUE`` is refused
@@ -1940,12 +1957,28 @@ def prove_for_space(
                     watermarks=watermarks)
     proven: list[ProvenInsight] = []
     refused = list(run.refused)
-    for p in run.proven:
-        got = _receipt(p, ledger_append, space_id=space_id, session_id=session_id)
+    got_all = [
+        (p, _receipt(p, ledger_append, space_id=space_id, session_id=session_id, actor=actor))
+        for p in run.proven
+    ]
+    ids: Counter[str] = Counter()
+    seqs: Counter[int] = Counter()
+    for _p, got in got_all:
         if isinstance(got, ProvenInsight):
-            proven.append(got)
-        else:
+            led = got.proof["ledger"]
+            ids[led["entry_id"]] += 1
+            if led["seq"] is not None:
+                seqs[led["seq"]] += 1
+    for p, got in got_all:
+        if not isinstance(got, ProvenInsight):
             refused.append(got)
+            continue
+        led = got.proof["ledger"]
+        if ids[led["entry_id"]] > 1 or (led["seq"] is not None and seqs[led["seq"]] > 1):
+            # Demote the pre-receipt insight: its trace names no ledger entry.
+            refused.append(demote_insight(p, "ledger_receipt_invalid:repeated"))
+            continue
+        proven.append(got)
     return InsightRun(
         status="ok" if proven else "refused",
         proven=tuple(proven),

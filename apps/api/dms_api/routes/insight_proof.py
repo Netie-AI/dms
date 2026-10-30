@@ -47,6 +47,8 @@ logger = logging.getLogger(__name__)
 
 FLAG = "DMS_INSIGHT_PROOF"
 ACTION = "insight_proof.run"
+#: Refusal codes after a ledger append was sent but no trusted receipt came back.
+UNCONFIRMED_LEDGER_CODES = frozenset({"ledger_append_failed", "ledger_receipt_invalid"})
 
 router = APIRouter(prefix="/v1/insight-proof", tags=["insight-proof"])
 
@@ -60,7 +62,8 @@ class InsightProofRunIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     space_id: str | None = None
-    session_id: str = Field(default="insights", min_length=1, max_length=128)
+    #: An identifier, not free text. The ledger gets only its hash (``session_hash``).
+    session_id: str = Field(default="insights", pattern=r"^[A-Za-z0-9_.:-]{1,128}$")
     top: int = Field(default=6, ge=1, le=20)
 
 
@@ -148,10 +151,18 @@ def insight_proof_run(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
-    # (c) Fail closed: this route appends to the ledger.
+    # (c) Fail closed: this route appends to the ledger. The gate names the one
+    # configured actor (DR-0004 Option A), the same identity the ledger append and
+    # the audit row carry. ``compliance_gate`` puts only ``filled_template`` on the
+    # wire, so the Space goes there too, where F5 can scope the task by it.
     decision = compliance_gate(
         action=ACTION,
-        metadata={"task_id": ACTION, "space_id": body.space_id},
+        actor=settings.dms_actor_user_id,
+        metadata={
+            "task_id": ACTION,
+            "space_id": body.space_id,
+            "filled_template": {"space_id": body.space_id},
+        },
         client=cortex,
     )
     if not decision.allowed:
@@ -164,7 +175,12 @@ def insight_proof_run(
     # (e)
     try:
         run = wiring.prove_insights(
-            ask, cortex, space_id=body.space_id, session_id=body.session_id, top=body.top
+            ask,
+            cortex,
+            space_id=body.space_id,
+            session_id=body.session_id,
+            top=body.top,
+            actor=settings.dms_actor_user_id,
         )
     except Exception as exc:
         record_ask(
@@ -231,6 +247,12 @@ def insight_proof_run(
         ],
         "counts": {"proven": len(insights), "refused": len(refused)},
         "orphan_ledger_entries": orphans,
+        # Appends whose outcome DMS does not know: no receipt, or one it would not
+        # trust. They may be on the chain; contract 1.2.0 cannot read them back.
+        "unconfirmed_ledger_appends": sum(
+            1 for r in refused
+            if str(r["code"]).split(":", 1)[0] in UNCONFIRMED_LEDGER_CODES
+        ),
         "scope": run.scope,
     }
     return JSONResponse(_redacted(jsonable_encoder(out), key))
