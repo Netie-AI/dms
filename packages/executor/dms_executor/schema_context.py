@@ -73,7 +73,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
+from cortex_client.insights import (
+    SCHEMA_CONTEXT_FIELD,
+    schema_context_enabled,
+    schema_context_is_empty,
+)
 from dms_core.pii import (
     _ACCOUNT_COL,
     _ADDRESS_COL,
@@ -1431,6 +1435,34 @@ def _select(
     measures: Sequence[MeasureFact],
     max_tokens: int,
 ) -> tuple[list[ColumnFact], list[JoinFact], list[HintFact], list[MeasureFact]]:
+    """``_select_once``, except measures never leave ``SCHEMA`` without a table.
+
+    Measures are reserved first. Ten demo measures fill the 480-token budget,
+    and once the index is ready a column line carries ``distinct=``, so no
+    granted column fit and the prompt went out as measures under an empty
+    ``SCHEMA`` (Cortex: ``schema_context_empty``). When that happens, measures
+    give their room back, lowest score first, until a column fits. Only
+    columns already passed in are candidates: the grant filter is upstream.
+    """
+    picked = _select_once(dialect, columns, joins, hints, measures, max_tokens)
+    if picked[0] or not columns or not measures:
+        return picked
+    ranked = sorted(measures, key=lambda item: (-item.score, item.name))
+    for keep in range(len(ranked) - 1, -1, -1):
+        trial = _select_once(dialect, columns, joins, hints, ranked[:keep], max_tokens)
+        if trial[0]:
+            return trial
+    return picked
+
+
+def _select_once(
+    dialect: str,
+    columns: Sequence[ColumnFact],
+    joins: Sequence[JoinFact],
+    hints: Sequence[HintFact],
+    measures: Sequence[MeasureFact],
+    max_tokens: int,
+) -> tuple[list[ColumnFact], list[JoinFact], list[HintFact], list[MeasureFact]]:
     """Hints and the columns they cite take budget before measures.
 
     With no hints, measures are still reserved before unrelated columns.
@@ -2020,9 +2052,15 @@ def _save_record(serving: Path, space_id: str, payload: Mapping[str, Any]) -> No
 
 
 def _open_serving(serving: Path) -> Any:
-    from dms_executor.demo_warehouse import connect_file
+    """Serving lease for the catalog read: read-only, shared with live asks.
 
-    return connect_file(Path(serving))
+    Not the ingest lease. That lease waits for every serving cursor to come
+    back, so an ask or an index build in flight made the catalog read time
+    out and return no table at all.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
+    return connect_serving(Path(serving))
 
 
 def _open_index_read(serving: Path) -> Any:
@@ -2599,7 +2637,9 @@ def prepare_generate_context(
         )
     except Exception:  # noqa: BLE001 -- schema context must not sink the ask
         return ctx
-    if not built.prompt:
+    if schema_context_is_empty(built.prompt):
+        # No granted table made it in. A header-only prompt is a Cortex
+        # abstain (schema_context_empty) with no model call. Send none.
         return ctx
     out = dict(ctx)
     out[SCHEMA_CONTEXT_FIELD] = built.prompt

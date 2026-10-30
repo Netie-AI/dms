@@ -246,6 +246,43 @@ def schema_context_enabled() -> bool:
     return os.environ.get(SCHEMA_CONTEXT_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+_SCHEMA_SECTIONS = frozenset({"SCHEMA", "JOINS", "FILTER HINTS", "MEASURES"})
+_HEAD_KEYS = ("reason=", "description=")
+
+
+def schema_context_is_empty(text: str | None) -> bool:
+    """True when a schema prompt declares no table: blank, or header only.
+
+    Header only is the renderer's shape (``DIALECT: x``, section labels, ``- ``
+    entries) with no table head under ``SCHEMA``. Cortex names that
+    ``schema_context_empty`` and abstains without calling the model. The head
+    rule is Cortex ``parse_schema_context``'s: ``- <table>`` alone or followed
+    by ``reason=`` / ``description=``; a column line has a type after the name.
+    Text in any other shape is not judged here.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return True
+    section = ""
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        if line in _SCHEMA_SECTIONS:
+            section = line
+            continue
+        if not section:
+            if line.startswith("DIALECT:"):
+                continue
+            return False
+        if not line.startswith("-"):
+            return False
+        parts = line[1:].split()
+        head = len(parts) == 1 or (len(parts) > 1 and parts[1].startswith(_HEAD_KEYS))
+        if section == "SCHEMA" and head:
+            return False
+    return True
+
+
 def without_route_fields(body: dict[str, Any]) -> dict[str, Any]:
     """Copy a Cortex body. OpenVault routes. DMS does not send model or strict."""
     out = dict(body)
@@ -258,10 +295,11 @@ def apply_schema_context(body: dict[str, Any], text: str | None) -> dict[str, An
     """Put ``schema_context`` on the body only when the flag is on.
 
     The key is removed first so a caller cannot leave it on a nested object
-    and also send it while the flag is off.
+    and also send it while the flag is off. A prompt that names no table is
+    not sent: Cortex would abstain ``schema_context_empty`` on it.
     """
     body.pop(SCHEMA_CONTEXT_FIELD, None)
-    if schema_context_enabled() and isinstance(text, str) and text.strip():
+    if schema_context_enabled() and not schema_context_is_empty(text):
         body[SCHEMA_CONTEXT_FIELD] = text
     return body
 
