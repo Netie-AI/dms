@@ -1040,7 +1040,9 @@ def _relation_taint(
     A table's generated columns (``region AS (upper(name))``) are marked when
     their expression carries one of that table's marked columns, or cannot be
     modelled (verify round 6: a VIRTUAL column served a marked column's values
-    under a new name, because it reads as a plain column of a base table).
+    under a new name, because it reads as a plain column of a base table). The
+    pass runs to a fixpoint, so a generated column that reads a marked generated
+    column is marked too (verify round 7).
     """
     generated = generated or {}
     tables = _read_tables(relation)
@@ -1051,9 +1053,19 @@ def _relation_taint(
         own = {column for rel, column in items if not rel or rel == table}
         if not own:
             continue
-        for column, expression in generated[table]:
-            if column not in own and _generated_reads_marked(expression, own):
-                marked.add(column)
+        # A generated column may read another generated column (``g2 AS
+        # (lower(g1))`` over ``g1 AS (upper(name))``), so the pass runs to a
+        # fixpoint: each newly marked column joins ``own`` and the rest are
+        # checked again (verify round 7). ``own`` only grows and is bounded by
+        # the table's columns, so the loop ends.
+        pending = [(c, e) for c, e in generated[table] if c not in own]
+        while True:
+            newly = {c for c, e in pending if _generated_reads_marked(e, own)}
+            if not newly:
+                break
+            own |= newly
+            marked |= newly
+            pending = [(c, e) for c, e in pending if c not in own]
     for table in sorted(tables & set(views)):
         if depth >= _MAX_VIEW_DEPTH:
             return _ALL_PII
