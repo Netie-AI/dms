@@ -1054,7 +1054,8 @@ _OPAQUE_VIEWS = {
 
 
 def _opaque_view_world(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, pii: bool, kind: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, pii: bool, kind: str,
+    views: dict[str, list[str]] | None = None,
 ) -> _World:
     """Sales fixture whose Territory object reads a view over a table function."""
     from dms_core.control_plane import onto_data
@@ -1066,7 +1067,7 @@ def _opaque_view_world(
     wh = _seed_sales(tmp_path / "lake_opaque.duckdb")
     con = dw.connect_file(wh)
     try:
-        for sql in _OPAQUE_VIEWS[kind]:
+        for sql in (views or _OPAQUE_VIEWS)[kind]:
             con.execute(sql)
     finally:
         con.close()
@@ -1117,6 +1118,61 @@ def test_run_never_serves_a_view_over_a_table_function_on_a_marked_column(
         body = res.json()
         texts = [i["envelope"]["text"] for i in body["insights"]]
         assert _OPAQUE_HEADLINE not in texts
+        assert not [t for t in texts if "Territory" in t]
+        codes = {r.get("candidate"): r.get("code") for r in body.get("refused", [])}
+        assert codes.get("order_amount by Territory.zone") == "pii_dimension"
+        for label in ("north", "south", "86.4"):
+            assert label not in res.text.casefold()
+        assert not any("territory" in str(s).casefold() or "sales.tv" in str(s).casefold()
+                       for s in w.cortex.submits)
+    finally:
+        onto_data.reset_ontology_data_store()
+
+
+# --------------------------------------------------------------------------
+# 15. verify round 9: a duplicate output name renamed by the engine
+# --------------------------------------------------------------------------
+
+
+# DuckDB renames the second of two equal output names to <name>_1. The walker
+# marked by alias text, so the outer view read the marked values as r_1 or
+# name_1, untainted, and POST /run served them with a ledger receipt.
+_DUP_VIEWS = {
+    "dup_alias": ["CREATE VIEW Sales.TV0 AS SELECT territory_id, 'x' AS r, upper(name) AS r "
+                  "FROM Sales.Territory",
+                  "CREATE VIEW Sales.TV AS SELECT territory_id, r_1 AS zone FROM Sales.TV0"],
+    "dup_bare": ["CREATE VIEW Sales.TV0 AS SELECT territory_id, 'x' AS name, name "
+                 "FROM Sales.Territory",
+                 "CREATE VIEW Sales.TV AS SELECT territory_id, name_1 AS zone FROM Sales.TV0"],
+}
+_DUP_HEADLINES = {
+    "dup_alias": "2 of 4 Territory.zone values (NORTH, SOUTH) carry 86.4 pct of order_amount",
+    "dup_bare": "2 of 4 Territory.zone values (North, South) carry 86.4 pct of order_amount",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_DUP_VIEWS))
+def test_run_never_serves_a_duplicate_output_name_over_a_marked_column(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from dms_core.control_plane import onto_data
+
+    headline = _DUP_HEADLINES[kind]
+    try:
+        # Control: unmarked, the renamed column is an ordinary proven segment.
+        open_body = _opaque_view_world(
+            tmp_path / "a", monkeypatch, pii=False, kind=kind, views=_DUP_VIEWS).run().json()
+        got = _proven_by_text(open_body, headline)
+        assert got["envelope"]["badge"] == "L1_GOVERNED_METRIC"
+        assert_envelope_valid(got["envelope"])
+
+        w = _opaque_view_world(tmp_path / "b", monkeypatch, pii=True, kind=kind,
+                               views=_DUP_VIEWS)
+        res = w.run()
+        assert res.status_code == 200, res.text
+        body = res.json()
+        texts = [i["envelope"]["text"] for i in body["insights"]]
+        assert headline not in texts
         assert not [t for t in texts if "Territory" in t]
         codes = {r.get("candidate"): r.get("code") for r in body.get("refused", [])}
         assert codes.get("order_amount by Territory.zone") == "pii_dimension"
