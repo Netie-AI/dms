@@ -21,7 +21,7 @@ def test_health_route():
     body = r.json()
     assert body["status"] == "ok"
     assert body["product"] == "dms"
-    assert body["contract"] == "1.5.0"
+    assert body["contract"] == "1.9.0"
     assert body["ask_mode"] in ("live", "demo")
     assert body["demo_fallback"] is False or body["demo_fallback"] is True
     assert body["backend"] == "memory"
