@@ -147,6 +147,13 @@ def _refusal_codes(env: dict[str, Any]) -> list[str]:
                 code = text[len("GEN-01:") :].strip()
                 if code:
                     found.append(code)
+                # The armed lane writes ``GEN-01: validate:<code>``. ``validate``
+                # names the stage, not the refusal: read the code under it too,
+                # so ``validate:ungranted`` stays a direct abstain (F114).
+                if code.startswith("validate:"):
+                    inner = code[len("validate:") :].strip()
+                    if inner:
+                        found.append(inner)
     return found
 
 
