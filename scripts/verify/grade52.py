@@ -86,6 +86,7 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -184,6 +185,27 @@ _RULE_STAMPS = {
     "oracle": "oracle",
 }
 _AI_STAMPS = frozenset({"generate_sql", "model_sql", "ai"})
+# Ladder rungs that serve model SQL. Cortex's plan+SQL ladder (cortex-contract
+# 1.5.0 ``plan_sql_rung``, copied verbatim into ``ladder_rung``): ``plan``,
+# ``error-fed-retry-<N>``, ``stronger-model``; its ``reconfirm`` is a refusal.
+# DMS's own ladder after a failed check: ``self_correct``, ``richer_context``,
+# ``stronger_tier``. Attribution only: no bucket changes, so GRADER_VERSION
+# stays.
+_LADDER_AI_RUNGS = frozenset(
+    {"plan", "stronger-model", "self_correct", "richer_context", "stronger_tier"}
+)
+_CORTEX_RETRY_RUNG = re.compile(r"^error-fed-retry-[1-9][0-9]*$")
+
+
+def _ai_stamp(text: str) -> bool:
+    """A model-SQL stamp: DMS's own, or a Cortex ladder rung that served."""
+    return (
+        text in _AI_STAMPS
+        or text in _LADDER_AI_RUNGS
+        or _CORTEX_RETRY_RUNG.match(text) is not None
+    )
+
+
 _RULE_PATHS = frozenset({"L0", "L1", "compile", "ladder", "oracle"})
 # OpenVault per-caller cap. The armed pacer stays under both. It does not raise them.
 _OV_REQ_PER_MIN = 20
@@ -688,7 +710,7 @@ def _field_claim(text: str, *, unknown_if_other: bool) -> str | None:
         return "compile"
     if text in _RULE_STAMPS:
         return _RULE_STAMPS[text]
-    if text in _AI_STAMPS:
+    if _ai_stamp(text):
         return "ai"
     if unknown_if_other:
         return "unknown"
@@ -776,7 +798,7 @@ def _stamped_path(env: Mapping[str, Any]) -> str:
     if model and not ontology:
         claims.append("ai")
     kinds = set(claims)
-    if kinds == {"ai"} and model and (origin in _AI_STAMPS or rung in _AI_STAMPS):
+    if kinds == {"ai"} and model and (_ai_stamp(origin) or _ai_stamp(rung)):
         return "ai"
     if len(kinds) == 1:
         only = next(iter(kinds))
@@ -3281,6 +3303,26 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: ontology_ranking with a model was not rule/compile")
     if serve_path({"ladder_rung": "ontology_compile", "served_model": "some-model"}) != "compile":
         raise SystemExit("self-test: ontology_compile with a model was not compile")
+    for rung in (
+        "plan",
+        "error-fed-retry-1",
+        "error-fed-retry-12",
+        "stronger-model",
+        "self_correct",
+        "richer_context",
+        "stronger_tier",
+    ):
+        cortex = {"badge": "L2_VALIDATED", "ladder_rung": rung, "served_model": "some-model"}
+        if serve_path(cortex) != "ai":
+            raise SystemExit(f"self-test: Cortex rung {rung} with a model was not AI")
+        if serve_path({"ladder_rung": rung, "served_model": ""}) != "unattributed":
+            raise SystemExit(f"self-test: Cortex rung {rung} without a model was attributed")
+        mixed = {"badge": "L1_GOVERNED_METRIC", "ladder_rung": rung, "served_model": "m"}
+        if serve_path(mixed) != "unattributed":
+            raise SystemExit(f"self-test: a rule badge beside rung {rung} was not unattributed")
+    for rung in ("reconfirm", "error-fed-retry-0", "error-fed-retry-x", "planned"):
+        if serve_path({"ladder_rung": rung, "served_model": "some-model"}) != "unattributed":
+            raise SystemExit(f"self-test: rung {rung} was called AI")
     model_answer = {
         "badge": "L2_VALIDATED",
         "plan_origin": "generate_sql",
