@@ -1080,6 +1080,75 @@ def test_an_unreadable_generated_column_catalog_is_all_pii(
     _assert_nothing_leaked(run, stub, "name")
 
 
+# Verify round 7 (MEDIUM): a generated column that reads another generated column
+# (``region AS (lower(g1))`` over ``g1 AS (upper(name))``) was not marked, because
+# the generated-column pass ran once against the pii items only, and north/south
+# reached a proven L1 headline.
+_GENERATED_CHAINS = [
+    # (generated column definitions, relation the object reads, attribute)
+    ("g1 VARCHAR GENERATED ALWAYS AS (upper(name)) VIRTUAL, "
+     "region VARCHAR GENERATED ALWAYS AS (lower(g1)) VIRTUAL", "Sales.Territory", "region"),
+    # Three levels deep.
+    ("g1 VARCHAR AS (upper(name)), g2 VARCHAR AS (lower(g1)), region VARCHAR AS (upper(g2))",
+     "Sales.Territory", "region"),
+    # A subquery rename of the chained column carries its mark.
+    ("g1 VARCHAR AS (upper(name)), region VARCHAR AS (lower(g1))",
+     "(SELECT territory_id, region AS area FROM Sales.Territory)", "area"),
+]
+
+
+@pytest.mark.parametrize(("columns", "relation", "attr"), _GENERATED_CHAINS)
+def test_a_chained_generated_column_over_a_marked_column_never_executes(
+    tmp_path: Path, columns: str, relation: str, attr: str
+) -> None:
+    wh = _seed_sales(tmp_path / "pii_chain.duckdb")
+    _seed_generated(wh, columns)
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items(relation, attr, pii=True))
+    run = _run(wh, stub, set(_B_GRANTS), onto=onto)
+    texts = [p.envelope["text"] for p in run.proven]
+    for values in ("(north, south)", "(NORTH, SOUTH)"):
+        assert (f"2 of 4 Territory.{attr} values {values} carry 86.4 pct of "
+                "order_amount") not in texts
+    _assert_nothing_leaked(run, stub, attr)
+    shown = json.dumps([r["envelope"] for r in run.refused]).casefold()
+    assert "north" not in shown and "south" not in shown
+
+
+def test_a_chained_generated_column_is_in_the_pii_columns(tmp_path: Path) -> None:
+    """In addition to the envelope test above: every link of the chain is marked."""
+    from dms_executor.demo_warehouse import connect_serving
+
+    wh = _seed_sales(tmp_path / "pii_chain_cols.duckdb")
+    _seed_generated(wh, "g1 VARCHAR AS (upper(name)), g2 VARCHAR AS (lower(g1)), "
+                        "region VARCHAR AS (upper(g2)), other VARCHAR AS (upper(zone))")
+    onto = Ontology.from_store(items=_territory_items("Sales.Territory", "region", pii=True))
+    con = connect_serving(wh)
+    try:
+        cols = ip._pii_columns(onto, "Territory", con)
+    finally:
+        con.close()
+    assert {"name", "g1", "g2", "region"} <= set(cols)
+    assert "other" not in cols and "zone" not in cols
+
+
+def test_a_chained_generated_column_over_an_unmarked_column_still_proves(
+    tmp_path: Path,
+) -> None:
+    """Control: on a marked table, a chain that starts at an unmarked column proves."""
+    wh = _seed_sales(tmp_path / "chain_ok.duckdb")
+    _seed_generated(wh, "g1 VARCHAR AS (lower(zone)), region VARCHAR AS (upper(g1))")
+    onto = Ontology.from_store(items=_territory_items("Sales.Territory", "region", pii=True))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS), onto=onto)
+    got = _by_text(
+        run, "2 of 4 Territory.region values (NORTH, SOUTH) carry 86.4 pct of order_amount")
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert [t[:3] for t in _tuples(got.envelope["rows"])] == [
+        ("NORTH", 900.0, 81.8), ("SOUTH", 50.0, 4.5), ("EAST", 30.0, 2.7),
+        ("WEST", 20.0, 1.8), (None, 100.0, 9.1)]
+
+
 def _seed_codes(wh: Path) -> None:
     _exec(wh, "CREATE TABLE Sales.Codes (code VARCHAR)",
           "INSERT INTO Sales.Codes VALUES ('North'),('South'),('East'),('West')")
