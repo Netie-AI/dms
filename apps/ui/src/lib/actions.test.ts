@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ActionRefusal,
+  type RefusalDetail,
   REFUSAL_CODES,
   REFUSAL_TEXT,
   applyAction,
@@ -103,6 +104,21 @@ describe("refusals", () => {
       candidates: [{ sku: "SKU-BETA", location_id: "WH-B" }],
     });
     expect(s).toBe('No inventory item SKU "SKU-BETA" at WH-Z. Did you mean SKU-BETA at WH-B?');
+  });
+
+  it("rule-12 refusal from a source with PII key values shows no PII (route fixture)", () => {
+    // The exact 422 detail tests/control_plane/test_act_02_routes.py gets back after
+    // inserting email/NRIC location_ids: the route withholds them, so the screen does too.
+    const pii = JSON.parse(
+      readFileSync(
+        join(here, "../../../../tests/fixtures/actions/act02_pii_candidates_refusal.json"),
+        "utf8",
+      ),
+    ) as { pii_values: string[]; detail: RefusalDetail & { code: string }; rendered: string };
+    const s = describeRefusal(pii.detail.code, pii.detail);
+    expect(s).toBe(pii.rendered);
+    expect(s).toBe('No inventory item SKU "SKU-BETA" at WH-ZZ. Did you mean SKU-BETA at WH-B?');
+    for (const v of pii.pii_values) expect(s).not.toContain(v);
   });
 
   it("commit_outcome_unknown names the entry and never claims either outcome", () => {
