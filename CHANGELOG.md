@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-02: governed action routes behind DMS_ACTIONS
+
+- **Flag.** `DMS_ACTIONS` defaults 0; only `1` is on. Off, nothing under `/v1/amend/actions` matches: every method and body (malformed JSON included) gets main's 404 bytes, and `/openapi.json` hashes the same as origin/main `58fcaa5` (`scripts/verify/act_flag_off_parity.py`). No route is in the schema with the flag on either. `app.py`, `settings.py`, `chat.py` and MCP `TOOLS` are untouched.
+- **Routes.** types, proposals (list, propose, apply, decline), objects, decisions (list, get, revert). Each calls `compliance_gate` (`action.*`) in its own body; mutations then require the steward grant and refuse the shipped default actor. List GETs require `space_id`.
+- **Proof.** Propose refuses a key that does not match the source encoding (`BETA` -> 422 with candidate `SKU-BETA`) and evidence that is not a validated, executed, row-returning answer that read `inventory` (E9). Apply checks the ledger chain first, then in one transaction re-checks evidence, writes, re-reads, appends `action.apply` to Cortex and stores the pointer. A failed append writes nothing. A failed commit after the append makes a best-effort `action.apply.void` and answers 503 `commit_failed_after_append`. The receipt says `separation_of_duties.proven: false` and `source_system_changed: false`. Revert is a new proposal that still needs an apply.
+- **Held files.** `wiring.py` (+1 function at the end) and `dms_executor/__init__.py` (+1 import line, needed so the import-linter exemption covers the new resolver).
+- **Decision.** DR-0008 gains an ACT-02 addendum and is still Proposed; it needs the founder stamp.
+- **Tests.** At `de09cd0`, Postgres 16 (scratch container), one file per process: `tests/test_act_02_flag_off.py` 10 passed, `tests/control_plane/test_act_02_routes.py` 11 passed, every other `tests/control_plane` file and every `tests/invariants` file passed, `ruff`, `mypy` (5 CI packages) and `lint-imports` clean. `act_02_route_demo.py` printed `ACT-02 PROOF OK @de09cd0d` against an in-process fake ledger (live Cortex not exercised). The full suite was not run. Not PASS.
+
 ## 2026-10-29 - ACT-01: governed action core behind DMS_ACTIONS
 
 - **Flag.** `DMS_ACTIONS` defaults 0; only `1` is on. No route. Nothing on main calls the new code. With the flag off, propose, apply, decline and record refuse with `ActionsDisabled`.
