@@ -853,6 +853,31 @@ def _pin_mismatch(requested: str, served: str) -> bool:
     return bool(requested) and bool(served) and requested != served
 
 
+# SERVED-ATTR-01 (#305): the capture names where ``model_requested`` came from.
+# Only Cortex's own route stamp counts; a capture without this marker carried
+# the DMS pin constant, which never left DMS.
+REQUESTED_FROM_CORTEX_STAMP = "cortex_stamp"
+
+
+def _no_model_request(calls: Any, path: Any) -> bool:
+    """A case that made no Insights call, or served L1, carries no requested model."""
+    if isinstance(calls, bool) or not isinstance(calls, int):
+        return True
+    return calls < 1 or path == "L1"
+
+
+def _block_requested(block: Mapping[str, Any]) -> str | None:
+    """``model_requested`` for one case: Cortex's stamp from the capture, else None.
+
+    An older capture without the source marker is unknown, never the DMS pin.
+    """
+    if block.get("model_requested_source") != REQUESTED_FROM_CORTEX_STAMP:
+        return None
+    if _no_model_request(block.get("insights_calls"), block.get("serve_path")):
+        return None
+    return _stamp_text(block, "model_requested") or None
+
+
 def grade_case(
     *,
     gold: list[dict[str, Any]] | None,
@@ -1293,13 +1318,11 @@ def grade_envelopes(
             row["id"] = qid
             row["pack_gold_served"] = qid in flagged
             block = served_by_id.get(qid) or {}
-            row["model_requested"] = _stamp_text(block, "model_requested") or _stamp_text(
-                env, "model_requested"
-            )
+            row["model_requested"] = _block_requested(block)
             row["served_model"] = _stamp_text(block, "served_model") or _stamp_text(
                 env, "served_model"
             )
-            row["pin_mismatch"] = _pin_mismatch(row["model_requested"], row["served_model"])
+            row["pin_mismatch"] = _pin_mismatch(row["model_requested"] or "", row["served_model"])
             cases.append(row)
     finally:
         con.close()
@@ -2237,16 +2260,34 @@ def _model_reported(payload: Mapping[str, Any]) -> bool:
     )
 
 
-def _served_block(
-    env: Mapping[str, Any],
-    payloads: Sequence[Any],
-    *,
-    model_requested: str = "",
-) -> dict[str, Any]:
-    """Per question: served route, model SQL, rows, answer text, Insights reason."""
+def cortex_requested(payload: Mapping[str, Any]) -> str | None:
+    """The model id Cortex asked OpenVault for on one Insights call, or None.
+
+    Read from Cortex's FreeRoute stamp on ``generative.stamp``: ``model_requested``
+    (strict pin) else ``requested``. DMS strips ``model`` from the Insights
+    body, so the DMS pin constant is never this value.
+    """
+    gen = payload.get("generative")
+    stamp = gen.get("stamp") if isinstance(gen, Mapping) else None
+    if not isinstance(stamp, Mapping):
+        return None
+    for key in ("model_requested", "requested"):
+        raw = stamp.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, Any]:
+    """Per question: served route, model SQL, rows, answer text, Insights reason.
+
+    ``model_requested`` is Cortex's stamp for the call whose SQL was kept, else
+    the last stamped call. None with no call, no stamp, or an L1 serve.
+    """
     from cortex_client.compute import insights_fail_reason, insights_query_sql
 
     model_sql: str | None = None
+    requested: str | None = None
     fail: str | None = None
     calls = 0
     reported = False
@@ -2255,20 +2296,28 @@ def _served_block(
             continue
         calls += 1
         reported = reported or _model_reported(payload)
+        asked = cortex_requested(payload)
         sql = str(payload.get("query_sql") or "").strip() or insights_query_sql(payload)
         if sql:
             model_sql = sql
+            requested = asked
+        elif model_sql is None:
+            requested = asked or requested
         fail = fail or insights_fail_reason(payload)
     rows = env.get("rows")
+    path = serve_path(env, model_sql)
+    if _no_model_request(calls, path):
+        requested = None
     return {
         "route": served_route(env, model_sql),
-        "serve_path": serve_path(env, model_sql),
+        "serve_path": path,
         "model_sql": model_sql,
         "sql_used": env.get("sql_used"),
         "row_count": len(rows) if isinstance(rows, list) else None,
         "text": env.get("text"),
         "served_model": env.get("served_model"),
-        "model_requested": model_requested,
+        "model_requested": requested,
+        "model_requested_source": REQUESTED_FROM_CORTEX_STAMP if requested else None,
         "insights_calls": calls,
         "model_reported": reported,
         "insights_fail": fail,
@@ -2424,9 +2473,6 @@ def _armed_ask(
     app.dependency_overrides[get_settings] = lambda: settings
     client = TestClient(app)
     records: list[dict[str, Any]] = []
-    from cortex_client.strict_pin import pin_config
-
-    requested_model = pin_config().model
     pacer = _ArmedPacer()
     original_request = _install_pacer(pacer)
     try:
@@ -2452,9 +2498,7 @@ def _armed_ask(
             record = {
                 "id": qid,
                 "env": env,
-                "served": _served_block(
-                    env, cortex.payloads, model_requested=requested_model
-                ),
+                "served": _served_block(env, cortex.payloads),
             }
             why = armed_violation(record, stub)
             if why:
