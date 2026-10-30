@@ -387,6 +387,34 @@ def test_proof_check_rejects_an_inconsistent_proof(
         ip.assert_proof_shape(proof, rows=got.rows[:-1])
 
 
+def test_proof_check_binds_relation_item_and_watermarks(
+    run_b: tuple[ip.InsightRun, _Stub],
+) -> None:
+    """Verify round 3: with ``onto`` the raw relation, item ids and watermarks are bound."""
+    onto = Ontology.from_store(items=_items())
+    got = _by_text(run_b[0], _B_CONCENTRATION)
+    proof = got.proof
+    ip.assert_proof_shape(proof, onto=onto, sql=got.sql, rows=got.rows)
+    expr = onto.measures["order_amount"].expression
+    other = f"SELECT {expr} AS raw_total FROM (SELECT 1 AS amount) f"
+    forged_raw = {**proof, "raw_total_sql": other,
+                  "raw_total_sql_hash": item_content_hash(other)}
+    with pytest.raises(ip.ProofShapeError, match="own fact relation"):
+        ip.assert_proof_shape(forged_raw, onto=onto, sql=got.sql, rows=got.rows)
+    for item_id, version_id in (("item_obj_territory", _B_VERSION),
+                                (_B_MEASURE_ITEM, "forged_v9")):
+        forged = {**proof, "definition": {**proof["definition"], "item_id": item_id,
+                                          "version_id": version_id}}
+        with pytest.raises(ip.ProofShapeError, match="registry"):
+            ip.assert_proof_shape(forged, onto=onto, sql=got.sql, rows=got.rows)
+    future = {**proof, "watermarks": {t: "2099-01-01T00:00:00Z" for t in proof["watermarks"]}}
+    with pytest.raises(ip.ProofShapeError, match="later than"):
+        ip.assert_proof_shape(future, onto=onto, sql=got.sql, rows=got.rows)
+    with pytest.raises(ip.ProofShapeError, match="exactly the tables"):
+        ip.assert_proof_shape({**proof, "watermarks": {"orders": None}},
+                              onto=onto, sql=got.sql, rows=got.rows)
+
+
 def test_unknown_watermarks_are_said_in_the_assumptions(
     run_a: tuple[ip.InsightRun, _Stub], sales_wh: Path
 ) -> None:
@@ -732,6 +760,138 @@ def test_pii_on_an_unresolvable_relation_is_all_pii() -> None:
     onto.objects["Territory"] = ip.replace(onto.objects["Territory"], relation="")
     assert "anything" in ip._pii_columns(onto, "Territory")
     assert "name" in ip._pii_columns(onto, "Territory")
+
+
+# --------------------------------------------------------------------------
+# verify round 3: name-free column references and comma joins
+# --------------------------------------------------------------------------
+
+
+def _seed_dummy(wh: Path) -> None:
+    con = connect_file(wh, write=True)
+    try:
+        con.execute("CREATE TABLE IF NOT EXISTS Sales.Dummy (x INTEGER)")
+        con.execute("DELETE FROM Sales.Dummy")
+        con.execute("INSERT INTO Sales.Dummy VALUES (1)")
+    finally:
+        con.close()
+
+
+def _territory_items(relation: str, attr: str, *, pii: bool) -> list[dict[str, Any]]:
+    items = _items(pii_on_name=pii)
+    for it in items:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = relation
+            it["payload"]["attributes"] = ["territory_id", attr]
+    return items
+
+
+_ROUND3_LEAKS = [
+    # Each reaches the marked column with no exp.Column named 'name' (the verifier's 8a0b32c).
+    ("(SELECT territory_id, #2 AS region FROM Sales.Territory)", "region", False),
+    ("(SELECT territory_id, COLUMNS('name') AS region FROM Sales.Territory)", "region", False),
+    ("(SELECT t.territory_id, t['name'] AS region FROM Sales.Territory t)", "region", False),
+    ("(SELECT t.territory_id, struct_extract(t, 'name') AS region FROM Sales.Territory t)",
+     "region", False),
+    # A whole-row reference and a struct field of the marked column.
+    ("(SELECT t.territory_id, CAST(t AS VARCHAR) AS region FROM Sales.Territory t)",
+     "region", False),
+    # A comma join hides Sales.Territory from relation_tables' FROM/JOIN regex.
+    ("(SELECT t.territory_id, t.name FROM Sales.Dummy d, Sales.Territory t)", "name", True),
+]
+
+
+@pytest.mark.parametrize(("relation", "attr", "dummy"), _ROUND3_LEAKS)
+def test_pii_read_without_its_name_never_executes(
+    tmp_path: Path, relation: str, attr: str, dummy: bool
+) -> None:
+    wh = _seed_sales(tmp_path / "pii_r3.duckdb")
+    granted = set(_B_GRANTS)
+    if dummy:
+        _seed_dummy(wh)
+        granted.add("Sales.Dummy")
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items(relation, attr, pii=True))
+    run = _run(wh, stub, granted, onto=onto)
+    texts = [p.envelope["text"] for p in run.proven]
+    assert texts == []
+    for leaked in ("2 of 4 Territory." + attr, "lands on rows with no Territory." + attr):
+        assert not any(leaked in t for t in texts)
+    assert _codes(run)[f"order_amount by Territory.{attr}"] == "pii_dimension"
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    shown = json.dumps([r["envelope"] for r in run.refused])
+    for name in ("North", "South", "East", "West", "86.4", "9.1"):
+        assert name not in shown
+    assert not any("WITH g AS" in c for c in stub.calls)
+    assert not any("territory" in c.casefold() for c in stub.calls)
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        "(SELECT territory_id, #2 AS region FROM Sales.Territory)",
+        "(SELECT territory_id, COLUMNS('name') AS region FROM Sales.Territory)",
+        "(SELECT t.territory_id, t['name'] AS region FROM Sales.Territory t)",
+        "(SELECT t.territory_id, struct_extract(t, 'name') AS region FROM Sales.Territory t)",
+        "(SELECT t.territory_id, t AS region FROM Sales.Territory t)",
+        "(SELECT territory_id, Territory AS region FROM Sales.Territory)",
+        "(SELECT territory_id, row_to_json(t) AS region FROM Sales.Territory t)",
+        "(SELECT territory_id, FIRST(name) OVER () AS region FROM Sales.Territory)",
+        "(SELECT territory_id, (SELECT MAX(name) FROM Sales.Territory) AS region "
+        "FROM Sales.Orders)",
+    ],
+)
+def test_pii_taint_is_an_allowlist(relation: str) -> None:
+    assert ip._subquery_taint(relation, {"name"}) is None
+
+
+def test_pii_taint_follows_struct_fields_of_a_marked_column() -> None:
+    got = ip._subquery_taint(
+        "(SELECT t.territory_id, t.name.first AS region FROM Sales.Territory t)", {"name"})
+    assert got is not None and "region" in got
+
+
+@pytest.mark.parametrize(
+    ("relation", "want"),
+    [
+        ("(SELECT t.territory_id, t.name FROM Sales.Dummy d, Sales.Territory t)",
+         {"dummy", "territory"}),
+        ("Sales . Territory", {"sales", "territory"}),
+        ("Sales.Territory", {"territory"}),
+    ],
+)
+def test_read_tables_sees_comma_joins_and_spaced_dots(relation: str, want: set[str]) -> None:
+    assert ip._read_tables(relation) == want
+
+
+def test_comma_join_to_an_ungranted_table_never_submits(tmp_path: Path) -> None:
+    """Sales.Territory is not granted; the object reads it through a comma join."""
+    wh = _seed_sales(tmp_path / "comma_ungranted.duckdb")
+    _seed_dummy(wh)
+    stub = _Stub(wh)
+    relation = "(SELECT t.territory_id, t.name FROM Sales.Dummy d, Sales.Territory t)"
+    onto = Ontology.from_store(items=_territory_items(relation, "name", pii=False))
+    run = _run(wh, stub, {"Sales.Orders", "Sales.Dummy"}, onto=onto)
+    assert [p.envelope["text"] for p in run.proven] == []
+    assert "ungranted" in set(_codes(run).values())
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    assert not any("territory" in c.casefold() for c in stub.calls)
+
+
+def test_comma_join_without_pii_still_proves(tmp_path: Path) -> None:
+    """Control: a granted comma join with no pii item proves as before."""
+    wh = _seed_sales(tmp_path / "comma_ok.duckdb")
+    _seed_dummy(wh)
+    relation = "(SELECT t.territory_id, t.name FROM Sales.Dummy d, Sales.Territory t)"
+    onto = Ontology.from_store(items=_territory_items(relation, "name", pii=False))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS) | {"Sales.Dummy"}, onto=onto)
+    got = _by_text(run, _B_CONCENTRATION)
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert _tuples(got.envelope["rows"])[0][:3] == ("North", 900.0, 81.8)
+    assert set(got.proof["watermarks"]) == {"orders", "territory", "dummy"}
 
 
 class _Reorder(_Stub):

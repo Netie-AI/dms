@@ -407,6 +407,25 @@ def assert_proof_shape(
         raise _bad("raw_total_sql is not the definition's no-join total")
     if item_content_hash(raw_sql) != proof["raw_total_sql_hash"]:
         raise _bad("raw_total_sql_hash does not hash raw_total_sql")
+    if onto is not None and m is not None:
+        # The relation segment and the item metadata are the ontology's too, not
+        # only the prefix: a total over another relation conserves nothing.
+        fact = onto.objects.get(m.grain)
+        if fact is None or raw_sql != f"{prefix}{fact.relation} f":
+            raise _bad("raw_total_sql does not total the measure's own fact relation")
+        want = _definition(onto, m, d["source"])
+        if (d["item_id"], d["version_id"]) != (want["item_id"], want["version_id"]):
+            raise _bad("definition item_id/version_id is not the registry's")
+    latest = _parse_z(proof["reexecuted_at"])
+    for stamp in marks.values():
+        if stamp is not None and _parse_z(stamp) > latest:
+            raise _bad("a watermark is later than the proof's own re-execution")
+    if sql is not None:
+        # Every base table the SQL reads carries a watermark (null when unknown),
+        # and none is named that the SQL does not read.
+        scoped, read = _scoped_tables(sql), _read_tables(sql)
+        if scoped is None or read is None or not scoped <= set(marks) <= read:
+            raise _bad("watermarks do not name exactly the tables the SQL reads")
 
     execs = proof["executions"]
     if not isinstance(execs, list) or len(execs) != 2:
@@ -615,17 +634,52 @@ class _AllColumns(frozenset):
 _ALL_PII = _AllColumns()
 
 
+# Projection nodes the taint walker models. Each passes its inputs' values
+# through by column reference only: none reads a column named by a string, a
+# position, or a whole row. Anything else in a projection of a relation that
+# reads a marked table makes the object all-PII (verify round 3: ``#2``,
+# ``COLUMNS('name')``, ``t['name']`` and ``struct_extract(t, 'name')`` each served
+# a marked column under a new name).
+def _projection_allowlist() -> tuple[type, ...]:
+    from sqlglot import exp
+
+    return (
+        exp.Column, exp.Identifier, exp.Literal, exp.Null, exp.Boolean, exp.Paren,
+        exp.Cast, exp.TryCast, exp.DataType, exp.DataTypeParam,
+        exp.Case, exp.If, exp.Coalesce, exp.Nullif,
+        exp.Upper, exp.Lower, exp.Trim, exp.Substring, exp.Length, exp.Concat, exp.DPipe,
+        exp.Add, exp.Sub, exp.Mul, exp.Div, exp.Mod, exp.Neg, exp.Abs, exp.Round,
+        exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE, exp.And, exp.Or, exp.Not,
+        exp.Is, exp.In, exp.Between,
+        exp.Sum, exp.Count, exp.Min, exp.Max, exp.Avg, exp.Distinct,
+    )
+
+
+def _column_parts(col: Any) -> set[str]:
+    """Every name part of a column reference: ``t.name.x`` is field x of column name."""
+    return {
+        str(part).casefold()
+        for part in (col.name, col.table, col.db, col.catalog)
+        if isinstance(part, str) and part
+    }
+
+
 def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
     """Output names of a subquery relation that carry a ``marked`` column.
 
-    Over-approximates: an alias is tainted when its expression mentions a tainted
-    name anywhere in the statement, to a fixpoint, so ``name AS tname`` and a
-    nested re-alias both carry the mark. None (all-PII) when the relation does
-    not parse, or when it renames by position or by expansion, which the walker
-    does not model: a table or CTE alias column list (``t(id, region)``), a star,
-    a set operation, PIVOT/UNPIVOT, VALUES, UNNEST or LATERAL, or an unaliased
-    computed projection that reads a tainted name. Mirrors def_validate, where a
-    star over a pii table fails closed.
+    An allowlist, not a denylist. Every projection of every SELECT in the
+    statement must be a column, or an alias over an expression built only from
+    ``_projection_allowlist`` nodes, and no column may name a table, a table
+    alias or a CTE (a whole-row reference carries every column). Anything else
+    returns None (all-PII): a positional reference, ``COLUMNS()``, a bracket or
+    struct access, an unlisted function, a window, a scalar subquery, a star, a
+    set operation, PIVOT/UNPIVOT, VALUES, UNNEST, LATERAL, a table or CTE alias
+    column list, an unaliased computed projection, or text that does not parse.
+
+    Over-approximates within the allowlist: an output name is tainted when any
+    name part of any column it reads is tainted, to a fixpoint, so
+    ``name AS tname``, ``UPPER(name) AS label`` and a nested re-alias all carry
+    the mark. Mirrors def_validate, where a star over a pii table fails closed.
     """
     import sqlglot
     from sqlglot import exp
@@ -644,40 +698,90 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
         return None
     if any(ta.columns for ta in tree.find_all(exp.TableAlias)):
         return None
+    sources: set[str] = set()
+    for table in tree.find_all(exp.Table):
+        sources |= {str(x).casefold() for x in (table.name, table.alias) if x}
+    for node in tree.find_all(exp.Subquery, exp.CTE):
+        if node.alias:
+            sources.add(str(node.alias).casefold())
+    allowed = _projection_allowlist()
+    projections: list[tuple[str, set[str]]] = []
+    for select in tree.find_all(exp.Select):
+        for proj in select.expressions:
+            if isinstance(proj, exp.Alias):
+                out, body = str(proj.alias or "").casefold(), proj.this
+            elif isinstance(proj, exp.Column):
+                out, body = str(proj.name or "").casefold(), proj
+            else:
+                return None  # an unaliased computed projection: the engine names it
+            if not out:
+                return None
+            for node in body.walk():
+                if not isinstance(node, allowed):
+                    return None
+                if isinstance(node, exp.Column) and str(node.name).casefold() in sources:
+                    return None  # a whole-row reference carries every column
+            cols: set[str] = set()
+            for col in body.find_all(exp.Column):
+                cols |= _column_parts(col)
+            projections.append((out, cols))
     tainted = set(marked)
-    aliases = list(tree.find_all(exp.Alias))
     changed = True
     while changed:
         changed = False
-        for node in aliases:
-            out = str(node.alias or "").casefold()
-            if not out or out in tainted:
-                continue
-            used = {str(c.name).casefold() for c in node.this.find_all(exp.Column)}
-            if isinstance(node.this, exp.Column):
-                used.add(str(node.this.name).casefold())
-            if used & tainted:
+        for out, cols in projections:
+            if out not in tainted and cols & tainted:
                 tainted.add(out)
                 changed = True
-    for select in tree.find_all(exp.Select):
-        for proj in select.expressions:
-            if isinstance(proj, (exp.Alias, exp.Column)):
-                continue
-            if {str(c.name).casefold() for c in proj.find_all(exp.Column)} & tainted:
-                return None
     return tainted
+
+
+def _read_tables(sql: str) -> frozenset[str] | None:
+    """Bare casefolded tables ``sql`` reads: the regex set and sqlglot's, united.
+
+    ``relation_tables`` sees only names after FROM or JOIN, so a comma join
+    (``FROM a, b``) or a spaced dot (``Sales . Territory``) hides a table from
+    it. sqlglot's scope walk (``tables_read_checked``) sees those. The union is
+    the superset both callers need: every table must be granted, and a pii item
+    on any of them applies. None when sqlglot cannot parse or scope the text,
+    which callers treat as ungranted and all-PII.
+    """
+    parsed = _scoped_tables(sql)
+    if parsed is None:
+        return None
+    out = set(relation_tables(sql)) | parsed
+    out.discard("")
+    return frozenset(out)
+
+
+def _scoped_tables(sql: str) -> frozenset[str] | None:
+    """Bare casefolded base tables sqlglot's scope walk finds; CTE names excluded."""
+    from dms_executor.sql_currency import tables_read_checked
+
+    text = (sql or "").strip()
+    if not text:
+        return None
+    if not re.match(r"(?is)^\s*(select|with|from)\b", text):
+        text = f"SELECT * FROM {text}"
+    try:
+        parsed, approximate = tables_read_checked(text)
+    except Exception:  # noqa: BLE001 - an unreadable relation fails closed
+        return None
+    if approximate:
+        return None
+    return frozenset(t.rsplit(".", 1)[-1].strip('"').casefold() for t in parsed)
 
 
 def _pii_columns(onto: Ontology, obj: str) -> Collection[str]:
     """Casefolded columns of ``obj`` a steward marked as personal data.
 
     A pii item applies when the table it names is one the object's relation
-    reads (``relation_tables``, subqueries included), or when it names no
-    table. An object whose tables cannot be resolved, or whose subquery does
+    reads (``_read_tables``: subqueries and comma joins included), or when it
+    names no table. An object whose tables cannot be resolved, or whose subquery does
     not parse, is all-PII: nothing of it is grouped by.
     """
     relation = str(onto.objects[obj].relation or "")
-    tables = relation_tables(relation)
+    tables = _read_tables(relation)
     marked: set[str] = set()
     for payload in onto.__dict__.get("_pii", []) or []:
         if not isinstance(payload, dict):
@@ -753,8 +857,8 @@ def _identity_columns(onto: Ontology, obj: str) -> set[str]:
 
 
 def _granted_relation(relation: str, granted: set[str]) -> bool:
-    tables = relation_tables(relation)
-    return bool(tables) and all(table_is_granted(t, granted) for t in tables)
+    tables = _read_tables(relation)
+    return bool(tables) and all(table_is_granted(t, granted) for t in tables or ())
 
 
 @dataclass
@@ -1043,8 +1147,11 @@ def _prove_measure(ctx: _Ctx, m: Measure, dims_of: Callable[[str], _Dims]) -> bo
                 ctx.skipped.append({"candidate": candidate, "reason": got.reason})
             continue
         assert isinstance(got, CompiledQuery)
-        tables = sorted(relation_tables(got.sql))
-        if not readable or not all(table_is_granted(t, ctx.granted) for t in tables):
+        read = _read_tables(got.sql)
+        tables = sorted(read or ())
+        if not readable or not read or not all(
+            table_is_granted(t, ctx.granted) for t in tables
+        ):
             _refuse(ctx, candidate, "ungranted")
             continue
         outcome = _prove_candidate(ctx, m, obj, attr, label, got, tables, candidate)
