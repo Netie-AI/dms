@@ -16,6 +16,10 @@ from ao_vendor import VENDOR_SHA
 from ao_vendor.catalog.extract import extract_duckdb
 from ao_vendor.catalog.parsers.sqlglot_extractor import extract_tables_and_columns
 from ao_vendor.llm.ov_client import (
+    REFUSE_NO_CALLS,
+    REFUSE_OUTPUT_INVALID,
+    AoCompileRefused,
+    AoLlmError,
     OpenVaultOntologyClient,
     bind_client,
     reset_client,
@@ -27,7 +31,12 @@ from ao_vendor.utils.sql_identifiers import quoted_identifier
 
 
 def compile_catalog(conn: Any, *, transport: Any = None) -> dict[str, Any]:
-    """Extract ``conn`` and propose terms, attributes, and inferred FKs."""
+    """Extract ``conn`` and propose terms, attributes, and inferred FKs.
+
+    Raises :class:`AoCompileRefused` when any model call failed, or when no
+    call succeeded for a catalog that has tables. A proposal whose AI pass did
+    not run is not returned, so nothing downstream can store it.
+    """
     client = OpenVaultOntologyClient(transport=transport)
     token = bind_client(client)
     try:
@@ -69,9 +78,11 @@ def compile_catalog(conn: Any, *, transport: Any = None) -> dict[str, Any]:
             for fk in catalog["fks"]
             if fk.get("source_column") and fk.get("target_table")
         ]
+        _require_clean_ai_pass(client, table_count=len(by_table))
         return {
             "status": "proposed",
             "vendor_sha": VENDOR_SHA,
+            "model_calls": client.calls_ok,
             "served": False,
             "database_name": catalog["database_name"],
             "terms": terms,
@@ -90,8 +101,19 @@ def compile_catalog(conn: Any, *, transport: Any = None) -> dict[str, Any]:
             "bridge_attributes": bridges,
             "unkeyed": unkeyed,
         }
+    except AoLlmError as exc:
+        raise AoCompileRefused(exc.code) from None
     finally:
         reset_client(token)
+
+
+def _require_clean_ai_pass(client: OpenVaultOntologyClient, *, table_count: int) -> None:
+    """A fatal failure wins the name. Else bad output. Else no call at all."""
+    if client.failures:
+        fatal = [code for code in client.failures if code != REFUSE_OUTPUT_INVALID]
+        raise AoCompileRefused(fatal[0] if fatal else REFUSE_OUTPUT_INVALID)
+    if table_count and client.calls_ok == 0:
+        raise AoCompileRefused(REFUSE_NO_CALLS)
 
 
 def _term_key(
