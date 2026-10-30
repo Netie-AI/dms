@@ -1043,7 +1043,7 @@ def user_function_count(con: Any) -> int | None:
     return row[0]
 
 
-def function_gate(warehouse: Path) -> str | None:
+def user_function_refusal(warehouse: Path) -> str | None:
     """None when the serving warehouse defines no function of its own, else the refusal code.
 
     ``user_macro_present`` when any non-internal function or macro exists (verify
@@ -1467,7 +1467,7 @@ def prove_insights(
         return InsightRun(status="ok")
     from dms_executor.generative_ask import cached_verify_violations, load_verified_ontology
 
-    gate = function_gate(Path(warehouse))
+    gate = user_function_refusal(Path(warehouse))
     if gate is not None:
         # Before verify and before any submit: a user macro can shadow a builtin
         # the PII walker trusts, or one verify() itself runs (``sum``, ``count``).
@@ -1512,7 +1512,7 @@ def prove_insights(
     finally:
         con.close()
 
-    gate = function_gate(ctx.warehouse)
+    gate = user_function_refusal(ctx.warehouse)
     if gate is not None:
         # A function that appeared while the run was in flight: the rows already
         # returned may have resolved through it, so none of them is served.
