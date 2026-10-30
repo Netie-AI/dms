@@ -1149,6 +1149,163 @@ def test_a_chained_generated_column_over_an_unmarked_column_still_proves(
         ("WEST", 20.0, 1.8), (None, 100.0, 9.1)]
 
 
+# Verify round 8 (MEDIUM): a view whose body reads a table macro or a table
+# function (query_table, a subquery over a macro) was opaque to the taint walker.
+# The name it reads is neither a marked table nor a view, so nothing was marked,
+# and upper(name) of the marked column reached a proven L1 headline. Any name a
+# relation or view body reads that is not a table or view in the catalog, and
+# any table function anywhere in it, now makes the object all-PII.
+_TABLE_FUNCTION_VIEWS = [
+    # (statements, view body)
+    (["CREATE MACRO tm() AS TABLE SELECT territory_id, upper(name) AS area "
+      "FROM Sales.Territory"], "SELECT territory_id, area FROM tm()"),
+    ([], "SELECT territory_id, upper(name) AS area FROM query_table('Sales.Territory')"),
+    (["CREATE MACRO tm2() AS TABLE SELECT * FROM Sales.Territory"],
+     "SELECT territory_id, upper(name) AS area FROM (SELECT * FROM tm2())"),
+    # A view over a view over the macro: the inner body is walked too.
+    (["CREATE MACRO tm() AS TABLE SELECT territory_id, upper(name) AS area "
+      "FROM Sales.Territory",
+      "CREATE VIEW Sales.TU AS SELECT territory_id, area FROM tm()"],
+     "SELECT territory_id, area FROM Sales.TU"),
+]
+
+
+def _assert_no_marked_values(run: ip.InsightRun, stub: _Stub, attr: str) -> None:
+    """No headline, no row, no refusal text and no submit carries the marked values."""
+    texts = [p.envelope["text"] for p in run.proven]
+    for values in ("(NORTH, SOUTH)", "(North, South)"):
+        assert (f"2 of 4 Territory.{attr} values {values} carry 86.4 pct of "
+                "order_amount") not in texts
+    assert texts == []
+    assert run.proven == ()
+    assert _codes(run)[f"order_amount by Territory.{attr}"] == "pii_dimension"
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    shown = json.dumps([r["envelope"] for r in run.refused]).casefold()
+    for token in ("north", "south", "east", "west", "86.4", "9.1"):
+        assert token not in shown
+    assert not any("WITH g AS" in c for c in stub.calls)
+    assert not any("territory" in c.casefold() for c in stub.calls)
+    assert not any(re.search(r"\btv\b|\btu\b", c, re.IGNORECASE) for c in stub.calls)
+
+
+@pytest.mark.parametrize(("statements", "body"), _TABLE_FUNCTION_VIEWS)
+def test_a_view_over_a_table_function_never_executes(
+    tmp_path: Path, statements: list[str], body: str
+) -> None:
+    wh = _seed_sales(tmp_path / "pii_tfn.duckdb")
+    _exec(wh, *statements, f"CREATE VIEW Sales.TV AS {body}")
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items("Sales.TV", "area", pii=True))
+    run = _run(wh, stub, set(_B_GRANTS) | {"Sales.TV", "Sales.TU"}, onto=onto)
+    _assert_no_marked_values(run, stub, "area")
+
+
+@pytest.mark.parametrize("relation", [
+    "(SELECT territory_id, area FROM tm())",
+    "(SELECT t.territory_id, m.area FROM Sales.Territory t JOIN tm() m "
+    "ON m.territory_id = t.territory_id)",
+])
+def test_a_relation_over_a_table_function_never_executes(tmp_path: Path, relation: str) -> None:
+    """A table function in the object's own relation, granted or not, is all-PII."""
+    wh = _seed_sales(tmp_path / "pii_tfn_rel.duckdb")
+    _exec(wh, "CREATE MACRO tm() AS TABLE SELECT territory_id, upper(name) AS area "
+              "FROM Sales.Territory")
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items(relation, "area", pii=True))
+    run = _run(wh, stub, set(_B_GRANTS) | {"tm", "tm()"}, onto=onto)
+    texts = [p.envelope["text"] for p in run.proven]
+    assert not [t for t in texts if "north" in t.casefold() or "south" in t.casefold()]
+    assert run.refused
+    assert not any("WITH g AS" in c for c in stub.calls)
+    assert not any("tm()" in c.casefold() for c in stub.calls)
+
+
+def test_a_view_over_a_macro_on_an_ungranted_marked_table_never_executes(
+    tmp_path: Path,
+) -> None:
+    """Only the view is granted; the macro reads a marked table in another schema."""
+    wh = _seed_sales(tmp_path / "pii_tfn_secret.duckdb")
+    _exec(wh, "CREATE SCHEMA IF NOT EXISTS Secret",
+          "CREATE TABLE Secret.People (territory_id INTEGER, name VARCHAR)",
+          "INSERT INTO Secret.People VALUES (1,'Alice'),(2,'Bob'),(3,'Carol'),(4,'Dave')",
+          "CREATE MACRO pm() AS TABLE SELECT territory_id, name AS area FROM Secret.People",
+          "CREATE VIEW Sales.TV AS SELECT territory_id, area FROM pm()")
+    items = _territory_items("Sales.TV", "area", pii=False)
+    items.append({"id": "item_pii_people", "version_id": _B_VERSION, "kind": "pii",
+                  "status": "approved",
+                  "payload": {"name": "people_name", "relation": "Secret.People",
+                              "column": "name"}})
+    stub = _Stub(wh)
+    run = _run(wh, stub, {"Sales.Orders", "Sales.TV"}, onto=Ontology.from_store(items=items))
+    assert "2 of 4 Territory.area values (Alice, Bob) carry 86.4 pct of order_amount" not in [
+        p.envelope["text"] for p in run.proven]
+    assert run.proven == ()
+    assert _codes(run)["order_amount by Territory.area"] == "pii_dimension"
+    shown = json.dumps([r["envelope"] for r in run.refused]).casefold()
+    for token in ("alice", "bob", "carol", "dave", "86.4"):
+        assert token not in shown
+    assert not any("WITH g AS" in c for c in stub.calls)
+    assert not any("people" in c.casefold() or "pm()" in c.casefold() for c in stub.calls)
+    assert not any(re.search(r"\btv\b", c, re.IGNORECASE) for c in stub.calls)
+
+
+@pytest.mark.parametrize("relation", [
+    "Sales.TV",
+    "Sales.TW",
+    "(SELECT territory_id, area FROM Sales.TV)",
+])
+def test_a_catalogued_relation_on_a_marked_table_still_proves(
+    tmp_path: Path, relation: str
+) -> None:
+    """Control: views over catalogued tables, reading an unmarked column, prove."""
+    wh = _seed_sales(tmp_path / "tfn_ok.duckdb")
+    _seed_generated(wh, "spare INTEGER")
+    _exec(wh, "CREATE VIEW Sales.TV AS SELECT territory_id, upper(zone) AS area "
+              "FROM Sales.Territory",
+          "CREATE VIEW Sales.TW AS SELECT territory_id, area FROM Sales.TV")
+    onto = Ontology.from_store(items=_territory_items(relation, "area", pii=True))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS) | {"Sales.TV", "Sales.TW"}, onto=onto)
+    got = _by_text(
+        run, "2 of 4 Territory.area values (NORTH, SOUTH) carry 86.4 pct of order_amount")
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert [t[:3] for t in _tuples(got.envelope["rows"])] == [
+        ("NORTH", 900.0, 81.8), ("SOUTH", 50.0, 4.5), ("EAST", 30.0, 2.7),
+        ("WEST", 20.0, 1.8), (None, 100.0, 9.1)]
+
+
+def test_an_unreadable_table_catalog_is_all_pii(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed: a catalog that cannot list tables makes the object all-PII."""
+    wh = _seed_sales(tmp_path / "tbl_cat.duckdb")
+    monkeypatch.setattr(ip, "_known_relations", lambda con, views: None)
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_items(pii_on_name=True))
+    run = _run(wh, stub, set(_B_GRANTS), onto=onto)
+    _assert_nothing_leaked(run, stub, "name")
+
+
+@pytest.mark.parametrize(("relation", "known", "opaque"), [
+    ("Sales.Territory", {"territory"}, False),
+    ("Sales.Missing", {"territory"}, True),
+    ("tm()", {"territory"}, True),
+    ("(SELECT * FROM query_table('Sales.Territory'))", {"territory"}, True),
+    ("(SELECT * FROM range(3) AS r(x))", {"territory"}, True),
+    ("(SELECT * FROM read_csv('x.csv'))", {"territory"}, True),
+    ("(WITH c AS (SELECT * FROM Sales.Territory) SELECT * FROM c)", {"territory"}, False),
+    ("Sales.Territory", None, False),
+    ("(SELECT * FROM tm())", None, True),
+])
+def test_reads_unmodelled(relation: str, known: set[str] | None, opaque: bool) -> None:
+    """In addition to the envelope tests above: the opaque-name rule itself."""
+    tables = ip._read_tables(relation)
+    assert tables is not None
+    got = ip._reads_unmodelled(relation, tables, None if known is None else frozenset(known))
+    assert got is opaque
+
+
 def _seed_codes(wh: Path) -> None:
     _exec(wh, "CREATE TABLE Sales.Codes (code VARCHAR)",
           "INSERT INTO Sales.Codes VALUES ('North'),('South'),('East'),('West')")
