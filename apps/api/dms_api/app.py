@@ -24,6 +24,7 @@ from dms_api.routes import (
     chat,
     freeroute,
     health,
+    insight_proof,
     insights,
     library,
     mcp,
@@ -181,6 +182,8 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     if settings.dms_mcp:
         app.include_router(mcp.router)
+    if insight_proof.enabled():
+        app.include_router(insight_proof.router)
     return app
 
 

@@ -46,8 +46,17 @@ A catalog that cannot be listed refuses the same way
 (``function_catalog_unreadable``).
 
 Scope, stated in ``PROOF_SCOPE``: the result hash covers rows before PII
-masking, and contract 1.2.0 has no ledger read-back, so ``proof['ledger']`` is
-always null.
+masking, and contract 1.2.0 has no ledger read-back. ``prove_insights`` leaves
+``proof['ledger']`` null; INS-PROOF-02's ``prove_for_space`` appends one Cortex
+ledger pointer per proven insight and records the receipt there (the entry id
+and seq the append returned, never a read-back).
+
+INS-PROOF-02 adds ``prove_for_space``: the same run over an Executor's Space
+grants and its Cortex submit path (``_submit_verified_sql``), then one
+``insight.proven`` ledger append per proven insight with pointers only (hashes,
+ids, the definition source). An insight whose append fails or returns an
+invalid receipt is demoted through ``abstain.build_abstain``: none is served
+without a ledger entry.
 """
 
 from __future__ import annotations
@@ -56,6 +65,7 @@ import hashlib
 import math
 import os
 import re
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -63,6 +73,7 @@ from pathlib import Path
 from typing import Any, TypeGuard
 
 import httpx
+from dms_core.ask import ExecutedTrace
 
 from dms_executor import abstain, bronze, executed_trace
 from dms_executor.ontology import (
@@ -96,6 +107,8 @@ KINDS = ("concentration", "dominance", "unknown_bucket")
 SOURCES = ("approved_store", "demo_ontology")
 CONSERVATION_ASSUMPTION = "grouped total equals the raw no-join total within tolerance"
 DEMO_ASSUMPTION = "definition from the built-in demo ontology, not a steward-approved item"
+LEDGER_EVENT = "insight.proven"
+_LEDGER_KEYS = frozenset({"event_type", "entry_id", "seq"})
 
 #: Closed: code -> the sentence a customer reads. No figure, no table name.
 REFUSALS: dict[str, str] = {
@@ -170,6 +183,20 @@ REFUSALS: dict[str, str] = {
     ),
     "insights_budget": (
         "The insight run reached its limit of compiled breakdowns and stopped."
+    ),
+    # Neither sentence says the proof was not written: an append whose response
+    # was lost may have committed, and contract 1.2.0 cannot read it back.
+    "ledger_append_failed": (
+        "The ledger did not confirm the proof was written, so the insight was not shown. "
+        "No figure was returned."
+    ),
+    "ledger_receipt_invalid": (
+        "The ledger returned a receipt that could not be trusted, so the insight was not "
+        "shown. No figure was returned."
+    ),
+    "audit_unrecorded": (
+        "The audit record for this insight could not be written, so it was not shown. "
+        "No figure was returned."
     ),
     "user_macro_present": (
         "This warehouse defines its own SQL functions or macros. One can stand in for "
@@ -345,6 +372,26 @@ def order_hash(rows: Sequence[Any]) -> str:
     ).hexdigest()
 
 
+def _check_ledger(ledger: Any) -> None:
+    """Null, or the receipt of the one ``insight.proven`` append (INS-PROOF-02).
+
+    The receipt is what the append returned: an entry id and its seq. Contract
+    1.2.0 cannot read an entry back, so nothing here says the entry was read.
+    """
+    if ledger is None:
+        return
+    if not isinstance(ledger, dict) or set(ledger) != _LEDGER_KEYS:
+        raise _bad("ledger is not null or the append receipt")
+    if ledger["event_type"] != LEDGER_EVENT:
+        raise _bad("ledger.event_type is not insight.proven")
+    entry = ledger["entry_id"]
+    if not isinstance(entry, str) or not _IDENT.fullmatch(entry):
+        raise _bad("ledger.entry_id is not an identifier")
+    seq = ledger["seq"]
+    if seq is not None and (type(seq) is not int or seq < 0):
+        raise _bad("ledger.seq is not a non-negative int or null")
+
+
 def assert_proof_shape(
     proof: Any,
     *,
@@ -405,8 +452,7 @@ def assert_proof_shape(
         raise _bad("conserves is not a bool")
     if not isinstance(proof["n_groups"], int) or isinstance(proof["n_groups"], bool):
         raise _bad("n_groups is not an int")
-    if proof["ledger"] is not None:
-        raise _bad("ledger must be null: contract 1.2.0 cannot read an entry back")
+    _check_ledger(proof["ledger"])
     if proof["scope"] != PROOF_SCOPE:
         raise _bad("scope is not PROOF_SCOPE")
 
@@ -1408,6 +1454,9 @@ class _Ctx:
     watermarks: Callable[..., Any]
     onto: Ontology
     source: str
+    #: Readable under a row predicate other than TRUE (INS-PROOF-02). Refused as
+    #: ``ungranted:row_policy``: the proof hash would describe filtered rows.
+    policy: set[str] = field(default_factory=set)
     refused: list[dict[str, Any]] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     built: list[tuple[float, ProvenInsight]] = field(default_factory=list)
@@ -1430,7 +1479,9 @@ def _refuse(
         reason=code,
         stage=STAGE,
         question="insight:" + candidate,
-        answer_id="ins_refused_" + hashlib.sha256(
+        # ``ans_``: the audit export reads a synthetic id as no ledger pointer
+        # (``ledger_pointer``); ``ins_`` would export it as a Cortex entry id.
+        answer_id="ans_insproof_refused_" + hashlib.sha256(
             f"{candidate}|{code}".encode()
         ).hexdigest()[:16],
         text=REFUSALS[base],
@@ -1448,6 +1499,13 @@ def _refuse(
     return entry
 
 
+def _ungranted_code(ctx: _Ctx, tables: Collection[str] | None) -> str:
+    """``ungranted:row_policy`` when an ungranted table is readable under a predicate."""
+    if ctx.policy and any(table_is_granted(t, ctx.policy) for t in tables or ()):
+        return "ungranted:row_policy"
+    return "ungranted"
+
+
 def prove_insights(
     warehouse: Path,
     *,
@@ -1458,8 +1516,13 @@ def prove_insights(
     top: int = 12,
     onto: Ontology | None = None,
     watermarks: Callable[..., Any] = bronze.lookup_ingest_watermarks,
+    policy_tables: Collection[str] = (),
 ) -> InsightRun:
-    """Proven insights over the verified ontology, or the reason each was refused."""
+    """Proven insights over the verified ontology, or the reason each was refused.
+
+    ``policy_tables`` are readable only under a row predicate; a candidate that
+    reads one is refused ``ungranted:row_policy`` before any submit.
+    """
     if not insight_proof_enabled():
         return InsightRun(status="off")
     if top < 1:
@@ -1488,6 +1551,7 @@ def prove_insights(
         watermarks=watermarks,
         onto=loaded,
         source=source,
+        policy={str(t) for t in policy_tables if str(t).strip()},
     )
     if not loaded.measures:
         _refuse(ctx, "ontology", "no_approved_measure")
@@ -1515,9 +1579,18 @@ def prove_insights(
     gate = user_function_refusal(ctx.warehouse)
     if gate is not None:
         # A function that appeared while the run was in flight: the rows already
-        # returned may have resolved through it, so none of them is served.
+        # returned may have resolved through it, so none of them is served. The
+        # refusal carries what ran for the discarded insights, for its audit row.
+        ran: list[tuple[str, int]] = []
+        seen: set[int] = set()
+        for _s, p in ctx.built:
+            if isinstance(p.trace, ExecutedTrace) and id(p.trace) not in seen:
+                seen.add(id(p.trace))
+                ran.extend(p.trace.statements)
         ctx.built.clear()
-        _refuse(ctx, "warehouse", gate)
+        late = _refuse(ctx, "warehouse", gate)
+        if ran:
+            late["trace"] = ExecutedTrace(statements=tuple(ran))
         return InsightRun(status="refused", refused=tuple(ctx.refused),
                           skipped=tuple(ctx.skipped))
 
@@ -1545,7 +1618,7 @@ def _prove_measure(ctx: _Ctx, m: Measure, dims_of: Callable[[str], _Dims]) -> bo
         return False
     fact = onto.objects[m.grain]
     if not _granted_relation(fact.relation, ctx.granted):
-        _refuse(ctx, m.name, "ungranted")
+        _refuse(ctx, m.name, _ungranted_code(ctx, _read_tables(fact.relation)))
         return False
 
     candidates: list[tuple[str, str, dict[str, str] | None, bool]] = []
@@ -1581,7 +1654,8 @@ def _prove_measure(ctx: _Ctx, m: Measure, dims_of: Callable[[str], _Dims]) -> bo
         if not readable or not read or not all(
             table_is_granted(t, ctx.granted) for t in tables
         ) or _statement_gap(got.sql, ctx.granted) is not None:
-            _refuse(ctx, candidate, "ungranted")
+            seen = read if readable else _read_tables(onto.objects[obj].relation)
+            _refuse(ctx, candidate, _ungranted_code(ctx, seen))
             continue
         outcome = _prove_candidate(ctx, m, obj, attr, label, got, tables, candidate)
         if outcome == "measure_signed":
@@ -1603,6 +1677,7 @@ def _prove_candidate(
     from dms_executor.sql_vote import rows_equal
 
     pending: list[tuple[float, ProvenInsight]] = []
+    mark = len(ctx.refused)
     executed_trace.begin()
     try:
         fact = ctx.onto.objects[m.grain]
@@ -1722,6 +1797,9 @@ def _prove_candidate(
     finally:
         trace = executed_trace.take()
         ctx.built.extend((s, replace(p, trace=trace)) for s, p in pending)
+        # A refusal made after a submit carries what ran, for its audit row.
+        for entry in ctx.refused[mark:]:
+            entry["trace"] = trace
 
 
 def _templates(
@@ -1902,3 +1980,223 @@ def _pick(
         if len(picked) >= top:
             break
     return picked
+
+
+# --------------------------------------------------------------------------
+# INS-PROOF-02: a Space's run through the Executor, one ledger pointer each
+# --------------------------------------------------------------------------
+
+
+def ledger_payload(
+    p: ProvenInsight, *, space_id: str | None, session_id: str | None
+) -> dict[str, Any]:
+    """The ``insight.proven`` payload. POINTERS ONLY.
+
+    Hashes, ids and closed members: no SQL text, no rows, no labels and no
+    figure. The two totals stay in the DMS-side proof and are pinned here by
+    ``totals_hash``, so a ledger entry never carries a number the customer read.
+    The session id is a client string, so it is written as ``session_hash``:
+    whatever a caller put in it never lands verbatim on an append-only chain.
+    """
+    from dms_executor.skills_quarantine import item_content_hash
+
+    proof = p.proof
+    d = proof["definition"]
+    totals = f"{float(proof['raw_total'])!r}|{float(proof['grouped_total'])!r}"
+    return {
+        "v": 1,
+        "insight_id": p.insight_id,
+        "kind": p.kind,
+        "sql_hash": proof["sql_hash"],
+        "raw_total_sql_hash": proof["raw_total_sql_hash"],
+        "parts_sql_hash": proof["parts_sql_hash"],
+        "result_hash": proof["result_hash"],
+        "order_hash": proof["order_hash"],
+        "totals_hash": item_content_hash(totals),
+        "conserves": bool(proof["conserves"]),
+        "space_id": space_id,
+        "session_hash": item_content_hash(session_id) if session_id else None,
+        "measure_item_id": d["item_id"],
+        "measure_version_id": d["version_id"],
+        "definition_source": d["source"],
+    }
+
+
+def demote_insight(
+    p: ProvenInsight, code: str, *, orphan_ledger_entry: str | None = None
+) -> dict[str, Any]:
+    """A proven insight that may not be served, as a refusal. Never mutates ``p``.
+
+    The ABSTAIN is a fresh envelope from ``abstain.build_abstain``, the one
+    builder, not ``demote=`` over the proven envelope: that path clears rows and
+    SQL but leaves the include receipt describing them (E13). Nothing of the
+    proven envelope survives but its Space and session. Its answer id is a
+    synthetic ``ans_`` id, so the audit export reads it as no ledger pointer.
+    ``orphan_ledger_entry`` names an entry that was appended for an insight that
+    was then not served.
+    """
+    from dms_executor.envelope import assert_envelope_valid
+
+    base = code.split(":", 1)[0]
+    rid = "ans_insproof_" + hashlib.sha256(f"{p.insight_id}|{code}".encode()).hexdigest()[:16]
+    env = abstain.build_abstain(
+        reason=code,
+        stage=STAGE,
+        question="insight:" + p.insight_id,
+        answer_id=rid,
+        text=REFUSALS[base],
+        values=[],
+        rows=[],
+        sql_used=None,
+        space_id=p.envelope.get("space_id"),
+        session_id=p.envelope.get("session_id"),
+    )
+    assert_envelope_valid(env)
+    entry: dict[str, Any] = {
+        "candidate": f"{p.measure} by {p.dimension}:{p.kind}",
+        "code": code,
+        "envelope": env,
+        "insight_id": p.insight_id,
+        "trace": p.trace,
+    }
+    if orphan_ledger_entry:
+        entry["orphan_ledger_entry"] = orphan_ledger_entry
+    return entry
+
+
+def _receipt(
+    p: ProvenInsight,
+    ledger_append: Callable[..., Any],
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    actor: str | None,
+) -> ProvenInsight | dict[str, Any]:
+    """Append the pointer; serve only on a valid receipt (the verified-query rule)."""
+    from dms_executor.envelope import assert_envelope_valid
+
+    try:
+        led = ledger_append(
+            event_type=LEDGER_EVENT,
+            payload=ledger_payload(p, space_id=space_id, session_id=session_id),
+            actor=actor,
+        )
+    except Exception:  # noqa: BLE001 - no insight is served without a ledger entry
+        return demote_insight(p, "ledger_append_failed")
+    entry_id = getattr(led, "entry_id", None) if led is not None else None
+    led_hash = getattr(led, "hash", None) if led is not None else None
+    if (
+        not (isinstance(entry_id, str) and entry_id.strip())
+        or not (isinstance(led_hash, str) and led_hash.strip())
+        or led_hash.strip() == entry_id.strip()
+        or not _IDENT.fullmatch(entry_id.strip())
+    ):
+        return demote_insight(p, "ledger_receipt_invalid")
+    entry_id = entry_id.strip()
+    # A receipt with no seq is what contract 1.2.0 may return; one whose seq is
+    # present but not a non-negative int is malformed, not unknown (verify round 8).
+    seq = getattr(led, "seq", None)
+    if seq is not None and (type(seq) is not int or seq < 0):
+        return demote_insight(p, "ledger_receipt_invalid", orphan_ledger_entry=entry_id)
+    env = dict(p.envelope)
+    env["audit_id"] = entry_id
+    proof = {**p.proof, "ledger": {"event_type": LEDGER_EVENT, "entry_id": entry_id, "seq": seq}}
+    trace = p.trace if isinstance(p.trace, ExecutedTrace) else ExecutedTrace()
+    trace = ExecutedTrace(statements=trace.statements, ledger=(*trace.ledger, (entry_id, seq)))
+    served = replace(p, envelope=env, proof=proof, trace=trace)
+    try:
+        assert_envelope_valid(env)
+        assert_proof_shape(proof, sql=p.sql, rows=p.rows, label=p.dimension,
+                           insight_id=p.insight_id, kind=p.kind)
+    except (AssertionError, ProofShapeError):
+        return demote_insight(served, "envelope_invalid:receipt", orphan_ledger_entry=entry_id)
+    return served
+
+
+def prove_for_space(
+    executor: Any,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    top: int = 6,
+    ledger_append: Callable[..., Any],
+    actor: str | None = None,
+    watermarks: Callable[..., Any] = bronze.lookup_ingest_watermarks,
+) -> InsightRun:
+    """``prove_insights`` over a Space, through Cortex submit, with a ledger pointer each.
+
+    ``actor`` is the one configured deployment actor (DR-0004 Option A); the
+    route passes ``settings.dms_actor_user_id``, the identity its gate call names.
+
+    Receipts are checked across the run as well as one by one. Two appends of
+    different payloads cannot be the same chain position, so an entry id or a
+    non-null seq that comes back for more than one insight is a replayed or
+    stale receipt: every insight that got it is refused
+    ``ledger_receipt_invalid:repeated``, the first one included, because nothing
+    says which of them the entry is.
+
+    Grants are the Executor's own turn ACL for the Space (``demo_acl``). A
+    relation readable under any predicate other than ``TRUE`` is refused
+    ``ungranted:row_policy``: the proof's hash would describe rows Cortex filtered.
+    Every statement goes through ``Executor._submit_verified_sql`` (serve_gap,
+    a minted manifest, Cortex submit, the executed trace). The local warehouse
+    is read for ontology verification and dimension discovery only.
+
+    Flag off: ``status='off'`` before the ACL, a submit or an append.
+    """
+    if not insight_proof_enabled():
+        return InsightRun(status="off")
+    from dms_executor.demo_warehouse import warehouse_path
+
+    acl = executor.demo_acl(session_id=session_id, space_id=space_id, tables=None)
+    preds = {str(t): str(v) for t, v in dict(acl.row_predicates).items()}
+    granted = {t for t, v in preds.items() if v.strip().upper() == "TRUE"}
+    policy = {t for t in preds if t not in granted}
+
+    def submit(sql: str) -> Any:
+        return executor._submit_verified_sql(
+            sql, space_id=space_id, session_id=session_id, tables=None
+        )
+
+    warehouse = getattr(executor, "_warehouse", None) or warehouse_path()
+    run = prove_insights(
+        Path(warehouse),
+        submit=submit,
+        granted=granted,
+        space_id=space_id,
+        session_id=session_id,
+        top=top,
+        watermarks=watermarks,
+        policy_tables=policy,
+    )
+    proven: list[ProvenInsight] = []
+    refused = list(run.refused)
+    got_all = [
+        (p, _receipt(p, ledger_append, space_id=space_id, session_id=session_id, actor=actor))
+        for p in run.proven
+    ]
+    ids: Counter[str] = Counter()
+    seqs: Counter[int] = Counter()
+    for _p, got in got_all:
+        if isinstance(got, ProvenInsight):
+            led = got.proof["ledger"]
+            ids[led["entry_id"]] += 1
+            if led["seq"] is not None:
+                seqs[led["seq"]] += 1
+    for p, got in got_all:
+        if not isinstance(got, ProvenInsight):
+            refused.append(got)
+            continue
+        led = got.proof["ledger"]
+        if ids[led["entry_id"]] > 1 or (led["seq"] is not None and seqs[led["seq"]] > 1):
+            # Demote the pre-receipt insight: its trace names no ledger entry.
+            refused.append(demote_insight(p, "ledger_receipt_invalid:repeated"))
+            continue
+        proven.append(got)
+    return InsightRun(
+        status="ok" if proven else "refused",
+        proven=tuple(proven),
+        refused=tuple(refused),
+        scope=run.scope,
+        skipped=run.skipped,
+    )
