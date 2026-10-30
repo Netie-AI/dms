@@ -69,6 +69,9 @@ _GROUNDED = "transactions"
 class _Cortex:
     asks: list[Any] = field(default_factory=list)
 
+    def close(self) -> None:
+        """The app lifespan closes ``app.state.cortex`` on shutdown; the fixture holds nothing."""
+
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
         sql = getattr(self, "hold_sql", None)
         lake = getattr(self, "lake", None)
@@ -210,6 +213,10 @@ def _boot(
 
     monkeypatch.setattr("dms_api.app.build_ask_service", _build)
     monkeypatch.setattr("dms_api.wiring.build_ask_service", _build)
+    # The lifespan builds a real CortexClient(settings.cortex_url, ...) and overwrites
+    # app.state.cortex. With a Cortex listening on the default :8010 the compliance gate
+    # then calls it for real and answers 403 gate_refused. Keep the fixture across lifespan.
+    monkeypatch.setattr("dms_api.app.CortexClient", lambda *_a, **_k: exe._cortex)
     try:
         app = create_app()
     finally:
@@ -804,7 +811,11 @@ def test_writer_prefers_over_continuous_asks(
 
 
 def _reasons(body: dict[str, Any]) -> list[str]:
-    return [str(item) for item in (body.get("assumptions") or [])]
+    out = [str(item) for item in (body.get("assumptions") or [])]
+    detail = body.get("detail")
+    if detail:
+        out.append(str(detail))  # a gate refusal is {"detail": ...}, never an empty reason
+    return out
 
 
 def test_queue_default_holds_the_short_burst(monkeypatch: pytest.MonkeyPatch) -> None:
