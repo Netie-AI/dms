@@ -69,8 +69,30 @@ a customer's SQL Server, a customer's Excel file (hard rule 5), or a ledger of i
    caller record that differs in any field. The Space is the proposal's own. One Cortex
    entry id backs one pointer (`LedgerEntryReused`). Evidence, `approval_ref` and the
    reason are secret-scrubbed and PII-masked before the append-only row, as
-   `0005_ask_audit` stores a question. The actor is recorded and must not be blank or the
-   shipped default (DR-0004 Option A: one configured steward identity, no dual control).
+   `0005_ask_audit` stores a question; an integer in evidence is masked by its decimal
+   text. The actor is recorded and must not be blank or the shipped default (DR-0004
+   Option A: one configured steward identity, no dual control); an actor that is not a
+   user id and reads as PII (an email) is refused.
+7. **Who approved is bound at apply, not told at record.** The apply (or decline) writes
+   its actor and masked `approval_ref` (and, for a decline, the masked `decline_reason`)
+   to the append-only `dms.action_confirmations` row for that version, in the same
+   transaction as the status flip. `record_decision` reads them back and refuses
+   (`ReceiptMismatch` on `approval_ref` or `actor_id`) a caller record that names another
+   ref or actor; the decision row stores the bound values. The receipt's evidence must be
+   exactly what was pinned at propose, plus the bound `decline_reason` for a decline: a
+   key added at record time (an `audit_id` the proposal never cited, an `approved_by`)
+   or a changed one is refused (`ReceiptMismatch` on `evidence`). A proposal cannot pin
+   `decline_reason` itself.
+8. **A refused record takes its apply with it.** The apply or decline runs under a
+   savepoint that stays open until `record_decision` stores the decision. Any refusal of
+   the record rolls that savepoint back, so the write, the status flip and the binding are
+   gone even if the caller commits afterwards; work the caller did before the apply is
+   kept. The version is `pending_confirm` again and can be applied anew.
+9. **Object keys never carry PII.** A key value is copied verbatim into the writeback row,
+   the summary, the receipt and the Cortex ledger, and masking it would lose which object
+   changed. A key value the masker would change (an NRIC, an email) or one longer than 200
+   characters is refused at propose (`key_value_invalid`). A reason whose masked form is
+   longer than 500 characters is refused at propose, not at every later apply.
 
 ## Consequences
 
@@ -151,7 +173,10 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
    Cortex payload and the append-only rows secret-scrubbed and PII-masked, the way
    `ask_audit` stores a question. Whether free text should instead stay DMS-side only,
    or be hashed, is open for the PRD Agent. A configured actor that is not a UUID is
-   refused (`steward_identity_invalid`).
+   refused (`steward_identity_invalid`). The decline route passes the reason to the core
+   decline, which binds it with the actor and `approval_ref` (item 7 above); the ledger
+   payload's `reason` and the receipt's `decline_reason` are that bound value. A key value
+   that reads as PII is refused at propose with 400 `key_value_invalid` (item 9 above).
 
 Confirmation for ACT-02: `tests/test_act_02_flag_off.py`,
 `tests/control_plane/test_act_02_routes.py`, `scripts/verify/act_flag_off_parity.py` and

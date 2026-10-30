@@ -780,11 +780,14 @@ def decline_action_route(
                     idempotency_token=body.idempotency_token,
                     approval_ref=approval_ref,
                     actor_id=actor,
+                    reason=reason,
                 )
             )
         except _CORE_REFUSALS as exc:
             raise _action_error(exc) from exc
-        result["evidence"] = {**(result.get("evidence") or {}), "decline_reason": reason}
+        # The core binds the reason at decline and returns it in the evidence; the
+        # receipt is refused if the evidence names anything else (DR-0008 item 7).
+        reason = str((result.get("evidence") or {}).get("decline_reason") or "")
         payload = _jsonable(
             {
                 "schema": "dms.action.decline/1",
