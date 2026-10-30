@@ -92,4 +92,35 @@ describe("ActionCard", () => {
     expect(html).toContain("Value changed to 450 since this was proposed.");
     expect(html).not.toContain("Applied");
   });
+
+  it("the approval reference field asks for a change ticket id", () => {
+    expect(view("")).toContain('placeholder="Change ticket id, e.g. CHG-1234 (required)"');
+  });
+
+  // The ACT-02 round-4 refusals, with the detail the route sends.
+  it("approval_ref_invalid refusal says what a ref must be and that nothing was written", () => {
+    const html = view("CHG-900101-14-5678", {
+      code: "approval_ref_invalid",
+      detail: { code: "approval_ref_invalid", max: 200 },
+    });
+    const text = html.split('data-testid="action-refusal"')[1]?.split(">")[1]?.split("<")[0];
+    proof("approval_ref_invalid refusal", text);
+    expect(text).toBe(
+      "The approval reference must be one ticket or change id (letters, digits and - _ . / : #, with at least one letter), not an email, a sentence, a bare number, or one that contains an NRIC or card number. Nothing was written.",
+    );
+    expect(html).not.toContain("Applied");
+  });
+
+  it("record_failed_after_append refusal names the voided entry and never says Applied", () => {
+    const html = view("CAB-1", {
+      code: "record_failed_after_append",
+      detail: { code: "record_failed_after_append", cortex_entry_id: "e1" },
+    });
+    const text = html.split('data-testid="action-refusal"')[1]?.split(">")[1]?.split("<")[0];
+    proof("record_failed_after_append refusal", text);
+    expect(text).toBe(
+      "Ledger entry e1 was written but the database failed before the decision was recorded; a void entry was requested and nothing changed.",
+    );
+    expect(html).not.toContain("Applied");
+  });
 });

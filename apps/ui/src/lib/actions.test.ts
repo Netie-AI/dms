@@ -131,6 +131,7 @@ describe("refusals", () => {
   it("approval_ref_invalid says what a ref must look like", () => {
     const s = describeRefusal("approval_ref_invalid", { code: "approval_ref_invalid", max: 200 });
     expect(s).toContain("one ticket or change id");
+    expect(s).toContain("contains an NRIC or card number");
     expect(s).toContain("Nothing was written.");
   });
 

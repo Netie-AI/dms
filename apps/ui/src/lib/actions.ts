@@ -204,7 +204,7 @@ export const REFUSAL_TEXT: Record<string, string> = {
   approval_ref_required: "An approval reference of at least 3 characters is required.",
   approval_ref_too_long: "The approval reference is longer than 200 characters; use the ticket or change id.",
   approval_ref_invalid:
-    "The approval reference must be one ticket or change id (letters, digits and - _ . / : #, with at least one letter), not an email, a sentence or a bare number. Nothing was written.",
+    "The approval reference must be one ticket or change id (letters, digits and - _ . / : #, with at least one letter), not an email, a sentence, a bare number, or one that contains an NRIC or card number. Nothing was written.",
   evidence_id_invalid: "The cited answer's audit id is not a valid id, so nothing was proposed.",
   // state (409)
   object_changed: "The value changed since this was proposed. Propose again from the current value.",
