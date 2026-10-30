@@ -69,14 +69,11 @@ def test_flag_off_has_no_side_effects(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_compile_proposes_terms_attributes_and_inferred_fk(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     from dms_executor.ao_compile import PROPOSAL_JSON_SCHEMA, check_proposal_schema, compile_source
 
-    token_file = tmp_path / "ov.token"
-    token_file.write_text("ov-file-token\n", encoding="utf-8")
-    monkeypatch.delenv("DMS_OV_SERVICE_TOKEN", raising=False)
-    monkeypatch.setenv("DMS_OV_SERVICE_TOKEN_FILE", str(token_file))
+    monkeypatch.delenv("CORTEX_API_KEY", raising=False)
+    monkeypatch.setenv("OPENVAULT_API_KEY", "ov_filetoken")
     monkeypatch.setenv("OPENVAULT_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("DMS_AO_COMPILE", "1")
 
@@ -84,9 +81,9 @@ def test_compile_proposes_terms_attributes_and_inferred_fk(
 
     def transport(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         assert url == "http://127.0.0.1:9/v1/chat/completions"
-        assert headers.get("Authorization") == "Bearer ov-file-token"
+        assert headers.get("Authorization") == "Bearer ov_filetoken"
         captured.append(body)
-        _reject_model_ids(body, secret="ov-file-token")
+        _reject_model_ids(body, secret="ov_filetoken")
         return _recorded(body)
 
     conn = duckdb.connect()
@@ -153,25 +150,22 @@ def test_compile_proposes_terms_attributes_and_inferred_fk(
         assert row["role"] == "ontology"
 
 
-def test_env_token_overrides_file_and_names_no_model(
+def test_openvault_key_wins_over_cortex_key_and_names_no_model(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     from ao_vendor.llm.ov_client import OpenVaultOntologyClient
     from ao_vendor.semantic.models import FkHitSelection
 
-    token_file = tmp_path / "ov.token"
-    token_file.write_text("file-token", encoding="utf-8")
-    monkeypatch.setenv("DMS_OV_SERVICE_TOKEN_FILE", str(token_file))
-    monkeypatch.setenv("DMS_OV_SERVICE_TOKEN", "env-token")
+    monkeypatch.setenv("CORTEX_API_KEY", "ov_cortexkey")
+    monkeypatch.setenv("OPENVAULT_API_KEY", "ov_envkey")
     monkeypatch.setenv("OPENVAULT_URL", "http://127.0.0.1:9")
     seen: list[dict[str, str]] = []
 
     def transport(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[str, Any]:
         assert url.endswith("/v1/chat/completions")
         seen.append(headers)
-        _reject_model_ids(body, secret="env-token")
-        assert "file-token" not in json.dumps(body)
+        _reject_model_ids(body, secret="ov_envkey")
+        assert "ov_cortexkey" not in json.dumps(body)
         return {"selected_id": None, "rationale": ""}
 
     from ao_vendor.llm.messages import HumanMessage
@@ -179,7 +173,7 @@ def test_env_token_overrides_file_and_names_no_model(
     client = OpenVaultOntologyClient(transport=transport)
     parsed = client.complete_structured([HumanMessage(content="ping")], FkHitSelection)
     assert parsed.selected_id is None
-    assert seen[0]["Authorization"] == "Bearer env-token"
+    assert seen[0]["Authorization"] == "Bearer ov_envkey"
 
 
 def _ao_loaded() -> bool:
