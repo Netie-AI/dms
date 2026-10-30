@@ -162,6 +162,14 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
    `action.decline.void`) with `reason: record_failed` naming the entry and answers 503
    `record_failed_after_append` with the entry id, never a bare 500 that leaves an
    unvoided entry claiming `verified: true`.
+   A Cortex append that returns an entry id which already backs an earlier decision
+   (`LedgerEntryReused`: a Cortex defect or a replayed response) is refused with 409
+   `ledger_entry_reused` naming the id (`reused_entry_id`, `voided: false`) and rolled
+   back. No void is appended: that id belongs to a committed decision, and a void over
+   it would tell the ledger a real decision did not commit. The entry Cortex actually
+   wrote for the refused attempt has no id DMS can name, so it stays on the ledger
+   unvoided, an orphan that no `dms.ledger_ref` points at (as in the lost-response case
+   below). Disclosed, not closed.
    Remaining, disclosed: an append that Cortex accepted but whose response was lost (a
    timeout) looks here like a failed append, so it rolls back with no void, and the
    steward's retry appends a second `action.apply` for the same `version_id`. The first

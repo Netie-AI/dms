@@ -720,9 +720,14 @@ def test_decline_and_revert(h: Harness) -> None:
 # --- ACT-01 fix carried to the routes -------------------------------------------------------
 
 
-def test_reused_ledger_entry_refused_and_voided(h: Harness) -> None:
-    """A Cortex that hands back an entry id already used gets no second receipt."""
-    first = _ok(h.apply(_ok(h.propose("450"))))
+def test_reused_ledger_entry_refused_and_not_voided(h: Harness) -> None:
+    """A Cortex that hands back an entry id already used gets no second receipt.
+
+    That id backs the first, committed apply. Voiding it would put "did not commit"
+    on the ledger over a real decision, so nothing is appended over it.
+    """
+    first_prop = _ok(h.propose("450"))
+    first = _ok(h.apply(first_prop))
     assert first["ledger_entry_id"] == "e1"
     prop = _ok(h.propose("500"))
     real = h.cortex.ledger_append
@@ -736,21 +741,58 @@ def test_reused_ledger_entry_refused_and_voided(h: Harness) -> None:
     h.monkeypatch.setattr(h.cortex, "ledger_append", reuse_e1)
     resp = h.apply(prop, "CAB-2")
     assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"] == {"code": "ledger_entry_reused"}
-    assert [e.event_type for e in h.cortex.events] == [
-        "action.apply",
-        "action.apply",
-        "action.apply.void",
-    ]
-    assert h.cortex.events[2].payload["entry_id"] == "e1"
+    assert resp.json()["detail"] == {
+        "code": "ledger_entry_reused",
+        "reused_entry_id": "e1",
+        "voided": False,
+    }
+    # The second append landed; no void was appended over anything, least of all e1.
+    assert [e.event_type for e in h.cortex.events] == ["action.apply", "action.apply"]
+    assert not [e for e in h.cortex.events if e.event_type.endswith(".void")]
     assert h.writeback() == [("450", 1)], "the refused receipt rolled the write back"
+    assert h.status(first_prop) == "applied"
     assert h.status(prop) == "pending_confirm"
     assert h.count("action_decisions") == 1
+    # The first receipt still stands as read back.
+    got = h.client.get(f"{A}/decisions/{first['decision_id']}", params={"space_id": h.space})
+    assert got.status_code == 200, got.text
+    assert got.json()["after"]["value"] == "450"
 
     h.monkeypatch.setattr(h.cortex, "ledger_append", real)
     receipt = _ok(h.apply(prop, "CAB-2"))
-    assert receipt["after"]["value"] == "500" and receipt["ledger_entry_id"] == "e4"
+    assert receipt["after"]["value"] == "500" and receipt["ledger_entry_id"] == "e3"
     assert h.writeback() == [("500", 2)]
+    assert [e.event_type for e in h.cortex.events] == ["action.apply"] * 3
+
+
+def test_reused_ledger_entry_on_decline_is_not_voided(h: Harness) -> None:
+    """The decline route has the same refusal: 409, the proposal stays pending, no void."""
+    first = _ok(h.apply(_ok(h.propose("450"))))
+    prop = _ok(h.propose("300"))
+    real = h.cortex.ledger_append
+
+    def reuse_first(req: Any) -> LedgerAppendResponse:
+        out = real(req)
+        if req.event_type == "action.decline":
+            reused = first["ledger_entry_id"]
+            return LedgerAppendResponse(entry_id=reused, hash=out.hash, seq=out.seq)
+        return out
+
+    h.monkeypatch.setattr(h.cortex, "ledger_append", reuse_first)
+    resp = h.client.post(
+        f"{A}/proposals/{prop['proposal_id']}/decline",
+        json={"idempotency_token": prop["idempotency_token"], "approval_ref": "CAB-D"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {
+        "code": "ledger_entry_reused",
+        "reused_entry_id": "e1",
+        "voided": False,
+    }
+    assert [e.event_type for e in h.cortex.events] == ["action.apply", "action.decline"]
+    assert h.status(prop) == "pending_confirm"
+    assert h.count("action_decisions") == 1
+    assert h.writeback() == [("450", 1)]
 
 
 def test_decline_ledger_payload_and_receipt_are_masked(h: Harness) -> None:
