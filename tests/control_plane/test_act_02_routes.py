@@ -157,6 +157,7 @@ class Harness:
         sql: str = "SELECT sku FROM inventory WHERE quantity_kg < reorder_level_kg",
         rows: int = 2,
         tables: tuple[str, ...] = ("inventory",),
+        space: str | None = None,
     ) -> str:
         self.conn.rollback()
         self.conn.execute(
@@ -170,7 +171,7 @@ class Harness:
                 uuid.uuid4(),
                 self.tenant,
                 str(self.user),
-                self.space,
+                self.space if space is None else space,
                 QUESTION,
                 sql,
                 list(tables),
@@ -776,3 +777,175 @@ def test_decline_ledger_payload_and_receipt_are_masked(h: Harness) -> None:
         (out["decision_id"],),
     ).fetchone()
     assert row == ("CAB DMSMASK_email_01", "owner DMSMASK_nric_01 said no", str(h.user))
+
+
+# --- round-3 verifier defects ---------------------------------------------------------
+
+
+def _commit_then_raise(conn: psycopg.Connection) -> None:
+    """The COMMIT lands, then the client loses the connection before it hears so."""
+    conn.commit()
+    raise psycopg.OperationalError("connection lost after COMMIT was sent")
+
+
+def test_commit_landed_but_raised_is_applied_not_voided(h: Harness) -> None:
+    """A commit that landed is a receipt, not a void: the ledger must not say 'void'."""
+    prop = _ok(h.propose("450"))
+    h.monkeypatch.setattr("dms_api.routes.actions._commit", _commit_then_raise)
+    receipt = _ok(h.apply(prop))
+    assert receipt["status"] == "applied"
+    assert receipt["after"]["value"] == "450" and receipt["verified"] is True
+    assert receipt["ledger_entry_id"] == "e1"
+    assert [e.event_type for e in h.cortex.events] == ["action.apply"], "no false void"
+    assert h.writeback() == [("450", 1)]
+    assert h.status(prop) == "applied"
+    h.conn.rollback()
+    row = h.conn.execute(
+        "SELECT d.id, d.ledger_seq, r.cortex_entry_id FROM dms.action_decisions d "
+        "JOIN dms.ledger_ref r ON r.seq = d.ledger_seq WHERE d.tenant_id = %s",
+        (h.tenant,),
+    ).fetchall()
+    assert row == [(uuid.UUID(receipt["decision_id"]), receipt["ledger_seq"], "e1")]
+    assert [o["value"] for o in h.objects()] == ["450"]
+
+    # The decline route has the same window (propose commits normally).
+    h.monkeypatch.setattr("dms_api.routes.actions._commit", lambda conn: conn.commit())
+    prop2 = _ok(h.propose("500"))
+    h.monkeypatch.setattr("dms_api.routes.actions._commit", _commit_then_raise)
+    out = _ok(
+        h.client.post(
+            f"{A}/proposals/{prop2['proposal_id']}/decline",
+            json={"idempotency_token": prop2["idempotency_token"], "approval_ref": "CAB-2"},
+        )
+    )
+    assert out["status"] == "rejected" and out["ledger_entry_id"] == "e2"
+    assert [e.event_type for e in h.cortex.events] == ["action.apply", "action.decline"]
+    assert h.status(prop2) == "rejected"
+    assert h.count("action_decisions") == 2
+
+
+def test_commit_outcome_unknown_appends_no_void(h: Harness) -> None:
+    """When the database cannot say whether the commit landed, neither void nor claim."""
+    prop = _ok(h.propose("450"))
+
+    def commit_lost(conn: psycopg.Connection) -> None:
+        raise psycopg.OperationalError("connection lost at commit")
+
+    h.monkeypatch.setattr("dms_api.routes.actions._commit", commit_lost)
+    h.monkeypatch.setattr(
+        "dms_api.routes.actions._decision_by_entry", lambda settings, entry: ("unknown", None)
+    )
+    resp = h.apply(prop)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == {"code": "commit_outcome_unknown", "cortex_entry_id": "e1"}
+    assert [e.event_type for e in h.cortex.events] == ["action.apply"]
+    assert h.writeback() == [], "the uncommitted write was not committed by the context exit"
+    assert h.status(prop) == "pending_confirm"
+
+
+def test_empty_entry_id_rolls_back_with_503(h: Harness) -> None:
+    prop = _ok(h.propose("450"))
+    before = h.counts()
+    real = h.cortex.ledger_append
+
+    def blank_id(req: Any) -> LedgerAppendResponse:
+        out = real(req)
+        return LedgerAppendResponse(entry_id="", hash=out.hash, seq=out.seq)
+
+    h.monkeypatch.setattr(h.cortex, "ledger_append", blank_id)
+    resp = h.apply(prop)
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["detail"] == {"code": "ledger_append_failed", "reason": "empty_entry_id"}
+    assert h.counts() == before
+    assert h.writeback() == [] and h.objects() == []
+    assert h.status(prop) == "pending_confirm"
+
+    h.monkeypatch.setattr(h.cortex, "ledger_append", real)
+    receipt = _ok(h.apply(prop))
+    assert receipt["after"]["value"] == "450" and receipt["ledger_entry_id"] == "e2"
+
+
+def test_evidence_from_another_space_refused(h: Harness) -> None:
+    before = h.counts()
+    other = str(uuid.uuid4())
+    h.seed_ask(entry="led_other_space", space=other)
+    resp = h.propose("450", evidence_audit_id="led_other_space")
+    assert resp.status_code == 422, resp.text
+    assert _code(resp) == "evidence_wrong_space"
+    assert h.counts() == before
+
+    # The same Space, in another spelling of its UUID, is the same Space.
+    h.seed_ask(entry="led_same_space", space=h.space.upper())
+    prop = _ok(h.propose("450", evidence_audit_id="led_same_space"))
+    assert prop["diff"]["evidence"]["audit_id"] == "led_same_space"
+
+    # An answer asked with no Space is tenant-wide.
+    h.seed_ask(entry="led_no_space", space="")
+    prop2 = _ok(h.propose("500", evidence_audit_id="led_no_space"))
+    assert prop2["diff"]["evidence"]["audit_id"] == "led_no_space"
+
+
+def test_long_approval_ref_and_decline_reason_refused(h: Harness) -> None:
+    prop = _ok(h.propose("450"))
+    before = h.counts()
+    resp = h.apply(prop, "X" * 201)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "approval_ref_too_long", "max": 200}
+
+    resp = h.client.post(
+        f"{A}/proposals/{prop['proposal_id']}/decline",
+        json={
+            "idempotency_token": prop["idempotency_token"],
+            "approval_ref": "CAB-1",
+            "reason": "r" * 501,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["detail"] == {"code": "reason_too_long", "max": 500}
+    assert h.counts() == before
+    assert h.cortex.events == []
+    assert h.status(prop) == "pending_confirm"
+
+    receipt = _ok(h.apply(prop, "X" * 200))
+    assert receipt["approval_ref"] == "X" * 200
+
+
+def test_actor_not_a_uuid_refused_not_500(h: Harness) -> None:
+    prop = _ok(h.propose("450"))
+    before = h.counts()
+    h.configure(DMS_ACTOR_USER_ID="steward-jian")
+    try:
+        for resp in (h.propose("500"), h.apply(prop)):
+            assert resp.status_code == 403, resp.text
+            assert _code(resp) == "steward_identity_invalid"
+    finally:
+        h.configure(DMS_ACTOR_USER_ID=str(h.user))
+    assert h.counts() == before
+    assert h.cortex.events == []
+
+
+def test_rule12_candidates_match_any_key_field(h: Harness) -> None:
+    """A wrong location still shows the SKU where it does exist, best match first."""
+    resp = h.propose("450", object_key={"sku": "SKU-BETA", "location_id": "WH-Z"})
+    assert resp.status_code == 422 and _code(resp) == "object_key_not_found", resp.text
+    candidates = resp.json()["detail"]["candidates"]
+    assert {"sku": "SKU-BETA", "location_id": "WH-B"} in candidates
+    assert candidates[0]["sku"] == "SKU-BETA", "a key matching on more fields ranks first"
+    assert 0 < len(candidates) <= 5
+
+    exact_both = h.propose("450", object_key={"sku": "BETA", "location_id": "WH-B"})
+    first = exact_both.json()["detail"]["candidates"][0]
+    assert first == {"sku": "SKU-BETA", "location_id": "WH-B"}
+    assert h.objects() == []
+
+
+def test_apply_payload_and_propose_reason_are_masked(h: Harness) -> None:
+    """The apply's ledger payload and the propose diff carry no raw PII."""
+    prop = _ok(h.propose("450", reason="owner 900101-14-5678 asked"))
+    assert prop["diff"]["reason"] == "owner DMSMASK_nric_01 asked"
+    receipt = _ok(h.apply(prop, "CAB jian@example.com"))
+    assert receipt["approval_ref"] == "CAB DMSMASK_email_01"
+    payload = h.cortex.events[0].payload
+    assert payload["approval_ref"] == "CAB DMSMASK_email_01"
+    assert "jian@example.com" not in json.dumps(payload)
+    assert "900101-14-5678" not in json.dumps(payload)
