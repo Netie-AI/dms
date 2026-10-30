@@ -1,14 +1,37 @@
 import { useEffect, useState } from "react";
+import { GovernedActions } from "@/components/GovernedActions";
 import { useApp } from "@/context/AppContext";
+import { probeActions, type ActionProposal, type ActionsAvailability } from "@/lib/actions";
 import {
   fetchAmendProposals,
   postAmendProposal,
   type AmendProposal,
 } from "@/lib/api";
 
-export function AmendPage() {
+export type AmendPageProps = {
+  /** Seeds for a server render or a test; the browser starts from null / []. */
+  initialActionsAvailable?: ActionsAvailability | null;
+  initialProposals?: AmendProposal[];
+  initialActionProposals?: ActionProposal[];
+};
+
+function isActionRow(p: AmendProposal): boolean {
+  return (p.diff as { kind?: unknown } | undefined)?.kind === "action";
+}
+
+export function AmendPage({
+  initialActionsAvailable = null,
+  initialProposals,
+  initialActionProposals,
+}: AmendPageProps = {}) {
   const { activeSpaceId } = useApp();
-  const [list, setList] = useState<AmendProposal[]>([]);
+  const [list, setList] = useState<AmendProposal[]>(initialProposals ?? []);
+  // Governed actions (ACT-03) render only when the server answers the ACT-02
+  // registry probe with a 200, i.e. it runs with DMS_ACTIONS=1. null (probing)
+  // and 'off' render exactly the page main renders.
+  const [actionsAvailable, setActionsAvailable] = useState<ActionsAvailability | null>(
+    initialActionsAvailable,
+  );
   const [summary, setSummary] = useState("Correct quantity on demo row");
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -25,6 +48,16 @@ export function AmendPage() {
     // reload closes over activeSpaceId; re-run when the Space switcher moves.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId]);
+
+  useEffect(() => {
+    let live = true;
+    void probeActions().then((a) => {
+      if (live) setActionsAvailable(a);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const propose = async () => {
     setMsg(null);
@@ -111,7 +144,12 @@ export function AmendPage() {
                 v{p.version_num} · {p.status}
               </p>
             </div>
-            {p.status === "pending_confirm" && (
+            {p.status === "pending_confirm" && actionsAvailable === "on" && isActionRow(p) && (
+              <span className="text-xs text-[var(--color-ink-muted)]">
+                Apply in Governed actions
+              </span>
+            )}
+            {p.status === "pending_confirm" && !(actionsAvailable === "on" && isActionRow(p)) && (
               <button
                 type="button"
                 onClick={() => void confirm(p)}
@@ -123,6 +161,13 @@ export function AmendPage() {
           </li>
         ))}
       </ul>
+      {actionsAvailable === "on" && (
+        <GovernedActions
+          spaceId={activeSpaceId ?? null}
+          seed={initialActionProposals ? { proposals: initialActionProposals } : undefined}
+          onChanged={reload}
+        />
+      )}
     </div>
   );
 }
