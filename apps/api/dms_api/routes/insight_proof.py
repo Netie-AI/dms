@@ -254,6 +254,8 @@ PIN_STATUS: dict[str, int] = {
     "not_pinned": 409,
     "ledger_append_failed": 503,
     "ledger_receipt_invalid": 503,
+    "cortex_unavailable": 503,
+    "cortex_submit_failed": 503,
     "pin_commit_failed": 500,
     "revoke_commit_failed": 500,
 }
@@ -348,8 +350,9 @@ def insight_proof_pin_confirm(
     take_executed(ask)
     if not res.get("ok"):
         return _pin_refusal(res, key)
+    confirm = _ConfirmingStore(audit)
     record_ask(
-        audit,
+        confirm,  # type: ignore[arg-type]
         settings,
         question="insight:" + str(res["insight_id"]),
         space_id=space_id,
@@ -359,6 +362,11 @@ def insight_proof_pin_confirm(
     )
     out = {k: res[k] for k in ("asset_id", "insight_id", "approved_at", "approved_by",
                                "expected_result_hash", "ledger_entry_id")}
+    # The pin and its ledger entry are committed; a dropped audit row is reported,
+    # never hidden (INS-PROOF-02 rule g, applied to the confirm).
+    out["audit_recorded"] = confirm.ok
+    if not confirm.ok:
+        logger.error("insight pin %s committed without its audit row", res["asset_id"])
     return JSONResponse(_redacted(jsonable_encoder(out), key))
 
 
@@ -383,12 +391,13 @@ def insight_proof_pin_replay(
         return stop
     take_executed(ask)
     asked_at = datetime.now(UTC)
-    res = wiring.replay_pin(ask, cortex, asset_id)
+    res = wiring.replay_pin(ask, cortex, asset_id, actor=settings.dms_actor_user_id)
     take_executed(ask)
     if not res.get("ok"):
         return _pin_refusal(res, key)
+    confirm = _ConfirmingStore(audit)
     record_ask(
-        audit,
+        confirm,  # type: ignore[arg-type]
         settings,
         question="insight:" + str(res["insight_id"]),
         space_id=space_id,
@@ -396,7 +405,13 @@ def insight_proof_pin_replay(
         envelope=res["envelope"],
         executed=res["trace"],
     )
+    if not confirm.ok and res["envelope"].get("abstained") is False:
+        # (g) a served replay needs its row: no row, no figure; name the entry.
+        entry_id = str(res["envelope"].get("audit_id") or "")
+        res = wiring.demote_replay(res, "audit_unrecorded", orphan_ledger_entry=entry_id)
     out = {k: res[k] for k in ("asset_id", "verdict", "envelope", "proof")}
+    if res.get("orphan_ledger_entry"):
+        out["orphan_ledger_entry"] = res["orphan_ledger_entry"]
     return JSONResponse(_redacted(jsonable_encoder(out), key))
 
 

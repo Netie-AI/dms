@@ -743,8 +743,17 @@ def confirm_pin(ask: Any, cortex: CortexClient, *, token: str, actor: str) -> di
     )
 
 
-def replay_pin(ask: Any, cortex: CortexClient, asset_id: str) -> dict[str, Any]:
-    return dms_executor.replay_pin(ask, asset_id, ledger_append=_ledger_append(cortex))
+def replay_pin(ask: Any, cortex: CortexClient, asset_id: str, *, actor: str) -> dict[str, Any]:
+    return dms_executor.replay_pin(
+        ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex)
+    )
+
+
+def demote_replay(
+    res: dict[str, Any], code: str, *, orphan_ledger_entry: str | None = None
+) -> dict[str, Any]:
+    """A served replay whose audit row did not land, as an ABSTAIN (INS-PROOF-02 rule g)."""
+    return dms_executor.demote_replay(res, code, orphan_ledger_entry=orphan_ledger_entry)
 
 
 def revoke_pin(ask: Any, cortex: CortexClient, asset_id: str, *, actor: str) -> dict[str, Any]:

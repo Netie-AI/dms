@@ -237,6 +237,11 @@ class ProvenInsight:
     envelope: dict[str, Any]
     proof: dict[str, Any]
     trace: Any
+    #: INS-PROOF-03: the (object, attribute, via) the SQL was compiled from, so a
+    #: pin can recompile it at replay and re-check the PII gate on that column.
+    dim_object: str = ""
+    dim_attribute: str = ""
+    via: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1222,7 +1227,8 @@ def _prove_measure(ctx: _Ctx, m: Measure, dims_of: Callable[[str], _Dims]) -> bo
             seen = read if readable else _read_tables(onto.objects[obj].relation)
             _refuse(ctx, candidate, _ungranted_code(ctx, seen))
             continue
-        outcome = _prove_candidate(ctx, m, obj, attr, label, got, tables, candidate)
+        outcome = _prove_candidate(ctx, m, obj, attr, label, got, tables, candidate,
+                                   via=via)
         if outcome == "measure_signed":
             break
     return False
@@ -1237,6 +1243,8 @@ def _prove_candidate(
     compiled: CompiledQuery,
     tables: list[str],
     candidate: str,
+    *,
+    via: dict[str, str] | None = None,
 ) -> str:
     from dms_executor.skills_quarantine import item_content_hash, item_result_hash
     from dms_executor.sql_vote import rows_equal
@@ -1350,7 +1358,10 @@ def _prove_candidate(
             made = _emit(ctx, m, kind, headline, k, n, label, sql, sql_hash,
                          run2, reexecuted_at, proof_base, candidate)
             if made is not None:
-                pending.append((surprise, made))
+                pending.append((surprise, replace(
+                    made, dim_object=obj, dim_attribute=attr,
+                    via=tuple(sorted((via or {}).items())),
+                )))
         return "done"
     finally:
         trace = executed_trace.take()

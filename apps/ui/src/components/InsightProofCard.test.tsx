@@ -3,7 +3,7 @@ import { createElement, isValidElement, type ReactElement, type ReactNode } from
 import { renderToStaticMarkup } from "react-dom/server";
 import { Navigate } from "react-router-dom";
 import { InsightProofCard } from "./InsightProofCard";
-import { InsightsPageView, statusToView } from "@/pages/InsightsPage";
+import { InsightsPageView, resolveStatus, statusToView } from "@/pages/InsightsPage";
 import {
   confirmPin,
   createApprovalFlow,
@@ -144,5 +144,21 @@ describe("InsightsPage", () => {
     expect(el.type).toBe(Navigate);
     expect(el.props.to).toBe("/");
     expect(el.props.replace).toBe(true);
+  });
+
+  it("redirects like main when the status call fails any other way, and shows nothing first", async () => {
+    // A proxy 502, an enabled:false body, and a rejected fetch (API down) all
+    // behave as the catch-all does on main: a redirect, never the feature's header.
+    expect(statusToView(502)).toBe("missing");
+    expect(statusToView(500)).toBe("missing");
+    const resp = (status: number, body: unknown) =>
+      Promise.resolve(new Response(JSON.stringify(body), { status }));
+    expect(await resolveStatus(() => resp(502, {}))).toBe("missing");
+    expect(await resolveStatus(() => resp(200, { enabled: false }))).toBe("missing");
+    expect(await resolveStatus(() => Promise.reject(new TypeError("Failed to fetch")))).toBe(
+      "missing",
+    );
+    expect(await resolveStatus(() => resp(200, { enabled: true }))).toBe("ready");
+    expect(InsightsPageView({ view: { kind: "loading" } })).toBeNull();
   });
 });

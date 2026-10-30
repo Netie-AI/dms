@@ -8,6 +8,7 @@ import {
   confirmPin,
   fetchInsightProofStatus,
   listPins,
+  type FetchLike,
   previewPin,
   replayPin,
   runInsightProof,
@@ -21,7 +22,9 @@ import {
  *
  * It asks GET /v1/insight-proof/status first. With the flag off that is a 404
  * and this page renders the same redirect to "/" as the catch-all route, so the
- * URL behaves as it does on main.
+ * URL behaves as it does on main. Any status other than a 2xx that says
+ * enabled, and a fetch that rejects (API down), redirect the same way, and
+ * nothing of the feature (not even its header) renders before the answer.
  */
 
 export type InsightsView =
@@ -36,10 +39,19 @@ export type InsightsView =
       approvals: Record<string, ApprovalState>;
     };
 
-/** A status 404 means the routes are not mounted: the page does not exist. */
-export function statusToView(status: number): "missing" | "ready" | "error" {
-  if (status === 404) return "missing";
-  return status >= 200 && status < 300 ? "ready" : "error";
+/** Only a 2xx means the routes are mounted; anything else, the page does not exist. */
+export function statusToView(status: number): "missing" | "ready" {
+  return status >= 200 && status < 300 ? "ready" : "missing";
+}
+
+/** The status call, never rejecting: unreachable or not enabled is "missing". */
+export async function resolveStatus(fetchImpl?: FetchLike): Promise<"missing" | "ready"> {
+  try {
+    const got = await fetchInsightProofStatus(fetchImpl);
+    return statusToView(got.status) === "ready" && got.enabled ? "ready" : "missing";
+  } catch {
+    return "missing";
+  }
 }
 
 export function InsightsPageView({
@@ -56,6 +68,7 @@ export function InsightsPageView({
   onReplay?: (assetId: string) => void;
 }) {
   if (view.kind === "missing") return <Navigate to="/" replace />;
+  if (view.kind === "loading") return null;
   return (
     <div className="mx-auto max-w-4xl p-6">
       <PageHeader
@@ -63,7 +76,6 @@ export function InsightsPageView({
         title="Proven insights"
         blurb="Every figure is a cell of a query that ran twice through Cortex and added back to its total. A steward approves a pin; nothing is pinned or replayed on its own."
       />
-      {view.kind === "loading" ? <p className="mt-6 text-sm">Loading...</p> : null}
       {view.kind === "error" ? (
         <p className="mt-6 text-sm" data-testid="insights-error">
           {view.message}
@@ -95,7 +107,8 @@ export function InsightsPageView({
                 return (
                   <li key={pin.asset_id} className="text-xs">
                     <p>
-                      {pin.headline} (approved {pin.approved_at} by {pin.approved_by})
+                      {pin.headline ?? `Headline withheld (${pin.headline_withheld ?? "unknown"})`}{" "}
+                      (approved {pin.approved_at} by {pin.approved_by})
                     </p>
                     <button
                       type="button"
@@ -127,11 +140,14 @@ export function InsightsPage() {
   const flows = useRef<Record<string, ReturnType<typeof createApprovalFlow>>>({});
 
   const load = useCallback(async () => {
-    const status = await fetchInsightProofStatus();
-    const next = statusToView(status.status);
-    if (next === "missing") return setView({ kind: "missing" });
-    if (next === "error") return setView({ kind: "error", message: `status ${status.status}` });
-    const [run, pins] = await Promise.all([runInsightProof(activeSpaceId), listPins(activeSpaceId)]);
+    if ((await resolveStatus()) === "missing") return setView({ kind: "missing" });
+    let run: Awaited<ReturnType<typeof runInsightProof>>;
+    let pins: Awaited<ReturnType<typeof listPins>>;
+    try {
+      [run, pins] = await Promise.all([runInsightProof(activeSpaceId), listPins(activeSpaceId)]);
+    } catch {
+      return setView({ kind: "error", message: "The insight service could not be reached." });
+    }
     if (!run.ok) return setView({ kind: "error", message: run.refusal.code });
     setView({
       kind: "ready",

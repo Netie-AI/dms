@@ -24,6 +24,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import sqlglot
 from cortex_client.models import LedgerAppendRequest, LedgerAppendResponse
@@ -755,3 +756,256 @@ def test_flag_off_the_register_functions_touch_nothing(
     assert ir.list_pinned(exe, space_id=None) == []
     assert cortex.submits == [] and cortex.ledger == [] and calls == []
     assert _counts(wh) == before
+
+
+# --------------------------------------------------------------------------
+# Verify round 1 - governance is re-checked at replay, not only the measure
+# --------------------------------------------------------------------------
+
+_PII_TEXT = (
+    "A column this approved insight groups by is now marked as personal data, so "
+    "nothing of it is shown. Revoke the pin."
+)
+_AUDIT_TEXT = (
+    "The audit record for this insight could not be written, so it was not shown. "
+    "No figure was returned."
+)
+
+
+def _pii_item() -> dict[str, Any]:
+    return next(i for i in _items(pii_on_name=True) if i["kind"] == "pii")
+
+
+def _register_row(wh: Path, asset_id: str) -> dict[str, Any]:
+    con = dw.connect_serving(wh)
+    try:
+        cur = con.execute("SELECT * FROM main._proven_insights WHERE asset_id = ?", [asset_id])
+        cols = [d[0] for d in cur.description]
+        return dict(zip(cols, cur.fetchone(), strict=True))
+    finally:
+        con.close()
+
+
+def test_a_pii_mark_after_the_pin_stops_replay_and_withholds_the_listed_headline(
+    world: _World,
+) -> None:
+    asset_id, pre, _ = _pin(world)
+    assert world.pins().json()["pins"][0]["headline"] == _B_HEADLINE
+    world.onto.approved.append(_pii_item())  # a steward marks Territory.name as PII
+    assert world.run().json()["insights"] == []  # a fresh run proves nothing over it
+    before = list(world.cortex.submits)
+    res = world.replay(asset_id)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    env = body["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["text"] == _PII_TEXT
+    assert env["values"] == [] and env["rows"] == [] and env["sql_used"] is None
+    assert_envelope_valid(env)
+    assert body["verdict"] == "definition_changed"
+    assert body["proof"]["code"] == "definition_changed:pii_dimension"
+    assert world.cortex.submits == before  # zero submits
+    assert world.cortex.events("insight.replayed")[-1].payload["verdict"] == "definition_changed"
+    for label in ("North", "South", "86.4"):
+        assert label not in res.text
+    listed = world.pins()
+    pins = listed.json()["pins"]
+    assert len(pins) == 1 and pins[0]["asset_id"] == asset_id
+    assert pins[0]["headline"] is None and pins[0]["headline_withheld"] == "pii_dimension"
+    for label in ("North", "South", "86.4"):
+        assert label not in listed.text
+    rec = [r for r in world.records() if r.question == "insight:" + pre["proof"]["insight_id"]]
+    assert rec[-1].badge == "abstain" and rec[-1].row_count == 0
+
+
+@pytest.mark.parametrize("how", ["object_and_link", "link_only", "new_version"])
+def test_a_revoked_or_reversioned_dimension_or_link_is_definition_changed(
+    world: _World, how: str
+) -> None:
+    asset_id, _pre, _ = _pin(world)
+    terr = next(i for i in world.onto.approved if i["id"] == "item_obj_territory")
+    link = next(i for i in world.onto.approved if i["id"] == "item_link_order_territory")
+    if how == "new_version":
+        terr["version_id"] = "ver_reapproved_0002"
+    else:
+        moved = [terr, link] if how == "object_and_link" else [link]
+        for item in moved:
+            world.onto.approved.remove(item)
+            world.onto.revoked.append({**item, "status": "revoked"})
+    before = list(world.cortex.submits)
+    res = world.replay(asset_id)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    env = body["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["values"] == [] and env["rows"] == []
+    assert env["text"] == (
+        "The approved definition of order_amount changed since this insight was approved; "
+        "reconfirm it before it is shown."
+    )
+    assert "Unchanged since steward approval" not in res.text
+    assert_envelope_valid(env)
+    assert body["verdict"] == "definition_changed"
+    assert body["proof"]["code"] == "definition_changed:dependency"
+    assert world.cortex.submits == before
+
+
+def test_the_pin_records_every_item_its_sql_rests_on(world: _World) -> None:
+    asset_id, _pre, _ = _pin(world)
+    d = json.loads(_register_row(world.wh, asset_id)["definition_json"])
+    assert d["dim_object"] == "Territory" and d["dim_attribute"] == "name"
+    assert d["via"] == []
+    assert [(x["kind"], x["item_id"]) for x in d["deps"]] == [
+        ("link", "item_link_order_territory"),
+        ("measure", d["item_id"]),
+        ("object", "item_obj_orders"),
+        ("object", "item_obj_territory"),
+    ]
+    assert all(x["version_id"] for x in d["deps"])
+
+
+def test_a_replay_racing_a_revoke_is_never_served(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor import insight_register as ir
+
+    asset_id, _pre, _ = _pin(world)
+    real = ir._execute
+    started, release = threading.Event(), threading.Event()
+
+    def slow(executor: Any, pin: Any) -> Any:
+        started.set()
+        release.wait(30)
+        return real(executor, pin)
+
+    monkeypatch.setattr(ir, "_execute", slow)
+    out: list[Any] = []
+    t = threading.Thread(target=lambda: out.append(world.replay(asset_id)))
+    t.start()
+    assert started.wait(30)
+    assert world.revoke(asset_id).status_code == 200
+    release.set()
+    t.join(60)
+    res = out[0]
+    assert res.status_code == 404, res.text
+    assert res.json()["code"] == "pin_not_found"
+    assert "envelope" not in res.json() and "North" not in res.text
+    kinds = [r.event_type for r in world.cortex.ledger]
+    assert kinds[-1] == "insight.pin_revoked"
+    assert "insight.replayed" not in kinds
+
+
+@pytest.mark.parametrize(
+    ("error", "code"),
+    [
+        (lambda: httpx.ConnectError("connection refused"), "cortex_unavailable"),
+        (lambda: RuntimeError("cortex down"), "cortex_submit_failed"),
+    ],
+)
+def test_cortex_down_at_preview_and_confirm_is_503_and_the_token_survives(
+    world: _World, error: Any, code: str
+) -> None:
+    iid = _insight_id(world)
+    world.cortex.submit_error = error()
+    down = world.preview(iid)
+    assert down.status_code == 503, down.text
+    assert down.json()["code"] == code
+    world.cortex.submit_error = None
+    pre = world.preview(iid).json()
+    world.cortex.submit_error = error()
+    got = world.confirm(pre["token"])
+    assert got.status_code == 503, got.text
+    assert got.json()["code"] == code
+    assert "stale_preview" not in got.text
+    assert world.cortex.events("insight.pinned") == [] and world.register_rows() == 0
+    world.cortex.submit_error = None
+    again = world.confirm(pre["token"])  # Cortex is back: the same token pins
+    assert again.status_code == 200, again.text
+    assert world.register_rows() == 1
+    assert world.confirm(pre["token"]).json()["code"] == "confirm_token_used"
+
+
+def test_a_replay_whose_audit_row_is_dropped_is_not_served(world: _World) -> None:
+    from tests.test_insight_proof_02_route import _RaisingStore
+
+    asset_id, _pre, _ = _pin(world)
+    world.client.app.state.ask_audit_store = _RaisingStore()  # type: ignore[attr-defined]
+    res = world.replay(asset_id)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    env = body["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["text"] == _AUDIT_TEXT
+    assert env["rows"] == [] and env["values"] == [] and env["sql_used"] is None
+    assert_envelope_valid(env)
+    assert body["verdict"] == "refused" and body["proof"]["code"] == "audit_unrecorded"
+    assert world.cortex.events("insight.replayed")
+    assert body["orphan_ledger_entry"] == f"led_{world.cortex._n:06d}"
+    assert "North" not in res.text and "Unchanged since" not in res.text
+
+
+def test_a_confirm_whose_audit_row_is_dropped_says_so(world: _World) -> None:
+    from tests.test_insight_proof_02_route import _RaisingStore
+
+    iid = _insight_id(world)
+    pre = world.preview(iid).json()
+    world.client.app.state.ask_audit_store = _RaisingStore()  # type: ignore[attr-defined]
+    got = world.confirm(pre["token"])
+    assert got.status_code == 200, got.text
+    assert got.json()["audit_recorded"] is False
+    assert world.register_rows() == 1
+
+
+def test_the_replay_receipt_names_the_deployment_actor(world: _World) -> None:
+    asset_id, _pre, got = _pin(world)
+    assert got["audit_recorded"] is True
+    world.replay(asset_id)
+    assert world.cortex.events("insight.replayed")[-1].actor == _ACTOR
+
+
+def test_revoke_drops_the_stored_labels(world: _World) -> None:
+    asset_id, _pre, _ = _pin(world)
+    row = _register_row(world.wh, asset_id)
+    assert "North" in row["headline"] and "North" in row["approved_rows_json"]
+    assert world.revoke(asset_id).status_code == 200
+    row = _register_row(world.wh, asset_id)
+    assert row["headline"] == "" and row["approved_rows_json"] == "[]"
+    assert row["active_key"] is None and row["revoked_at"] is not None
+    assert row["expected_result_hash"] and row["ledger_entry_id"]
+
+
+def test_one_active_pin_is_a_database_rule_not_only_a_lock(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor import insight_register as ir
+
+    first, pre, _ = _pin(world)
+    real = ir._active_pin
+    token = world.preview(pre["proof"]["insight_id"]).json()["token"]
+    # A second process does not share _PIN_LOCK: let its check miss the first pin.
+    monkeypatch.setattr(ir, "_active_pin", _MissOnce(real))
+    got = world.confirm(token)
+    assert got.status_code == 409, got.text
+    body = got.json()
+    assert body["code"] == "already_pinned" and body["asset_id"] == first
+    assert body["orphan_ledger_entry"] == f"led_{world.cortex._n:06d}"
+    assert world.register_rows() == 1
+    monkeypatch.setattr(ir, "_active_pin", real)
+    assert [p["asset_id"] for p in world.pins().json()["pins"]] == [first]
+    # A revoke frees the key: the same SQL may be pinned again.
+    assert world.revoke(first).status_code == 200
+    token = world.preview(pre["proof"]["insight_id"]).json()["token"]
+    assert world.confirm(token).status_code == 200
+    assert world.register_rows() == 2
+
+
+class _MissOnce:
+    """The already-pinned check misses once (the race), then answers truthfully."""
+
+    def __init__(self, real: Any) -> None:
+        self.real = real
+        self.calls = 0
+
+    def __call__(self, *a: Any, **k: Any) -> Any:
+        self.calls += 1
+        return None if self.calls == 1 else self.real(*a, **k)

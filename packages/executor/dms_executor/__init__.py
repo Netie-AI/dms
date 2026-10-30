@@ -110,6 +110,7 @@ from dms_executor.grant_struct import (
 from dms_executor.insight_proof import demote_insight, insight_proof_enabled, prove_for_space
 from dms_executor.insight_register import (
     confirm_pin,
+    demote_replay,
     list_pinned,
     pin_space,
     preview_pin,
@@ -2058,6 +2059,7 @@ __all__ = [
     "insight_proof_enabled",
     "prove_for_space",
     "confirm_pin",
+    "demote_replay",
     "list_pinned",
     "pin_space",
     "preview_pin",

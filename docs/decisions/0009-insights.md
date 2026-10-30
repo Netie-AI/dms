@@ -138,3 +138,14 @@ confirmed it": nothing is auto-pinned, auto-replayed or auto-applied.
   an entry back.
 - Hand-off to ACTIONS (DR-0008): `asset_id` plus `expected_result_hash` is the citation a
   future writeback proposal must carry.
+- Verify round 1. Replay re-checks governance, not only the measure, before any submit:
+  every ontology item the pinned SQL was compiled from (measure, objects, links) must
+  still be served at its approved version, the SQL must recompile byte-identically, and
+  the INS-PROOF-01 PII gate runs on the pinned dimension. A miss is
+  `definition_changed`. GET /pins withholds a stored headline whose dimension is now PII,
+  and revoke clears the stored headline and rows. A replay re-reads the pin under the
+  revoke lock before its append. A re-prove that fails on Cortex is a 503
+  (`cortex_unavailable` / `cortex_submit_failed`) and gives the token back. A served
+  replay whose audit row is dropped is demoted to ABSTAIN `audit_unrecorded` and names its
+  orphan entry; confirm reports `audit_recorded`. The replay receipt names the deployment
+  actor. One active pin per (space, SQL) is also a UNIQUE index on `active_key`.

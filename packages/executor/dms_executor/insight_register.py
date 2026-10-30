@@ -18,7 +18,15 @@ steward saw, then a confirm with a single-use token.
   then re-executes the PINNED SQL twice through submit and reports unchanged
   (L0), changed with a label-level drift block (L1), or a named refusal. Every
   verdict appends one ``insight.replayed`` pointer.
-- ``revoke_pin`` appends ``insight.pin_revoked`` and then marks the row.
+- ``revoke_pin`` appends ``insight.pin_revoked`` and then marks the row; the
+  stored headline and approved rows (they carry labels) are cleared with it.
+
+Replay re-checks governance before any submit, not only the measure: every
+ontology item the pinned SQL was compiled from (the measure, the objects and
+links on its path) must still be served at the version the steward approved,
+the SQL must recompile byte-identically, and the INS-PROOF-01 PII gate is run on
+the pinned dimension. Any miss is ``definition_changed`` with zero submits, and
+GET /pins withholds the stored headline of a pin whose dimension is now PII.
 
 The register is ``main._proven_insights`` in the DMS warehouse DuckDB, a
 DMS-owned table on the ``main._verified_queries`` precedent: created under
@@ -77,7 +85,15 @@ TEXTS: dict[str, str] = {
         "The ontology this insight was approved under is not the one in use now. "
         "Reconfirm it before it is shown."
     ),
+    "pii_dimension": (
+        "A column this approved insight groups by is now marked as personal data, so "
+        "nothing of it is shown. Revoke the pin."
+    ),
 }
+
+#: Re-prove refusals that are the engine, not the data: a 503, and the token is
+#: given back so the steward can confirm once Cortex answers again.
+INFRA_CODES = ("cortex_unavailable", "cortex_submit_failed")
 
 _ASSET = re.compile(r"pin_[0-9a-f]{16}")
 _INSIGHT = re.compile(r"ins_[0-9a-f]{16}")
@@ -157,6 +173,13 @@ def _spend(token: str) -> _Token | str:
     return tok
 
 
+def _give_back(token: str, tok: _Token) -> None:
+    """Undo ``_spend`` after an infrastructure failure. The expiry is unchanged."""
+    with _TOKEN_LOCK:
+        _USED.pop(token, None)
+        _TOKENS[token] = tok
+
+
 def token_space(token: str) -> str | None:
     """The Space a live token is bound to, for the gate's metadata. Never spends it."""
     with _TOKEN_LOCK:
@@ -173,7 +196,7 @@ _COLUMNS = (
     "asset_id", "space_id", "insight_id", "measure", "dimension", "kind", "headline",
     "sql_text", "sql_hash", "expected_result_hash", "approved_rows_json",
     "definition_json", "watermarks_json", "approved_at", "approved_by",
-    "ledger_entry_id", "revoked_at", "revoke_ledger_entry_id",
+    "ledger_entry_id", "revoked_at", "revoke_ledger_entry_id", "active_key",
 )
 
 
@@ -211,9 +234,18 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
               approved_by VARCHAR NOT NULL,
               ledger_entry_id VARCHAR NOT NULL,
               revoked_at TIMESTAMPTZ,
-              revoke_ledger_entry_id VARCHAR
+              revoke_ledger_entry_id VARCHAR,
+              active_key VARCHAR
             )
             """
+        )
+        # One active pin per (space_id, sql_hash) is a database rule, not only
+        # _PIN_LOCK: active_key is set while active and NULL once revoked, and a
+        # UNIQUE index admits any number of NULLs. A table from before the column
+        # gains it here.
+        con.execute(f"ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS active_key VARCHAR")
+        con.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS _proven_insights_active ON {TABLE} (active_key)"
         )
 
 
@@ -242,6 +274,10 @@ def _load_pin(wh: Path, asset_id: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
+def _active_key(space: str, sql_hash: str) -> str:
+    return f"{space}|{sql_hash}"
+
+
 def _active_pin(wh: Path, space: str, sql_hash: str) -> str | None:
     rows = _read(wh, "space_id = ? AND sql_hash = ? AND revoked_at IS NULL", [space, sql_hash])
     return str(rows[0]["asset_id"]) if rows else None
@@ -268,8 +304,11 @@ def _mark_revoked(wh: Path, asset_id: str, at: datetime, entry_id: str) -> None:
     con = connect_file(wh, write=True)
     try:
         _ensure(con)
+        # The headline and the approved rows carry dimension labels; a revoked pin
+        # is never served, so it keeps its hashes and ids and drops its labels.
         con.execute(
-            f"UPDATE {TABLE} SET revoked_at = ?, revoke_ledger_entry_id = ? "
+            f"UPDATE {TABLE} SET revoked_at = ?, revoke_ledger_entry_id = ?, "
+            "active_key = NULL, headline = '', approved_rows_json = '[]' "
             "WHERE asset_id = ? AND revoked_at IS NULL",
             [at, entry_id, asset_id],
         )
@@ -286,7 +325,7 @@ def _stamp(value: Any) -> str | None:
     return ip._iso_z(value)
 
 
-def _public(pin: Mapping[str, Any]) -> dict[str, Any]:
+def _public(pin: Mapping[str, Any], withheld: str | None = None) -> dict[str, Any]:
     return {
         "asset_id": pin["asset_id"],
         "space_id": pin["space_id"] or None,
@@ -294,7 +333,8 @@ def _public(pin: Mapping[str, Any]) -> dict[str, Any]:
         "measure": pin["measure"],
         "dimension": pin["dimension"],
         "kind": pin["kind"],
-        "headline": pin["headline"],
+        "headline": None if withheld else pin["headline"],
+        "headline_withheld": withheld,
         "sql_hash": pin["sql_hash"],
         "expected_result_hash": pin["expected_result_hash"],
         "approved_at": _stamp(pin["approved_at"]),
@@ -315,9 +355,57 @@ def list_pinned(executor: Any, *, space_id: str | None) -> list[dict[str, Any]]:
     """Active pins of one Space (``None``: the personal context), oldest first."""
     if not ip.insight_proof_enabled():
         return []
-    rows = _read(_warehouse(executor), "space_id = ? AND revoked_at IS NULL",
-                 [_space_key(space_id)])
-    return [_public(r) for r in rows]
+    wh = _warehouse(executor)
+    rows = _read(wh, "space_id = ? AND revoked_at IS NULL", [_space_key(space_id)])
+    if not rows:
+        return []
+    loaded = _verified(wh)
+    return [_public(r, _headline_withheld(loaded, r)) for r in rows]
+
+
+def _verified(wh: Path) -> Any:
+    """The verified ontology in use now, or None (unverifiable fails closed)."""
+    from dms_executor.generative_ask import cached_verify_violations, load_verified_ontology
+
+    try:
+        loaded = load_verified_ontology(wh)
+    except Exception:  # noqa: BLE001 - an ontology that cannot load cannot clear a label
+        return None
+    if loaded is None or cached_verify_violations(loaded) != []:
+        return None
+    return loaded
+
+
+def _dimension_of(pin: Mapping[str, Any]) -> tuple[str, str, dict[str, str]] | None:
+    try:
+        d = json.loads(pin["definition_json"])
+    except (TypeError, ValueError):
+        return None
+    obj, attr, via = d.get("dim_object"), d.get("dim_attribute"), d.get("via")
+    if not (isinstance(obj, str) and obj and isinstance(attr, str) and attr):
+        return None
+    if not isinstance(via, list) or not all(
+        isinstance(v, list) and len(v) == 2 and all(isinstance(x, str) for x in v) for v in via
+    ):
+        return None
+    return obj, attr, {k: v for k, v in via}
+
+
+def _pii_hit(loaded: Any, obj: str, attr: str) -> bool:
+    """INS-PROOF-01's PII gate on the pinned dimension, now. Unknown object: a hit."""
+    if loaded is None or obj not in loaded.objects:
+        return True
+    return attr.casefold() in ip._pii_columns(loaded, obj)
+
+
+def _headline_withheld(loaded: Any, pin: Mapping[str, Any]) -> str | None:
+    """Why a stored headline (it names labels) may not be listed now, or None."""
+    if loaded is None:
+        return "ontology_unverified"
+    dim = _dimension_of(pin)
+    if dim is None:
+        return "definition_changed"
+    return "pii_dimension" if _pii_hit(loaded, dim[0], dim[1]) else None
 
 
 # --------------------------------------------------------------------------
@@ -355,6 +443,66 @@ def _served_trace(p_trace: Any, sql: str, entry_id: str, seq: int | None) -> Exe
 
 
 # --------------------------------------------------------------------------
+# what a pin depends on
+# --------------------------------------------------------------------------
+
+
+def _dependencies(loaded: Any, measure: str, sql: str) -> list[dict[str, str]]:
+    """Ontology items the pinned SQL was compiled from, with the version approved.
+
+    The measure; every object whose relation's tables the SQL reads; every link
+    between two of those objects. A replay refuses when any of them is no longer
+    served at that version (revoked, re-versioned or gone).
+    """
+    read = ip._read_tables(sql) or frozenset()
+    objects = {
+        name for name, o in loaded.objects.items()
+        if (t := ip._read_tables(str(o.relation or ""))) and t <= read
+    }
+    links = {
+        name for name, link in loaded.links.items()
+        if link.from_object in objects and link.to_object in objects
+    }
+    out: list[dict[str, str]] = []
+    for meta in ip._item_meta(loaded):
+        payload = meta.get("payload")
+        kind = str(meta.get("kind") or "")
+        name = str(payload.get("name") or "") if isinstance(payload, dict) else ""
+        if (kind == "measure" and name == measure) or (
+            kind == "object" and name in objects) or (kind == "link" and name in links):
+            out.append({"kind": kind, "name": name, "item_id": str(meta.get("id") or ""),
+                        "version_id": str(meta.get("version_id") or "")})
+    return sorted(out, key=lambda d: (d["kind"], d["name"], d["item_id"]))
+
+
+def _dependencies_hold(loaded: Any, deps: Any) -> bool:
+    """Every recorded item still served, same id, same version. Nothing recorded: no."""
+    if not isinstance(deps, list) or not deps:
+        return False
+    served = {
+        str(meta.get("id") or ""): str(meta.get("version_id") or "")
+        for meta in ip._item_meta(loaded)
+    }
+    ids = set(loaded.__dict__.get("_served_ids", ()) or ())
+    for dep in deps:
+        if not isinstance(dep, dict):
+            return False
+        item_id = str(dep.get("item_id") or "")
+        if not item_id or item_id not in ids or served.get(item_id) != dep.get("version_id"):
+            return False
+    return True
+
+
+def _infra_code(run: ip.InsightRun) -> str | None:
+    """The engine failure behind an empty re-prove, if that is what it was."""
+    for entry in run.refused:
+        base = str(entry.get("code") or "").split(":", 1)[0]
+        if base in INFRA_CODES:
+            return base
+    return None
+
+
+# --------------------------------------------------------------------------
 # preview and confirm
 # --------------------------------------------------------------------------
 
@@ -372,7 +520,7 @@ def preview_pin(executor: Any, *, space_id: str | None, insight_id: str) -> dict
         return _fail("insight_not_found")
     run = _reprove(executor, space_id, insight_id)
     if not run.proven:
-        return _fail("insight_not_found")
+        return _fail(_infra_code(run) or "insight_not_found")
     p = run.proven[0]
     expires = _clock() + timedelta(seconds=TOKEN_TTL_S)
     token = _mint(_Token(
@@ -395,13 +543,19 @@ def confirm_pin(
         return _off()
     from dms_executor.skills_quarantine import reject_scored_write
 
-    tok = _spend(str(token or ""))
+    raw_token = str(token or "")
+    tok = _spend(raw_token)
     if isinstance(tok, str):
         return _fail(tok)
     if tok.source != "approved_store":
         return _fail("measure_not_approved")
     run = _reprove(executor, tok.space_id, tok.insight_id)
     if not run.proven:
+        infra = _infra_code(run)
+        if infra is not None:
+            # Cortex, not the data: say so, and let the steward retry this token.
+            _give_back(raw_token, tok)
+            return _fail(infra)
         return _fail("stale_preview", shown_result_hash=tok.result_hash,
                      current_result_hash=None)
     p = run.proven[0]
@@ -412,6 +566,11 @@ def confirm_pin(
     if p.proof["definition"]["source"] != "approved_store":
         return _fail("measure_not_approved")
     wh = _warehouse(executor)
+    loaded = _verified(wh)
+    deps = _dependencies(loaded, p.measure, p.sql) if loaded is not None else []
+    if not p.dim_object or not p.dim_attribute or not deps:
+        # Replay could not re-check what this pin rests on: never pin it.
+        return _fail("measure_not_approved")
     space = _space_key(tok.space_id)
     with _PIN_LOCK:
         existing = _active_pin(wh, space, tok.sql_hash)
@@ -454,14 +613,23 @@ def confirm_pin(
                 "expected_result_hash": current,
                 "approved_rows_json": json.dumps(p.rows),
                 "definition_json": json.dumps({
-                    k: d[k] for k in ("measure", "grain", "expression", "item_id",
-                                      "version_id", "source")
+                    **{k: d[k] for k in ("measure", "grain", "expression", "item_id",
+                                         "version_id", "source")},
+                    "dim_object": p.dim_object,
+                    "dim_attribute": p.dim_attribute,
+                    "via": [list(v) for v in p.via],
+                    "deps": deps,
                 }),
                 "watermarks_json": json.dumps(p.proof["watermarks"]),
                 "approved_at": approved_at,
                 "approved_by": actor,
                 "ledger_entry_id": entry_id,
+                "active_key": _active_key(space, tok.sql_hash),
             })
+        except duckdb.ConstraintException:
+            # Another process pinned it between the check and the INSERT.
+            return _fail("already_pinned", asset_id=_active_pin(wh, space, tok.sql_hash),
+                         orphan_ledger_entry=entry_id)
         except Exception:  # noqa: BLE001 - the entry exists; say which one has no row
             return _fail("pin_commit_failed", orphan_ledger_entry=entry_id)
     env = dict(p.envelope)
@@ -516,6 +684,8 @@ def _drift(approved_rows: list[dict[str, Any]], rows: list[dict[str, Any]],
 
 def _refusal_text(code: str, measure: str) -> str:
     base = code.split(":", 1)[0]
+    if code == "definition_changed:pii_dimension":
+        return TEXTS["pii_dimension"]
     if base == "definition_changed":
         return (
             f"The approved definition of {measure} changed since this insight was approved; "
@@ -637,10 +807,31 @@ def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
         or ip._revoked(m)
     ):
         return _refused(pin, "definition_changed", "definition_changed")
+    # Everything else the pinned SQL rests on, before any submit: the items on its
+    # path at their approved versions, the PII gate on its dimension, and a
+    # recompile that must reproduce the pinned SQL byte for byte.
+    if not _dependencies_hold(loaded, definition.get("deps")):
+        return _refused(pin, "definition_changed:dependency", "definition_changed")
+    dim = _dimension_of(pin)
+    if dim is None or dim[0] not in loaded.objects:
+        return _refused(pin, "definition_changed:dimension", "definition_changed")
+    dim_obj, dim_attr, via = dim
+    if _pii_hit(loaded, dim_obj, dim_attr):
+        return _refused(pin, "definition_changed:pii_dimension", "definition_changed")
 
     sql = str(pin["sql_text"])
     if item_content_hash(sql) != pin["sql_hash"]:
         return _refused(pin, "envelope_invalid:sql_hash")
+    from dms_executor.ontology import CompiledQuery
+
+    try:
+        again = loaded.compile(measure, group_by=[(dim_obj, dim_attr)], via=via or None)
+    except Exception:  # noqa: BLE001 - a definition that no longer compiles has changed
+        again = None
+    if not isinstance(again, CompiledQuery) or item_content_hash(
+        ip._wrapper_sql(again.sql, f"{dim_obj}_{dim_attr}", measure)
+    ) != pin["sql_hash"]:
+        return _refused(pin, "definition_changed:compiled_sql", "definition_changed")
     approved_marks = json.loads(pin["watermarks_json"])
     tables = sorted(approved_marks)
     access = ip.space_access(executor, space_id=space_id, session_id=SESSION)
@@ -790,28 +981,42 @@ def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
 
 
 def replay_pin(
-    executor: Any, asset_id: str, *, ledger_append: Callable[..., Any]
+    executor: Any,
+    asset_id: str,
+    *,
+    ledger_append: Callable[..., Any],
+    actor: str | None = None,
 ) -> dict[str, Any]:
-    """One replay of an active pin: a verdict, its envelope and proof, one ledger pointer."""
+    """One replay of an active pin: a verdict, its envelope and proof, one ledger pointer.
+
+    ``actor`` is the deployment actor (DR-0004 Option A) the receipt names.
+    """
     if not ip.insight_proof_enabled():
         return _off()
     from dms_executor.envelope import assert_envelope_valid
 
-    pin = _load_pin(_warehouse(executor), asset_id)
+    wh = _warehouse(executor)
+    pin = _load_pin(wh, asset_id)
     if pin is None or pin["revoked_at"] is not None:
         return _fail("pin_not_found")
     done = _execute(executor, pin)
-    got = _append(
-        ledger_append,
-        REPLAY_EVENT,
-        {
-            "asset_id": pin["asset_id"],
-            "sql_hash": pin["sql_hash"],
-            "result_hash": done.result_hash,
-            "verdict": done.verdict,
-        },
-        None,
-    )
+    # A revoke may have landed while the SQL ran. Re-read under the lock revoke
+    # holds for its own append, so a revoked pin is never served or receipted.
+    with _PIN_LOCK:
+        now = _load_pin(wh, asset_id)
+        if now is None or now["revoked_at"] is not None:
+            return _fail("pin_not_found")
+        got = _append(
+            ledger_append,
+            REPLAY_EVENT,
+            {
+                "asset_id": pin["asset_id"],
+                "sql_hash": pin["sql_hash"],
+                "result_hash": done.result_hash,
+                "verdict": done.verdict,
+            },
+            actor,
+        )
     if isinstance(got, str):
         return _fail(got)
     entry_id, seq = got
@@ -834,6 +1039,46 @@ def replay_pin(
         "proof": proof,
         "trace": ExecutedTrace(statements=statements, ledger=((entry_id, seq),)),
     }
+
+
+def demote_replay(
+    res: Mapping[str, Any], code: str, *, orphan_ledger_entry: str | None = None
+) -> dict[str, Any]:
+    """A served replay that may not be served (its audit row did not land), as ABSTAIN.
+
+    INS-PROOF-02 rule (g) for replays: the envelope is a fresh ``build_abstain``
+    with no rows, values or SQL, and the receipt that was appended is named as
+    ``orphan_ledger_entry``. Never mutates ``res``.
+    """
+    from dms_executor.envelope import assert_envelope_valid
+
+    old = res.get("envelope") or {}
+    insight_id = str(res.get("insight_id") or "")
+    env = abstain.build_abstain(
+        reason=code,
+        stage=ip.STAGE,
+        question="insight:" + insight_id,
+        answer_id="ans_insproof_replay_" + hashlib.sha256(
+            f"{res.get('asset_id')}|{code}".encode()
+        ).hexdigest()[:16],
+        text=_refusal_text(code, ""),
+        values=[],
+        rows=[],
+        sql_used=None,
+        space_id=old.get("space_id"),
+        session_id=old.get("session_id"),
+    )
+    assert_envelope_valid(env)
+    proof = dict(res.get("proof") or {})
+    for key in ("result_hash", "reexec_result_hash", "drift"):
+        if key in proof:
+            proof[key] = None
+    proof.update(verdict="refused", code=code)
+    out = {**res, "verdict": "refused", "code": code, "envelope": env, "proof": proof,
+           "trace": ExecutedTrace()}
+    if orphan_ledger_entry:
+        out["orphan_ledger_entry"] = orphan_ledger_entry
+    return out
 
 
 # --------------------------------------------------------------------------

@@ -75,7 +75,9 @@ export type PinSummary = {
   measure: string;
   dimension: string;
   kind: string;
-  headline: string;
+  /** Null when the server withholds it (its dimension is now PII, or unverifiable). */
+  headline: string | null;
+  headline_withheld?: string | null;
   expected_result_hash: string;
   approved_at: string;
   approved_by: string;
@@ -88,7 +90,7 @@ export type Refusal = { status: number; code: string; body: Record<string, unkno
 
 const BASE = "/api/v1/insight-proof";
 
-type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 async function call<T>(
   fetchImpl: FetchLike,
