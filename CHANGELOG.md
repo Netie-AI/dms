@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
+
+- **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
+- **Evidence.** The receipt's evidence must equal what propose pinned (plus the bound `decline_reason` on a decline). A key added at record time, `audit_id` included, is refused (`ReceiptMismatch` on `evidence`). Propose refuses evidence that pins `decline_reason`. `decline_action_version` takes `reason=`.
+- **Refused record.** Apply and decline hold a savepoint until `record_decision` stores the decision; any refusal rolls it back, so a caller that commits anyway keeps no write, no status flip and no binding.
+- **Masking.** Integers in evidence are masked by their text. A key value that reads as PII or is longer than 200 characters is refused at propose (`key_value_invalid`, a new refusal code). An actor that is not a user id and reads as PII is refused (`ActorRequired`). A reason that masks past 500 characters is refused at propose.
+- **Docs.** DR-0008 items 6-9 updated (still Proposed).
 ## 2026-10-30 - ACT-01 fix: the receipt is rebuilt from the database, not trusted
 
 - **Receipt.** `record_decision` rebuilds every receipt field from the stored version, its pins and the writeback row the version last wrote, and refuses a caller record that differs (`ReceiptMismatch`). A forged `applied` for a pending version, and a real apply recorded as `declined`, are refused; the real receipt can still be written. The Space is the proposal's own (`space_id`, if passed, must match). One Cortex entry id backs one pointer (`LedgerEntryReused`).

@@ -17,6 +17,7 @@ from dms_core.control_plane.action_types import (
     ActionSpecError,
     actions_enabled,
     canonical_decimal,
+    mask_json,
     spec_sha,
     state_hash,
     validate_spec,
@@ -212,3 +213,33 @@ def test_single_alembic_head() -> None:
     cfg = Config(str(root / "alembic.ini"))
     cfg.set_main_option("script_location", str(root / "alembic"))
     assert ScriptDirectory.from_config(cfg).get_heads() == ["0009_action_writeback"]
+
+
+def test_key_values_that_read_as_pii_or_run_long_are_refused() -> None:
+    """A key is copied verbatim into the receipt and the ledger, so PII is refused, not kept."""
+    for key in (
+        {"sku": "900101-14-5678", "location_id": "WH-B"},
+        {"sku": "SKU-BETA", "location_id": "ali@example.com"},
+        {"sku": "S" * 201, "location_id": "WH-B"},
+    ):
+        assert _code(_raw(object_key=key)) == "key_value_invalid", key
+    with pytest.raises(ActionSpecError) as info:
+        validate_spec(_raw(object_key={"sku": "900101-14-5678", "location_id": "WH-B"}))
+    assert str(info.value) == "key_value_invalid: sku reads as personal data or a secret"
+    # Real SKU shapes, an EAN-13 among them, pass through unchanged.
+    for sku in ("SKU-BETA", "9556001234567", "ITEM-2026-0042", "S" * 200):
+        spec = validate_spec(_raw(object_key={"sku": sku, "location_id": "WH-B"}))
+        assert spec.object_key == {"sku": sku, "location_id": "WH-B"}
+
+
+def test_reason_that_masks_past_the_limit_is_refused_at_propose() -> None:
+    """Before the fix this validated at propose and failed every later apply as tampering."""
+    reason = ("a@b.co " * 80)[:500]
+    assert len(reason.strip()) <= 500
+    assert _code(_raw(reason=reason)) == "reason_too_long"
+
+
+def test_mask_json_masks_integers_like_their_text() -> None:
+    masked = mask_json({"nric_int": 900101145678, "rows": 3, "flag": True, "ok": "SKU-BETA"})
+    assert masked == {"nric_int": "DMSMASK_nric_01", "rows": 3, "flag": True, "ok": "SKU-BETA"}
+    assert mask_json(masked) == masked

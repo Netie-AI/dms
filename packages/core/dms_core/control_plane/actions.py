@@ -10,6 +10,10 @@ there is no auto-apply.
 rolls the savepoint back, so the version stays ``pending_confirm``. It does not
 write the decision: only the caller (ACT-02) holds the Cortex ledger entry, and
 ``record_decision`` stores that pointer (hard rule 3: one ledger, pointers only).
+The apply binds its actor and ``approval_ref`` in ``dms.action_confirmations``;
+the receipt reads them back from there, never from the caller. A refused
+``record_decision`` also rolls back the apply or decline it was recording, so a
+caller that commits anyway keeps neither.
 
 psycopg only. No cortex_client, duckdb or sqlglot here (layers).
 ``DMS_ACTIONS`` defaults off and every write path here refuses while it is off.
@@ -21,6 +25,7 @@ from __future__ import annotations
 import json
 import unicodedata
 import uuid
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Any, TypedDict, TypeVar
 from uuid import UUID
@@ -30,6 +35,7 @@ import psycopg
 from dms_core.control_plane.action_types import (
     ACTION_TYPES,
     ALLOWED_KEYS,
+    REASON_MAX,
     ActionSpec,
     ActionSpecError,
     ActionType,
@@ -54,6 +60,8 @@ from dms_core.control_plane.seed import USER_ID as SEED_USER_ID
 
 _T = TypeVar("_T")
 _SAVEPOINT = "dms_action_core"
+#: Evidence key a decline adds; reserved, so a proposal cannot pin it.
+DECLINE_REASON_KEY = "decline_reason"
 APPROVAL_REF_MIN = 3
 #: Actor values that name nobody: the shipped default user and stringified blanks.
 _NO_ACTOR = frozenset({"", "none", "null", str(SEED_USER_ID)})
@@ -171,12 +179,41 @@ def _require_ref(approval_ref: str | None) -> str:
     return mask_text(ref)
 
 
+def _is_uuid(text: str) -> bool:
+    try:
+        UUID(text)
+    except ValueError:
+        return False
+    return True
+
+
 def _require_actor(actor_id: Any) -> str:
-    """DR-0004 Option A: the one configured steward identity, never blank or the default."""
+    """DR-0004 Option A: the one configured steward identity, never blank or the default.
+
+    The actor lands verbatim in append-only rows, so an actor that is not a user id
+    and reads as PII (an email) is refused rather than stored or masked away.
+    """
     actor = "" if actor_id is None else str(actor_id).strip()
     if actor.lower() in _NO_ACTOR or _visible(actor) == 0:
         raise ActorRequired("an apply or decline needs the configured steward identity")
+    if not _is_uuid(actor) and mask_text(actor) != actor:
+        raise ActorRequired("the actor reads as personal data; configure the steward's user id")
     return actor
+
+
+def _require_decline_reason(reason: Any) -> str:
+    """The decline reason as stored: stripped, scrubbed and masked, at most REASON_MAX."""
+    if reason is None:
+        reason = ""
+    if not isinstance(reason, str):
+        raise ActionSpecError("field_unknown", "reason must be text")
+    text = reason.strip()
+    if len(text) > REASON_MAX:
+        raise ActionSpecError("reason_too_long", f"{len(text)} > {REASON_MAX}")
+    text = mask_text(text)
+    if len(text) > REASON_MAX:
+        raise ActionSpecError("reason_too_long", f"{len(text)} > {REASON_MAX} once masked")
+    return text
 
 
 def _in_savepoint(conn: psycopg.Connection, fn: Callable[[], _T]) -> _T:
@@ -193,6 +230,100 @@ def _in_savepoint(conn: psycopg.Connection, fn: Callable[[], _T]) -> _T:
         raise
     conn.execute(f"RELEASE SAVEPOINT {_SAVEPOINT}")
     return out
+
+
+#: Per connection, the applies and declines not yet recorded, oldest first:
+#: (transaction id, version id, savepoint name). The savepoint stays open until
+#: ``record_decision`` stores the decision, so a refused record can roll it back.
+_HELD: weakref.WeakKeyDictionary[psycopg.Connection, list[tuple[str, str, str]]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _xid(conn: psycopg.Connection) -> str | None:
+    row = conn.execute("SELECT pg_current_xact_id_if_assigned()::text").fetchone()
+    return None if row is None or row[0] is None else str(row[0])
+
+
+def _held(conn: psycopg.Connection, fn: Callable[[], _T], version_of: Callable[[_T], Any]) -> _T:
+    """Run an apply or decline under a savepoint that ``record_decision`` settles.
+
+    A refusal rolls it back at once. On success it stays open, so a refused
+    ``record_decision`` can undo the write and the status flip it was recording.
+    """
+    name = f"dms_action_held_{uuid.uuid4().hex}"
+    conn.execute(f"SAVEPOINT {name}")
+    try:
+        out = fn()
+        xid = _xid(conn)
+    except BaseException:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {name}")
+            conn.execute(f"RELEASE SAVEPOINT {name}")
+        except psycopg.Error:
+            pass
+        raise
+    if xid is not None:
+        held = [h for h in _HELD.get(conn, []) if h[0] == xid]
+        held.append((xid, str(version_of(out)), name))
+        _HELD[conn] = held
+    return out
+
+
+def _undo_held(conn: psycopg.Connection, version_id: str) -> None:
+    """Roll back the apply or decline a refused record was for.
+
+    The one for ``version_id`` if this transaction holds it, else the oldest one
+    still unrecorded (a forged version id must not leave a real apply behind).
+    A transaction that is already aborted commits nothing, so it is left as is.
+    """
+    held = _HELD.pop(conn, None)
+    if not held:
+        return
+    try:
+        xid = _xid(conn)
+    except psycopg.Error:
+        return
+    live = [h for h in held if h[0] == xid]
+    if not live:
+        return
+    at = next((i for i, h in enumerate(live) if h[1] == version_id), 0)
+    try:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {live[at][2]}")
+        conn.execute(f"RELEASE SAVEPOINT {live[at][2]}")
+    except psycopg.Error:
+        return
+    if at:
+        _HELD[conn] = live[:at]
+
+
+def _settle_held(conn: psycopg.Connection, version_id: str) -> None:
+    """The decision is stored: its apply or decline is no longer undone by a refusal."""
+    held = _HELD.pop(conn, None)
+    rest = [h for h in held or [] if h[1] != version_id]
+    if rest:
+        _HELD[conn] = rest
+
+
+def _bind(
+    conn: psycopg.Connection,
+    *,
+    version_id: UUID,
+    tenant_id: UUID,
+    decision: str,
+    approval_ref: str,
+    actor_id: str,
+    decline_reason: str | None = None,
+) -> None:
+    """Who confirmed this version, under which approval_ref: the receipt reads it back."""
+    conn.execute(
+        """
+        INSERT INTO dms.action_confirmations (
+          version_id, tenant_id, decision, approval_ref, actor_id, decline_reason
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (version_id, tenant_id, decision, approval_ref, actor_id, decline_reason),
+    )
 
 
 def _json_safe(value: Any) -> Any:
@@ -276,6 +407,8 @@ def propose_action(
     source = None if source_value is None else canonical_decimal(source_value)
     # Evidence is copied into an append-only receipt: no secret, no PII (0005 precedent).
     ev = mask_json(_json_safe(dict(evidence or {})))
+    if DECLINE_REASON_KEY in ev:
+        raise ActionSpecError("field_unknown", f"evidence key {DECLINE_REASON_KEY!r} is reserved")
 
     cell = _read_cell(conn, tenant_id, at, spec.object_key)
     current, row_version = (None, 0) if cell is None else (cell[1], cell[2])
@@ -541,6 +674,14 @@ def apply_action_version(
                 f"re-read shows {reread[3]!r} at row_version {reread[4]}, wrote {spec.value!r}"
             )
 
+        _bind(
+            conn,
+            version_id=version_id,
+            tenant_id=tenant_id,
+            decision="applied",
+            approval_ref=ref,
+            actor_id=actor,
+        )
         before = dict(diff.get("before") or {})
         source = before.get("source_value")
         return ApplyResult(
@@ -563,7 +704,7 @@ def apply_action_version(
             actor_id=actor,
         )
 
-    return _in_savepoint(conn, _apply)
+    return _held(conn, _apply, lambda out: out["version_id"])
 
 
 def decline_action_version(
@@ -573,18 +714,22 @@ def decline_action_version(
     idempotency_token: str,
     approval_ref: str = "",
     actor_id: str = "",
+    reason: str = "",
     lock_timeout_seconds: float = 2.0,
 ) -> ApplyResult:
     """Reject a pending action version. Writes nothing to the writeback table.
 
     The returned record has ``rows_changed`` 0 and ``verified`` False, ready for
-    ``record_decision(..., decision='declined')``. Never commits.
+    ``record_decision(..., decision='declined')``. Its evidence is the pinned
+    evidence plus ``decline_reason``, bound here with the actor and approval_ref.
+    Never commits.
     """
     _require_enabled()
-    # Both checks come before the status flips, as in apply: a refused decline
+    # Every check comes before the status flips, as in apply: a refused decline
     # leaves the version pending, never rejected with no decision behind it.
     ref = _require_ref(approval_ref)
     actor = _require_actor(actor_id)
+    why = _require_decline_reason(reason)
 
     def _decline() -> ApplyResult:
         row = conn.execute(
@@ -607,6 +752,15 @@ def decline_action_version(
             lock_timeout_seconds=lock_timeout_seconds,
         )
         diff = _load_action_version(conn, out["id"], tenant_id)["diff"]
+        _bind(
+            conn,
+            version_id=out["id"],
+            tenant_id=tenant_id,
+            decision="declined",
+            approval_ref=ref,
+            actor_id=actor,
+            decline_reason=why,
+        )
         return ApplyResult(
             proposal_id=out["proposal_id"],
             version_id=out["id"],
@@ -623,11 +777,11 @@ def decline_action_version(
             verified=False,
             rows_changed=0,
             approval_ref=ref,
-            evidence=dict(diff.get("evidence") or {}),
+            evidence={**dict(diff.get("evidence") or {}), DECLINE_REASON_KEY: why},
             actor_id=actor,
         )
 
-    return _in_savepoint(conn, _decline)
+    return _held(conn, _decline, lambda out: out["version_id"])
 
 
 _UNSET: Any = object()
@@ -748,11 +902,49 @@ def record_decision(
     transaction as the apply, so a failed append rolls all of it back.
 
     The record is not trusted: every receipt field is rebuilt from the stored
-    version and the writeback row, and a caller record that differs is refused
-    (ReceiptMismatch). The Space is the proposal's own; ``space_id``, when
-    given, must equal it. Evidence may add keys (a decline reason) but not
-    change the ones pinned at propose. An entry id backs one pointer only.
+    version and the writeback row, and the actor, approval_ref and decline
+    reason from the row the apply or decline bound. A caller record that differs
+    is refused (ReceiptMismatch). The Space is the proposal's own; ``space_id``,
+    when given, must equal it. Evidence must be exactly what was pinned at
+    propose (plus, for a decline, the bound ``decline_reason``): no key may be
+    added or changed. An entry id backs one pointer only.
+
+    Any refusal also rolls back the apply or decline being recorded, so the
+    caller's transaction cannot commit a write that has no decision.
     """
+    try:
+        out = _record_decision(
+            conn, result, decision=decision, cortex_entry_id=cortex_entry_id, space_id=space_id
+        )
+    except BaseException:
+        _undo_held(conn, str(result.get("version_id")))
+        raise
+    _settle_held(conn, str(result.get("version_id")))
+    return out
+
+
+def _bound(conn: psycopg.Connection, version_id: UUID) -> tuple[str, str, str, str | None]:
+    row = conn.execute(
+        """
+        SELECT decision, approval_ref, actor_id, decline_reason
+          FROM dms.action_confirmations
+         WHERE version_id = %s
+        """,
+        (version_id,),
+    ).fetchone()
+    if row is None:
+        raise ReceiptMismatch("actor_id", "no apply or decline bound an actor to this version")
+    return str(row[0]), str(row[1]), str(row[2]), None if row[3] is None else str(row[3])
+
+
+def _record_decision(
+    conn: psycopg.Connection,
+    result: Mapping[str, Any],
+    *,
+    decision: str,
+    cortex_entry_id: str,
+    space_id: UUID | None,
+) -> dict[str, Any]:
     _require_enabled()
     if decision not in ("applied", "declined"):
         raise ValueError(f"unknown decision {decision!r}")
@@ -768,10 +960,22 @@ def record_decision(
         stored, receipt = _rebuild_receipt(conn, result, decision)
         if space_id is not _UNSET and not _same(space_id, stored["space_id"]):
             raise ReceiptMismatch("space_id", "the proposal belongs to another Space")
-        pinned = stored["diff"].get("evidence") or {}
+        bound_decision, bound_ref, bound_actor, bound_reason = _bound(conn, stored["version_id"])
+        if bound_decision != decision:
+            raise ReceiptMismatch("decision", f"the version was {bound_decision}, not {decision}")
+        if ref != bound_ref:
+            raise ReceiptMismatch("approval_ref", "the version was confirmed under another ref")
+        if actor != bound_actor:
+            raise ReceiptMismatch("actor_id", "the version was confirmed by another actor")
+        pinned = dict(stored["diff"].get("evidence") or {})
+        if decision == "declined":
+            pinned[DECLINE_REASON_KEY] = bound_reason or ""
         evidence = mask_json(_json_safe(dict(result.get("evidence") or {})))
+        added = sorted(set(evidence) - set(pinned))
+        if added:
+            raise ReceiptMismatch("evidence", f"evidence {added[0]!r} was not pinned at propose")
         for key, value in pinned.items():
-            if evidence.get(key) != value:
+            if evidence.get(key, _UNSET) != value:
                 raise ReceiptMismatch("evidence", f"evidence {key!r} differs from the proposal")
         tenant_id = stored["tenant_id"]
         seq_row = conn.execute(
@@ -816,9 +1020,9 @@ def record_decision(
                 receipt["after_hash"],
                 receipt["rows_changed"],
                 receipt["verified"],
-                ref,
-                actor,
-                json.dumps(evidence),
+                bound_ref,
+                bound_actor,
+                json.dumps(pinned),
                 entry,
                 int(seq_row[0]),
             ),
