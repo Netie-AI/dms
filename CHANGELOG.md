@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-31 - ACT-02 fix 5: a reused entry id is never voided
+
+- **Reused entry id.** When Cortex returns an entry id that already backs an earlier, committed decision (`LedgerEntryReused`), apply and decline no longer append `action.*.void` naming that id (it put "did not commit" on the ledger over a real decision). They answer 409 `ledger_entry_reused` with `reused_entry_id` and `voided: false`, roll back, and append nothing. The entry Cortex really wrote for the refused attempt cannot be named, so it is disclosed as an orphan. Other refusals after the append (`receipt_mismatch`) still void the entry they name. DR-0008 item 4 updated (still Proposed).
+
 ## 2026-10-30 - ACT-02 fix 4: a verbatim approval_ref carries no NRIC or card
 
 - **approval_ref.** Since fix 3 keeps the ref verbatim, a ticket-shaped ref that embeds an NRIC (`CHG-900101-14-5678`, `NRIC900101145678`, even after a letter prefix) or a Luhn-valid card number (`REF-4111-1111-1111-1111`) is refused with 400 `approval_ref_invalid` before any write, instead of reaching the immutable ledger as given. Ordinary numeric tickets (`CHG-2026-1030-4417`, `INC-60123456789`) are kept. No new refusal code. DR-0008 item 8 updated (still Proposed).

@@ -466,6 +466,17 @@ def _record_failed(
     return _refuse(503, "record_failed_after_append", cortex_entry_id=entry_id)
 
 
+def _entry_reused(entry_id: str) -> HTTPException:
+    """Cortex handed back an entry id that already backs an earlier, committed decision.
+
+    That id is not this write's: voiding it would tell the ledger a real decision did
+    not commit. So nothing is appended over it. The entry Cortex really wrote for this
+    attempt (if any) has no id DMS can name, so it cannot be voided by name either; the
+    transaction rolls back on exit and the caller gets 409 naming the reused id.
+    """
+    return _refuse(409, "ledger_entry_reused", reused_entry_id=entry_id, voided=False)
+
+
 def _decision_by_entry(settings: Any, entry_id: str) -> tuple[str, dict[str, Any] | None]:
     """After a commit raised: did the decision that names ``entry_id`` land anyway?
 
@@ -746,6 +757,9 @@ def apply_action_route(
                 cortex_entry_id=entry_id,
                 space_id=target["space_id"],
             )
+        except LedgerEntryReused as exc:
+            # The id backs an earlier decision: never void it (see _entry_reused).
+            raise _entry_reused(entry_id) from exc
         except _CORE_REFUSALS as exc:
             # The entry exists but no receipt backs it: say so on the ledger.
             _void_append(cortex, actor, "action.apply.void", entry_id, result["version_id"])
@@ -871,6 +885,9 @@ def decline_action_route(
                 cortex_entry_id=entry_id,
                 space_id=target["space_id"],
             )
+        except LedgerEntryReused as exc:
+            # The id backs an earlier decision: never void it (see _entry_reused).
+            raise _entry_reused(entry_id) from exc
         except _CORE_REFUSALS as exc:
             _void_append(cortex, actor, "action.decline.void", entry_id, result["version_id"])
             raise _action_error(exc) from exc
