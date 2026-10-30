@@ -991,6 +991,95 @@ def test_a_view_marked_on_its_own_column_never_executes(tmp_path: Path) -> None:
     _assert_nothing_leaked(run, stub, "region")
 
 
+# Verify round 6 (MEDIUM): a generated (virtual) column over the marked column
+# read as a plain column of a base table, and NORTH/SOUTH reached an L1 headline.
+_GENERATED = [
+    # (generated column definition, relation the object reads, attribute)
+    ("region VARCHAR GENERATED ALWAYS AS (upper(name)) VIRTUAL", "Sales.Territory", "region"),
+    ("region VARCHAR AS (name || '')", "Sales.Territory", "region"),
+    ("region VARCHAR AS (md5(name))", "Sales.Territory", "region"),
+    # A subquery rename of the generated column carries its mark.
+    ("region VARCHAR AS (upper(name))",
+     "(SELECT territory_id, region AS area FROM Sales.Territory)", "area"),
+]
+
+
+def _seed_generated(wh: Path, column: str) -> None:
+    _exec(wh, "DROP TABLE Sales.Territory",
+          f"CREATE TABLE Sales.Territory (territory_id INTEGER, name VARCHAR, "
+          f"zone VARCHAR, {column})",
+          "INSERT INTO Sales.Territory (territory_id, name, zone) VALUES "
+          "(1,'North','north'),(2,'South','south'),(3,'East','east'),(4,'West','west')")
+
+
+@pytest.mark.parametrize(("column", "relation", "attr"), _GENERATED)
+def test_a_generated_column_over_a_marked_column_never_executes(
+    tmp_path: Path, column: str, relation: str, attr: str
+) -> None:
+    wh = _seed_sales(tmp_path / "pii_gen.duckdb")
+    _seed_generated(wh, column)
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items(relation, attr, pii=True))
+    run = _run(wh, stub, set(_B_GRANTS), onto=onto)
+    texts = [p.envelope["text"] for p in run.proven]
+    assert (f"2 of 4 Territory.{attr} values (NORTH, SOUTH) carry 86.4 pct of "
+            "order_amount") not in texts
+    _assert_nothing_leaked(run, stub, attr)
+    shown = json.dumps([r["envelope"] for r in run.refused])
+    assert "NORTH" not in shown and "SOUTH" not in shown
+
+
+def test_a_generated_column_over_an_unmarked_column_still_proves(tmp_path: Path) -> None:
+    """Control: on a marked table, a generated column over an unmarked column proves."""
+    wh = _seed_sales(tmp_path / "gen_ok.duckdb")
+    _seed_generated(wh, "region VARCHAR AS (upper(zone))")
+    onto = Ontology.from_store(items=_territory_items("Sales.Territory", "region", pii=True))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS), onto=onto)
+    got = _by_text(
+        run, "2 of 4 Territory.region values (NORTH, SOUTH) carry 86.4 pct of order_amount")
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert [t[:3] for t in _tuples(got.envelope["rows"])] == [
+        ("NORTH", 900.0, 81.8), ("SOUTH", 50.0, 4.5), ("EAST", 30.0, 2.7),
+        ("WEST", 20.0, 1.8), (None, 100.0, 9.1)]
+
+
+def test_a_generated_column_without_pii_still_proves(tmp_path: Path) -> None:
+    """Control: with no pii item, the generated column is an ordinary segment."""
+    wh = _seed_sales(tmp_path / "gen_nopii.duckdb")
+    _seed_generated(wh, "region VARCHAR AS (upper(name))")
+    onto = Ontology.from_store(items=_territory_items("Sales.Territory", "region", pii=False))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS), onto=onto)
+    got = _by_text(
+        run, "2 of 4 Territory.region values (NORTH, SOUTH) carry 86.4 pct of order_amount")
+    assert_envelope_valid(got.envelope)
+    assert _tuples(got.envelope["rows"])[0][:3] == ("NORTH", 900.0, 81.8)
+
+
+@pytest.mark.parametrize(("expression", "carries"), [
+    ('CAST(upper("name") AS VARCHAR)', True),
+    ('CAST(upper("zone") AS VARCHAR)', False),
+    ('CAST(md5("zone") AS VARCHAR)', True),   # unlisted function: not modelled
+    ("CAST(#2 AS VARCHAR)", True),            # positional: names no column
+    (None, True),
+])
+def test_generated_expression_trace(expression: str | None, carries: bool) -> None:
+    """In addition to the envelope tests above: the expression rule itself."""
+    assert ip._generated_reads_marked(expression, {"name"}) is carries
+
+
+def test_an_unreadable_generated_column_catalog_is_all_pii(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed: a catalog that cannot list generated columns makes the object all-PII."""
+    wh = _seed_sales(tmp_path / "gen_cat.duckdb")
+    monkeypatch.setattr(ip, "_generated_columns", lambda con: None)
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_items(pii_on_name=True))
+    run = _run(wh, stub, set(_B_GRANTS), onto=onto)
+    _assert_nothing_leaked(run, stub, "name")
+
+
 def _seed_codes(wh: Path) -> None:
     _exec(wh, "CREATE TABLE Sales.Codes (code VARCHAR)",
           "INSERT INTO Sales.Codes VALUES ('North'),('South'),('East'),('West')")
@@ -1324,8 +1413,19 @@ def test_insight_id_is_bound_to_measure_label_kind_and_sql(
         ip.assert_proof_shape(a.proof, onto=onto, sql=a.sql, rows=a.rows,
                               label="Territory.region")
     # Swapping both id and kind yields b's own proof, byte for byte: the two kinds
-    # read one statement, so no other proof field tells them apart.
-    assert {**a.proof, "insight_id": b.insight_id, "kind": b.kind} == b.proof
+    # read one statement, so no other proof field tells them apart. Verify round 6
+    # (LOW): bound to the insight it is attached to, the swapped proof fails.
+    swapped = {**a.proof, "insight_id": b.insight_id, "kind": b.kind}
+    assert swapped == b.proof
+    with pytest.raises(ip.ProofShapeError, match="insight_id is not the insight"):
+        ip.assert_proof_shape(swapped, onto=onto, sql=a.sql, rows=a.rows, label=a.dimension,
+                              insight_id=a.insight_id, kind=a.kind)
+    with pytest.raises(ip.ProofShapeError, match="kind is not the insight"):
+        ip.assert_proof_shape({**a.proof, "kind": b.kind}, kind=a.kind)
+    for p in (a, b):
+        ip.assert_proof_shape(p.proof, onto=onto, sql=p.sql, rows=p.rows, label=p.dimension,
+                              insight_id=p.insight_id, kind=p.kind)
+        assert p.envelope["answer_id"] == p.proof["insight_id"] == p.insight_id
 
 
 @pytest.mark.parametrize(

@@ -158,7 +158,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  watermarks {proof['watermarks']}  ledger {proof['ledger']}")
         try:
             assert_envelope_valid(env)
-            ip.assert_proof_shape(proof, sql=p.sql, rows=p.rows)
+            ip.assert_proof_shape(proof, sql=p.sql, rows=p.rows, label=p.dimension,
+                                  insight_id=p.insight_id, kind=p.kind)
         except (AssertionError, ip.ProofShapeError) as exc:
             ok = False
             print(f"  FAIL {type(exc).__name__}: {exc}")
