@@ -364,10 +364,22 @@ def test_rule12_key_refused_with_candidate(h: Harness) -> None:
 
 
 def test_rule12_candidates_withhold_pii_key_values(h: Harness, tmp_path: Path) -> None:
-    """A source key that reads as PII is never echoed back in the 422 body."""
+    """A source key that reads as PII is never echoed back in the 422 body.
+
+    The body is pinned in a fixture the UI renders (apps/ui/src/lib/actions.test.ts),
+    so the on-screen refusal text is tied to what this route actually returns.
+    """
     from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
 
-    pii = ("ali.baba@example.com", "900101-14-5678")
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "fixtures"
+            / "actions"
+            / "act02_pii_candidates_refusal.json"
+        ).read_text(encoding="utf-8")
+    )
+    pii = tuple(fixture["pii_values"])
     db = ensure_demo_warehouse(tmp_path / "act02_wh.duckdb")
     con = connect_file(db, write=True)
     try:
@@ -381,10 +393,10 @@ def test_rule12_candidates_withhold_pii_key_values(h: Harness, tmp_path: Path) -
     finally:
         con.close()
     before = h.counts()
-    resp = h.propose("450", object_key={"sku": "SKU-BETA", "location_id": "WH-ZZ"})
+    resp = h.propose("450", object_key=dict(fixture["detail"]["object_key"]))
     assert resp.status_code == 422, resp.text
     detail = resp.json()["detail"]
-    assert detail["code"] == "object_key_not_found"
+    assert detail == fixture["detail"]
     assert detail["candidates"] == [{"sku": "SKU-BETA", "location_id": "WH-B"}]
     for value in pii:
         assert value not in resp.text
