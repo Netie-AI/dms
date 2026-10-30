@@ -243,6 +243,7 @@ def test_insights_generate_sql_is_ontology_plan_not_bind(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -266,6 +267,7 @@ def test_insights_refuse_without_sql_is_miss_not_green_bind(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=False,
+        dialect="duckdb",
     )
     assert env is None
 
@@ -293,6 +295,7 @@ def test_insights_unarmed_ranked_metric_is_ontology_plan_not_bind(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -328,6 +331,7 @@ def test_insights_unarmed_without_ranked_measure_does_not_bind(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -358,6 +362,7 @@ def test_insights_refused_generate_sql_is_not_executed(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -455,6 +460,7 @@ def test_hostile_insights_sql_abstains_not_l2(
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -505,6 +511,7 @@ def test_prove_harness_counts_ontology_plan_when_cortex_path_works(
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env.get("plan_source") == "ontology_plan"
@@ -542,6 +549,7 @@ def test_unlabeled_compute_plan_is_other_not_guessed_ai(
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -563,6 +571,7 @@ def test_stamped_ontology_plan_survives_on_envelope(
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"

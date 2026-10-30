@@ -168,6 +168,7 @@ def _ask_envelope(compute: Any) -> dict[str, Any] | None:
         ontology=_tiny_ontology(),
         warehouse=None,
         bind_on_miss=True,
+        dialect="duckdb",
     )
 
 

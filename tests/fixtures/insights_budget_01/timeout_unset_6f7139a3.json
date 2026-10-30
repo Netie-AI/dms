@@ -1,0 +1,185 @@
+{
+ "generate": {
+  "envelope": {
+   "abstained": true,
+   "answer_id": "ans_gen01_abstain",
+   "as_of": "<as_of>",
+   "ask_mode": "live",
+   "assumptions": [
+    "GEN-01: insights_timeout"
+   ],
+   "audit_id": "ans_gen01_abstain",
+   "audit_receipt": {
+    "exclude": {
+     "reasons": [],
+     "status": "na",
+     "why": "N/A: abstained; no exclude receipt"
+    },
+    "include": {
+     "row_count": 0,
+     "rows": [],
+     "status": "na",
+     "why": "N/A: abstained; no include set"
+    },
+    "unsure": {
+     "abstained": true,
+     "badge": "ABSTAIN",
+     "status": "abstain",
+     "why": "GEN-01: insights_timeout"
+    }
+   },
+   "badge": "ABSTAIN",
+   "chart": null,
+   "contributing_sources": [],
+   "demo_fallback_used": false,
+   "drillthrough_token": null,
+   "generate_legs": {
+    "count": 1,
+    "legs": [
+     {
+      "returned": "nothing"
+     }
+    ]
+   },
+   "grounded_tables": [],
+   "plan_source": "other",
+   "route": "generated",
+   "rows": [],
+   "served_attribution": "missing",
+   "session_id": null,
+   "space_id": null,
+   "sql_used": null,
+   "suggestions": [],
+   "text": "I cannot certify an ontology-grounded query for that question (gap: insights_timeout), so I am not executing one.",
+   "values": []
+  },
+  "payload": {
+   "insights_fail": "insights_timeout",
+   "insights_reached": true,
+   "live_5000_ci": false,
+   "values": []
+  }
+ },
+ "ontology": {
+  "envelope": {
+   "abstained": true,
+   "answer_id": "ans_gen01_abstain",
+   "as_of": "<as_of>",
+   "ask_mode": "live",
+   "assumptions": [
+    "GEN-01: insights_timeout"
+   ],
+   "audit_id": "ans_gen01_abstain",
+   "audit_receipt": {
+    "exclude": {
+     "reasons": [],
+     "status": "na",
+     "why": "N/A: abstained; no exclude receipt"
+    },
+    "include": {
+     "row_count": 0,
+     "rows": [],
+     "status": "na",
+     "why": "N/A: abstained; no include set"
+    },
+    "unsure": {
+     "abstained": true,
+     "badge": "ABSTAIN",
+     "status": "abstain",
+     "why": "GEN-01: insights_timeout"
+    }
+   },
+   "badge": "ABSTAIN",
+   "chart": null,
+   "contributing_sources": [],
+   "demo_fallback_used": false,
+   "drillthrough_token": null,
+   "generate_legs": {
+    "count": 1,
+    "legs": [
+     {
+      "returned": "nothing"
+     }
+    ]
+   },
+   "grounded_tables": [],
+   "plan_source": "other",
+   "route": "generated",
+   "rows": [],
+   "served_attribution": "missing",
+   "session_id": null,
+   "space_id": null,
+   "sql_used": null,
+   "suggestions": [],
+   "text": "I cannot certify an ontology-grounded query for that question (gap: insights_timeout), so I am not executing one.",
+   "values": []
+  },
+  "payload": {
+   "insights_fail": "insights_timeout",
+   "insights_reached": true,
+   "live_5000_ci": false,
+   "values": []
+  }
+ },
+ "retry": {
+  "envelope": {
+   "abstained": true,
+   "answer_id": "ans_gen01_abstain",
+   "as_of": "<as_of>",
+   "ask_mode": "live",
+   "assumptions": [
+    "GEN-01: insights_timeout"
+   ],
+   "audit_id": "ans_gen01_abstain",
+   "audit_receipt": {
+    "exclude": {
+     "reasons": [],
+     "status": "na",
+     "why": "N/A: abstained; no exclude receipt"
+    },
+    "include": {
+     "row_count": 0,
+     "rows": [],
+     "status": "na",
+     "why": "N/A: abstained; no include set"
+    },
+    "unsure": {
+     "abstained": true,
+     "badge": "ABSTAIN",
+     "status": "abstain",
+     "why": "GEN-01: insights_timeout"
+    }
+   },
+   "badge": "ABSTAIN",
+   "chart": null,
+   "contributing_sources": [],
+   "demo_fallback_used": false,
+   "drillthrough_token": null,
+   "generate_legs": {
+    "count": 1,
+    "legs": [
+     {
+      "returned": "nothing"
+     }
+    ]
+   },
+   "grounded_tables": [],
+   "plan_source": "other",
+   "route": "generated",
+   "rows": [],
+   "served_attribution": "missing",
+   "session_id": null,
+   "space_id": null,
+   "sql_used": null,
+   "suggestions": [],
+   "text": "I cannot certify an ontology-grounded query for that question (gap: insights_timeout), so I am not executing one.",
+   "values": []
+  },
+  "payload": {
+   "insights_fail": "insights_timeout",
+   "insights_reached": true,
+   "live_5000_ci": false,
+   "values": []
+  }
+ }
+}

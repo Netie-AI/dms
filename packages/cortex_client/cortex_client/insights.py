@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import os
 import re
 from typing import Any
 from urllib.parse import urlparse
@@ -23,6 +24,14 @@ INSIGHTS_PATH = "/v1/insights"
 #: Compared on the stripped key, exactly as before. tests/test_key_01_fail_closed.py
 #: pins this digest to the real value, so it cannot drift silently.
 _DEMO_VIEWER_KEY_SHA256 = "76ecf0a7405d1368942588172e70fab3c396c269ae48e90bab33851e226eef08"
+#: Top-level Insights POST field for the granted-schema prompt.
+#: Cortex pin 279cbd85 InsightsAskIn does not declare it. DMS sends it only
+#: when DMS_SCHEMA_CONTEXT is on, so a pin that 422s unknown fields stays quiet.
+SCHEMA_CONTEXT_FIELD = "schema_context"
+SCHEMA_CONTEXT_ENV = "DMS_SCHEMA_CONTEXT"
+#: Catalog key for verified-example rows. Lifted before the Insights POST.
+#: Pin 279cbd85 does not declare it, so it must never be a body field.
+VERIFIED_EXAMPLES_FIELD = "verified_examples"
 INSIGHTS_FAIL_BEARER_MISSING = "insights_bearer_missing"
 INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT = "insights_bearer_insecure_transport"
 
@@ -170,6 +179,12 @@ def _request(
         merged = dict(headers or {})
         merged.update(extra_headers)
         headers = merged
+    if (
+        method.upper() == "POST"
+        and path.rstrip("/") == INSIGHTS_PATH
+        and isinstance(json_body, dict)
+    ):
+        json_body = without_route_fields(json_body)
     try:
         with httpx.Client(timeout=timeout) as http:
             res = http.request(
@@ -232,6 +247,31 @@ def insights_get(
     )
 
 
+def schema_context_enabled() -> bool:
+    """True when the schema prompt may leave on the Insights POST."""
+    return os.environ.get(SCHEMA_CONTEXT_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def without_route_fields(body: dict[str, Any]) -> dict[str, Any]:
+    """Copy a Cortex body. OpenVault routes. DMS does not send model or strict."""
+    out = dict(body)
+    out.pop("model", None)
+    out.pop("strict", None)
+    return out
+
+
+def apply_schema_context(body: dict[str, Any], text: str | None) -> dict[str, Any]:
+    """Put ``schema_context`` on the body only when the flag is on.
+
+    The key is removed first so a caller cannot leave it on a nested object
+    and also send it while the flag is off.
+    """
+    body.pop(SCHEMA_CONTEXT_FIELD, None)
+    if schema_context_enabled() and isinstance(text, str) and text.strip():
+        body[SCHEMA_CONTEXT_FIELD] = text
+    return body
+
+
 def insights_post(
     base_url: str,
     *,
@@ -244,6 +284,8 @@ def insights_post(
     consumer: str = "dms",
     api_key: str | None = None,
     timeout: float = 120.0,
+    schema_context: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     if generate:
         refuse = generate_bearer_refuse(api_key, base_url)
@@ -258,13 +300,19 @@ def insights_post(
         "space_id": space_id,
         "consumer": consumer,
     }
+    apply_schema_context(body, schema_context)
+    # Suggestion calls only. Generate posts omit it. Pin 279cbd85 InsightsAskIn
+    # drops unknown fields, so this does not change that pin's freeroute
+    # reservation until the pin forwards it. Do not send model or strict.
+    if max_tokens is not None:
+        body["max_tokens"] = int(max_tokens)
     extra_headers: dict[str, str] | None = None
     if generate:
-        from cortex_client.strict_pin import stamp_generate_body, stamp_generate_headers
+        from cortex_client.strict_pin import pin_config, stamp_generate_headers
 
-        body = stamp_generate_body(body)
-        if body.get("pin_refusal"):
-            return generate_abstain_payload(str(body["pin_refusal"]))
+        refusal = pin_config().refusal
+        if refusal:
+            return generate_abstain_payload(refusal)
         extra_headers = stamp_generate_headers({})
     return _request(
         "POST",
@@ -287,8 +335,13 @@ __all__ = [
     "generate_bearer_refuse",
     "generate_transport_is_safe",
     "honest_envelope",
+    "SCHEMA_CONTEXT_ENV",
+    "SCHEMA_CONTEXT_FIELD",
+    "apply_schema_context",
+    "without_route_fields",
     "insights_get",
     "insights_post",
     "is_published_demo_key",
     "redact_secrets",
+    "schema_context_enabled",
 ]

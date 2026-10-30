@@ -18,17 +18,25 @@ the body.
 
 from __future__ import annotations
 
+import logging
+import math
+import os
 import re
+from collections.abc import Mapping
 from contextvars import ContextVar
 from typing import Any
 
 import httpx
+from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload
 
 from cortex_client.insights import (
     INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
     INSIGHTS_FAIL_BEARER_MISSING,
     INSIGHTS_PATH,
+    SCHEMA_CONTEXT_FIELD,
+    apply_schema_context,
     generate_bearer_refuse,
+    without_route_fields,
 )
 
 # Explicit generate-POST count for the answer in this context. Not usage
@@ -57,17 +65,43 @@ ONTOLOGY_MODE = "ontology_plan"
 PLAN_SOURCES = frozenset({"ontology_plan", "bind_plan", "other"})
 PLAN_ORIGIN_GENERATE_SQL = "generate_sql"
 PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
-PLAN_ORIGINS = frozenset({PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING})
+#: DMS's own multi-grain compile (where-paths + importance). Served in place of
+#: any generate SQL, so it never carries the generate origin or a served model.
+PLAN_ORIGIN_ONTOLOGY_COMPILE = "ontology_compile"
+PLAN_ORIGINS = frozenset(
+    {PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING, PLAN_ORIGIN_ONTOLOGY_COMPILE}
+)
 INSIGHTS_REACHED = "insights_reached"
 INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
 #: Product-lane Insights bound. Not CortexClient's 120s contract timeout and
-#: not the pre-GEN-03 45s /dms/query stall. One httpx timeout for the Client.
+#: not the pre-GEN-03 45s /dms/query stall. One httpx timeout for the Client,
+#: applied to each leg (generate, ontology GET, retry). Default when
+#: ``INSIGHTS_TIMEOUT_ENV`` is unset.
 INSIGHTS_ASK_TIMEOUT_SECONDS = 8.0
+INSIGHTS_TIMEOUT_ENV = "DMS_INSIGHTS_TIMEOUT_S"
+#: Config cannot raise the ask-lane bound past this.
+INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS = 60.0
+#: DMS->Cortex generate POSTs one ask may send, retries included. Not a
+#: provider/model call count: Cortex makes its own calls inside one generate.
+#: Two is generate + one ranked retry, the most an ask sent before the cap.
+INSIGHTS_CALL_CAP_ENV = "DMS_INSIGHTS_CALL_CAP"
+INSIGHTS_CALL_CAP_DEFAULT = 2
+INSIGHTS_CALL_CAP_CEILING = 4
+#: Ontology-ranked compile as the generate-path answer. Default off.
+LANE_ONTOLOGY_RANKED_ENV = "DMS_LANE_ONTOLOGY_RANKED"
+#: Extract SQL loop (retry on a database error or a checker flag). Default off.
+CLOOP_B_ENV = "DMS_CLOOP_B"
+_LANE_ON = frozenset({"1", "true", "yes", "on"})
 INSIGHTS_FAIL_UNARMED = "insights_unarmed"
 INSIGHTS_FAIL_REFUSED = "insights_refused"
 INSIGHTS_FAIL_UNAUTHORIZED = "insights_unauthorized"
 INSIGHTS_FAIL_TIMEOUT = "insights_timeout"
+INSIGHTS_FAIL_CALL_CAP = "insights_call_cap"
 INSIGHTS_FAIL_EMPTY = "insights_no_sql_no_ranking"
+#: ``insights_timeout:<leg>`` names the call that timed out.
+INSIGHTS_TIMEOUT_LEGS = ("generate", "ontology", "retry")
+#: Budget stops: ``insights_timeout:<leg>`` and ``insights_call_cap:<n>``.
+_BUDGET_PREFIXES = (f"{INSIGHTS_FAIL_TIMEOUT}:", f"{INSIGHTS_FAIL_CALL_CAP}:")
 INSIGHTS_FAIL_REASONS = frozenset(
     {
         INSIGHTS_FAIL_UNARMED,
@@ -80,6 +114,108 @@ INSIGHTS_FAIL_REASONS = frozenset(
     }
 )
 _HTTP_STATUS_KEY = "_insights_http_status"
+_log = logging.getLogger(__name__)
+
+
+def _env_positive(
+    env: Mapping[str, str] | None, name: str, default: float, ceiling: float
+) -> float:
+    """Positive number from ``env[name]``, clamped to ``ceiling``. Unset -> default."""
+    src = os.environ if env is None else env
+    raw = str(src.get(name) or "").strip()
+    if not raw:
+        if name in src:
+            _log.warning("%s: requested '' is empty; effective %s", name, default)
+        return default
+    try:
+        val = float(raw)
+    except ValueError:
+        val = math.nan
+    # float() accepts 'nan' and 'inf'; isfinite rejects them.
+    if not math.isfinite(val) or val <= 0:
+        _log.warning("%s: requested %r is not a positive number; effective %s",
+                     name, raw, default)
+        return default
+    if val > ceiling:
+        _log.warning("%s: requested %s is above the ceiling; effective %s",
+                     name, raw, ceiling)
+        return ceiling
+    return val
+
+
+def insights_timeout_s(env: Mapping[str, str] | None = None) -> float:
+    """``DMS_INSIGHTS_TIMEOUT_S``: 8.0 when unset or invalid, at most 60."""
+    return _env_positive(
+        env, INSIGHTS_TIMEOUT_ENV, INSIGHTS_ASK_TIMEOUT_SECONDS,
+        INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS,
+    )
+
+
+def _flag_on(env: Mapping[str, str] | None, name: str) -> bool:
+    src = os.environ if env is None else env
+    raw = str(src.get(name) or "").strip().lower()
+    return raw in _LANE_ON
+
+
+def ontology_ranked_lane_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``DMS_LANE_ONTOLOGY_RANKED``: off unless set to a true token.
+
+    Off, a question that reached generate is not answered by the ontology
+    ranked fallback. The cap ceiling is unchanged. With ``DMS_CLOOP_B`` also
+    off, the pre-loop ranking path still runs.
+    """
+    return _flag_on(env, LANE_ONTOLOGY_RANKED_ENV)
+
+
+def cloop_b_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``DMS_CLOOP_B``: off unless set to a true token.
+
+    Off, the extract SQL loop does not run and the ask follows the pre-loop
+    path. On, model SQL runs on the extract when the ontology lane is off.
+    """
+    return _flag_on(env, CLOOP_B_ENV)
+
+
+def insights_call_cap(env: Mapping[str, str] | None = None) -> int:
+    """``DMS_INSIGHTS_CALL_CAP``: 2 when unset or not a whole number, at most 4.
+
+    No off value. A raised timeout never lifts it.
+    """
+    val = _env_positive(
+        env, INSIGHTS_CALL_CAP_ENV, INSIGHTS_CALL_CAP_DEFAULT, INSIGHTS_CALL_CAP_CEILING
+    )
+    if val != int(val) or val < 1:
+        _log.warning("%s: requested %s is not a whole number >= 1; effective %s",
+                     INSIGHTS_CALL_CAP_ENV, val, INSIGHTS_CALL_CAP_DEFAULT)
+        return INSIGHTS_CALL_CAP_DEFAULT
+    return int(val)
+
+
+def insights_timeout_env_set(env: Mapping[str, str] | None = None) -> bool:
+    """True when ``DMS_INSIGHTS_TIMEOUT_S`` is set. Unset keeps the bare reason."""
+    src = os.environ if env is None else env
+    return bool(str(src.get(INSIGHTS_TIMEOUT_ENV) or "").strip())
+
+
+def insights_budget_stop(payload: dict[str, Any] | None) -> str | None:
+    """``insights_timeout:<leg>`` / ``insights_call_cap:<n>`` on the payload, or None.
+
+    The bare ``insights_timeout`` (env unset) is not one: it keeps the
+    pre-budget ask path unchanged.
+    """
+    reason = insights_fail_reason(payload)
+    return reason if reason and reason.startswith(_BUDGET_PREFIXES) else None
+
+
+class _BudgetStop(Exception):
+    """A leg timed out or the call cap would be passed. Carries the legs so far."""
+
+    def __init__(self, reason: str, legs: list[dict[str, Any]]) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.legs = legs
+
+
 # FreeRoute pick stays in Cortex/OpenVault. Hint only; no provider ids or tokens.
 FREEROUTE_PREFERENCE = "free+normal"
 _SELECT_SQL = re.compile(r"(?is)^\s*(with|select)\b")
@@ -743,12 +879,16 @@ def _insights_generate_post(
     from cortex_client.strict_pin import (
         abstain_payload,
         interpret,
+        pin_config,
         refusal_payload,
         stamp_generate_headers,
     )
 
-    if body.get("pin_refusal"):
-        return refusal_payload(str(body["pin_refusal"]))
+    body = without_route_fields(body)
+    # The pin is not sent, but a caller-error pin still stops this leg.
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     hdr = stamp_generate_headers(headers)
     note_model_call()
     try:
@@ -784,7 +924,7 @@ def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:
     if not isinstance(payload, dict):
         return None
     raw = str(payload.get("insights_fail") or "").strip()
-    if raw in INSIGHTS_FAIL_REASONS:
+    if raw in INSIGHTS_FAIL_REASONS or raw.startswith(_BUDGET_PREFIXES):
         return raw
     if raw.startswith("pin_unavailable:") or raw.startswith("pin_caller_error:"):
         return raw
@@ -796,7 +936,8 @@ def insights_fail_payload(
 ) -> dict[str, Any]:
     """Insights answered without a usable plan. Never a bind_plan miss."""
     out = insights_miss_payload(payload or {})
-    out["insights_fail"] = reason if reason in INSIGHTS_FAIL_REASONS else INSIGHTS_FAIL_EMPTY
+    named = reason in INSIGHTS_FAIL_REASONS or reason.startswith(_BUDGET_PREFIXES)
+    out["insights_fail"] = reason if named else INSIGHTS_FAIL_EMPTY
     out[INSIGHTS_REACHED] = True
     return out
 
@@ -834,16 +975,107 @@ def classify_insights_fail(
     return INSIGHTS_FAIL_EMPTY
 
 
+def lift_verified_examples(
+    ontology: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Lift example rows off the catalog. They are not an Insights body field.
+
+    Cortex pin 279cbd85 drops unknown keys on some routes and 422s others.
+    The rows ride in the question text, which that pin already accepts.
+    """
+    from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
+
+    if not isinstance(ontology, dict) or VERIFIED_EXAMPLES_FIELD not in ontology:
+        return ontology, []
+    onto = dict(ontology)
+    raw = onto.pop(VERIFIED_EXAMPLES_FIELD, None)
+    rows = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    return (onto or None), rows
+
+
+def question_with_examples(question: str, examples: list[dict[str, Any]]) -> str:
+    """Append example SQL to the question. A revoked row is skipped.
+
+    The text does not choose an answer. The caller still has to write SQL
+    and pass the checker. Repeating the same SQL is a no-op.
+    """
+    blocks: list[str] = []
+    for ex in examples:
+        if ex.get("revoked") is True:
+            continue
+        sql = str(ex.get("sql") or "").strip()
+        if not sql or sql in question:
+            continue
+        asked = str(ex.get("question") or "").strip()
+        blocks.append(f"example_question: {asked}\nexample_sql:\n{sql}")
+    if not blocks:
+        return question
+    return question + "\n\nverified_examples:\n" + "\n\n".join(blocks) + "\n"
+
+
+def _split_schema_context(
+    ontology: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Lift ``schema_context`` off the catalog so it is not an ontology key.
+
+    Cortex caller-ontology rejects measure SQL and ignores unknown keys, so
+    the prompt is a sibling field, not part of ``ontology``.
+    """
+    if not isinstance(ontology, dict) or SCHEMA_CONTEXT_FIELD not in ontology:
+        return ontology, None
+    onto = dict(ontology)
+    raw = onto.pop(SCHEMA_CONTEXT_FIELD, None)
+    text = raw if isinstance(raw, str) and raw.strip() else None
+    return (onto or None), text
+
+
+def _masked_model_question(question: str, evidence: Mapping[str, Any] | None) -> str:
+    """Same masker the hinter reads. Failure blanks the question; the ask continues."""
+    if not isinstance(evidence, Mapping):
+        return question
+    try:
+        masked = fail_closed_mask_payload(
+            text=question or "",
+            name_values=list(evidence.get("name_values") or ()),
+            exempt_values=list(evidence.get("exempt_values") or ()),
+            schema_terms=list(evidence.get("schema_terms") or ()),
+        )
+    except Exception:  # noqa: BLE001 -- fail closed, the generate call still goes
+        return "DMSMASK_unknown_00" if question else ""
+    if not isinstance(masked, dict):
+        return "DMSMASK_unknown_00" if question else ""
+    text = masked.get("text")
+    if not isinstance(text, str):
+        return "DMSMASK_unknown_00" if question else ""
+    return text
+
+
 def _insights_body(
     question: str,
     *,
     session_id: str | None,
     space_id: str | None,
     ontology: dict[str, Any] | None,
+    sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    asked = question
+    if isinstance(sql_feedback, dict):
+        reason = str(sql_feedback.get("reason") or "")
+        prev = str(sql_feedback.get("previous_sql") or "")
+        if reason:
+            asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
+    onto, schema_context = _split_schema_context(ontology)
+    onto, examples = lift_verified_examples(onto)
+    evidence = None
+    if isinstance(onto, dict) and NAME_MASK_KEY in onto:
+        onto = dict(onto)
+        evidence = onto.pop(NAME_MASK_KEY, None)
+    asked = _masked_model_question(asked, evidence if isinstance(evidence, Mapping) else None)
+    if examples:
+        asked = question_with_examples(asked, examples)
     body: dict[str, Any] = {
-        "intent": question,
-        "question": question,
+        "intent": asked,
+        "question": asked,
         "ask": False,
         "generate": True,
         "session_id": session_id or "demo",
@@ -852,15 +1084,19 @@ def _insights_body(
         "mode": ONTOLOGY_MODE,
         "model_preference": FREEROUTE_PREFERENCE,
     }
-    if ontology is not None:
-        body["ontology"] = ontology
-        if isinstance(ontology, dict):
-            slots = ontology.get("intent_slots")
+    if onto is not None:
+        body["ontology"] = onto
+        if isinstance(onto, dict):
+            slots = onto.get("intent_slots")
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
-    from cortex_client.strict_pin import stamp_generate_body
-
-    return stamp_generate_body(body)
+    if isinstance(sql_feedback, dict) and str(sql_feedback.get("reason") or ""):
+        body["sql_feedback"] = {
+            "previous_sql": str(sql_feedback.get("previous_sql") or ""),
+            "reason": str(sql_feedback.get("reason") or ""),
+        }
+    apply_schema_context(body, schema_context)
+    return without_route_fields(body)
 
 
 def _leg_kind(payload: dict[str, Any] | None) -> str:
@@ -937,19 +1173,46 @@ def _run_insights_legs(
     insights_body: dict[str, Any],
     headers: dict[str, str] | None,
     ontology: dict[str, Any] | None,
+    *,
+    call_cap: int | None = None,
 ) -> dict[str, Any] | None:
-    """Generate, optional ontology GET, one ranked retry. No /dms/query."""
+    """Generate, optional ontology GET, one ranked retry. No /dms/query.
+
+    Raises ``_BudgetStop`` naming the leg that timed out, or before a generate
+    POST that would pass ``call_cap``.
+    """
     from cortex_client.qualifiers import retry_plan_covers_qualifiers
 
     legs: list[dict[str, Any]] = []
-    insights_payload = _insights_generate_post(http, root, insights_body, headers)
-    legs.append(_leg(insights_payload, _leg_kind(insights_payload)))
+    # ponytail: this snapshot is one compute_insights. The ask path does not
+    # use it as a second cap. AskCallBudget in the extract loop is the one
+    # cap for both readings and their retries, and it stops before another
+    # compute is sent. Upgrade: thread the ask budget into this check when
+    # a second seam can call compute_insights without that budget.
+    calls_before = recorded_model_calls()
+    cap = insights_call_cap() if call_cap is None else call_cap
+
+    def _generate(body: dict[str, Any], leg: str) -> dict[str, Any] | None:
+        if recorded_model_calls() - calls_before >= cap:
+            raise _BudgetStop(f"{INSIGHTS_FAIL_CALL_CAP}:{cap}", legs)
+        try:
+            got = _insights_generate_post(http, root, body, headers)
+        except httpx.TimeoutException as exc:
+            legs.append({"returned": "timeout"})
+            raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:{leg}", legs) from exc
+        legs.append(_leg(got, _leg_kind(got)))
+        return got
+
+    insights_payload = _generate(insights_body, "generate")
     if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
         out = dict(insights_payload)
         out["generate_legs"] = {"count": len(legs), "legs": legs}
         return out
     if not _has_ranked_metrics(insights_payload):
-        ranking = _insights_ontology_get(http, root, question, headers)
+        try:
+            ranking = _insights_ontology_get(http, root, question, headers)
+        except httpx.TimeoutException as exc:
+            raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:ontology", legs) from exc
         if ranking is not None:
             insights_payload = _merge_ontology_ranking(insights_payload, ranking)
     ranked_plan = typed_ranked_retry_plan(
@@ -959,7 +1222,14 @@ def _run_insights_legs(
     retry_ok = bool(ranked_plan) and retry_plan_covers_qualifiers(
         ranked_plan, question
     )
-    if generate_retry_eligible(insights_payload) and retry_ok and ranked_plan is not None:
+    # Ranked-slot retry is the pre-loop path. The extract loop (DMS_CLOOP_B)
+    # keeps that call inside the cap instead, unless the ontology lane is on.
+    if (
+        (not cloop_b_enabled() or ontology_ranked_lane_enabled())
+        and generate_retry_eligible(insights_payload)
+        and retry_ok
+        and ranked_plan is not None
+    ):
         retry_body = dict(insights_body)
         retry_body["query_plan"] = {
             k: v for k, v in ranked_plan.items() if k != "ranked_id"
@@ -968,8 +1238,7 @@ def _run_insights_legs(
             ranked_plan.get("ranked_id") or ranked_plan["measure"]
         )
         retry_body["generate_retry"] = "ranked_slots"
-        retry_payload = _insights_generate_post(http, root, retry_body, headers)
-        legs.append(_leg(retry_payload, _leg_kind(retry_payload)))
+        retry_payload = _generate(retry_body, "retry")
         if isinstance(retry_payload, dict):
             insights_payload = _merge_ontology_ranking(
                 retry_payload, insights_payload or {}
@@ -991,6 +1260,8 @@ def compute_query(
     api_key: str | None = None,
     timeout: float = 120.0,
     dms_query: bool = True,
+    call_cap: int | None = None,
+    sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
 
@@ -1024,12 +1295,17 @@ def compute_query(
     headers = _auth_headers(api_key)
     root = base_url.rstrip("/")
     insights_body = _insights_body(
-        question, session_id=session_id, space_id=space_id, ontology=ontology
+        question,
+        session_id=session_id,
+        space_id=space_id,
+        ontology=ontology,
+        sql_feedback=sql_feedback,
     )
-    if insights_body.get("pin_refusal"):
-        from cortex_client.strict_pin import refusal_payload
+    from cortex_client.strict_pin import pin_config, refusal_payload
 
-        return refusal_payload(str(insights_body["pin_refusal"]))
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     dms_body: dict[str, Any] = {
         "question": question,
         "session_id": session_id or "demo",
@@ -1041,12 +1317,26 @@ def compute_query(
     insights_payload: dict[str, Any] | None = None
     dms_res: httpx.Response | None = None
     timed_out = False
+    cap = insights_call_cap() if call_cap is None else call_cap
+    if not dms_query:
+        timeout = min(float(timeout), INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS)
     try:
         with httpx.Client(timeout=timeout) as http:
             try:
                 insights_payload = _run_insights_legs(
-                    http, root, question, insights_body, headers, ontology
+                    http, root, question, insights_body, headers, ontology,
+                    call_cap=cap,
                 )
+            except _BudgetStop as stop:
+                timed_out = stop.reason.startswith(INSIGHTS_FAIL_TIMEOUT)
+                if dms_query and timed_out:
+                    return None
+                if timed_out and not insights_timeout_env_set():
+                    # Unset env: the bare pre-budget payload, byte for byte.
+                    return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
+                # Legs only: a partial ranking/SQL must not reach the ask path.
+                legs = {"count": len(stop.legs), "legs": stop.legs}
+                return insights_fail_payload(stop.reason, {"generate_legs": legs})
             except httpx.TimeoutException:
                 timed_out = True
                 if not dms_query:
@@ -1134,12 +1424,14 @@ def compute_insights(
     space_id: str | None = None,
     ontology: dict[str, Any] | None = None,
     api_key: str | None = None,
-    timeout: float = INSIGHTS_ASK_TIMEOUT_SECONDS,
+    timeout: float | None = None,
+    sql_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Ask-lane Insights planner: generate + ranking + one retry. No /dms/query.
 
-    Timeout is ``INSIGHTS_ASK_TIMEOUT_SECONDS`` (8s) unless the caller passes a
-    tighter bound. Fail-closed payloads stamp ``insights_fail`` with a named
+    Timeout is ``insights_timeout_s()`` (8s unless ``DMS_INSIGHTS_TIMEOUT_S``,
+    at most 60s) unless the caller passes a bound. The DMS->Cortex call cap
+    always applies. Fail-closed payloads stamp ``insights_fail`` with a named
     reason. OpenVault keys stay in Cortex; this client forwards ``api_key``
     when already configured and never invents one.
     """
@@ -1150,23 +1442,35 @@ def compute_insights(
         space_id=space_id,
         ontology=ontology,
         api_key=api_key,
-        timeout=timeout,
+        timeout=insights_timeout_s() if timeout is None else timeout,
         dms_query=False,
+        sql_feedback=sql_feedback,
     )
 
 
 __all__ = [
     "COMPUTE_PATH",
     "FREEROUTE_PREFERENCE",
+    "INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS",
     "INSIGHTS_ASK_TIMEOUT_SECONDS",
+    "INSIGHTS_CALL_CAP_CEILING",
+    "INSIGHTS_CALL_CAP_DEFAULT",
+    "INSIGHTS_CALL_CAP_ENV",
+    "CLOOP_B_ENV",
+    "LANE_ONTOLOGY_RANKED_ENV",
+    "cloop_b_enabled",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
     "INSIGHTS_FAIL_BEARER_MISSING",
+    "INSIGHTS_FAIL_CALL_CAP",
     "INSIGHTS_FAIL_REASONS",
+    "INSIGHTS_TIMEOUT_ENV",
+    "INSIGHTS_TIMEOUT_LEGS",
     "INSIGHTS_PATH",
     "INSIGHTS_REACHED",
     "ONTOLOGY_MODE",
     "PLAN_ORIGINS",
     "PLAN_ORIGIN_GENERATE_SQL",
+    "PLAN_ORIGIN_ONTOLOGY_COMPILE",
     "PLAN_ORIGIN_ONTOLOGY_RANKING",
     "PLAN_SOURCES",
     "SERVED_LEG_KEYS",
@@ -1177,11 +1481,16 @@ __all__ = [
     "first_ranked_metric_id",
     "generate_model_called",
     "generate_retry_eligible",
+    "insights_budget_stop",
+    "insights_call_cap",
     "insights_fail_payload",
     "insights_fail_reason",
     "insights_miss_payload",
     "insights_query_sql",
+    "insights_timeout_env_set",
+    "insights_timeout_s",
     "insights_was_reached",
+    "ontology_ranked_lane_enabled",
     "normalize_insights_compute",
     "overlay_pack_id_from_question",
     "pack_id_shape",
