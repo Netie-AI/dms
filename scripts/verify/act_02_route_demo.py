@@ -6,9 +6,10 @@ Run from a worktree ``$W`` with Postgres up::
 $W/packages/executor;$W/packages/ledger;$W/packages/ao_vendor" \
 python scripts/verify/act_02_route_demo.py
 
-The database is ``dms_act_demo`` on the server named by ``ACT02_DEMO_URL``
-(default ``postgresql://dms:dms@127.0.0.1:5432/dms_act_demo``), created and
-migrated when missing and dropped at the end unless ``--keep`` is passed. A
+The database is ``dms_act_demo`` on the server named by ``ACT02_DEMO_URL``, which
+must be set: there is no default, as in ACT-01, because the usual 127.0.0.1:5432
+server is shared. It is created and migrated when missing and dropped at the end
+unless ``--keep`` is passed. A
 database not named ``dms_act_demo*`` is refused, and so is ``dms``. See
 ``act_01_writeback_demo.py`` for why the database is dropped (cluster-wide roles).
 
@@ -37,7 +38,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import act_01_writeback_demo as act01  # noqa: E402
 
-DEFAULT_URL = "postgresql://dms:dms@127.0.0.1:5432/dms_act_demo"
 A = "/v1/amend/actions"
 KEY = {"sku": "SKU-BETA", "location_id": "WH-B"}
 QUESTION = "Which SKUs are below reorder level?"
@@ -109,7 +109,10 @@ class ChainedFakeLedger:
 
 
 def main() -> int:
-    url = os.environ.get("ACT02_DEMO_URL", DEFAULT_URL).strip()
+    url = os.environ.get("ACT02_DEMO_URL", "").strip()
+    if not url:
+        print("REFUSED: set ACT02_DEMO_URL to a scratch server's dms_act_demo database.")
+        return 2
     keep = "--keep" in sys.argv[1:]
     name = act01._db_name(url)
     if name == "dms" or not name.startswith("dms_act_demo"):

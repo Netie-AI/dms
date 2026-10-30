@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-02: the route demo has no shared-server default
+
+- **Demo.** `act_02_route_demo.py` no longer defaults to `127.0.0.1:5432`; it refuses (exit 2) unless `ACT02_DEMO_URL` is set, as `act_01_writeback_demo.py` already does. The demo creates, migrates and drops a database and grants cluster-wide roles, so it must name a scratch server.
+
 ## 2026-10-30 - ACT-03: sentences for the three new ACT-01/02 refusals
 
 - **UI.** `REFUSAL_TEXT` gains `actor_required`, `receipt_mismatch` and `ledger_entry_reused`; `tests/fixtures/actions/act02_refusal_codes.json` lists them, so the server scan and the UI pin still agree. None says "Applied".
