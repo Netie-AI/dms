@@ -73,7 +73,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
+from cortex_client.insights import (
+    SCHEMA_CONTEXT_FIELD,
+    schema_context_enabled,
+    schema_context_is_empty,
+)
 from dms_core.pii import (
     _ACCOUNT_COL,
     _ADDRESS_COL,
@@ -2020,9 +2024,15 @@ def _save_record(serving: Path, space_id: str, payload: Mapping[str, Any]) -> No
 
 
 def _open_serving(serving: Path) -> Any:
-    from dms_executor.demo_warehouse import connect_file
+    """Serving lease for the catalog read: read-only, shared with live asks.
 
-    return connect_file(Path(serving))
+    Not the ingest lease. That lease waits for every serving cursor to come
+    back, so an ask or an index build in flight made the catalog read time
+    out and return no table at all.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
+    return connect_serving(Path(serving))
 
 
 def _open_index_read(serving: Path) -> Any:
@@ -2599,7 +2609,9 @@ def prepare_generate_context(
         )
     except Exception:  # noqa: BLE001 -- schema context must not sink the ask
         return ctx
-    if not built.prompt:
+    if schema_context_is_empty(built.prompt):
+        # No granted table made it in. A header-only prompt is a Cortex
+        # abstain (schema_context_empty) with no model call. Send none.
         return ctx
     out = dict(ctx)
     out[SCHEMA_CONTEXT_FIELD] = built.prompt

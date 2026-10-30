@@ -1889,7 +1889,10 @@ def test_schema_from_serving_reuses_the_serving_connection(
     body = schema_from_serving(serving, {"person"}, dialect="duckdb")
     assert body["dialect"] == "duckdb"
     assert seen
-    assert all(not item.get("read_only") for item in seen)
+    # The serving parent is the read-only one (CONN-POOL-01). The catalog read
+    # on the ingest parent queued behind live reads and came back empty (F118).
+    assert all(item.get("read_only") is True for item in seen)
+    assert [d["name"] for d in body["datasets"]] == ["person"]
     prompt = build_schema_context("count rows", body).prompt
     assert prompt.startswith("DIALECT: duckdb")
 

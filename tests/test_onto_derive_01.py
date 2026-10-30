@@ -522,10 +522,22 @@ def test_space_body_carries_the_schema_context_prompt(
     rig.ask(VERIFIED_Q, {"query_sql": VERIFIED_SQL, "plan_source": "ontology_plan"})
     sent = rig.cortex.insights[-1]
     assert sent["ontology"]["source"] == "space"
-    # Carried, not dropped. What the prompt lists for a Space's bronze tables is
-    # SCHEMA-RETRIEVE's to prove: on this rig it holds the header only.
-    prompt = str(sent["ontology"].get("schema_context") or "")
-    assert prompt.startswith("DIALECT:"), sorted(sent["ontology"])
+    # The catalog reads schema main only, so a Space's bronze tables are not
+    # listed yet. A header-only prompt is a Cortex abstain (schema_context_empty,
+    # F118): none is sent rather than one that names no table.
+    assert "schema_context" not in sent["ontology"], sent["ontology"].get("schema_context")
+
+    # Carried, not dropped: a prompt that lists a granted table rides the Space body.
+    listed = f"DIALECT: duckdb\nSCHEMA\n- {SCHOOLS} reason=score:0.50\n- name VARCHAR"
+
+    def _listed(ctx: dict[str, Any], **_kw: Any) -> dict[str, Any]:
+        return {**ctx, "schema_context": listed}
+
+    monkeypatch.setattr("dms_executor.generative_ask.prepare_generate_context", _listed)
+    rig.ask(VERIFIED_Q, {"query_sql": VERIFIED_SQL, "plan_source": "ontology_plan"})
+    sent = rig.cortex.insights[-1]
+    assert sent["ontology"]["source"] == "space"
+    assert sent["ontology"].get("schema_context") == listed, sorted(sent["ontology"])
 
 
 def test_typed_plan_needing_an_undeclared_measure_abstains(
