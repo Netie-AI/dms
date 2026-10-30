@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-01 fix: the receipt is rebuilt from the database, not trusted
+
+- **Receipt.** `record_decision` rebuilds every receipt field from the stored version, its pins and the writeback row the version last wrote, and refuses a caller record that differs (`ReceiptMismatch`). A forged `applied` for a pending version, and a real apply recorded as `declined`, are refused; the real receipt can still be written. The Space is the proposal's own (`space_id`, if passed, must match). One Cortex entry id backs one pointer (`LedgerEntryReused`).
+- **Pins.** `dms.action_proposals` also pins the one version id and the whole-diff sha256. `create_proposal_version` refuses a second version on an action proposal (`ActionVersionFixed`). Apply recomputes the expected hashes, summary and cited `audit_id` from the spec and refuses a diff that disagrees, so a stale proposal cannot be re-armed.
+- **PII.** Evidence, `approval_ref` and reason are secret-scrubbed and PII-masked (the `0005_ask_audit` masker) before they reach the append-only row.
+- **Identity.** Apply and decline refuse a blank, `None` or shipped-default actor (`ActorRequired`); `action_decisions.actor_id` records it. DR-0004 Option A, no dual-control claim.
+- **Inputs.** Decline checks `approval_ref` before it flips the status. `approval_ref` needs 3 visible characters (code and table CHECK). Values are ASCII digits, at most 40 significant digits. The VerifyFailed branch is tested. The demo needs an explicit `ACT01_DEMO_URL`.
+- **Not fixed.** The advisory-lock unlock on an aborted transaction (pre-existing `advisory_lock.py`, shared with main's confirm) is left for its own ticket.
+
 ## 2026-10-30 - ACT-03: governed actions on AmendPage behind the ACT-02 probe
 
 - **Flag.** UI only. AmendPage probes `GET /v1/amend/actions/types`; only a 200 (server `DMS_ACTIONS=1`) renders the new section. Probing (null) and off render origin/main `58fcaa5`'s AmendPage markup byte for byte (`AmendPage.test.ts` against a committed render of that commit's file). An action-kind row keeps the legacy Confirm while off.

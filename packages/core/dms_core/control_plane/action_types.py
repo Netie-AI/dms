@@ -28,6 +28,8 @@ from dataclasses import field as dc_field
 from decimal import Context, Decimal, InvalidOperation
 from typing import Any
 
+from dms_core.control_plane.ask_audit_scrub import mask_pii_counted, scrub_counted
+
 
 def actions_enabled() -> bool:
     """True only when ``DMS_ACTIONS`` is the digit 1. Unset is off."""
@@ -68,8 +70,13 @@ ALLOWED_KEYS = frozenset({"action_type", "object_key", "value", "op", "reason"})
 OPS = ("set", "clear")
 REASON_MAX = 500
 _MAX_EXPONENT = 64
+#: Significant digits a value may carry, and the longest text read as a number.
+#: The registry's widest range is 8 integer digits; 40 leaves room for a fraction.
+MAX_DIGITS = 40
+_MAX_VALUE_TEXT = 100
 
-_NUMBER = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+# ASCII digits only: ``\d`` would also read fullwidth and Arabic-Indic digits.
+_NUMBER = re.compile(r"^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$")
 _NON_FINITE = re.compile(r"^[+-]?(?:nan|snan|inf|infinity)$", re.IGNORECASE)
 
 
@@ -118,6 +125,8 @@ def _to_decimal(raw: Any) -> Decimal:
         dec = Decimal(repr(raw))
     elif isinstance(raw, str):
         text = raw.strip()
+        if len(text) > _MAX_VALUE_TEXT:
+            raise ActionSpecError("value_out_of_range", "value has too many characters")
         if _NON_FINITE.match(text):
             raise ActionSpecError("value_not_finite", "value must be finite")
         if not _NUMBER.match(text):
@@ -130,6 +139,8 @@ def _to_decimal(raw: Any) -> Decimal:
         raise ActionSpecError("value_not_number", "value must be a number")
     if not dec.is_finite():
         raise ActionSpecError("value_not_finite", "value must be finite")
+    if len(dec.as_tuple().digits) > MAX_DIGITS:
+        raise ActionSpecError("value_out_of_range", f"value has more than {MAX_DIGITS} digits")
     return dec
 
 
@@ -199,12 +210,43 @@ def validate_spec(raw: Any) -> ActionSpec:
     reason = reason.strip()
     if len(reason) > REASON_MAX:
         raise ActionSpecError("reason_too_long", f"{len(reason)} > {REASON_MAX}")
+    # The reason lands in an append-only diff and receipt: no secret, no PII.
+    reason = mask_text(reason)
 
     return ActionSpec(action_type=at.name, object_key=object_key, value=value, op=op, reason=reason)
 
 
 def spec_sha(spec: ActionSpec) -> str:
     return _digest(spec.as_dict())
+
+
+def diff_sha(diff: Mapping[str, Any]) -> str:
+    """Digest of a whole stored action diff, pinned in ``dms.action_proposals``."""
+    return _digest(dict(diff))
+
+
+def mask_text(text: str) -> str:
+    """Secrets scrubbed, then PII masked, as ``ask_audit`` stores a question.
+
+    Idempotent: masked text masks to itself, so a stored reason re-validates to
+    the same spec digest.
+    """
+    if not text:
+        return text
+    clean, _ = scrub_counted(text)
+    masked, _ = mask_pii_counted(clean)
+    return masked
+
+
+def mask_json(value: Any) -> Any:
+    """``mask_text`` over every string (keys too) in a JSON-shaped value."""
+    if isinstance(value, Mapping):
+        return {mask_text(str(k)): mask_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [mask_json(v) for v in value]
+    if isinstance(value, str):
+        return mask_text(value)
+    return value
 
 
 def object_key_hash(object_key: Mapping[str, Any]) -> str:
