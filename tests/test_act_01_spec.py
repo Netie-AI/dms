@@ -16,7 +16,9 @@ from dms_core.control_plane.action_types import (
     ACTION_TYPES,
     ActionSpecError,
     actions_enabled,
+    approval_ref_problem,
     canonical_decimal,
+    mask_evidence,
     mask_json,
     spec_sha,
     state_hash,
@@ -243,3 +245,66 @@ def test_mask_json_masks_integers_like_their_text() -> None:
     masked = mask_json({"nric_int": 900101145678, "rows": 3, "flag": True, "ok": "SKU-BETA"})
     assert masked == {"nric_int": "DMSMASK_nric_01", "rows": 3, "flag": True, "ok": "SKU-BETA"}
     assert mask_json(masked) == masked
+
+
+def test_mask_evidence_keeps_ids_verbatim_and_masks_free_text() -> None:
+    """ACT-02 MEDIUM 1: about 3% of UUID4 and 7% of 64-hex ids were rewritten."""
+    uuid4_id = "ce4c9504-8966-4851-8653-567a9ade70f6"
+    hex_id = "f5ca38f748a1d6eaf726b8a42fb575c3c71f1864a8143301782de13da2d9202b"
+    assert mask_json(uuid4_id) != uuid4_id, "the masker alone does mangle this id"
+    ev = mask_evidence(
+        {"audit_id": uuid4_id, "reverts_decision_id": hex_id, "question": "for 900101-14-5678"}
+    )
+    assert ev == {
+        "audit_id": uuid4_id,
+        "reverts_decision_id": hex_id,
+        "question": "for DMSMASK_nric_01",
+    }
+    assert mask_evidence(ev) == ev
+    for bad in ("ali@example.com", "id with space", "", 12345, "x" * 129):
+        with pytest.raises(ActionSpecError) as info:
+            mask_evidence({"audit_id": bad})
+        assert info.value.code == "evidence_id_invalid", bad
+
+
+def test_approval_ref_is_a_ticket_shape_kept_verbatim() -> None:
+    """ACT-02 MEDIUM 2: numeric change refs are kept; non-ticket refs are refused."""
+    for ok in (
+        "CHG-2026-1030-4417",
+        "CHG-2026-1031-9999",
+        "INC-60123456789",
+        "CAB-1",
+        "INC0012345678",
+        "RFC-2026/10#77",
+        "X" * 200,
+    ):
+        assert approval_ref_problem(ok) is None, ok
+    for bad in (
+        "CAB jian@example.com",
+        "900101-14-5678",
+        "+60123456789",
+        "4111111111111111",
+        "CAB-1​",
+        "ＣAB-1",
+        "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+    ):
+        assert approval_ref_problem(bad) == "approval_ref_invalid", bad
+    assert approval_ref_problem("X" * 201) == "approval_ref_too_long"
+
+
+def test_core_actor_is_canonical_and_default_refused_in_any_spelling() -> None:
+    """ACT-02 MEDIUM 3: compared as a parsed UUID, returned in canonical form."""
+    from dms_core.control_plane.actions import ActorRequired, _require_actor
+
+    for spelling in (
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "{bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
+        "urn:uuid:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB",
+    ):
+        with pytest.raises(ActorRequired):
+            _require_actor(spelling)
+    canonical = "ad4b40d3-12ba-4c3e-9d6f-0123456789ab"
+    for spelling in (canonical.upper(), canonical.replace("-", ""), f"{{{canonical}}}"):
+        assert _require_actor(spelling) == canonical
+    assert _require_actor("steward-1") == "steward-1"

@@ -67,14 +67,23 @@ a customer's SQL Server, a customer's Excel file (hard rule 5), or a ledger of i
    status must be `applied` or `rejected` to match the decision), its pins and, for an
    apply, the writeback row that version last wrote, and refuses (`ReceiptMismatch`) a
    caller record that differs in any field. The Space is the proposal's own. One Cortex
-   entry id backs one pointer (`LedgerEntryReused`). Evidence, `approval_ref` and the
-   reason are secret-scrubbed and PII-masked before the append-only row, as
-   `0005_ask_audit` stores a question; an integer in evidence is masked by its decimal
-   text. The actor is recorded and must not be blank or the shipped default (DR-0004
-   Option A: one configured steward identity, no dual control); an actor that is not a
+   entry id backs one pointer (`LedgerEntryReused`). Free text in evidence (the cited
+   question) and the reason are secret-scrubbed and PII-masked before the append-only
+   row, as `0005_ask_audit` stores a question; an integer in evidence is masked by its
+   decimal text. Structural identifiers are never run through the PII masker, because it
+   matches digit runs inside ids (about 3% of UUID4 ids and 7% of 64-hex ids were
+   rewritten, so a pinned `audit_id` pointed at nothing): the evidence keys `audit_id` and
+   `reverts_decision_id` are kept verbatim and must be one ASCII id of at most 128
+   characters (letters, digits, `_ . : -`), else propose refuses with 400
+   `evidence_id_invalid`. `approval_ref` is an identifier too (item 8 of the ACT-02
+   section). The actor is recorded and must not be blank or the shipped default (DR-0004
+   Option A: one configured steward identity, no dual control); a UUID actor is parsed and
+   compared and stored in canonical form, so another spelling of the default
+   (hyphenless, braced, `urn:uuid:`, uppercase) is refused too; an actor that is not a
    user id and reads as PII (an email) is refused.
 7. **Who approved is bound at apply, not told at record.** The apply (or decline) writes
-   its actor and masked `approval_ref` (and, for a decline, the masked `decline_reason`)
+   its canonical actor and verbatim `approval_ref` (and, for a decline, the masked
+   `decline_reason`)
    to the append-only `dms.action_confirmations` row for that version, in the same
    transaction as the status flip. `record_decision` reads them back and refuses
    (`ReceiptMismatch` on `approval_ref` or `actor_id`) a caller record that names another
@@ -129,8 +138,12 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
    (`settings.dms_actor_user_id`) both proposes and applies. Every receipt says
    `identity: config_actor (DR-0004 Option A)` and
    `separation_of_duties: {proven: false}`. The shipped default actor is refused
-   (`steward_identity_unset`), and the steward grant is checked
-   (`steward_grant_required`). No dual-control claim is made anywhere.
+   (`steward_identity_unset`) in any spelling: the configured value is parsed with
+   `uuid.UUID` and compared as a UUID, and the canonical `str(uuid.UUID(...))` is the one
+   form the gate, the Cortex ledger actor, `dms.proposals.created_by`, the confirmation
+   row and the decision row all receive, so actors join across ledger and audit. The
+   steward grant is checked (`steward_grant_required`) for the configured and the
+   canonical spelling. No dual-control claim is made anywhere.
 4. **Commit-after-append window.** The ledger append runs inside the transaction, before
    the commit, so a failed append writes nothing (503 `ledger_append_failed`). If the
    commit itself fails after a successful append, the entry exists and the write does
@@ -142,7 +155,13 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
    `commit_failed_after_append` with the entry id. If the database cannot answer, it
    appends nothing and answers 503 `commit_outcome_unknown` with the entry id, because a
    void and silence could each be wrong. An append that returns a blank entry id is
-   refused (503 `ledger_append_failed`, `reason: empty_entry_id`) and rolled back.
+   refused (503 `ledger_append_failed`, `reason: empty_entry_id`) and rolled back. If
+   recording the decision fails after the append for a reason that is not a refusal (the
+   database connection dies inside `record_decision`), nothing can have committed, and
+   DMS knows the entry id: the route appends `action.apply.void` (or
+   `action.decline.void`) with `reason: record_failed` naming the entry and answers 503
+   `record_failed_after_append` with the entry id, never a bare 500 that leaves an
+   unvoided entry claiming `verified: true`.
    Remaining, disclosed: an append that Cortex accepted but whose response was lost (a
    timeout) looks here like a failed append, so it rolls back with no void, and the
    steward's retry appends a second `action.apply` for the same `version_id`. The first
@@ -168,11 +187,19 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
    match first.
 7. **Revert is a new proposal.** It is made against the reverted decision's after-state,
    refuses if the cell has moved on, and still needs its own apply.
-8. **Free text is masked, not kept out.** `approval_ref` (at most 200 characters) and the
+8. **Free text is masked, not kept out; identifiers are validated, not masked.** The
    reasons (at most 500; a longer decline reason is refused, never truncated) reach the
    Cortex payload and the append-only rows secret-scrubbed and PII-masked, the way
-   `ask_audit` stores a question. Whether free text should instead stay DMS-side only,
-   or be hashed, is open for the PRD Agent. A configured actor that is not a UUID is
+   `ask_audit` stores a question. `approval_ref` names a change ticket, so it is kept
+   verbatim: masking had collapsed `CHG-2026-1030-4417` and `CHG-2026-1031-9999` to one
+   `CHG-DMSMASK_account_01` on the immutable ledger. It must be one ASCII token of 3 to
+   200 characters (letters, digits, `_ . / : # -`) with at least one letter, and one the
+   secret scrubber would change is refused: 400 `approval_ref_invalid` (or
+   `approval_ref_too_long`), before any read or write. That refuses an email, a spaced
+   narrative, and a bare NRIC, phone or card number. Disclosed limit: a ticket-shaped ref
+   that embeds a personal number after a letter prefix (`CAB-900101-14-5678`) is not
+   detected and is stored as given; the steward types the ref. Whether free text should
+   instead stay DMS-side only, or be hashed, is open for the PRD Agent. A configured actor that is not a UUID is
    refused (`steward_identity_invalid`). The decline route passes the reason to the core
    decline, which binds it with the actor and `approval_ref` (item 7 above); the ledger
    payload's `reason` and the receipt's `decline_reason` are that bound value. A key value

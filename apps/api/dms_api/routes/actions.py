@@ -26,7 +26,7 @@ chain verifies *before* any write.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
 
@@ -53,15 +53,18 @@ from dms_core.control_plane.action_types import (
     ActionSpecError,
     ActionType,
     actions_enabled,
+    approval_ref_problem,
     mask_text,
     spec_sha,
     state_hash,
     validate_spec,
 )
 from dms_core.control_plane.actions import (
+    APPROVAL_REF_MAX,
     APPROVAL_REF_MIN,
     ActionsDisabled,
     ActorRequired,
+    ApprovalRefInvalid,
     ApprovalRefRequired,
     LedgerEntryReused,
     PreconditionFailed,
@@ -93,10 +96,11 @@ from dms_api.gatekeeping import enforce
 
 #: The shipped default actor. Applying as it would sign the ledger as nobody in
 #: particular (the scripts/verify/onto_steward.py precedent), so it is refused.
-DEFAULT_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+#: Compared as a parsed UUID, so no other spelling of it gets past.
+DEFAULT_ACTOR = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 #: An approval reference names a ticket or a change record, not a narrative. It is
-#: written to the Cortex ledger and the append-only decision row, so it is bounded.
-APPROVAL_REF_MAX = 200
+#: written verbatim to the Cortex ledger and the append-only decision row, so it is
+#: bounded (APPROVAL_REF_MAX) and validated by shape, never PII-masked.
 IDENTITY = "config_actor (DR-0004 Option A)"
 SEPARATION_OF_DUTIES = {
     "proven": False,
@@ -193,6 +197,8 @@ def _action_error(exc: Exception) -> HTTPException:
     """One map from core refusals to HTTP. Subclasses before their bases."""
     if isinstance(exc, ActionSpecError):
         return _refuse(400, exc.code)
+    if isinstance(exc, ApprovalRefInvalid):
+        return _refuse(400, exc.code, max=APPROVAL_REF_MAX)
     if isinstance(exc, ApprovalRefRequired):
         return _refuse(400, "approval_ref_required")
     if isinstance(exc, PreconditionFailed):
@@ -275,26 +281,48 @@ def _require_space(conn: psycopg.Connection, space: uuid.UUID) -> None:
         raise _refuse(404, "space_not_found")
 
 
-def _require_steward_identity(settings: Any) -> None:
-    """DR-0004 Option A: the configured actor must hold the steward grant and be set."""
+def _actor(settings: Any) -> str:
+    """The configured actor, canonicalised once: the one spelling gate, ledger and rows see.
+
+    A value that parses as a UUID (hyphenless, braced, ``urn:uuid:``, any case) is
+    returned as ``str(uuid.UUID(...))``; anything else is returned stripped, and
+    ``_require_steward_identity`` refuses it on a mutation.
+    """
+    raw = "" if settings.dms_actor_user_id is None else str(settings.dms_actor_user_id).strip()
+    parsed = _uuid_or_none(raw) if raw else None
+    return raw if parsed is None else str(parsed)
+
+
+def _require_steward_identity(settings: Any) -> str:
+    """DR-0004 Option A: the configured actor must hold the steward grant and be set.
+
+    Returns the canonical actor. The default is compared as a parsed UUID, so its
+    other spellings are refused too.
+    """
+    raw = "" if settings.dms_actor_user_id is None else str(settings.dms_actor_user_id)
+    actor = _actor(settings)
     store = ontology_data_store()
-    if not store.holds_steward_grant(
-        role=settings.dms_actor_role, actor_id=settings.dms_actor_user_id
-    ):
-        raise _refuse(403, "steward_grant_required")
-    if str(settings.dms_actor_user_id).strip().lower() == DEFAULT_ACTOR:
+    # Both spellings must hold the grant, so a deny recorded in either one binds.
+    for spelling in dict.fromkeys((raw, actor)):
+        if not store.holds_steward_grant(role=settings.dms_actor_role, actor_id=spelling):
+            raise _refuse(403, "steward_grant_required")
+    parsed = _uuid_or_none(actor)
+    if parsed == DEFAULT_ACTOR:
         raise _refuse(403, "steward_identity_unset")
-    if _uuid_or_none(settings.dms_actor_user_id) is None:
+    if parsed is None:
         # The proposal row stores the actor as a UUID: refuse here, not with a 500.
         raise _refuse(403, "steward_identity_invalid")
+    return actor
 
 
 def _require_approval_ref(raw: str) -> str:
+    """The ref verbatim (stripped), or 400 before anything is read or written."""
     ref = (raw or "").strip()
     if len(ref) < APPROVAL_REF_MIN:
         raise _refuse(400, "approval_ref_required")
-    if len(ref) > APPROVAL_REF_MAX:
-        raise _refuse(400, "approval_ref_too_long", max=APPROVAL_REF_MAX)
+    problem = approval_ref_problem(ref)
+    if problem is not None:
+        raise _refuse(400, problem, max=APPROVAL_REF_MAX)
     return ref
 
 
@@ -397,7 +425,14 @@ def _chain_readback(cortex: Any) -> dict[str, Any]:
     return {"ok": bool(verified.ok), "first_break": verified.first_break}
 
 
-def _void_append(cortex: Any, actor: str, event_type: str, entry_id: str, version_id: Any) -> None:
+def _void_append(
+    cortex: Any,
+    actor: str,
+    event_type: str,
+    entry_id: str,
+    version_id: Any,
+    reason: str = "commit_failed",
+) -> None:
     """Best effort: tell the ledger an appended entry's transaction did not commit."""
     try:
         cortex.ledger_append(
@@ -406,13 +441,29 @@ def _void_append(cortex: Any, actor: str, event_type: str, entry_id: str, versio
                 payload={
                     "entry_id": entry_id,
                     "proposal_version_id": str(version_id),
-                    "reason": "commit_failed",
+                    "reason": reason,
                 },
                 actor=actor,
             )
         )
     except Exception:  # noqa: BLE001 - the 503 below names the entry either way
         pass
+
+
+def _record_failed(
+    cortex: Any, actor: str, void_event: str, entry_id: str, result: Mapping[str, Any]
+) -> HTTPException:
+    """``record_decision`` failed for a reason that is not a refusal (the database died).
+
+    The Cortex entry exists and DMS knows its id, but nothing was committed: the
+    transaction is aborted and rolls back on exit, so the write cannot have landed.
+    The entry is voided by name, not left claiming ``verified: true``, and the
+    caller gets 503 ``record_failed_after_append`` instead of a 500.
+    """
+    _void_append(
+        cortex, actor, void_event, entry_id, result.get("version_id"), reason="record_failed"
+    )
+    return _refuse(503, "record_failed_after_append", cortex_entry_id=entry_id)
 
 
 def _decision_by_entry(settings: Any, entry_id: str) -> tuple[str, dict[str, Any] | None]:
@@ -503,7 +554,7 @@ def list_action_types(settings: SettingsDep, cortex: CortexDep) -> list[dict[str
     """The closed registry. Identifiers only; it changes by PR, not by request."""
     decision = compliance_gate(
         action="action.list",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         metadata={"task_id": "action.list", "filled_template": {"list": "types"}},
         client=cortex,
     )
@@ -531,7 +582,7 @@ def list_action_proposals_route(
 ) -> list[dict[str, Any]]:
     decision = compliance_gate(
         action="action.list",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         metadata={"task_id": "action.list", "filled_template": {"list": "proposals"}},
         client=cortex,
     )
@@ -561,13 +612,13 @@ def propose_action_route(
     at = ACTION_TYPES[spec.action_type]
     decision = compliance_gate(
         action="action.propose",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         resource=_resource(at, spec.object_key),
         metadata={"task_id": "action.propose", "filled_template": _template(at, spec_sha(spec))},
         client=cortex,
     )
     enforce(decision)
-    _require_steward_identity(settings)
+    actor = _require_steward_identity(settings)
     space = _space(body.space_id)
 
     with _tenant_conn(settings, role="steward") as (conn, tenant):
@@ -589,7 +640,7 @@ def propose_action_route(
                 conn,
                 tenant_id=tenant,
                 space_id=space,
-                actor_id=uuid.UUID(str(settings.dms_actor_user_id)),
+                actor_id=uuid.UUID(actor),
                 spec=spec,
                 source_value=source_value,
                 evidence=evidence,
@@ -608,13 +659,13 @@ def apply_action_route(
     at, resource, sha = _target_of(target)
     decision = compliance_gate(
         action="action.apply",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         resource=resource,
         metadata={"task_id": "action.apply", "filled_template": _template(at, sha)},
         client=cortex,
     )
     enforce(decision)
-    _require_steward_identity(settings)
+    actor = _require_steward_identity(settings)
     approval_ref = _require_approval_ref(body.approval_ref)
     if not settings.database_url:
         raise _refuse(503, "database_unavailable")
@@ -629,7 +680,6 @@ def apply_action_route(
     if not chain_before.ok:
         raise _refuse(503, "ledger_chain_broken", first_break=chain_before.first_break)
 
-    actor = settings.dms_actor_user_id
     with _tenant_conn(settings, role="steward") as (conn, tenant):
         current = load_action_version(
             conn,
@@ -700,6 +750,8 @@ def apply_action_route(
             # The entry exists but no receipt backs it: say so on the ledger.
             _void_append(cortex, actor, "action.apply.void", entry_id, result["version_id"])
             raise _action_error(exc) from exc
+        except Exception as exc:  # noqa: BLE001 - the entry exists; this write will not
+            raise _record_failed(cortex, actor, "action.apply.void", entry_id, result) from exc
         recorded = _commit_or_settle(
             conn,
             settings,
@@ -749,13 +801,13 @@ def decline_action_route(
     at, resource, sha = _target_of(target)
     decision = compliance_gate(
         action="action.decline",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         resource=resource,
         metadata={"task_id": "action.decline", "filled_template": _template(at, sha)},
         client=cortex,
     )
     enforce(decision)
-    _require_steward_identity(settings)
+    actor = _require_steward_identity(settings)
     approval_ref = _require_approval_ref(body.approval_ref)
     if not settings.database_url:
         raise _refuse(503, "database_unavailable")
@@ -764,7 +816,6 @@ def decline_action_route(
     if cortex is None:
         raise _refuse(503, "ledger_unavailable")
 
-    actor = settings.dms_actor_user_id
     reason = (body.reason or "").strip()
     if len(reason) > REASON_MAX:
         # Refused, not truncated: a cut reason can say something the steward did not.
@@ -823,6 +874,8 @@ def decline_action_route(
         except _CORE_REFUSALS as exc:
             _void_append(cortex, actor, "action.decline.void", entry_id, result["version_id"])
             raise _action_error(exc) from exc
+        except Exception as exc:  # noqa: BLE001 - the entry exists; this write will not
+            raise _record_failed(cortex, actor, "action.decline.void", entry_id, result) from exc
         recorded = _commit_or_settle(
             conn,
             settings,
@@ -861,7 +914,7 @@ def list_action_objects(
     """
     decision = compliance_gate(
         action="action.list",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         metadata={"task_id": "action.list", "filled_template": {"list": "objects"}},
         client=cortex,
     )
@@ -883,7 +936,7 @@ def list_action_decisions(
 ) -> list[dict[str, Any]]:
     decision = compliance_gate(
         action="action.list",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         metadata={"task_id": "action.list", "filled_template": {"list": "decisions"}},
         client=cortex,
     )
@@ -903,7 +956,7 @@ def get_action_decision(
 ) -> dict[str, Any]:
     decision = compliance_gate(
         action="action.list",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         metadata={"task_id": "action.list", "filled_template": {"list": "decision"}},
         client=cortex,
     )
@@ -927,13 +980,13 @@ def revert_action_decision(
     at, resource, _sha = _target_of(prior)
     decision = compliance_gate(
         action="action.revert",
-        actor=settings.dms_actor_user_id,
+        actor=_actor(settings),
         resource=resource,
         metadata={"task_id": "action.revert", "filled_template": _template(at, None)},
         client=cortex,
     )
     enforce(decision)
-    _require_steward_identity(settings)
+    actor = _require_steward_identity(settings)
     if not settings.database_url:
         raise _refuse(503, "database_unavailable")
     if prior is None or at is None:
@@ -979,7 +1032,7 @@ def revert_action_decision(
                 conn,
                 tenant_id=tenant,
                 space_id=prior.get("space_id"),
-                actor_id=uuid.UUID(str(settings.dms_actor_user_id)),
+                actor_id=uuid.UUID(actor),
                 spec=spec,
                 source_value=source_value,
                 evidence={"reverts_decision_id": str(prior["id"])},

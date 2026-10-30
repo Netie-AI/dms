@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-02 fix 3: identifiers are kept verbatim, one actor spelling, a dead record is voided
+
+- **Evidence ids.** The PII masker no longer runs over the evidence keys `audit_id` and `reverts_decision_id` (it rewrote about 3% of UUID4 and 7% of 64-hex ids, so the pinned `evidence_audit_id` pointed at nothing and the proposal could never be applied). They are kept verbatim and shape-checked; a non-id value is refused at propose (400 `evidence_id_invalid`, a new refusal code).
+- **approval_ref.** Validated by shape and kept verbatim instead of PII-masked, so `CHG-2026-1030-4417` and `CHG-2026-1031-9999` stay distinct on the ledger, in the confirmation row and in the decision row. One ASCII ticket token of 3-200 characters with a letter; an email, a spaced narrative, a bare NRIC/phone/card number or a secret is refused (400 `approval_ref_invalid`, a new refusal code) before any write.
+- **Actor.** The configured actor is parsed with `uuid.UUID`; the shipped default is refused in any spelling (hyphenless, braced, `urn:uuid:`), and the canonical form is what the gate, the ledger actor, `created_by`, the confirmation row and the decision row receive. The core `_require_actor` canonicalises the same way.
+- **Record failure.** A non-refusal failure inside `record_decision` after the Cortex append (the database dies) now voids the known entry (`action.*.void`, `reason: record_failed`) and answers 503 `record_failed_after_append` with the entry id, instead of a 500 that left an unvoided `verified: true` entry.
+- **Docs.** DR-0008 updated (still Proposed).
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
