@@ -1,4 +1,4 @@
-"""Pydantic request/response shapes for cortex-contract 1.5.0 wire calls.
+"""Pydantic request/response shapes for cortex-contract 1.9.0 wire calls.
 
 Manifest / SubmitRequest / QueryResult live in ``cortex_contract`` — import those
 from the pinned package, do not duplicate.
@@ -49,7 +49,7 @@ class AskResponse(BaseModel):
     unsure: bool | None = None
     #: 1.5.0 plan and SQL ladder: the rung that produced the answer, the
     #: model calls per step, and the closest runnable question when it would
-    #: abstain. Read by nothing yet; the envelope mapping is WIRE-01c.
+    #: abstain. ``reconfirm`` becomes the envelope's Yes/No offer (WIRE-19).
     plan_sql_rung: str | None = None
     model_calls: dict[str, int] | None = None
     reconfirm: dict[str, Any] | None = None
@@ -95,7 +95,8 @@ class AskResponse(BaseModel):
         badge_l = badge.lower() if isinstance(badge, str) else ""
         if (
             route in ("abstain", "blocked", "needs_clarification")
-            or badge_l in ("abstain", "blocked")
+            # A reconfirm is a question back to the user, never an answer.
+            or badge_l in ("abstain", "blocked", "reconfirm")
             or data.get("unsure") is True
         ):
             data["abstained"] = True

@@ -53,7 +53,7 @@ from dms_core.control_plane.onto_store import (
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
-from dms_executor.demo_warehouse import connect_file
+from dms_executor.demo_warehouse import SERVING_DIALECT, connect_file
 from dms_executor.measure_use import attach_confirmed_measures
 from dms_executor.ontology import Ontology, Violation, from_manifest
 
@@ -61,7 +61,7 @@ from dms_executor.ontology import Ontology, Violation, from_manifest
 PROVENANCE_COLUMNS = frozenset({"_src", "_ingest_id"})
 #: One wire identifier part (Cortex ``caller_ontology.IDENT``, used with fullmatch).
 _IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_DIALECT = "duckdb"
+_DIALECT = SERVING_DIALECT
 
 REASON_UNVERIFIED_JOIN = "unverified_join"
 REASON_NO_DECLARED_MEASURE = "no_declared_measure"

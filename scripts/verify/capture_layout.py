@@ -1,18 +1,28 @@
 """Capture flag-off ask envelopes from this checkout's product code.
 
 COPY-only hides ``tests/fixtures/curated_ceo`` before DMS imports, which is
-the API image: the Dockerfile does not COPY ``tests/``. Insights stay
-unarmed. Submit executes the SQL the product hands it. TestClient is
+the API image: the Dockerfile does not COPY ``tests/``. TestClient is
 constructed without entering lifespan.
+
+Default is the stub: Cortex is a recorded fixture, Insights stay unarmed,
+and submit executes the SQL the product hands it. The header says
+``mode=stub``.
+
+``--armed`` swaps the stub for the product CortexClient on
+``CORTEX_BASE_URL`` and the product OpenVault minter (see grade52.py for the
+settings). It never falls back: a missing setting, an unreachable Cortex, an
+unarmed FreeRoute or a placeholder answer exits non-zero and writes nothing.
+The header says ``mode=armed`` and names the Cortex sha. Each line carries
+``served``: route, model SQL, rows, answer text, Insights reason.
 
     python scripts/verify/capture_layout.py --layout copy-only --out PATH
     python scripts/verify/capture_layout.py --layout full-tree --out PATH
+    python scripts/verify/capture_layout.py --layout copy-only --armed --out PATH
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 import tempfile
@@ -21,13 +31,13 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
-FIXTURE = ROOT / "tests" / "fixtures" / "curated_ceo"
 SESSION_ID = "ses_flag_off_52"
 
 
 def _prepare() -> None:
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
+    os.environ.pop("DMS_AI_FIRST", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     for rel in (
         ".",
@@ -173,6 +183,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--layout", choices=("copy-only", "full-tree"), required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--armed",
+        action="store_true",
+        help="ask a live Cortex (CORTEX_BASE_URL) instead of the stub; refuses unless armed",
+    )
     args = parser.parse_args(argv)
     _prepare()
     import yaml
@@ -180,31 +195,25 @@ def main(argv: list[str] | None = None) -> int:
     # Stamp the commit whose product code this capture runs (fails closed on
     # uncommitted apps/ or packages/ changes), never a constant.
     sys.path.insert(0, str(ROOT / "scripts" / "verify"))
-    from grade52 import product_sha
+    from grade52 import armed_config, armed_replay, pack_layout, product_sha, write_capture
 
-    sha = product_sha()
-
-    pack = yaml.safe_load(PACK.read_text(encoding="utf-8"))
-    questions = list(pack["questions"])
-    spaces = dict(pack["spaces"])
-    hidden = FIXTURE.with_name("curated_ceo.hide_capture")
-    moved = False
-    if args.layout == "copy-only":
-        if hidden.exists():
-            raise SystemExit("grade52: capture hide path is already present")
-        FIXTURE.rename(hidden)
-        moved = True
-    try:
-        rows = _capture(questions, spaces)
-    finally:
-        if moved and hidden.exists() and not FIXTURE.exists():
-            hidden.rename(FIXTURE)
-    header = {"dms_sha": sha, "layout": args.layout}
-    lines = [json.dumps(header, sort_keys=True)]
-    lines.extend(json.dumps(row, sort_keys=True, default=str) for row in rows)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"wrote {args.out} layout={args.layout} n={len(rows)}")
+    header: dict[str, Any]
+    if args.armed:
+        # Settings are refused by name before the sha or the network.
+        cfg = armed_config()
+        sha = product_sha()
+        rows, meta = armed_replay(args.layout, cfg=cfg)
+        header = {"dms_sha": sha, **meta}
+    else:
+        sha = product_sha()
+        pack = yaml.safe_load(PACK.read_text(encoding="utf-8"))
+        questions = list(pack["questions"])
+        spaces = dict(pack["spaces"])
+        with pack_layout(args.layout):
+            rows = _capture(questions, spaces)
+        header = {"dms_sha": sha, "layout": args.layout, "mode": "stub"}
+    write_capture(rows, header, args.out)
+    print(f"wrote {args.out} mode={header['mode']} layout={args.layout} n={len(rows)}")
     return 0
 
 

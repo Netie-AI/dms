@@ -118,7 +118,7 @@ jobs:
           set -euo pipefail
           found=0
           # Prefer current pin; keep older specs checked when present.
-          for SPEC in contract/openapi-1.5.0.json contract/openapi-1.2.0.json contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
+          for SPEC in contract/openapi-1.9.0.json contract/openapi-1.5.0.json contract/openapi-1.2.0.json contract/openapi-1.1.0.json contract/openapi-1.0.0.json; do
             HASH="${SPEC}.sha256"
             if [ -f "$SPEC" ]; then
               found=1
@@ -139,8 +139,8 @@ jobs:
             echo "::error::No vendored OpenAPI — run scripts/sync_contract.py"
             exit 1
           fi
-          if [ ! -f contract/openapi-1.5.0.json ]; then
-            echo "::error::Missing current pin contract/openapi-1.5.0.json — run scripts/sync_contract.py"
+          if [ ! -f contract/openapi-1.9.0.json ]; then
+            echo "::error::Missing current pin contract/openapi-1.9.0.json — run scripts/sync_contract.py"
             exit 1
           fi
           VEC=contract/testvectors/manifest_canonical.jsonl
@@ -189,7 +189,7 @@ jobs:
           python -m pip install --upgrade pip wheel build
           python -m build --wheel ./_cortex/packages/cortex_contract
           pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
-          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger"
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
           pip install -e ".[dev]"
           pip install fastapi uvicorn httpx pydantic-settings cryptography
 
@@ -201,7 +201,7 @@ jobs:
 
       - name: Import linter
         run: |
-          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger"
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           lint-imports
 
       - name: Invariant + unit tests
@@ -211,8 +211,13 @@ jobs:
           # Add a postgres service job before flipping this off.
           DMS_SKIP_CONTROL_PLANE_TESTS: "1"
         run: |
-          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger"
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
+          # DEF-VALIDATE-01: tests/test_def_validate_01.py runs here. No skip.
           python -m pytest tests/ -q --tb=short
+
+      - name: grade52 metric self-test (stack-free, not a score)
+        run: python scripts/verify/grade52.py --self-test
 
       - name: Oracle self-test (stack-free, not live ask)
         # F42 / EPIC-018: recomputes hostile-pack oracles. Does not POST /v1/chat/ask.
@@ -235,4 +240,4 @@ jobs:
         working-directory: apps/ui
         run: |
           npm ci
-          npx vitest run src/components/studio/ResultView.test.ts src/components/answerStamp.test.ts
+          npx vitest run src/components/studio/ResultView.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts

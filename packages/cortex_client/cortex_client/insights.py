@@ -22,6 +22,9 @@ INSIGHTS_PATH = "/v1/insights"
 #: when DMS_SCHEMA_CONTEXT is on, so a pin that 422s unknown fields stays quiet.
 SCHEMA_CONTEXT_FIELD = "schema_context"
 SCHEMA_CONTEXT_ENV = "DMS_SCHEMA_CONTEXT"
+#: Catalog key for verified-example rows. Lifted before the Insights POST.
+#: Pin 279cbd85 does not declare it, so it must never be a body field.
+VERIFIED_EXAMPLES_FIELD = "verified_examples"
 #: Cortex's published demo viewer key (also the DMS settings default). Not a
 #: secret. Generate=true must not send it; KEY-01 (dms#273) removes the default.
 DEMO_VIEWER_KEY = "dms-demo-viewer-key"
@@ -276,6 +279,7 @@ def insights_post(
     api_key: str | None = None,
     timeout: float = 120.0,
     schema_context: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     if generate:
         refuse = generate_bearer_refuse(api_key, base_url)
@@ -291,6 +295,11 @@ def insights_post(
         "consumer": consumer,
     }
     apply_schema_context(body, schema_context)
+    # Suggestion calls only. Generate posts omit it. Pin 279cbd85 InsightsAskIn
+    # drops unknown fields, so this does not change that pin's freeroute
+    # reservation until the pin forwards it. Do not send model or strict.
+    if max_tokens is not None:
+        body["max_tokens"] = int(max_tokens)
     extra_headers: dict[str, str] | None = None
     if generate:
         from cortex_client.strict_pin import pin_config, stamp_generate_headers

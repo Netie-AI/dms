@@ -7,12 +7,14 @@ names no warehouse table or column.
 Retry only on a database execution error or a checker flag. Hostile SQL,
 multi-statement SQL, file reads, ungranted tables, a missing extract, and
 a reply with no SQL abstain at once and are not pasted into a retry prompt.
+The second reading sets ``recover_failures`` and also feeds back a pre-run
+refusal and an empty result. Hostile SQL stays out of that prompt.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -20,13 +22,14 @@ from cortex_client.compute import (
     cloop_b_enabled,
     generate_model_called,
     insights_call_cap,
-    recorded_model_calls,
 )
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
 from dms_executor.lake_registry import SERVING_ERRORS
 from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
 
 #: sqlglot dialect for a connector kind. The extract engine is separate.
+#: The serving name is the imported constant, not a second literal.
 _CONNECTOR_DIALECT: dict[str, str] = {
     "postgresql": "postgres",
     "postgres": "postgres",
@@ -34,10 +37,10 @@ _CONNECTOR_DIALECT: dict[str, str] = {
     "sqlserver": "tsql",
     "mssql": "tsql",
     "tsql": "tsql",
-    "duckdb": "duckdb",
+    SERVING_DIALECT: SERVING_DIALECT,
 }
 #: Read-only extract engine. SQL that runs here is compared in this dialect.
-EXTRACT_DIALECT = "duckdb"
+EXTRACT_DIALECT = SERVING_DIALECT
 MAX_SQL_RETRIES = 2
 EMPTY_NOTE = "no rows match"
 #: VALUE-EXISTS-01 later returns None from ``empty_result_reason`` so the
@@ -75,21 +78,50 @@ _SK = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 _LONG_TOKEN = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
 
 
-def dialect_for_connector(kind: str | None) -> str:
-    """sqlglot dialect name for a connector kind. Unknown kinds use the extract."""
-    key = str(kind or "").strip().lower()
-    return _CONNECTOR_DIALECT.get(key, EXTRACT_DIALECT)
+class UnknownConnectorDialect(Exception):
+    """The connector kind is not a dialect this process can name.
 
-
-def extract_dialect(warehouse: Path | None) -> str:
-    """Dialect of the engine that executes model SQL.
-
-    The extract is DuckDB even when a source connector was TSQL or another
-    warehouse. Comparison uses this dialect, not the source connector.
-    ``warehouse`` is unused; the engine does not change per file.
+    ``envelope`` is the ``sql_dialect_unknown`` abstain from ``build_abstain``.
     """
-    del warehouse
-    return EXTRACT_DIALECT
+
+    def __init__(self, envelope: dict[str, Any]) -> None:
+        self.envelope = envelope
+        super().__init__("sql_dialect_unknown")
+
+
+def dialect_for_connector(kind: str | None) -> str:
+    """sqlglot dialect for a connector kind.
+
+    An unknown kind does not become the extract dialect. It is the named
+    ``sql_dialect_unknown`` abstain, and the ticket is the one ``build_abstain``
+    writes.
+    """
+    key = str(kind or "").strip().lower()
+    found = _CONNECTOR_DIALECT.get(key)
+    if found is None:
+        from dms_executor.grant_struct import sql_refusal_envelope
+
+        raise UnknownConnectorDialect(
+            sql_refusal_envelope(
+                reason="sql_dialect_unknown",
+                space_id=None,
+                session_id=None,
+                route="connector",
+                question="",
+            )
+        )
+    return found
+
+
+def extract_dialect(dialect: str | None) -> str:
+    """The dialect the caller passed, when sqlglot knows that name.
+
+    An unknown or missing dialect is an empty name. It is not replaced
+    with the extract engine.
+    """
+    from dms_executor.grant_struct import sqlglot_dialect
+
+    return sqlglot_dialect(dialect) or ""
 
 
 def empty_result_reason(sql: str) -> str | None:
@@ -106,6 +138,102 @@ def empty_result_reason(sql: str) -> str | None:
     if not isinstance(sql, str):
         return EMPTY_UNVERIFIED
     return EMPTY_UNVERIFIED
+
+
+#: A column of a granted table may ride in a db error code. Anything else may
+#: not: a name outside this shape could carry the separator or a value.
+_CODE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}")
+_CODE_COLUMN = re.compile(r"[\w ]{1,64}")
+
+
+def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
+    """Reduce a database error to ``Class`` or ``Class:name``, never the message.
+
+    DuckDB echoes the offending cell value in cast and constraint errors, an
+    ENUM member list in binder errors, and a file error echoes a path. The
+    message body therefore never leaves the run. ``columns`` come from
+    ``written_names``: a column the statement wrote, or a string literal that
+    is a cast operand. The name is attached only when exactly one of them
+    appears in the message, and the spelling is the schema or SQL spelling,
+    never text copied from the message. A message that names none, or several
+    (a binder candidate list), names none.
+    """
+    name = type(exc).__name__
+    code = name if _CODE_NAME.fullmatch(name) else "Error"
+    text = str(exc)
+    hits = {
+        col
+        for col in columns
+        if isinstance(col, str)
+        and _CODE_COLUMN.fullmatch(col)
+        and re.search(rf"(?<![A-Za-z0-9_]){re.escape(col)}(?![A-Za-z0-9_])", text, re.I)
+    }
+    if len(hits) == 1:
+        return f"{code}:{hits.pop()}"
+    return code
+
+
+def written_names(con: Any, sql: str) -> list[str]:
+    """Names ``sql`` itself writes, the only names a db error code may carry.
+
+    A name that is a column of a table the statement cites comes back in
+    schema spelling. Any other written name (a misspelt column, an alias the
+    statement refers to, a string literal that is a cast operand) comes back
+    as the SQL spelled it, so the retry still hears which name was wrong. A
+    cast of a column offers the column, not the cell value the message
+    quotes. No name is taken from the database message, so a cell value that
+    spells some other column cannot ride out as a name. A CTE name is not a
+    table, and a schema-qualified table matches only its own schema. Anything
+    that does not parse offers nothing.
+    """
+    try:
+        from sqlglot import exp, parse_one
+
+        tree = parse_one(sql, read=EXTRACT_DIALECT)
+        written: dict[str, str] = {}
+        for col in tree.find_all(exp.Column):
+            if col.name:
+                written.setdefault(col.name.lower(), col.name)
+        # TryCast is a Cast. The operand literal is the model's own text.
+        literals: dict[str, str] = {}
+        for cast in tree.find_all(exp.Cast):
+            lit = cast.this
+            if (
+                isinstance(lit, exp.Literal)
+                and lit.is_string
+                and isinstance(lit.this, str)
+                and lit.this
+            ):
+                literals.setdefault(lit.this.lower(), lit.this)
+        if not written and not literals:
+            return []
+        ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
+        cited = {
+            (t.db.lower(), t.name.lower())
+            for t in tree.find_all(exp.Table)
+            if t.name and (t.db or t.name.lower() not in ctes)
+        }
+    except Exception:
+        return []
+    names = sorted({name for _, name in cited})
+    if names:
+        try:
+            marks = ",".join("?" for _ in names)
+            got = con.execute(
+                "SELECT table_schema, table_name, column_name FROM information_schema.columns "
+                f"WHERE lower(table_name) IN ({marks})",
+                names,
+            ).fetchall()
+        except Exception:
+            got = []
+        for schema, table, column in got:
+            key = str(column).lower()
+            here = (str(schema).lower(), str(table).lower())
+            if key in written and (here in cited or ("", here[1]) in cited):
+                written[key] = str(column)
+    for key, name in literals.items():
+        written.setdefault(key, name)
+    return sorted(written.values())
 
 
 #: Refusals for SQL that is not exactly one SELECT. Nothing executed.
@@ -149,7 +277,8 @@ def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]
     except SERVING_ERRORS:
         raise
     except Exception as exc:  # noqa: BLE001 — engine error is the extract result
-        return None, f"{type(exc).__name__}: {exc}"
+        # A typed code: DuckDB echoes cell values and paths in its messages.
+        return None, typed_db_error(exc, written_names(con, sql))
 
 
 def run_readonly(
@@ -164,7 +293,8 @@ def run_readonly(
     waits for it, and a lease miss raises the registry's named serving error
     to the ask boundary. One SELECT runs. A WITH that ends in SELECT is a
     SELECT. Anything else, including a parse failure, is refused without
-    executing.
+    executing. An engine error comes back as a typed code from
+    ``typed_db_error``, never the database message.
     """
     from dms_executor.demo_warehouse import connect_serving
 
@@ -173,7 +303,7 @@ def run_readonly(
     except SERVING_ERRORS:
         raise
     except Exception as exc:  # noqa: BLE001
-        return None, f"{type(exc).__name__}: {exc}"
+        return None, typed_db_error(exc)
     try:
         gate = _one_select(con, sql)
         if gate is not None:
@@ -412,16 +542,47 @@ def feedback_prompt(question: str, *, previous_sql: str | None, reason: str | No
     return f"{question}\n\nprevious_sql:\n{safe_sql}\n\nfeedback:\n{safe_reason}"
 
 
+#: Pre-run refusals the second reading feeds back. Hostile stays in
+#: ``_NO_RETRY_HEADS`` and is not pasted into the prompt.
+_SECOND_RECOVER_HEADS = frozenset(
+    {
+        "statement_not_allowed",
+        "sql_not_analyzable",
+        "multi_statement",
+    }
+)
+
+
+def _refusal_head(why: str) -> str:
+    return why.split(":", 1)[0]
+
+
 def _no_model_retry(why: str, extra: frozenset[str]) -> bool:
     """True when this checker reason must abstain without another model call."""
     if why in extra:
         return True
-    head = why.split(":", 1)[0]
-    return head in _NO_RETRY_HEADS
+    return _refusal_head(why) in _NO_RETRY_HEADS
 
 
-def _can_retry(*, retries: int, used: int, cap: int) -> bool:
-    return retries < MAX_SQL_RETRIES and used < cap
+class AskCallBudget:
+    """One insights cap for the first reading, the second reading, and retries."""
+
+    def __init__(self) -> None:
+        self.cap = insights_call_cap()
+        self.used = 0
+
+    def allow(self) -> bool:
+        return self.used < self.cap
+
+    def take(self) -> bool:
+        if not self.allow():
+            return False
+        self.used += 1
+        return True
+
+
+def _can_retry(*, retries: int, budget: AskCallBudget) -> bool:
+    return retries < MAX_SQL_RETRIES and budget.allow()
 
 
 def _served_outcome(env: dict[str, Any]) -> str:
@@ -486,18 +647,23 @@ def run_model_loop(
     empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
     attempts: list[dict[str, Any]],
     no_retry_reasons: frozenset[str] = frozenset(),
+    recover_failures: bool = False,
+    budget: AskCallBudget,
 ) -> dict[str, Any]:
     """Checker, read-only run, feedback retry.
 
     An empty result does not retry. It abstains until VALUE-EXISTS-01
     switches ``empty_result_reason``. Hostile, multi-statement, file-read,
     and ungranted SQL abstain on the first call.
+
+    ``budget`` is the ask's one cap. The opening compute already took a
+    call. Retries take from what is left. They do not start a new cap.
+
+    ``recover_failures`` is the second reading only. It feeds back a reply
+    with no SQL, a statement refused before execute, and an empty result.
+    The next SQL still goes through ``check``. Hostile SQL does not.
     """
-    cap = insights_call_cap()
     retries = 0
-    used = recorded_model_calls()
-    if used <= 0:
-        used = 1
     current = payload if isinstance(payload, dict) else None
     reason: str | None = None
     prev_sql: str | None = None
@@ -516,6 +682,13 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            if recover_failures and _can_retry(retries=retries, budget=budget):
+                retries += 1
+                budget.take()
+                prev_sql = None
+                reason = "pre_run_refusal:no_sql"
+                current = _call(compute, ctx, prompt, reason, None)
+                continue
             return abstain("no_sql", attempts, sql=None, retries=retries)
 
         if protected_sql:
@@ -531,11 +704,11 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
-                if not _can_retry(retries=retries, used=used, cap=cap):
+                if not _can_retry(retries=retries, budget=budget):
                     head = f"loop_exhausted:{flag}"
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = sql
                 reason = flag
                 current = _call(compute, ctx, prompt, reason, sql)
@@ -550,11 +723,11 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
-                if not _can_retry(retries=retries, used=used, cap=cap):
+                if not _can_retry(retries=retries, budget=budget):
                     head = "loop_exhausted:filter_dropped"
                     return abstain(head, attempts, sql=sql, retries=retries)
                 retries += 1
-                used += 1
+                budget.take()
                 prev_sql = sql
                 reason = "filter_dropped"
                 current = _call(compute, ctx, prompt, reason, sql)
@@ -575,18 +748,15 @@ def run_model_loop(
             )
             if why in no_retry_reasons:
                 return abstain(why, attempts, sql=sql, retries=retries)
-            if _no_model_retry(why, no_retry_reasons) or not _can_retry(
-                retries=retries, used=used, cap=cap
-            ):
-                head = (
-                    outcome
-                    if _no_model_retry(why, no_retry_reasons)
-                    else f"loop_exhausted:{outcome}"
-                )
+            blocked = _no_model_retry(why, no_retry_reasons)
+            if recover_failures and _refusal_head(why) in _SECOND_RECOVER_HEADS:
+                blocked = False
+            if blocked or not _can_retry(retries=retries, budget=budget):
+                head = outcome if blocked else f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
             protected_sql = sql
             retries += 1
-            used += 1
+            budget.take()
             prev_sql = sql
             reason = outcome
             current = _call(compute, ctx, prompt, reason, sql)
@@ -603,7 +773,8 @@ def run_model_loop(
 
         rows, exec_err = run_readonly(sql, Path(warehouse))
         if exec_err in _REFUSED_SHAPES:
-            # Not one SELECT. Refused before execute, no model retry.
+            # Not one SELECT. The first reading stops. The second reading
+            # feeds the refusal back and still checks the next SQL.
             attempts.append(
                 loop_entry(
                     prompt=prompt,
@@ -613,21 +784,30 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            if recover_failures and _can_retry(retries=retries, budget=budget):
+                retries += 1
+                budget.take()
+                prev_sql = sql
+                reason = f"pre_run_refusal:{exec_err}"
+                current = _call(compute, ctx, prompt, reason, sql)
+                continue
             return abstain(exec_err, attempts, sql=sql, retries=retries)
         if exec_err:
-            safe_err = mask_feedback_text(exec_err)
-            outcome = f"db_error:{safe_err}"
+            # A typed code from run_readonly. The database message never gets
+            # here. The name in it is one the SQL wrote, so it is masked like
+            # the SQL itself.
+            outcome = f"db_error:{mask_feedback_text(exec_err)}"
             attempts.append(
                 loop_entry(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
             protected_sql = sql
-            if not _can_retry(retries=retries, used=used, cap=cap):
+            if not _can_retry(retries=retries, budget=budget):
                 head = f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
             retries += 1
-            used += 1
+            budget.take()
             prev_sql = sql
             reason = outcome
             current = _call(compute, ctx, prompt, reason, sql)
@@ -646,6 +826,13 @@ def run_model_loop(
                         dialect=dialect,
                     )
                 )
+                if recover_failures and _can_retry(retries=retries, budget=budget):
+                    retries += 1
+                    budget.take()
+                    prev_sql = sql
+                    reason = decision
+                    current = _call(compute, ctx, prompt, reason, sql)
+                    continue
                 return abstain(decision, attempts, sql=sql, retries=retries)
             return _finish_attempt(
                 empty_answer(sql, attempts),

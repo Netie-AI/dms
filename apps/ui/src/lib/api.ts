@@ -175,6 +175,23 @@ export async function postAsk(
   return (await res.json()) as AnswerEnvelope;
 }
 
+export async function postAskConfirm(
+  body: { token: string; yes: boolean },
+  signal?: AbortSignal,
+): Promise<AnswerEnvelope> {
+  const res = await fetch("/api/v1/chat/ask/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: body.token, yes: body.yes ? "yes" : "no" }),
+    signal,
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`confirm ${res.status}: ${detail}`);
+  }
+  return (await res.json()) as AnswerEnvelope;
+}
+
 /* ── Generic JSON read ─────────────────────────────────────────────────────
  * Pages that read reference data render their own error state, so a failed
  * fetch throws with a message worth printing rather than resolving to null.

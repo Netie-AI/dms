@@ -90,6 +90,17 @@ export type AnswerEnvelope = {
   served_model?: string | null;
   /** Named abstain when the writer set it. Other names live in assumptions. */
   abstain_reason?: string | null;
+  /** Lane that served this answer. "document" is a Cortex answer cited from
+   *  the Space's documents: no SQL ran. */
+  route?: string | null;
+  /** Set when the ladder ended without a checked answer and the user can confirm. */
+  reconfirm?: {
+    reason_code: string;
+    reason_text: string;
+    suggested_question: string;
+    token: string;
+    definition?: string;
+  } | null;
 };
 
 export type SpaceSummary = {

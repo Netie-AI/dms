@@ -85,6 +85,7 @@ _CODES = frozenset(
         "loop_exhausted",
         "multi_statement",
         "no_sql",
+        "not_in_ontology",
         "ontology",
         "openvault_mint",
         "path_not_allowed",
@@ -94,7 +95,10 @@ _CODES = frozenset(
         "serving_deadline_reserve",
         "serving_lease_cap",
         "serving_lease_queue_full",
+        "sql_dialect_unknown",
         "sql_not_analyzable",
+        "sql_relation_not_granted",
+        "sql_relation_unresolved",
         "statement_not_allowed",
         "submit_failed",
         "ticket_missing",
@@ -140,27 +144,65 @@ def _known_codes() -> frozenset[str]:
     return _CODES | GAP_REASONS
 
 
+def _direct_refusal(code: str) -> bool:
+    """Ungranted, PII, or a non-read statement. Engine codes, not question words.
+
+    ``customer_grant_reason`` folds ``ungranted:<table>`` to ``ungranted``.
+    A file read stays ``ungranted:file`` and is a direct refusal. An unparsed
+    statement is not: the ask can still offer another question.
+    """
+    raw = str(code or "").strip()
+    if not raw:
+        return False
+    from dms_executor.grant_struct import customer_grant_reason
+
+    shown = customer_grant_reason(raw.casefold())
+    if shown in {"ungranted", "sql_relation_not_granted", "ungranted:file", "pii"}:
+        return True
+    if shown.startswith("hostile_sql"):
+        return True
+    head = shown.split(":", 1)[0]
+    return head in {"statement_not_allowed", "path_not_allowed"}
+
+
 def reconfirm_disposition(code: str) -> str:
     """How ASK-RECONFIRM-01 treats a closed abstain code.
 
-    ``retry_later`` is a reconfirm with a retry offer. A direct refusal,
-    including ``ungranted``, is not this offer.
+    ``retry_later`` and ``offer`` are reconfirm. ``direct`` is ungranted,
+    PII, or destructive SQL, and is not this offer.
     """
     head = str(code or "").casefold().split(":", 1)[0].strip()
     if head in RECONFIRM_RETRY_CODES:
         return "retry_later"
-    return "other"
+    if _direct_refusal(code):
+        return "direct"
+    return "offer"
 
 
 def _reason_code(raw: str) -> str:
-    """Named code only. Error prose and unknown tokens are dropped."""
+    """Named code only. Error prose is dropped. An ungranted relation stays.
+
+    ``ungranted`` is closed for messages, and the next identifier is the
+    relation. That name is the ticket. It is not the customer envelope.
+    """
     known = _known_codes()
     codes: list[str] = []
-    for part in str(raw or "").casefold().split(":"):
+    parts = str(raw or "").casefold().split(":")
+    for index, part in enumerate(parts):
         token = part.strip()
-        if not _TOKEN.fullmatch(token) or token not in known:
+        if not _TOKEN.fullmatch(token):
+            break
+        if token not in known:
+            if codes == ["ungranted"]:
+                codes.append(token)
             break
         codes.append(token)
+        if token == "ungranted":
+            if index + 1 < len(parts):
+                nxt = parts[index + 1].strip()
+                if _TOKEN.fullmatch(nxt):
+                    codes.append(nxt)
+            break
         if token in _CLOSED:
             break
     return ":".join(codes) if codes else "unspecified"
@@ -258,6 +300,11 @@ def log_pipeline_failure_ticket(
         payload["group"] = group
         payload["count"] = count
         payload["ticket_id"] = ticket_id
+    from dms_executor.name_echo import echoed_names
+
+    names = echoed_names(str(reason or ""))
+    if names:
+        payload["names"] = names
     _LOG.warning(
         "pipeline_failure %s",
         json.dumps(payload, sort_keys=True, default=str),

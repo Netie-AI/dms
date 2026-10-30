@@ -1,53 +1,59 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-06  
+**Last updated:** 2026-10-28, DEF-VALIDATE-02
 **Remote:** https://github.com/Netie-AI/dms
+**Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
-## Direct interact
+## Direction
 
-```powershell
-D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -OpenBrowser
-python D:\DMS\scripts\verify_demo_live.py
-python D:\DMS\scripts\verify_l2_vs_l1.py
-python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
-python D:\DMS\scripts\walk_buyer_studio.py --self-check
-pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants -q
-python D:\DMS\scripts\ontology_bench.py      # 896 cases, 494 shapes
-```
+AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 
-Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove IAP = section 2.1, origin `https://studio.netie.ai`, `:8090` loopback) - AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
+Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm with Yes. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not route provider keys.
 
-## Shipped / verified
+## 52 pack - number of record (STUB)
 
-Archived: [docs/archive/2026-10-06_STATUS_shipped-and-open-next.md](docs/archive/2026-10-06_STATUS_shipped-and-open-next.md) (DOCS-01, [#371](https://github.com/Netie-AI/dms/issues/371)). Closed work lives on its issue.
+STUB at `7392972`, `grade52 --main`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
-## Truth to hold
+| Run | 52 included | paths | metric |
+|-----|-------------|-------|--------|
+| flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-- Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34)
-- Demo: `verify_demo_live.py` 31/31 on a cold stack; bounds error ~3/31, not zero (R-0010)
-- Engine bench is 3 variants of ONE schema family; on the honest coarse unit (3 databases) the bound is 100% - [#256](https://github.com/Netie-AI/dms/issues/256), [#265](https://github.com/Netie-AI/dms/issues/265)
-- Free-form: **not a measurement**. Quote "no recorded green run" until [Cortex#11](https://github.com/Netie-AI/Cortex/issues/11) closes the engine half of F40 (R-0011)
-- CCA ask-path hook ships OFF (`DMS_CCA_CASCADE=0`) until measured on a real question log - [#132](https://github.com/Netie-AI/dms/issues/132)
+Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43, tries omitted_pin_mismatch=0. Suite 3573 passed, 41 skipped, 33 xfailed. n=348 not run. Armed 52 not re-run.
 
-## Open next
+With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
-GitHub issues are the source of truth. This table holds links only.
+## Merged since 2026-10-09
 
-| Item | Issue |
-|------|-------|
-| **This tick** | **STUDIO-RESULT-01** (#365) renders the ask envelope in Studio. UI only. No payload (#364), no mint (#362), no prove pin. Nothing PASS. Prove owner stays vault / OV mint 401. |
-| PROVE-SUBMIT-01 - live BLOCKED, vault / OV mint 401 | [#359](https://github.com/Netie-AI/dms/issues/359), [#362](https://github.com/Netie-AI/dms/issues/362), [#363](https://github.com/Netie-AI/dms/pull/363) |
-| ORACLE-FIX-01 | [#301](https://github.com/Netie-AI/dms/issues/301) |
-| EPIC-020b | [#173](https://github.com/Netie-AI/dms/issues/173) |
-| F73 accuracy remainder - EPIC-019 | [#38](https://github.com/Netie-AI/dms/issues/38) |
-| F73 delivery (gated) - EPIC-016 | [#29](https://github.com/Netie-AI/dms/issues/29) |
-| SCALE-WAREHOUSE-01 - do not reseat | [#237](https://github.com/Netie-AI/dms/issues/237) |
-| F41 EPIC-021a - founder decision | [#380](https://github.com/Netie-AI/dms/issues/380) |
-| F68 monetization - founder decision | [#381](https://github.com/Netie-AI/dms/issues/381) |
-| `app.netie.ai/cortex` 404 | [#382](https://github.com/Netie-AI/dms/issues/382) |
-| F73 surface cream/graphite (queued) | [#383](https://github.com/Netie-AI/dms/issues/383) |
-| `verify_freeform_demo --self-check` not in CI | [#384](https://github.com/Netie-AI/dms/issues/384) |
-| Live Power BI / Superset connector after EXPORT-02 | [#385](https://github.com/Netie-AI/dms/issues/385) |
+| PR | Squash | What |
+|----|--------|------|
+| [#420](https://github.com/Netie-AI/dms/pull/420) | `404f3999` | CONN-POOL-01: one DuckDB connection per lake |
+| [#432](https://github.com/Netie-AI/dms/pull/432) | `8ff2623a` | GRADER-VALUES-01: grade52 and the copy-only number of record |
+| [#423](https://github.com/Netie-AI/dms/pull/423) | `a52ccb22` | VALUE-HINT-SPAN: mask only person-classified columns |
+| [#342](https://github.com/Netie-AI/dms/pull/342) | `5b2456fb` | BANK-02: auditor export of ask, SQL, tables and outcome |
+| [#445](https://github.com/Netie-AI/dms/pull/445) | `2a78c4bb` | CI: lint-type-test timeout 30 minutes |
+| [#442](https://github.com/Netie-AI/dms/pull/442) | `79b7a274` | P0 DROP-ROUTE-FIELDS-01: stop sending `model` and `strict` to Cortex (the 422). Supersedes #429, still open |
+| [#447](https://github.com/Netie-AI/dms/pull/447) | `2083e6ac` | Extract and result-hash probe on the pooled serving cursor. Supersedes #426, still open |
+| [#448](https://github.com/Netie-AI/dms/pull/448) | `ed7c4011` | EVAL-01: grade52 wrong-rate bound, worst-case repeats, baseline diff |
+| [#446](https://github.com/Netie-AI/dms/pull/446) | `3d19dea3` | INGEST-COLNAME-01 (P1 security): a source column name is one quoted identifier |
 
-## Agent models
-PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.
+## Open work
+
+[GitHub issues](https://github.com/Netie-AI/dms/issues) and [open PRs](https://github.com/Netie-AI/dms/pulls) are the source of truth. Never a markdown backlog. P0s first.
+
+| Item | PR |
+|------|----|
+| P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
+| CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
+| COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
+| SAFE-01: one grant function, one parser | #454 |
+| WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
+| WIRE-19: contract 1.9.0 client, `document` badge (was a 502), Cortex `reconfirm` Yes/No | this branch |
+| SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
+| DR-0006: writer family | #440 |
+| ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
+| AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
+| GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
+| GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |
+
+Not listed: 15 older open drafts (#424, #408, #398, #397, #391, #379, #378, #376, #375, #344, #343, #339, #336, #331, #329).

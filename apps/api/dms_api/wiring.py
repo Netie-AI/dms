@@ -138,6 +138,18 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     return env
 
 
+def scrub_ask_envelope(env: dict[str, Any]) -> dict[str, Any]:
+    """Scrub an ask envelope built outside ``live_ask``. Opens no connection.
+
+    Routes stay off ``dms_executor``. No turn resolved a grant set for
+    these, so nothing is granted. Loop SQL and ``raw_reply`` are not
+    rewritten.
+    """
+    if not isinstance(env, dict):
+        return env
+    return dms_executor.hide_echo(env, "")
+
+
 def batch_ingest(files: list[tuple[str, bytes]], *, space_id: str | None = None) -> dict[str, Any]:
     return dms_executor.ingest_batch(files, space_id=space_id).to_dict()
 
@@ -182,6 +194,7 @@ def register_verified_query(
         question=question,
         sql=sql,
         synonyms=synonyms,
+        dialect=dms_executor.SERVING_DIALECT,
     )
 
 
@@ -826,6 +839,34 @@ def health_pack_fields() -> dict[str, str]:
 def health_pack_name() -> str:
     """``curated_ceo``, ``absent``, or ``unreadable``. See ``health_pack_fields``."""
     return health_pack_fields()["pack"]
+
+
+def compile_ontology_proposal(
+    *,
+    actor: str,
+    tenant_id: str,
+    space_id: str | None = None,
+) -> dict[str, Any]:
+    """Run AO-VENDOR-01 ``compile_source`` and store the proposal as proposed.
+
+    Flag off returns status ``off`` and writes nothing. A proposal is never
+    stored with ``served`` true.
+    """
+    import duckdb
+    from dms_core.control_plane.onto_data import store_proposal
+
+    path = dms_executor.warehouse_path()
+    conn = dms_executor.connect_serving(path) if path.is_file() else duckdb.connect()
+    try:
+        proposal = dms_executor.compile_source(conn)
+    finally:
+        conn.close()
+    return store_proposal(
+        proposal.to_json(),
+        created_by=actor,
+        space_id=space_id,
+        tenant_id=tenant_id,
+    )
 
 
 def engine_clock_fields() -> dict[str, str]:

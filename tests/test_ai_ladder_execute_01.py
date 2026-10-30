@@ -4,12 +4,16 @@ Flags on, ask_path generative, one fake ``compute_insights``. The checker
 EXPLAIN closes its serving cursor, then this test opens the file for write
 (an ingest). The extract must wait on the lake registry and return the
 warehouse rows. A bare ``duckdb.connect`` for the extract (the main-branch
-shape) raises ConnectionException beside that writer, and the ask abstains.
-Every other open of the file takes the same path: one parent per lake, read
-only, external access off, config locked.
+shape) raises ConnectionException beside that writer, and the ask abstains
+with a database error. Every other open of the file takes the same path:
+one parent per lake, read only, external access off, config locked.
 
 ``DMS_INSIGHTS_CALL_CAP=1`` is required for that split. The default cap
 retries after the hold drops, and the retry's connect then succeeds.
+The shared vote cap spends that one call on the opening reading, so the
+envelope abstains ``insights_call_cap`` and does not submit. The loop still
+names the model SQL with that cap outcome: a connection miss would have
+abstained ``db_error`` instead.
 """
 
 from __future__ import annotations
@@ -225,12 +229,18 @@ def test_model_sql_executes_on_the_serving_file(
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert_envelope_valid(body)
-        assert body["abstained"] is False
-        assert body["badge"] == "L2_VALIDATED"
-        assert body["sql_used"] == _SQL
-        assert body["rows"] == [{"n": 2}]
-        assert body["loop"][-1]["outcome"] == "served"
-        assert model.sql == [_SQL]
+        assert body["abstained"] is True
+        assert body["badge"] == "ABSTAIN"
+        assert body["sql_used"] is None
+        assert body["rows"] == []
+        blob = " ".join(str(item) for item in body["assumptions"])
+        assert "GEN-01: insights_call_cap:1" in blob
+        assert "db_error" not in blob
+        assert "ConnectionException" not in body["text"]
+        assert body["loop"][-1]["sql"] == _SQL
+        assert body["loop"][-1]["outcome"] == "insights_call_cap:1"
+        assert hold.fired is True
+        assert model.sql == []
         assert model.asks == []
         onto = model.ontologies[0]
         assert isinstance(onto, dict)
@@ -432,8 +442,9 @@ def test_single_non_select_through_http(
     loop. ``sql`` is ``kind == sql`` with the loop off.
     """
     monkeypatch.setattr("dms_executor.manifest.reject_hostile_chat_sql", lambda _sql: None)
-    monkeypatch.setattr("dms_executor.generative_ask.reject_hostile_chat_sql", lambda _sql: None)
-    monkeypatch.setattr("dms_executor.reject_hostile_chat_sql", lambda _sql: None)
+    # GRANT-STRUCT-01: grant_struct.serve_gap is the one chat-path caller of
+    # the scanner (generative_ask and the executor reach it through there).
+    monkeypatch.setattr("dms_executor.grant_struct.reject_hostile_chat_sql", lambda _sql: None)
     db = ensure_demo_warehouse(tmp_path / f"{path_name}-{case}.duckdb")
     _flags(monkeypatch, db)
     # The schema index opens the file on another thread. This case does not

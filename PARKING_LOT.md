@@ -299,6 +299,22 @@ demote). Live Studio steward inspect of >=3 asks is not this seat.
 asks showing include/exclude/unsure (or N/A with why). Until then: do not
 stamp #235 COMPLETE from CI green alone. #178 stays OPEN.
 
+## P-DMS-37 - A customer badge of its own for Cortex document answers
+
+WIRE-19 maps contract `document` onto the doc-RAG lane's amber `L2_VALIDATED`
+("generated - check sources") with route `document`, and the Details copy says
+the documents answered and no query ran. The chip text still reads "generated".
+A sixth badge kind touches `ALLOWED_BADGES`, xlsx export, BI export, the red-team
+grader and every UI badge map, so it is a PRD vocabulary decision.
+**Unlock:** the PRD Agent rules on a document badge (name, tone, export rules).
+
+## P-DMS-38 - Send 1.9.0 `schema_context` and `AskPayloadColumn.masked` on the contract ask
+
+The 1.9.0 client carries both fields. DMS's contract ask sends neither, and does
+not send `dms_payload` yet, so Cortex's plan+SQL path is not armed from DMS.
+**Unlock:** WIRE-01b (#452) merges `dms_payload` on the ask; then `masked` comes
+from the PII column classification, fail closed (absent is masked).
+
 ## P-DMS-37 - Free-text measure expressions, measure filters, arithmetic, ratios (dms#283)
 
 A measure in ONTO-CONFIRM-01 is a structured spec: one aggregate enum over one landed

@@ -1,0 +1,2266 @@
+"""Allow-list grant gate. These tests fail on 95f54f06.
+
+Every entry point refuses with a named reason and does not submit.
+A granted quoted relation, a trailing semicolon, and a semicolon inside a
+string or a comment still serve.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import duckdb
+import pytest
+from cortex_contract.execution import Manifest, QueryResult
+from dms_executor import DEMO_TABLES, Executor
+from dms_executor.demo_pack import PackMetric, maybe_pack_ask
+from dms_executor.demo_warehouse import ensure_demo_warehouse
+from dms_executor.envelope import assert_envelope_valid
+from dms_executor.grant_struct import normalize_relation, serve_gap, structural_grant_stop
+from dms_executor.manifest import SecurityEvent, SessionAcl
+from dms_executor.session_followup import run_followup_sql
+from dms_executor.verified_queries import (
+    _TABLE,
+    lookup_verified_query,
+    maybe_verified_ask,
+    register_verified_query,
+)
+
+OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+Q = "How many rows are there?"
+
+# reason is a prefix. Hostile file functions keep the scanner sentence.
+REFUSE = (
+    ("passwd", "SELECT * FROM '/etc/passwd'", "sql_relation_not_granted", "/etc/passwd"),
+    (
+        "read_csv_auto",
+        "SELECT * FROM read_csv_auto('/etc/passwd')",
+        "hostile_sql:",
+        "/etc/passwd",
+    ),
+    (
+        "read_text",
+        "SELECT * FROM read_text('/etc/hostname')",
+        "sql_relation_not_granted",
+        "/etc/hostname",
+    ),
+    (
+        "read_parquet",
+        "SELECT * FROM read_parquet('*.parquet')",
+        "hostile_sql:",
+        "*.parquet",
+    ),
+    (
+        "glob",
+        "SELECT * FROM glob('/var/cortex/*')",
+        "sql_relation_not_granted",
+        "/var/cortex",
+    ),
+    (
+        "iceberg",
+        "SELECT * FROM iceberg_scan(beta_secret)",
+        "sql_relation_not_granted",
+        "beta_secret",
+    ),
+    (
+        "cte",
+        "WITH c AS (SELECT * FROM read_text('/etc/hostname')) SELECT * FROM c",
+        "sql_relation_not_granted",
+        "/etc/hostname",
+    ),
+    (
+        "join",
+        "SELECT * FROM inventory JOIN iceberg_scan(beta_secret) t ON TRUE",
+        "sql_relation_not_granted",
+        "beta_secret",
+    ),
+    (
+        "subquery",
+        "SELECT * FROM (SELECT * FROM glob('/var/cortex/*')) s",
+        "sql_relation_not_granted",
+        "/var/cortex",
+    ),
+    (
+        "information_schema",
+        "SELECT * FROM information_schema.tables",
+        "sql_relation_not_granted",
+        "information_schema",
+    ),
+    ("checkpoint", "SELECT 1; CHECKPOINT", "multi_statement", ""),
+    ("attach", "SELECT 1;ATTACH ':memory:' AS x", "multi_statement", ""),
+    ("copy", "sElEcT 1; cOpY (SELECT 1) TO '/tmp/x.csv'", "multi_statement", "/tmp/x.csv"),
+    ("two_select", "SELECT 1; SELECT 2", "multi_statement", ""),
+    ("block_comment", "SELECT 1\n/* ; */\nSELECT 2", "ungranted:unparsed", ""),
+    ("line_comment", "SELECT 1\n-- note\nSELECT 2", "ungranted:unparsed", ""),
+)
+
+SERVE = (
+    'SELECT * FROM "orders"',
+    'SELECT * FROM "orders";',
+    "SELECT * FROM \"orders\" WHERE note = 'a;b'",
+    'SELECT * FROM "orders" /* a;b */',
+    "SELECT * FROM orders",
+    "SELECT * FROM main.orders",
+    'SELECT * FROM "Orders"',
+    "WITH c AS (WITH d AS (SELECT * FROM orders) SELECT * FROM d) SELECT * FROM c",
+    "SELECT * FROM (SELECT note FROM orders) s",
+    "SELECT o.note FROM orders o",
+    "SELECT a.note FROM orders a JOIN orders b ON a.note = b.note",
+    "SELECT * FROM orders WHERE EXISTS (SELECT 1 FROM orders o2 WHERE o2.note = orders.note)",
+    "SELECT note FROM orders UNION SELECT note FROM orders",
+)
+
+
+class _Gen:
+    def __init__(self, sql: str) -> None:
+        self.sql = sql
+        self.submits: list[Any] = []
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        return {"query_sql": self.sql, "plan_source": "ontology_plan"}
+
+    def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        return QueryResult(ok=True, status="ok", run_id="run_g2", output={"rows": [{"n": 1}]})
+
+    def ledger_append(self, req: Any) -> Any:
+        from cortex_client.models import LedgerAppendResponse
+
+        return LedgerAppendResponse(entry_id="led_g2", hash="hash_g2_not_led")
+
+    def ask(self, req: Any) -> Any:
+        from cortex_client.models import AskResponse
+
+        return AskResponse(answer="fallback", abstained=True, badge="abstain", rows=[])
+
+
+class _Fallback:
+    """Generative miss, then Cortex.ask returns this SQL."""
+
+    def __init__(self, sql: str) -> None:
+        self.sql = sql
+        self.submits: list[Any] = []
+        self.asks = 0
+
+    def compute_insights(self, question: str, **kwargs: Any) -> None:
+        return None
+
+    def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        return QueryResult(ok=True, status="ok", run_id="run_fb", output={"rows": []})
+
+    def ask(self, req: Any) -> Any:
+        from cortex_client.models import AskResponse
+
+        self.asks += 1
+        return AskResponse(
+            answer="1",
+            abstained=False,
+            badge="generated",
+            rows=[{"n": 1}],
+            sql_used=self.sql,
+            route="generated",
+        )
+
+
+def _minter(monkeypatch: pytest.MonkeyPatch) -> Any:
+    from dms_executor.manifest import ManifestMinter
+
+    minter = ManifestMinter()
+
+    def _mint(acl: SessionAcl) -> Manifest:
+        return Manifest(
+            session_id=acl.session_id,
+            org_id=acl.org_id,
+            space_id=acl.space_id,
+            pool_id=acl.pool_id,
+            issuer_key_id="grant-struct-kid",
+            allowed_paths=list(acl.allowed_paths),
+            row_predicates=dict(acl.row_predicates),
+            issued_at="2026-07-30T00:00:00+00:00",
+            expires_at="2026-07-30T01:00:00+00:00",
+            signature="dGVzdHNpZw",
+        )
+
+    monkeypatch.setattr(minter, "mint_manifest", _mint)
+    monkeypatch.setattr(minter, "fetch_intermediate", lambda: None)
+    monkeypatch.setattr(minter, "close", lambda: None)
+    monkeypatch.setattr(minter, "invalidate", lambda *_a, **_k: None)
+    return minter
+
+
+def _reason(env: dict[str, Any]) -> str:
+    return " ".join(str(item) for item in (env.get("assumptions") or []))
+
+
+def _acl() -> SessionAcl:
+    return SessionAcl(
+        session_id="ses_g2",
+        org_id="org_g2",
+        space_id=OPS,
+        row_predicates={"orders": "TRUE", "inventory": "TRUE"},
+        allowed_paths=[],
+        pool_id="default",
+    )
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _sql_submits(rows: list[Any]) -> list[Any]:
+    """Cortex SQL submits. Session bind is not the statement."""
+    out = []
+    for req in rows:
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else None
+        if kind == "sql":
+            out.append(req)
+    return out
+
+
+@pytest.mark.parametrize(("name", "sql", "reason", "hidden"), REFUSE)
+def test_ungranted_relation_refuses_every_entry(
+    name: str,
+    sql: str,
+    reason: str,
+    hidden: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = ensure_demo_warehouse(tmp_path / "gate.duckdb")
+    model = _Gen(sql)
+    exe = Executor(cortex=model, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_g2_live")
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, name
+    assert env["rows"] == [], name
+    assert env["sql_used"] is None, name
+    assert reason in _reason(env), name
+    assert _sql_submits(model.submits) == [], name
+    if hidden:
+        assert hidden not in json.dumps(env), name
+
+    digest = _sha(db)
+    user = exe.answer_user_sql(sql, space_id=OPS, session_id="ses_g2_user")
+    assert_envelope_valid(user)
+    assert user["abstained"] is True, name
+    assert user["rows"] == [], name
+    assert user["sql_used"] is None, name
+    assert reason in _reason(user), name
+    assert "hard rule 12" not in _reason(user), name
+    if hidden:
+        assert hidden not in json.dumps(user), name
+    assert _sha(db) == digest, name
+
+    before = len(_sql_submits(model.submits))
+    with pytest.raises(SecurityEvent) as ei:
+        exe.submit_sql(sql, _acl())
+    assert reason in ei.value.code, name
+    assert len(_sql_submits(model.submits)) == before, name
+
+    import dms_executor.demo_pack as pack_mod
+
+    real_match = pack_mod.match_pack_phrase
+    pack_mod.match_pack_phrase = lambda question, tables=None: PackMetric(  # type: ignore[method-assign]
+        "g2", question, sql, ()
+    )
+    pack_submits: list[str] = []
+    try:
+        pack_env = maybe_pack_ask(
+            Q,
+            space_id=OPS,
+            session_id="ses_g2_pack",
+            grantable={"orders", "inventory"},
+            submit=lambda s: pack_submits.append(s),
+            ledger_append=lambda _p: None,
+            dialect="duckdb",
+        )
+    finally:
+        pack_mod.match_pack_phrase = real_match
+    assert pack_submits == [], name
+    if pack_env is not None:
+        assert_envelope_valid(pack_env)
+        assert pack_env["abstained"] is True, name
+        assert reason in _reason(pack_env), name
+        if hidden:
+            assert hidden not in json.dumps(pack_env), name
+
+    with pytest.raises(ValueError) as ve:
+        register_verified_query(
+            space_id=OPS,
+            question=f"vq refuse {name}",
+            sql=sql,
+            path=db,
+            dialect="duckdb",
+        )
+    assert reason in str(ve.value), name
+    held = register_verified_query(
+        space_id=OPS,
+        question=f"vq hold {name}",
+        sql="SELECT 1 AS n FROM inventory",
+        path=db,
+        dialect="duckdb",
+    )
+    con = duckdb.connect(str(db))
+    try:
+        con.execute(
+            f"UPDATE {_TABLE} SET sql_text = ? WHERE asset_id = ?",
+            [sql, held["asset_id"]],
+        )
+    finally:
+        con.close()
+    assert (
+        lookup_verified_query(
+            f"vq hold {name}",
+            space_id=OPS,
+            warehouse=db,
+            grantable={"orders", "inventory"},
+            dialect="duckdb",
+        )
+        is None
+    ), name
+    vq_submits: list[str] = []
+    assert (
+        maybe_verified_ask(
+            f"vq hold {name}",
+            space_id=OPS,
+            warehouse=db,
+            grantable={"orders", "inventory"},
+            submit=lambda s: vq_submits.append(s),
+            ledger_append=lambda _p: None,
+            dialect="duckdb",
+        )
+        is None
+    ), name
+    assert vq_submits == [], name
+
+    followed = run_followup_sql(
+        sql,
+        warehouse=db,
+        space_id=OPS,
+        session_id="ses_g2_fu",
+        question="average of them",
+        why="gate",
+        text="no",
+        dialect="duckdb",
+    )
+    assert_envelope_valid(followed)
+    assert followed["abstained"] is True, name
+    assert followed["rows"] == [], name
+    assert followed["sql_used"] is None, name
+    assert reason in _reason(followed), name
+
+    fb = _Fallback(sql)
+    fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    fb_env = fb_exe.live_ask(Q, space_id=OPS, session_id="ses_g2_fb")
+    assert_envelope_valid(fb_env)
+    assert fb.asks == 1, name
+    assert fb_env["abstained"] is True, name
+    assert fb_env["rows"] == [], name
+    assert fb_env["sql_used"] is None, name
+    assert reason in _reason(fb_env), name
+    assert _sql_submits(fb.submits) == [], name
+    if hidden:
+        assert hidden not in json.dumps(fb_env), name
+
+
+def _grant_orders(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_executor as pkg
+
+    monkeypatch.setattr(pkg, "DEMO_TABLES", (*DEMO_TABLES, "orders"))
+    real = pkg.Executor.grantable_tables
+
+    def _grants(self: Executor, *, space_id: str | None) -> list[str]:
+        base = list(real(self, space_id=space_id))
+        if "orders" not in base:
+            base.append("orders")
+        return base
+
+    monkeypatch.setattr(pkg.Executor, "grantable_tables", _grants)
+
+
+@pytest.mark.parametrize("sql", SERVE)
+def test_granted_quoted_and_semicolon_shapes_serve(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "orders.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE orders (note VARCHAR)")
+        con.execute("INSERT INTO orders VALUES ('a;b')")
+    finally:
+        con.close()
+    _grant_orders(monkeypatch)
+    model = _Gen(sql)
+    exe = Executor(cortex=model, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_g2_ok")
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, sql
+    assert env["rows"], sql
+    assert model.submits, sql
+    user = exe.answer_user_sql(sql, space_id=OPS, session_id="ses_g2_ok_user")
+    assert_envelope_valid(user)
+    assert user["abstained"] is False, sql
+    assert user["rows"], sql
+    assert user["sql_used"], sql
+
+
+# A plain ungranted name is bare ``ungranted``. The name is not in the code.
+# A non-default schema is ``sql_relation_not_granted``. The pack lane keeps
+# its grants-fail sentence for a plain ungranted name and does not submit.
+_FALLBACK_HOLES = (
+    (
+        "information_schema",
+        "SELECT * FROM information_schema.tables",
+        "sql_relation_not_granted",
+    ),
+    (
+        "main_secret",
+        "SELECT * FROM main.secret_ungranted",
+        "ungranted",
+    ),
+    (
+        "cte_orders",
+        "WITH orders AS (SELECT * FROM alerts) SELECT * FROM orders",
+        "ungranted",
+    ),
+    (
+        "cte_secret",
+        "WITH orders AS (SELECT * FROM secret_ungranted) SELECT * FROM orders",
+        "ungranted",
+    ),
+)
+
+
+@pytest.mark.parametrize(("name", "sql", "reason"), _FALLBACK_HOLES)
+def test_fallback_refuses_every_serve_gap(
+    name: str,
+    sql: str,
+    reason: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = ensure_demo_warehouse(tmp_path / "hole.duckdb")
+    _grant_orders(monkeypatch)
+    model = _Gen(sql)
+    exe = Executor(cortex=model, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_hole_live")
+    assert env["abstained"] is True, name
+    assert env["sql_used"] is None, name
+    assert reason in _reason(env), name
+    assert _sql_submits(model.submits) == [], name
+
+    user = exe.answer_user_sql(sql, space_id=OPS, session_id="ses_hole_user")
+    assert user["abstained"] is True, name
+    assert user["sql_used"] is None, name
+    from dms_executor.grant_struct import customer_grant_reason
+
+    shown_user = customer_grant_reason(reason)
+    assert shown_user in _reason(user), name
+    if shown_user == "ungranted":
+        user_blob = json.dumps(user)
+        for planted in ("secret_ungranted", "alerts"):
+            if planted in sql:
+                assert planted not in user_blob, name
+
+    before = len(_sql_submits(model.submits))
+    with pytest.raises(SecurityEvent) as ei:
+        exe.submit_sql(sql, _acl())
+    assert reason in ei.value.code, name
+    assert len(_sql_submits(model.submits)) == before, name
+
+    import dms_executor.demo_pack as pack_mod
+
+    real_match = pack_mod.match_pack_phrase
+    pack_mod.match_pack_phrase = lambda question, tables=None: PackMetric(  # type: ignore[method-assign]
+        "hole", question, sql, ()
+    )
+    pack_submits: list[str] = []
+    try:
+        pack_env = maybe_pack_ask(
+            Q,
+            space_id=OPS,
+            session_id="ses_hole_pack",
+            grantable={"orders", "inventory"},
+            submit=lambda s: pack_submits.append(s),
+            ledger_append=lambda _p: None,
+            dialect="duckdb",
+        )
+    finally:
+        pack_mod.match_pack_phrase = real_match
+    assert pack_submits == [], name
+    assert pack_env is not None, name
+    assert pack_env["abstained"] is True, name
+    assert pack_env["sql_used"] is None, name
+    if reason == "ungranted" or reason.startswith("ungranted:"):
+        assert "grants fail" in _reason(pack_env), name
+    else:
+        assert reason in _reason(pack_env), name
+
+    with pytest.raises(ValueError) as ve:
+        register_verified_query(
+            space_id=OPS, question=f"vq hole {name}", sql=sql, path=db,
+            dialect="duckdb",
+        )
+    # A demo table outside the Space keeps the sql_not_in_space sentence.
+    assert reason in str(ve.value) or str(ve.value).startswith("sql_not_in_space:"), name
+
+    followed = run_followup_sql(
+        sql,
+        warehouse=db,
+        space_id=OPS,
+        session_id="ses_hole_fu",
+        question="average of them",
+        why="gate",
+        text="no",
+        grantable={"orders", "inventory"},
+        dialect="duckdb",
+    )
+    assert followed["abstained"] is True, name
+    assert followed["sql_used"] is None, name
+    shown_fu = customer_grant_reason(reason)
+    assert shown_fu in _reason(followed), name
+    if shown_fu == "ungranted":
+        fu_blob = json.dumps(followed)
+        for planted in ("secret_ungranted", "alerts"):
+            if planted in sql:
+                assert planted not in fu_blob, name
+
+    fb = _Fallback(sql)
+    fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    fb_env = fb_exe.live_ask(Q, space_id=OPS, session_id="ses_hole_fb")
+    assert fb.asks == 1, name
+    assert fb_env["abstained"] is True, name
+    assert fb_env["rows"] == [], name
+    assert fb_env["sql_used"] is None, name
+    from dms_executor.grant_struct import customer_grant_reason
+
+    shown = customer_grant_reason(reason)
+    assert shown in _reason(fb_env), name
+    fb_blob = json.dumps(fb_env)
+    if shown == "ungranted":
+        for planted in ("secret_ungranted", "alerts"):
+            if planted in sql:
+                assert planted not in fb_blob, name
+    assert _sql_submits(fb.submits) == [], name
+
+
+# Unclassified scalars are not relations. A function in the relation slot is.
+_SCALAR_FNS = ("read_text", "read_csv_auto", "read_parquet", "glob")
+_SCALAR_SLOTS = ("SELECT * FROM {fn}('/tmp/x')",)
+
+
+@pytest.mark.parametrize("fn", _SCALAR_FNS)
+@pytest.mark.parametrize("template", _SCALAR_SLOTS)
+def test_scalar_reader_is_ungranted_in_any_slot(
+    fn: str, template: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The allow-list refuses a reader even when the hostile scanner is off."""
+    monkeypatch.setattr(
+        "dms_executor.grant_struct.reject_hostile_chat_sql",
+        lambda _sql: None,
+    )
+    sql = template.format(fn=fn)
+    assert serve_gap(sql, grantable={"orders"}, dialect="duckdb") == (
+        "sql_relation_not_granted"
+    )
+
+
+@pytest.mark.parametrize("fn", _SCALAR_FNS)
+@pytest.mark.parametrize("template", _SCALAR_SLOTS)
+def test_scalar_reader_abstains_before_execute(
+    fn: str,
+    template: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sql = template.format(fn=fn)
+    db = tmp_path / "scalar.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE orders (note VARCHAR)")
+        con.execute("INSERT INTO orders VALUES ('a')")
+    finally:
+        con.close()
+    _grant_orders(monkeypatch)
+    exe = Executor(cortex=_Gen(sql), minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    user = exe.answer_user_sql(sql, space_id=OPS, session_id="ses_scalar")
+    assert_envelope_valid(user)
+    assert user["abstained"] is True, sql
+    assert user["sql_used"] is None, sql
+    assert user["rows"] == [], sql
+    assert "sql_relation_not_granted" in _reason(user) or "hostile_sql:" in _reason(user)
+    assert "/tmp/x" not in json.dumps(user)
+
+
+_OTHER_SCHEMA = (
+    "SELECT * FROM other_schema.orders",
+    'SELECT * FROM "other_schema"."orders"',
+    "WITH c AS (SELECT * FROM other_schema.orders) SELECT * FROM c",
+)
+
+
+@pytest.mark.parametrize("sql", _OTHER_SCHEMA)
+def test_other_schema_refuses_before_explain(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "schema.duckdb"
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE orders (note VARCHAR)")
+        con.execute("INSERT INTO orders VALUES ('a')")
+    finally:
+        con.close()
+    _grant_orders(monkeypatch)
+    explained: list[str] = []
+    real = duckdb.DuckDBPyConnection.execute
+
+    def _wrapped(self: Any, statement: str, *args: Any, **kwargs: Any) -> Any:
+        if str(statement).lstrip().upper().startswith("EXPLAIN"):
+            explained.append(str(statement))
+        return real(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(duckdb.DuckDBPyConnection, "execute", _wrapped)
+    assert serve_gap(sql, grantable={"orders"}, dialect="duckdb") == (
+        "sql_relation_not_granted"
+    )
+    model = _Gen(sql)
+    exe = Executor(cortex=model, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_schema")
+    assert env["abstained"] is True, sql
+    assert env["sql_used"] is None, sql
+    assert "sql_relation_not_granted" in _reason(env), sql
+    assert "CatalogException" not in _reason(env), sql
+    assert _sql_submits(model.submits) == [], sql
+    assert explained == [], sql
+    fb = _Fallback(sql)
+    fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    fb_env = fb_exe.live_ask(Q, space_id=OPS, session_id="ses_schema_fb")
+    assert fb_env["abstained"] is True, sql
+    # The schema is not in this file, so the catalog cannot bind it.
+    assert "sql_relation_unresolved" in _reason(fb_env), sql
+    assert "other_schema" not in json.dumps(fb_env), sql
+    assert _sql_submits(fb.submits) == [], sql
+    assert explained == [], sql
+
+
+def test_followup_serves_a_granted_table(tmp_path: Path) -> None:
+    db = ensure_demo_warehouse(tmp_path / "follow_ok.duckdb")
+    env = run_followup_sql(
+        "SELECT COUNT(*) AS n FROM inventory",
+        warehouse=db,
+        space_id=OPS,
+        session_id="ses_fu_ok",
+        question="how many",
+        why="granted follow-up",
+        text="served",
+        grantable={"inventory"},
+        dialect="duckdb",
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["rows"]
+    assert env["sql_used"]
+
+
+def _grant_names(monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...]) -> None:
+    import dms_executor as pkg
+
+    monkeypatch.setattr(pkg, "DEMO_TABLES", (*DEMO_TABLES, *names))
+    real = pkg.Executor.grantable_tables
+
+    def _grants(self: Executor, *, space_id: str | None) -> list[str]:
+        base = list(real(self, space_id=space_id))
+        for name in names:
+            if name not in base:
+                base.append(name)
+        return base
+
+    monkeypatch.setattr(pkg.Executor, "grantable_tables", _grants)
+
+
+_QUAL_BAD = (
+    "src_b.orders",
+    "other_schema.orders",
+    "catalog.src_b.orders",
+    '"src_b".orders',
+    "SRC_B.Orders",
+)
+_QUAL_POS = ("from", "join", "cte", "subquery")
+_QUAL_GRANTS = (
+    ("bare", {"orders"}, "orders"),
+    ("qualified", {"src_a.orders"}, "src_a.orders"),
+)
+
+
+def _placed(position: str, relation: str, anchor: str) -> str:
+    if position == "from":
+        return f"SELECT 1 AS n FROM {relation}"
+    if position == "join":
+        return f"SELECT 1 AS n FROM {anchor} a JOIN {relation} b ON TRUE"
+    if position == "cte":
+        return f"WITH c AS (SELECT 1 AS n FROM {relation}) SELECT * FROM c"
+    return f"SELECT * FROM (SELECT 1 AS n FROM {relation}) s"
+
+
+@pytest.mark.parametrize("relation", _QUAL_BAD)
+@pytest.mark.parametrize("position", _QUAL_POS)
+@pytest.mark.parametrize(("grant_name", "grant", "anchor"), _QUAL_GRANTS)
+def test_qualified_mismatch_refuses_before_submit(
+    relation: str,
+    position: str,
+    grant_name: str,
+    grant: set[str],
+    anchor: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sql = _placed(position, relation, anchor)
+    assert serve_gap(sql, grantable=set(grant), dialect="duckdb") == (
+        "sql_relation_not_granted"
+    ), (grant_name, position, relation)
+    _grant_names(monkeypatch, tuple(grant))
+    db = ensure_demo_warehouse(tmp_path / "qual.duckdb")
+    model = _Gen(sql)
+    exe = Executor(cortex=model, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_qual")
+    assert env["abstained"] is True
+    assert env["sql_used"] is None
+    assert "sql_relation_not_granted" in _reason(env)
+    assert _sql_submits(model.submits) == []
+    fb = _Fallback(sql)
+    fb_exe = Executor(cortex=fb, minter=_minter(monkeypatch), warehouse_path=db)  # type: ignore[arg-type]
+    fb_env = fb_exe.live_ask(Q, space_id=OPS, session_id="ses_qual_fb")
+    assert fb_env["abstained"] is True
+    # No such schema in the file: the qualifier does not resolve.
+    assert "sql_relation_unresolved" in _reason(fb_env)
+    schema = [part.strip().strip('"') for part in relation.split(".")][-2]
+    assert schema not in json.dumps(fb_env)
+    assert _sql_submits(fb.submits) == []
+
+
+def test_normalize_relation_follows_the_engine() -> None:
+    """Same key the dialect folds. Quoted case differs only when the engine keeps it."""
+    assert normalize_relation("orders", dialect="duckdb") == normalize_relation(
+        '"Orders"', dialect="duckdb"
+    )
+    assert normalize_relation("orders", dialect="duckdb") == normalize_relation(
+        "main.orders", dialect="duckdb"
+    )
+    assert normalize_relation('"SRC_A".orders', dialect="duckdb") == normalize_relation(
+        "src_a.orders", dialect="duckdb"
+    )
+    assert normalize_relation("SRC_A.ORDERS", dialect="postgres") == normalize_relation(
+        "src_a.orders", dialect="postgres"
+    )
+    assert normalize_relation('"SRC_A".orders', dialect="postgres") != normalize_relation(
+        "src_a.orders", dialect="postgres"
+    )
+    assert normalize_relation("src_a.orders", dialect="snowflake") == normalize_relation(
+        "SRC_A.ORDERS", dialect="snowflake"
+    )
+    assert normalize_relation('"src_a"."orders"', dialect="snowflake") != normalize_relation(
+        "src_a.orders", dialect="snowflake"
+    )
+    assert normalize_relation("orders", dialect="no-such-engine") is None
+    assert serve_gap("SELECT 1 FROM orders", grantable={"orders"}, dialect="duckdb") is None
+    assert serve_gap("SELECT 1 FROM orders", grantable={"orders"}, dialect="nope") == (
+        "sql_dialect_unknown"
+    )
+    assert serve_gap("SELECT * FROM ?", grantable={"orders"}, dialect="duckdb") == (
+        "sql_relation_unresolved"
+    )
+
+
+def test_unknown_dialect_and_unsettled_name_abstain_without_submit() -> None:
+    """#405's ticket logger is not on main. The named reason is the abstain exit."""
+    from dms_executor.generative_ask import maybe_generative_ask
+
+    assert structural_grant_stop("sql_dialect_unknown")
+    assert structural_grant_stop("sql_relation_unresolved")
+    submits: list[str] = []
+
+    def _submit(sql: str) -> Any:
+        submits.append(sql)
+        raise AssertionError("must not submit")
+
+    def _ledger(_payload: dict[str, Any]) -> Any:
+        raise AssertionError("must not append")
+
+    env = maybe_generative_ask(
+        Q,
+        grantable={"orders"},
+        compute=lambda _c: {
+            "query_sql": "SELECT 1 FROM orders",
+            "plan_source": "ontology_plan",
+        },
+        submit=_submit,
+        ledger_append=_ledger,
+        dialect="no-such-engine",
+    )
+    assert env is not None
+    assert env["abstained"] is True
+    assert submits == []
+    assert "sql_dialect_unknown" in _reason(env)
+    env = maybe_generative_ask(
+        Q,
+        grantable={"orders"},
+        compute=lambda _c: {
+            "query_sql": "SELECT * FROM ?",
+            "plan_source": "ontology_plan",
+        },
+        submit=_submit,
+        ledger_append=_ledger,
+        dialect="duckdb",
+    )
+    assert env is not None
+    assert env["abstained"] is True
+    assert submits == []
+    assert "sql_relation_unresolved" in _reason(env)
+
+
+def test_postgres_unquoted_serves_and_quoted_schema_refuses() -> None:
+    granted = {"src_a.orders"}
+    assert (
+        serve_gap("SELECT 1 FROM SRC_A.ORDERS", grantable=granted, dialect="postgres")
+        is None
+    )
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "SRC_A".orders', grantable=granted, dialect="postgres"
+        )
+        == "sql_relation_not_granted"
+    )
+
+
+def test_snowflake_unquoted_serves_and_quoted_lower_refuses() -> None:
+    granted = {"src_a.orders"}
+    assert (
+        serve_gap("SELECT 1 FROM src_a.orders", grantable=granted, dialect="snowflake")
+        is None
+    )
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "src_a"."orders"',
+            grantable=granted,
+            dialect="snowflake",
+        )
+        == "sql_relation_not_granted"
+    )
+
+
+def test_duckdb_quoted_schema_matches_the_engine(tmp_path: Path) -> None:
+    """DuckDB resolves \"SRC_A\".orders to src_a.orders. The checker must serve it."""
+    con = duckdb.connect(str(tmp_path / "fold.duckdb"))
+    try:
+        con.execute("CREATE SCHEMA src_a")
+        con.execute("CREATE TABLE src_a.orders (n INTEGER)")
+        con.execute("INSERT INTO src_a.orders VALUES (7)")
+        assert con.execute('SELECT n FROM "SRC_A".orders').fetchall() == [(7,)]
+    finally:
+        con.close()
+    sql = 'SELECT n FROM "SRC_A".orders'
+    assert serve_gap(sql, grantable={"src_a.orders"}, dialect="duckdb") is None
+    assert serve_gap('SELECT n FROM "orders"', grantable={"orders"}, dialect="duckdb") is None
+
+
+def test_postgres_quoted_schema_refuses_shortlist_and_serve() -> None:
+    """Quoted mixed case is a different Postgres schema. Both checks refuse it."""
+    from dms_executor.schema_context import build_schema_context
+
+    granted = {"src_a.orders"}
+    refused = '"SRC_A".orders'
+    prompt = build_schema_context(
+        "how many qwestbeta alphagrant orders",
+        {
+            "dialect": "postgres",
+            "datasets": [
+                {
+                    "name": "src_a.orders",
+                    "columns": [
+                        {
+                            "name": "category",
+                            "type": "varchar",
+                            "distinct": 1,
+                            "values": ["ALPHAGRANT"],
+                        }
+                    ],
+                },
+                {
+                    "name": refused,
+                    "columns": [
+                        {
+                            "name": "category",
+                            "type": "varchar",
+                            "distinct": 1,
+                            "values": ["QWESTBETA"],
+                        }
+                    ],
+                },
+            ],
+        },
+        grantable=granted,
+    ).prompt
+    assert "src_a.orders" in prompt
+    assert refused not in prompt
+    assert "SRC_A" not in prompt
+    assert "QWESTBETA" not in prompt
+    assert "qwestbeta" not in prompt
+    assert "FILTER HINTS" in prompt
+    assert "alphagrant" in prompt
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "SRC_A".orders',
+            grantable=granted,
+            dialect="postgres",
+        )
+        == "sql_relation_not_granted"
+    )
+
+
+_SHEET_SQL = 'SELECT 1 FROM bronze."sheet_x"'
+_SHEET_NAME = 'bronze."sheet_x"'
+# On 19eb1f59 bronze_gap allowed each of these for bronze."sheet_x".
+_SHEET_GRANTS = ("other_schema.sheet_x", "warehouse_sheet_x", "SHEET_X")
+
+
+@pytest.mark.parametrize("grant", _SHEET_GRANTS)
+def test_sheet_grant_shapes_refuse_on_both_paths(grant: str) -> None:
+    """One checker. The name path and the SQL path both refuse these grants."""
+    from dms_executor.grant_struct import relation_gap
+
+    grants = {grant}
+    assert serve_gap(_SHEET_SQL, grantable=grants, dialect="duckdb") == (
+        "sql_relation_not_granted"
+    )
+    assert relation_gap(_SHEET_NAME, grantable=grants, dialect="duckdb") == (
+        "sql_relation_not_granted"
+    )
+
+
+def test_qualified_bronze_sheet_serves_when_that_relation_is_granted() -> None:
+    from dms_executor.grant_struct import relation_gap
+
+    grants = {"bronze.sheet_x"}
+    assert serve_gap(_SHEET_SQL, grantable=grants, dialect="duckdb") is None
+    assert relation_gap("bronze.sheet_x", grantable=grants, dialect="duckdb") is None
+
+
+def test_postgres_schema_without_dialect_is_unknown() -> None:
+    """No dialect is sql_dialect_unknown. DuckDB must not fold a Postgres name.
+
+    Fails on 19eb1f59: a blank dialect fell back to duckdb and granted
+    ``"SRC_A".orders`` from ``src_a.orders``.
+    """
+    from dms_executor.schema_context import build_schema_context
+
+    granted = {"src_a.orders"}
+    prompt = build_schema_context(
+        "how many qwestbeta orders",
+        {
+            "datasets": [
+                {
+                    "name": "src_a.orders",
+                    "columns": [
+                        {
+                            "name": "n",
+                            "type": "integer",
+                            "distinct": 1,
+                            "values": ["ALPHAGRANT"],
+                        }
+                    ],
+                },
+                {
+                    "name": '"SRC_A".orders',
+                    "columns": [
+                        {
+                            "name": "category",
+                            "type": "varchar",
+                            "distinct": 1,
+                            "values": ["QWESTBETA"],
+                        }
+                    ],
+                },
+            ]
+        },
+        grantable=granted,
+    ).prompt
+    assert "sql_dialect_unknown" in prompt
+    body = prompt.split("sql_dialect_unknown", 1)[-1]
+    assert "src_a.orders" not in body
+    assert "SRC_A" not in prompt
+    assert "QWESTBETA" not in prompt
+    assert "qwestbeta" not in prompt
+    assert "ALPHAGRANT" not in prompt
+    assert serve_gap(
+        'SELECT 1 FROM "SRC_A".orders', grantable=granted, dialect=""
+    ) == "sql_dialect_unknown"
+    assert serve_gap(
+        "SELECT 1 FROM src_a.orders", grantable=granted, dialect="   "
+    ) == "sql_dialect_unknown"
+
+
+_DIGIT_STEMS = (
+    "01_clean_sales",
+    "02_title_above_header",
+    "06_malay_headers",
+    "07_thousands_separators",
+    "08_merged_header_sim",
+    "10_type_inconsistent",
+    "12_title_and_trailing",
+    "14_malay_dirty_numbers",
+    "15_q3_sales_export_Q3",
+)
+
+
+def test_digit_leading_relation_is_a_grant_key() -> None:
+    """A digit-leading stem normalises, quoted or not. An ungranted one refuses."""
+    assert len(_DIGIT_STEMS) == 9
+    for stem in _DIGIT_STEMS:
+        grant = f"bronze.{stem}"
+        quoted = f'SELECT * FROM bronze."{stem}"'
+        assert normalize_relation(grant, dialect="duckdb") == normalize_relation(
+            f'bronze."{stem}"', dialect="duckdb"
+        )
+        assert serve_gap(quoted, grantable={grant}, dialect="duckdb") is None, stem
+    refused = serve_gap(
+        'SELECT * FROM bronze."99_not_a_grant"',
+        grantable={"bronze.01_clean_sales"},
+        dialect="duckdb",
+    )
+    assert refused == "sql_relation_not_granted"
+    assert refused is not None and "99_not_a_grant" not in refused
+
+
+def test_digit_leading_uploads_are_askable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nine digit-leading uploads serve end to end when that relation is granted."""
+    db = ensure_demo_warehouse(tmp_path / "digits.duckdb")
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+        for stem in _DIGIT_STEMS:
+            con.execute(f'CREATE TABLE bronze."{stem}" (n INTEGER)')
+            con.execute(f'INSERT INTO bronze."{stem}" VALUES (1)')
+    finally:
+        con.close()
+    _grant_names(monkeypatch, tuple(f"bronze.{stem}" for stem in _DIGIT_STEMS))
+    exe = Executor(warehouse_path=db)
+    for stem in _DIGIT_STEMS:
+        env = exe.answer_user_sql(
+            f'SELECT n FROM bronze."{stem}"',
+            space_id=OPS,
+            session_id="ses_digit",
+        )
+        assert_envelope_valid(env)
+        assert env["abstained"] is False, stem
+        assert env["rows"] == [{"n": 1}], stem
+    missing = exe.answer_user_sql(
+        'SELECT n FROM bronze."99_not_a_grant"',
+        space_id=OPS,
+        session_id="ses_digit_no",
+    )
+    assert missing["abstained"] is True
+    assert "99_not_a_grant" not in json.dumps(missing)
+
+
+def test_scalar_functions_serve_and_readers_refuse() -> None:
+    """A scalar over a granted relation serves. A statement with no granted table does not."""
+    grants = {"orders"}
+    assert (
+        serve_gap(
+            "SELECT CASE WHEN amount < 0 THEN error('neg') ELSE amount END FROM orders",
+            grantable=grants,
+            dialect="duckdb",
+        )
+        is None
+    )
+    no_table = (
+        "SELECT printf('%d items', 3)",
+        "SELECT CAST(1 AS INTEGER)",
+        "SELECT CAST(42 AS INTEGER)",
+        "SELECT 5 UNION ALL SELECT 6",
+        "SELECT date_trunc('day', DATE '2020-01-01')",
+    )
+    assert (
+        serve_gap(
+            "SELECT CAST(n AS INTEGER) FROM orders",
+            grantable=grants,
+            dialect="duckdb",
+        )
+        is None
+    )
+    assert (
+        serve_gap(
+            "SELECT 1 FROM orders UNION ALL SELECT 5",
+            grantable=grants,
+            dialect="duckdb",
+        )
+        is None
+    )
+    for sql in no_table:
+        assert serve_gap(sql, grantable=grants, dialect="duckdb") == "ungranted", sql
+    # A generator in FROM is a table function: not a relation (round 3).
+    for sql in ("SELECT * FROM generate_series(1, 3)", "SELECT * FROM unnest([1, 2, 3])"):
+        assert serve_gap(sql, grantable=grants, dialect="duckdb") == "sql_relation_not_granted"
+    refuse = (
+        "SELECT * FROM read_csv('x.csv')",
+        "SELECT * FROM read_parquet('x.parquet')",
+        "ATTACH 'x.duckdb' AS other",
+        "COPY orders TO 'x.csv'",
+    )
+    for sql in refuse:
+        gap = serve_gap(sql, grantable=grants, dialect="duckdb")
+        assert gap, sql
+        assert gap.startswith("hostile_sql:") or gap == "sql_relation_not_granted", gap
+
+
+def test_catalog_binds_a_qualified_name_to_the_same_relation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Database.table is the granted table when the catalog binds them together."""
+    db = ensure_demo_warehouse(tmp_path / "warehouse.duckdb")
+    assert (
+        serve_gap(
+            'SELECT 1 FROM "warehouse"."inventory"',
+            grantable={"inventory"},
+            dialect="duckdb",
+            warehouse=db,
+        )
+        is None
+    )
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA other_schema")
+        con.execute("CREATE TABLE other_schema.orders (id INTEGER)")
+        con.execute("CREATE TABLE orders (id INTEGER)")
+    finally:
+        con.close()
+    assert (
+        serve_gap(
+            "SELECT 1 FROM other_schema.orders",
+            grantable={"orders"},
+            dialect="duckdb",
+            warehouse=db,
+        )
+        == "sql_relation_not_granted"
+    )
+    gap = serve_gap(
+        'SELECT 1 FROM "zz_missing_qual"."inventory"',
+        grantable={"inventory"},
+        dialect="duckdb",
+        warehouse=db,
+    )
+    assert gap == "sql_relation_unresolved"
+    assert "zz_missing_qual" not in (gap or "")
+    assert "inventory" not in (gap or "")
+    sql = 'SELECT 1 FROM "zz_missing_qual"."zz_no_such_table"'
+    fb = _Fallback(sql)
+    exe = Executor(
+        cortex=fb, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    env = exe.live_ask(Q, space_id=OPS, session_id="ses_unresolved")
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["sql_used"] is None
+    assert "validate:sql_relation_unresolved" in _reason(env)
+    blob = json.dumps(env)
+    assert "zz_missing_qual" not in blob
+    assert "zz_no_such_table" not in blob
+
+
+def test_ungranted_name_stays_out_of_both_envelopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The grant code is bare ungranted. The relation is not in the envelope or the ticket."""
+    planted = "zz_planted_secret"
+    sql = f"SELECT 1 FROM {planted}"
+    db = ensure_demo_warehouse(tmp_path / "mask.duckdb")
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    caplog.set_level("WARNING", logger="dms_executor.pipeline_failure")
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id="ses_mask_user"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is True
+    assert planted not in json.dumps(user)
+    follow = run_followup_sql(
+        sql,
+        warehouse=db,
+        space_id=OPS,
+        session_id="ses_mask_fu",
+        question="how many",
+        why="mask",
+        text="no",
+        grantable={"orders"},
+        dialect="duckdb",
+    )
+    assert_envelope_valid(follow)
+    assert follow["abstained"] is True
+    assert planted not in json.dumps(follow)
+    reasons = [
+        json.loads(rec.message.split(" ", 1)[1]).get("reason")
+        for rec in caplog.records
+        if rec.message.startswith("pipeline_failure ")
+    ]
+    assert "ungranted" in reasons
+    assert planted not in reasons
+    assert all(planted not in str(item) for item in reasons)
+
+
+# (sql, code). A generator in FROM is a table function, so it is not a
+# relation at all (round 3); the literal shapes cite no base table.
+_NO_TABLE = (
+    ("SELECT 1", "ungranted"),
+    ("SELECT 'literal'", "ungranted"),
+    ("SELECT CAST(42 AS INTEGER)", "ungranted"),
+    ("SELECT 5 UNION ALL SELECT 6", "ungranted"),
+    ("VALUES (1), (2)", "ungranted"),
+    ("SELECT * FROM generate_series(1, 3)", "sql_relation_not_granted"),
+    ("SELECT * FROM range(3)", "sql_relation_not_granted"),
+    ("SELECT * FROM unnest([1, 2, 3])", "sql_relation_not_granted"),
+)
+
+
+@pytest.mark.parametrize(("sql", "code"), _NO_TABLE)
+def test_no_granted_base_table_is_a_direct_http_refusal(
+    sql: str, code: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each no-source shape is a named refusal, before EXPLAIN, over HTTP.
+
+    A cast around a literal and a union of literal selects are bare
+    ungranted: the parse cites no base table. A generator is not a relation.
+    """
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from fastapi.testclient import TestClient
+
+    assert serve_gap(sql, grantable={"orders"}, dialect="duckdb") == code
+    db = ensure_demo_warehouse(tmp_path / "notable.duckdb")
+
+    class _Plant:
+        def __init__(self) -> None:
+            self.submits: list[Any] = []
+
+        def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+            return {"query_sql": sql, "plan_source": "ontology_plan"}
+
+        def submit(self, req: Any) -> Any:
+            self.submits.append(req)
+            raise AssertionError("submit")
+
+        def ask(self, req: Any) -> Any:
+            raise AssertionError("ask")
+
+        def ledger_append(self, req: Any) -> Any:
+            raise AssertionError("ledger")
+
+    plant = _Plant()
+    app = create_app()
+    exe = Executor(
+        cortex=plant, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    app.state.ask_service = exe
+    app.state.cortex = plant
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/ask",
+        json={"question": "b7 no table probe", "session_id": "ses_b7"},
+    )
+    assert response.status_code == 200, response.text
+    env = response.json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, sql
+    assert env["badge"] == "ABSTAIN", sql
+    assert env["sql_used"] is None, sql
+    assert env["rows"] == [], sql
+    assert env["answer_id"] == "ans_gen01_abstain", sql
+    blob = json.dumps(env)
+    assert code in blob, sql
+    assert "explain:" not in blob, sql
+    assert plant.submits == [], sql
+
+
+def test_generators_are_not_relations_but_a_scalar_unnest_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A generator in FROM is a table function, alone or beside a grant.
+
+    Round 3 (fail closed): only a table name, a subquery or VALUES is a FROM
+    item. ``unnest`` as a scalar over a granted table still serves. A reader
+    does not.
+    """
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    grants = {"orders"}
+    assert (
+        serve_gap("SELECT * FROM generate_series(1, 3)", grantable=grants, dialect="duckdb")
+        == "sql_relation_not_granted"
+    )
+    series_join = "SELECT COUNT(*) AS n FROM orders JOIN generate_series(1, 3) g ON TRUE"
+    assert (
+        serve_gap(series_join, grantable=grants, dialect="duckdb")
+        == "sql_relation_not_granted"
+    )
+    joined_reader = "SELECT * FROM orders JOIN read_csv('x.csv') t ON TRUE"
+    gap = serve_gap(joined_reader, grantable=grants, dialect="duckdb")
+    assert gap
+    assert gap.startswith("hostile_sql:") or gap == "sql_relation_not_granted"
+    unnest_sql = "SELECT unnest(items) AS n FROM orders"
+    assert serve_gap(unnest_sql, grantable=grants, dialect="duckdb") is None
+    db = ensure_demo_warehouse(tmp_path / "gen.duckdb")
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE orders (items INTEGER[])")
+        con.execute("INSERT INTO orders VALUES ([1, 2])")
+    finally:
+        con.close()
+    explained: list[str] = []
+    real = duckdb.DuckDBPyConnection.execute
+
+    def _wrapped(self: Any, statement: str, *args: Any, **kwargs: Any) -> Any:
+        if str(statement).lstrip().upper().startswith("EXPLAIN"):
+            explained.append(str(statement))
+        return real(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(duckdb.DuckDBPyConnection, "execute", _wrapped)
+    why = validate_compiled_sql(
+        joined_reader, grantable=grants, warehouse=db, dialect="duckdb"
+    )
+    assert why
+    assert why.startswith("hostile_sql:") or why == "sql_relation_not_granted"
+    assert explained == []
+    _grant_orders(monkeypatch)
+    exe = Executor(warehouse_path=db)
+    alone = exe.answer_user_sql(
+        "SELECT * FROM generate_series(1, 3)",
+        space_id=OPS,
+        session_id="ses_series_alone",
+    )
+    assert alone["abstained"] is True
+    assert alone["sql_used"] is None
+    assert "sql_relation_not_granted" in _reason(alone)
+    assert "explain:" not in json.dumps(alone)
+    series = exe.answer_user_sql(series_join, space_id=OPS, session_id="ses_series_join")
+    assert_envelope_valid(series)
+    assert series["abstained"] is True
+    assert series["rows"] == []
+    assert series["sql_used"] is None
+    assert "sql_relation_not_granted" in _reason(series)
+    unnest = exe.answer_user_sql(unnest_sql, space_id=OPS, session_id="ses_unnest")
+    assert_envelope_valid(unnest)
+    assert unnest["abstained"] is False
+    assert sorted(row["n"] for row in unnest["rows"]) == [1, 2]
+    reader = exe.answer_user_sql(
+        joined_reader, space_id=OPS, session_id="ses_reader_join"
+    )
+    assert_envelope_valid(reader)
+    assert reader["abstained"] is True
+    assert reader["sql_used"] is None
+    assert reader["rows"] == []
+    blob = json.dumps(reader)
+    assert "x.csv" not in blob
+    assert "explain:" not in blob
+    assert explained == []
+
+
+def test_usd_book_grant_is_the_same_verdict() -> None:
+    """Grant usd.book covers the one-identifier table \"usd.book\" at every call site."""
+    from dms_executor.demo_pack import _grant_covers
+    from dms_executor.grant_struct import relation_gap
+    from dms_executor.ontology import ungranted_tables
+    from dms_executor.schema_context import _granted
+
+    grant = {"usd.book"}
+    table = '"usd.book"'
+    gap = relation_gap(table, grantable=grant, dialect="duckdb")
+    assert gap is None
+    assert ungranted_tables({table}, grant, dialect="duckdb") == ()
+    assert _granted(table, grant, dialect="duckdb") is None
+    assert _grant_covers(table, grant, dialect="duckdb") is True
+    assert serve_gap(
+        "SELECT * FROM \"usd.book\"", grantable=grant, dialect="duckdb"
+    ) is None
+
+
+# --- CTE scope: a CTE name hides nothing outside the scope that defines it ---
+#
+# ``suppliers`` is a real demo table the Warehouse Ops Space does not grant
+# (it grants inventory, locations, shipments). Each shape defines a CTE called
+# ``suppliers`` somewhere, and also reads the base table ``suppliers`` from a
+# scope that CTE does not cover. DuckDB binds that read to the base table
+# (``_binds_base_suppliers`` proves it per shape), so the grant must check it.
+# These all served on 1bfa5ca: the CTE name was skipped wherever it appeared.
+
+_CTE_SCOPE_HOLES = (
+    (
+        "derived_table",
+        "SELECT COUNT(*) AS n FROM inventory g, "
+        "(WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) x, suppliers s",
+    ),
+    (
+        "union_branch",
+        "SELECT COUNT(*) AS n FROM inventory "
+        "UNION ALL (WITH suppliers AS (SELECT 1 AS a) SELECT COUNT(*) FROM suppliers) "
+        "UNION ALL SELECT COUNT(*) FROM suppliers",
+    ),
+    (
+        "in_subquery",
+        "SELECT COUNT(*) AS n FROM inventory "
+        "WHERE 1 IN (WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) "
+        "OR 4 IN (SELECT COUNT(*) FROM suppliers)",
+    ),
+    (
+        "scalar_subquery",
+        "SELECT (WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) AS q, "
+        "(SELECT COUNT(*) FROM suppliers) AS n FROM inventory LIMIT 1",
+    ),
+    (
+        "self_reference",
+        "WITH suppliers AS (SELECT * FROM suppliers) "
+        "SELECT COUNT(*) AS n FROM inventory, suppliers",
+    ),
+    (
+        "recursive_self_reference",
+        "WITH RECURSIVE suppliers AS (SELECT * FROM suppliers) "
+        "SELECT COUNT(*) AS n FROM inventory, suppliers",
+    ),
+    (
+        "forward_reference",
+        "WITH x AS (SELECT * FROM suppliers), suppliers AS (SELECT 1 AS a) "
+        "SELECT COUNT(*) AS n FROM inventory, x",
+    ),
+    (
+        "cte_inside_cte",
+        "WITH x AS (WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) "
+        "SELECT COUNT(*) AS n FROM inventory, x, suppliers",
+    ),
+)
+
+# The CTE does cover these reads, so no base ``suppliers`` is read and they serve.
+_CTE_IN_SCOPE = (
+    "WITH suppliers AS (SELECT 1 AS a) SELECT COUNT(*) AS n FROM inventory, suppliers",
+    "SELECT COUNT(*) AS n FROM inventory g, "
+    "(WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) x",
+    "WITH suppliers AS (SELECT 1 AS a) "
+    "SELECT COUNT(*) AS n FROM inventory WHERE 1 IN (SELECT a FROM suppliers)",
+    "WITH s AS (SELECT * FROM inventory), suppliers AS (SELECT COUNT(*) AS c FROM s) "
+    "SELECT c AS n FROM suppliers",
+)
+
+
+def _binds_base_suppliers(sql: str) -> bool:
+    """True when DuckDB needs a base table ``suppliers`` to bind ``sql``.
+
+    Without the base table the statement does not bind (a missing table, or
+    a CTE that would have to read itself). With it, the same statement runs.
+    """
+    con = duckdb.connect()
+    try:
+        con.execute("CREATE TABLE inventory AS SELECT 1 AS id")
+        try:
+            con.execute(sql).fetchall()
+        except duckdb.Error as exc:
+            if "suppliers" not in str(exc):
+                return False
+        else:
+            return False
+        con.execute("CREATE TABLE suppliers AS SELECT 1 AS a")
+        con.execute(sql).fetchall()
+        return True
+    finally:
+        con.close()
+
+
+class _ExecPlant:
+    """Model SQL is ``sql``. A submit runs it on a copy of the file: real rows."""
+
+    def __init__(self, sql: str, copy: Path) -> None:
+        self.sql = sql
+        self.copy = copy
+        self.submits: list[Any] = []
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        return {"query_sql": self.sql, "plan_source": "ontology_plan"}
+
+    def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        con = duckdb.connect(str(self.copy), read_only=True)
+        try:
+            cur = con.execute(self.sql)
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            con.close()
+        return QueryResult(ok=True, status="ok", run_id="run_cte", output={"rows": rows})
+
+    def ask(self, req: Any) -> Any:
+        raise AssertionError("ask")
+
+    def ledger_append(self, req: Any) -> Any:
+        from cortex_client.models import LedgerAppendResponse
+
+        return LedgerAppendResponse(entry_id="led_cte", hash="hash_cte_not_led")
+
+
+def _http_ask(
+    sql: str, db: Path, copy: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[dict[str, Any], _ExecPlant]:
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from fastapi.testclient import TestClient
+
+    plant = _ExecPlant(sql, copy)
+    app = create_app()
+    exe = Executor(
+        cortex=plant, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    app.state.ask_service = exe
+    app.state.cortex = plant
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+    )
+    response = TestClient(app).post(
+        "/v1/chat/ask",
+        json={"question": "how many inventory rows", "session_id": "ses_cte", "space_id": OPS},
+    )
+    assert response.status_code == 200, response.text
+    env = response.json()
+    assert_envelope_valid(env)
+    return env, plant
+
+
+@pytest.mark.parametrize(("name", "sql"), _CTE_SCOPE_HOLES)
+def test_cte_name_in_another_scope_is_checked_as_a_relation(
+    name: str, sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fail on 1bfa5ca: every shape served rows computed over ``suppliers``."""
+    import shutil
+
+    from dms_executor.gen_path_refuse import customer_abstain_text
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    assert _binds_base_suppliers(sql), name
+    db = ensure_demo_warehouse(tmp_path / "cte.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert "inventory" in grants and "suppliers" not in grants
+    refused = customer_abstain_text("ungranted")
+
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") == "ungranted", name
+    assert (
+        validate_compiled_sql(sql, grantable=grants, warehouse=db, dialect="duckdb")
+        == "ungranted"
+    ), name
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id=f"ses_cte_user_{name}"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is True, name
+    assert user["badge"] == "ABSTAIN", name
+    assert user["rows"] == [], name
+    assert user["values"] == [], name
+    assert user["sql_used"] is None, name
+    assert user["text"] == refused, name
+    assert "validate:ungranted" in _reason(user), name
+    assert "suppliers" not in json.dumps(user), name
+
+    copy = tmp_path / "plant.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is True, name
+    assert env["badge"] == "ABSTAIN", name
+    assert env["rows"] == [], name
+    assert env["values"] == [], name
+    assert env["sql_used"] is None, name
+    assert env["text"] == refused, name
+    assert "validate:ungranted" in _reason(env), name
+    assert "suppliers" not in json.dumps(env), name
+    assert plant.submits == [], name
+
+
+@pytest.mark.parametrize("sql", _CTE_IN_SCOPE)
+def test_cte_in_scope_still_serves_real_rows(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fix is scope, not a ban on CTE names: an enclosing CTE still serves."""
+    import shutil
+
+    assert not _binds_base_suppliers(sql)
+    db = ensure_demo_warehouse(tmp_path / "cte_ok.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") is None
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id="ses_cte_ok_user"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is False
+    assert user["rows"] == [{"n": 7}]
+    assert user["text"] == "Query result."
+    assert "suppliers" not in json.dumps(user["rows"])
+
+    copy = tmp_path / "plant_ok.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is False
+    assert env["badge"] != "ABSTAIN"
+    assert env["rows"] == [{"n": 7}]
+    assert env["text"] == "Found 1 row(s).\n  - n=7"
+    assert _sql_submits(plant.submits)
+
+
+def test_catalog_read_takes_the_serving_lease_not_the_ingest_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A qualified name reads the catalog on the chat path. That is a read lease.
+
+    Must-fail on 1bfa5ca after CONN-POOL-01: ``connect_file`` opened the ingest
+    writer, which waits for in-flight serving reads. With one held here it timed
+    out, the catalog was lost, and ``<database>.inventory`` stopped binding.
+    """
+    import dms_executor.lake_registry as lake_registry
+
+    db = ensure_demo_warehouse(tmp_path / "lease.duckdb")
+    monkeypatch.setenv("DMS_LAKE_INGEST_WAIT_S", "0.2")
+    real = lake_registry.open_lake
+    held = real(db, write=False)  # a serving read already in flight
+    modes: list[bool] = []
+
+    def _spy(path: Path | str, *, write: bool = False) -> Any:
+        modes.append(write)
+        return real(path, write=write)
+
+    monkeypatch.setattr(lake_registry, "open_lake", _spy)
+    try:
+        # ``lease`` is this file's database name, so only the catalog binds it.
+        gap = serve_gap(
+            "SELECT COUNT(*) AS n FROM lease.inventory",
+            grantable={"inventory"},
+            dialect="duckdb",
+            warehouse=db,
+        )
+    finally:
+        held.close()
+    assert modes == [False]
+    assert gap is None
+
+
+# --- Round 2: the engine's fold, table macros, one statement type, one lookup ---
+#
+# ``bank_accounts`` is a table the Warehouse Ops Space does not grant. It holds
+# one row, 424242. Each statement below also reads the granted ``inventory``,
+# so "no granted base table" cannot be what refuses it. On 97479d4 serve_gap
+# returned None for every statement here except ``query_table`` (its one
+# VARCHAR argument already read as a path reader); that one stays as a guard.
+
+_SECRET = 424242
+_KELVIN = "K"  # str.lower() gives ASCII "k"; DuckDB folds ASCII only.
+
+# (name, sql, rows DuckDB returns). Had the CTE bound, each would give 0.
+_FOLD_HOLES = (
+    (
+        "kelvin_cross_join",
+        f'WITH "ban{_KELVIN}_accounts" AS (SELECT 0 AS balance_myr) '
+        "SELECT b.balance_myr AS n FROM bank_accounts b, "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        [(_SECRET,)],
+    ),
+    (
+        "kelvin_scalar_subquery",
+        f'WITH "ban{_KELVIN}_accounts" AS (SELECT 0 AS balance_myr) '
+        "SELECT (SELECT balance_myr FROM bank_accounts) AS n FROM inventory LIMIT 1",
+        [(_SECRET,)],
+    ),
+    (
+        "kelvin_in_subquery",
+        f'WITH "ban{_KELVIN}_accounts" AS (SELECT 0 AS balance_myr) '
+        "SELECT COUNT(*) AS n FROM inventory "
+        "WHERE 424242 IN (SELECT balance_myr FROM bank_accounts)",
+        [(7,)],
+    ),
+    (
+        "accented_upper_cte",
+        'WITH "SALARIÉS" AS (SELECT 0 AS balance_myr) '
+        'SELECT s.balance_myr AS n FROM "salariés" s, '
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        [(_SECRET,)],
+    ),
+)
+
+_MACRO_HOLES = (
+    (
+        "histogram_values",
+        "SELECT bin AS n FROM histogram_values(bank_accounts, balance_myr), "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        True,
+    ),
+    (
+        "histogram",
+        "SELECT bin AS n FROM histogram('bank_accounts', balance_myr), "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        True,
+    ),
+    (
+        "query_table",
+        "SELECT balance_myr AS n FROM query_table('bank_accounts'), "
+        "(SELECT 1 FROM inventory LIMIT 1) g",
+        True,
+    ),
+    ("duckdb_settings", "SELECT COUNT(*) AS n FROM duckdb_settings(), inventory", False),
+    ("duckdb_secrets", "SELECT COUNT(*) AS n FROM duckdb_secrets(), inventory", False),
+    ("enable_logging", "SELECT COUNT(*) AS n FROM enable_logging(), inventory", False),
+    (
+        "truncate_duckdb_logs",
+        "SELECT COUNT(*) AS n FROM truncate_duckdb_logs(), inventory",
+        False,
+    ),
+    (
+        "parquet_bloom_probe",
+        "SELECT COUNT(*) AS n FROM parquet_bloom_probe('x.parquet', 'v', 424242), inventory",
+        False,
+    ),
+)
+
+
+def _secret_warehouse(path: Path) -> Path:
+    db = ensure_demo_warehouse(path)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute(f"CREATE TABLE bank_accounts AS SELECT {_SECRET} AS balance_myr")
+        con.execute(f'CREATE TABLE "salariés" AS SELECT {_SECRET} AS balance_myr')
+    finally:
+        con.close()
+    return db
+
+
+def _refused_everywhere(
+    sql: str,
+    code: str,
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``code`` from both checks, then ABSTAIN in-process and over HTTP, no submit."""
+    import shutil
+
+    from dms_executor.gen_path_refuse import customer_abstain_text
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _secret_warehouse(tmp_path / f"{name}.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert "inventory" in grants and "bank_accounts" not in grants
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") == code, name
+    assert (
+        validate_compiled_sql(sql, grantable=grants, warehouse=db, dialect="duckdb")
+        == code
+    ), name
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id=f"ses_r2_user_{name}"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is True, name
+    assert user["badge"] == "ABSTAIN", name
+    assert user["rows"] == [], name
+    assert user["values"] == [], name
+    assert user["sql_used"] is None, name
+    assert user["text"] == customer_abstain_text(code), name
+    assert f"validate:{code}" in _reason(user), name
+    assert str(_SECRET) not in json.dumps(user), name
+    assert "bank_accounts" not in json.dumps(user), name
+
+    copy = tmp_path / f"{name}_plant.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is True, name
+    assert env["badge"] == "ABSTAIN", name
+    assert env["rows"] == [], name
+    assert env["values"] == [], name
+    assert env["sql_used"] is None, name
+    assert env["text"] == customer_abstain_text(code), name
+    assert f"validate:{code}" in _reason(env), name
+    assert str(_SECRET) not in json.dumps(env), name
+    assert "bank_accounts" not in json.dumps(env), name
+    assert plant.submits == [], name
+
+
+@pytest.mark.parametrize(("name", "sql", "bound"), _FOLD_HOLES)
+def test_cte_alias_that_only_python_folds_does_not_hide_a_table(
+    name: str,
+    sql: str,
+    bound: list[tuple[int]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Must-fail on 97479d4: sqlglot's ``str.lower`` matched the CTE, DuckDB did not.
+
+    DuckDB folds a CTE name ASCII-only, so the read binds the base table
+    (424242, or the 7 inventory rows the IN subquery lets through). The
+    checker must not call that read a CTE reference.
+    """
+    con = duckdb.connect(str(_secret_warehouse(tmp_path / f"{name}_proof.duckdb")))
+    try:
+        assert con.execute(sql).fetchall() == bound, name
+    finally:
+        con.close()
+    _refused_everywhere(sql, "ungranted", name, tmp_path, monkeypatch)
+
+
+def test_a_name_whose_case_fold_is_not_ascii_is_not_settled() -> None:
+    """The engine folds ASCII; a name only Python folds names nothing for sure."""
+    from dms_executor.grant_struct import relation_gap
+
+    kelvin = f'"ban{_KELVIN}_accounts"'
+    assert normalize_relation(kelvin, dialect="duckdb") is None
+    assert normalize_relation('"SALARIÉS"', dialect="duckdb") is None
+    assert relation_gap(kelvin, grantable={"bank_accounts"}, dialect="duckdb") == (
+        "sql_relation_unresolved"
+    )
+    # A Kelvin spelling of a granted name is not that grant.
+    kelvin_read = f'SELECT COUNT(*) AS n FROM inventory, "ban{_KELVIN}_accounts"'
+    assert (
+        serve_gap(kelvin_read, grantable={"inventory", "bank_accounts"}, dialect="duckdb")
+        == "sql_relation_not_granted"
+    )
+    # ASCII case and an already-lower accent still settle.
+    assert normalize_relation('"INVENTORY"', dialect="duckdb") == "main.inventory"
+    assert normalize_relation('"Salariés"', dialect="duckdb") == "main.salariés"
+
+
+@pytest.mark.parametrize(("name", "sql", "reads_secret"), _MACRO_HOLES)
+def test_table_function_beside_a_grant_is_not_a_generator(
+    name: str,
+    sql: str,
+    reads_secret: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Must-fail on 97479d4: any catalog table function was a "generator".
+
+    ``histogram_values`` and ``histogram`` are table macros over
+    ``query_table``: they read the named table and return 424242. The others
+    read a file, change logging, or expose settings and secrets. Since round
+    3 no table function is a FROM item, generators included.
+    """
+    if reads_secret:
+        con = duckdb.connect(str(_secret_warehouse(tmp_path / f"{name}_proof.duckdb")))
+        try:
+            assert str(_SECRET) in str(con.execute(sql).fetchall()), name
+        finally:
+            con.close()
+    _refused_everywhere(sql, "sql_relation_not_granted", name, tmp_path, monkeypatch)
+
+
+# --- Round 3: every relation slot, and DuckDB's own parse ---
+#
+# On cb84d84 ``_allow`` looked only at ``exp.Table`` nodes. sqlglot parses
+# ``LATERAL f(...)`` as a Lateral over a function (or a Dot for
+# ``main.f(...)``) with no Table node, and it reads DuckDB's ``(TABLE t)`` as a
+# column, so neither read was checked. Each statement below also reads the
+# granted ``inventory`` (or ``locations``), so "no granted base table" is not
+# what refuses it. ``proof`` is text DuckDB itself returns for the statement
+# on the planted file: the secret, the ungranted table's name, or (for a
+# predicate) the 7 inventory rows that only match when it reads 424242.
+#
+# (name, sql, code, proof, served on cb84d84)
+_ROUND3_HOLES = (
+    # LATERAL table function.
+    (
+        "lateral_table_function_generate_series",
+        "SELECT g.n AS n FROM inventory i, "
+        "LATERAL generate_series((TABLE bank_accounts), 424242) AS g(n)",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_table_function_duckdb_tables",
+        "SELECT t.table_name AS n FROM inventory i, LATERAL duckdb_tables() t",
+        "sql_relation_not_granted",
+        "bank_accounts",
+        True,
+    ),
+    # LATERAL table macro, in every join form and position.
+    (
+        "lateral_macro_comma",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_cross_join",
+        "SELECT h.bin AS n FROM inventory i "
+        "CROSS JOIN LATERAL histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_join_on_true",
+        "SELECT h.bin AS n FROM inventory i "
+        "JOIN LATERAL histogram_values(bank_accounts, balance_myr) h ON TRUE",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_left_join",
+        "SELECT h.bin AS n FROM inventory i "
+        "LEFT JOIN LATERAL histogram_values(bank_accounts, balance_myr) h ON TRUE",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_first_item",
+        "SELECT h.bin AS n FROM LATERAL histogram_values(bank_accounts, balance_myr) h, "
+        "inventory i",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_schema_dot",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL main.histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_catalog_dot",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL system.main.histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_in_cte",
+        "WITH c AS (SELECT h.bin AS n FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h) SELECT n FROM c",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_scalar_subquery",
+        "SELECT (SELECT max(h.bin) FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h) AS n "
+        "FROM inventory LIMIT 1",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_in_subquery",
+        "SELECT COUNT(*) AS n FROM inventory WHERE 424242 IN "
+        "(SELECT h.bin FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h)",
+        "sql_relation_not_granted",
+        "(7,)",
+        True,
+    ),
+    (
+        "lateral_macro_union_branch",
+        "SELECT COUNT(*) AS n FROM inventory UNION ALL SELECT h.bin FROM inventory i, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "lateral_macro_histogram",
+        "SELECT h.bin AS n FROM inventory i, "
+        "LATERAL histogram('bank_accounts', balance_myr) h",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    # LATERAL query() / query_table(): refused on cb84d84 too; kept as guards.
+    (
+        "lateral_query_table",
+        "SELECT q.balance_myr AS n FROM inventory i, LATERAL query_table('bank_accounts') q",
+        "sql_relation_not_granted",
+        "424242",
+        False,
+    ),
+    (
+        "lateral_query_table_list",
+        "SELECT q.balance_myr AS n FROM inventory i, "
+        "LATERAL query_table(['bank_accounts'], true) q",
+        "sql_relation_not_granted",
+        "424242",
+        False,
+    ),
+    (
+        "lateral_query",
+        "SELECT q.balance_myr AS n FROM inventory i, "
+        "LATERAL query('SELECT * FROM bank_accounts') q",
+        "sql_relation_not_granted",
+        "424242",
+        False,
+    ),
+    # DuckDB's ``TABLE t`` form: sqlglot reads it as a column.
+    (
+        "table_form_cte",
+        "WITH c AS (TABLE bank_accounts) SELECT c.balance_myr AS n FROM inventory i, c",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "table_form_scalar",
+        "SELECT (TABLE bank_accounts) AS n FROM inventory LIMIT 1",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "table_form_predicate",
+        "SELECT COUNT(*) AS n FROM inventory WHERE (TABLE bank_accounts) = 424242",
+        "ungranted",
+        "(7,)",
+        True,
+    ),
+    (
+        "table_form_from",
+        "SELECT x.balance_myr AS n FROM inventory i, (TABLE bank_accounts) x",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    # Alias shadowing: a name that hides what the item really reads.
+    (
+        "alias_shadow_cte_named_table",
+        'WITH "table" AS (SELECT 0 AS balance_myr) '
+        "SELECT x.balance_myr AS n FROM inventory i, (TABLE bank_accounts) AS x",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "alias_shadow_macro_as_granted_name",
+        "SELECT inventory.bin AS n FROM locations l, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) AS inventory",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+    (
+        "alias_shadow_table_as_granted_name",
+        "SELECT inventory.balance_myr AS n FROM locations l, bank_accounts AS inventory",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    (
+        "alias_shadow_derived_table",
+        "SELECT balance_myr AS n FROM bank_accounts, (SELECT 1 AS z) AS bank_accounts, "
+        "inventory LIMIT 1",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    # A recursive CTE named after a real table.
+    (
+        "recursive_cte_named_ungranted_table",
+        "WITH RECURSIVE bank_accounts AS (SELECT balance_myr FROM bank_accounts "
+        "UNION ALL SELECT 1 WHERE false) "
+        "SELECT b.balance_myr AS n FROM bank_accounts b, inventory i LIMIT 1",
+        "ungranted",
+        "424242",
+        False,
+    ),
+    (
+        "recursive_cte_named_granted_table",
+        "WITH RECURSIVE inventory(n) AS ((TABLE bank_accounts) "
+        "UNION ALL SELECT n FROM inventory WHERE false) SELECT n FROM inventory",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "recursive_cte_named_granted_table_scalar",
+        "WITH RECURSIVE inventory(n) AS (SELECT (TABLE bank_accounts) "
+        "UNION ALL SELECT n FROM inventory WHERE false) SELECT n FROM inventory",
+        "ungranted",
+        "424242",
+        True,
+    ),
+    (
+        "recursive_cte_named_granted_table_lateral",
+        "WITH RECURSIVE inventory(n) AS (SELECT h.bin FROM locations l, "
+        "LATERAL histogram_values(bank_accounts, balance_myr) h "
+        "UNION ALL SELECT n FROM inventory WHERE false) SELECT n FROM inventory",
+        "sql_relation_not_granted",
+        "424242",
+        True,
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("name", "sql", "code", "proof", "served_before"),
+    _ROUND3_HOLES,
+    ids=[hole[0] for hole in _ROUND3_HOLES],
+)
+def test_every_relation_slot_and_duckdb_parse_is_grant_checked(
+    name: str,
+    sql: str,
+    code: str,
+    proof: str,
+    served_before: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Must-fail on cb84d84 for every ``served_before`` shape (it served them).
+
+    DuckDB proves the read first. Then ``serve_gap`` and
+    ``validate_compiled_sql`` refuse, ``answer_user_sql`` and
+    ``POST /v1/chat/ask`` ABSTAIN with no rows, no values, no SQL and no
+    submit, and neither the secret nor the ungranted table's name is in the
+    envelope.
+    """
+    del served_before
+    con = duckdb.connect(str(_secret_warehouse(tmp_path / f"{name}_proof.duckdb")))
+    try:
+        assert proof in str(con.execute(sql).fetchall()), name
+    finally:
+        con.close()
+    _refused_everywhere(sql, code, name, tmp_path, monkeypatch)
+
+
+def test_duckdb_parse_alone_refuses_what_sqlglot_cannot_see() -> None:
+    """The second net decides on its own: DuckDB's parse, not sqlglot's."""
+    from dms_executor.grant_struct import _duckdb_gap, duckdb_read_relations
+
+    grants = {"inventory", "locations", "shipments"}
+    for name, sql, code, _proof, _before in _ROUND3_HOLES:
+        assert _duckdb_gap(sql, grants, "duckdb", None) == code, name
+    # Parts as written; an enclosing CTE covers a bare name, not a qualified one.
+    parsed = duckdb.execute(
+        "SELECT json_serialize_sql("
+        "'WITH c AS (SELECT 1) SELECT * FROM c, main.c, \"Inventory\", lake.main.t')"
+    ).fetchone()
+    assert parsed is not None
+    tree = json.loads(parsed[0])["statements"]
+    assert duckdb_read_relations(tree) == [("main", "c"), ("Inventory",), ("lake", "main", "t")]
+    # One statement to sqlglot is one statement to DuckDB, or it refuses.
+    assert _duckdb_gap("SELECT 1 FROM inventory; SELECT 2", grants, "duckdb", None) == (
+        "multi_statement"
+    )
+
+
+# Granted reads keep serving, with the exact rows and answer text. The TABLE
+# form and LATERAL subquery forms over a granted table are decided by grant,
+# not by form (cb84d84 refused the TABLE form: sqlglot saw no table in it).
+_ROUND3_SERVE = (
+    "SELECT COUNT(*) AS n FROM inventory",
+    "SELECT COUNT(*) AS n FROM inventory i, LATERAL (SELECT 1 AS one) s",
+    "SELECT COUNT(*) AS n FROM inventory i CROSS JOIN LATERAL (SELECT i.sku) s",
+    "WITH c AS (TABLE inventory) SELECT COUNT(*) AS n FROM c",
+    "SELECT (SELECT COUNT(*) FROM inventory) AS n",
+)
+
+
+@pytest.mark.parametrize("sql", _ROUND3_SERVE)
+def test_granted_reads_still_serve_exact_rows(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    from dms_executor.generative_ask import validate_compiled_sql
+
+    db = _secret_warehouse(tmp_path / "r3_ok.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") is None, sql
+    assert (
+        validate_compiled_sql(sql, grantable=grants, warehouse=db, dialect="duckdb") is None
+    ), sql
+
+    user = Executor(warehouse_path=db).answer_user_sql(
+        sql, space_id=OPS, session_id="ses_r3_ok_user"
+    )
+    assert_envelope_valid(user)
+    assert user["abstained"] is False, sql
+    assert user["rows"] == [{"n": 7}], sql
+    assert user["text"] == "Query result.", sql
+
+    copy = tmp_path / "r3_ok_plant.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert env["abstained"] is False, sql
+    assert env["badge"] != "ABSTAIN", sql
+    assert env["rows"] == [{"n": 7}], sql
+    assert env["text"] == "Found 1 row(s).\n  - n=7", sql
+    assert _sql_submits(plant.submits), sql
+    assert str(_SECRET) not in json.dumps(env), sql
+
+
+@pytest.mark.parametrize(
+    "sql",
+    (
+        "COPY (SELECT 1 AS n) TO 'x.csv'",
+        "SET threads = 1",
+        "ALTER TABLE inventory RENAME TO inventory_gone",
+        "INSERT INTO inventory SELECT * FROM inventory",
+    ),
+)
+def test_one_statement_that_is_not_a_query_is_statement_not_allowed(
+    sql: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The parsed type refuses even with the first-token scanner off."""
+    monkeypatch.setattr("dms_executor.grant_struct.reject_hostile_chat_sql", lambda _s: None)
+    gap = serve_gap(sql, grantable={"inventory"}, dialect="duckdb")
+    assert gap == "statement_not_allowed", sql
+    assert structural_grant_stop(gap)
+
+
+def test_a_lease_miss_on_the_grant_lookup_is_one_wait_per_ask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Must-fail on 97479d4: the follow-up lookup swallowed the lease miss,
+    then the verified-query lookup waited again (two waits per ask)."""
+    from dms_executor.lake_registry import SERVING_LEASE_CAP_REASON, ServingLeaseCap
+
+    db = ensure_demo_warehouse(tmp_path / "once.duckdb")
+    plant = _ExecPlant("SELECT COUNT(*) AS n FROM inventory", db)
+    exe = Executor(
+        cortex=plant, minter=_minter(monkeypatch), warehouse_path=db  # type: ignore[arg-type]
+    )
+    lookups: list[str | None] = []
+
+    def _capped(self: Executor, *, space_id: str | None) -> list[str]:
+        lookups.append(space_id)
+        raise ServingLeaseCap(1, 2.0)
+
+    monkeypatch.setattr(Executor, "grantable_tables", _capped)
+    env = exe.live_ask("how many inventory rows", space_id=OPS, session_id="ses_once")
+    assert_envelope_valid(env)
+    assert lookups == [OPS]
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["rows"] == []
+    assert env["values"] == []
+    assert SERVING_LEASE_CAP_REASON in _reason(env)
+    assert env["text"].startswith("I can't answer this right now: serving connections")
+    assert plant.submits == []
