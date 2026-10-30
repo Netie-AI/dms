@@ -363,6 +363,38 @@ def test_rule12_key_refused_with_candidate(h: Harness) -> None:
     assert h.objects() == []
 
 
+def test_rule12_candidates_withhold_pii_key_values(h: Harness, tmp_path: Path) -> None:
+    """A source key that reads as PII is never echoed back in the 422 body."""
+    from dms_executor.demo_warehouse import connect_file, ensure_demo_warehouse
+
+    pii = ("ali.baba@example.com", "900101-14-5678")
+    db = ensure_demo_warehouse(tmp_path / "act02_wh.duckdb")
+    con = connect_file(db, write=True)
+    try:
+        for loc in pii:
+            con.execute(
+                "INSERT INTO inventory SELECT sku, $loc, quantity_kg, reorder_level_kg, "
+                "unit_cost_myr, supplier_id, category, expiry_date FROM inventory "
+                "WHERE sku = 'SKU-BETA' AND location_id = 'WH-B'",
+                {"loc": loc},
+            )
+    finally:
+        con.close()
+    before = h.counts()
+    resp = h.propose("450", object_key={"sku": "SKU-BETA", "location_id": "WH-ZZ"})
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "object_key_not_found"
+    assert detail["candidates"] == [{"sku": "SKU-BETA", "location_id": "WH-B"}]
+    for value in pii:
+        assert value not in resp.text
+        # The same value sent as input is refused, so it is not offered either.
+        sent = h.propose("450", object_key={"sku": "SKU-BETA", "location_id": value})
+        assert sent.status_code == 400 and _code(sent) == "key_value_invalid", sent.text
+    assert h.counts() == before
+    assert h.objects() == []
+
+
 # --- evidence (E9) -------------------------------------------------------------------
 
 
