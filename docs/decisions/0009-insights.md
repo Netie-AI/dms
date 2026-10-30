@@ -177,7 +177,9 @@ confirmed it": nothing is auto-pinned, auto-replayed or auto-applied.
     hyphenless, braced and `urn:uuid:` spellings of the default (and an empty value) are
     refused too. With no steward configured, no pin may
     say a steward approved it (ACT-02 refuses the same case). One configured steward, no
-    dual control.
+    dual control. Since verify round 8, replay and revoke refuse it the same way, and all
+    three refuse an actor that is not a UUID (an email, say) as `steward_identity_invalid`
+    (403), so no pin-lifecycle ledger entry names a steward that cannot be one.
   - Receipts are deduplicated across the pin lifecycle. `main._proven_insight_receipts`
     holds one row per receipt a pin, replay or revoke accepted (entry id primary key,
     seq unique); the register's own pointers are checked too. A receipt seen before is

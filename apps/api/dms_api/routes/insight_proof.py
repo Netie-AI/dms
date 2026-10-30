@@ -281,6 +281,7 @@ PIN_STATUS: dict[str, int] = {
     "cortex_submit_failed": 503,
     "ledger_receipt_unrecorded": 503,
     "steward_identity_unset": 403,
+    "steward_identity_invalid": 403,
     "pin_commit_failed": 500,
     "pin_commit_unknown": 500,
     "revoke_commit_failed": 500,
@@ -306,6 +307,34 @@ def _is_shipped_default(actor: object) -> bool:
         return uuid.UUID(text) == uuid.UUID(DEFAULT_ACTOR)
     except ValueError:
         return False
+
+
+def _steward_refusal(actor: object) -> JSONResponse | None:
+    """403 when no steward can be named on the ledger; None when one can.
+
+    Confirm, replay and revoke each append an entry whose actor is the
+    configured steward (DR-0004 Option A), so each refuses the shipped default
+    in every spelling (``steward_identity_unset``) and an actor that is not a
+    UUID, such as an email address (``steward_identity_invalid``, as ACT-02
+    refuses it), before the gate, the token or any submit or append.
+    """
+    if _is_shipped_default(actor):
+        return JSONResponse(
+            {"ok": False, "code": "steward_identity_unset",
+             "message": "No steward is configured (DMS_ACTOR_USER_ID is the shipped "
+                        "default), so no pin can say a steward approved it."},
+            status_code=403,
+        )
+    try:
+        uuid.UUID(str(actor).strip())
+    except ValueError:
+        return JSONResponse(
+            {"ok": False, "code": "steward_identity_invalid",
+             "message": "DMS_ACTOR_USER_ID is not a UUID, so it cannot name the steward "
+                        "on the ledger."},
+            status_code=403,
+        )
+    return None
 
 
 class PinPreviewIn(BaseModel):
@@ -400,14 +429,9 @@ def insight_proof_pin_confirm(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
-    if _is_shipped_default(settings.dms_actor_user_id):
+    if (stop := _steward_refusal(settings.dms_actor_user_id)) is not None:
         # Before the gate and the token: nothing is spent, submitted or appended.
-        return JSONResponse(
-            {"ok": False, "code": "steward_identity_unset",
-             "message": "No steward is configured (DMS_ACTOR_USER_ID is the shipped "
-                        "default), so no pin can say a steward approved it."},
-            status_code=403,
-        )
+        return stop
     space_id = wiring.pin_owner_space(ask, token=body.token)
     decision = compliance_gate(
         action="insight_proof.pin.confirm",
@@ -454,6 +478,8 @@ def insight_proof_pin_replay(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
+    if (stop := _steward_refusal(settings.dms_actor_user_id)) is not None:
+        return stop
     space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
     decision = compliance_gate(
         action="insight_proof.replay",
@@ -496,6 +522,8 @@ def insight_proof_pin_revoke(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
+    if (stop := _steward_refusal(settings.dms_actor_user_id)) is not None:
+        return stop
     space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
     decision = compliance_gate(
         action="insight_proof.revoke",

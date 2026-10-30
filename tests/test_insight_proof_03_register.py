@@ -981,6 +981,94 @@ def test_a_pii_mark_under_a_generated_column_stops_replay_and_withholds_the_head
         assert label not in listed.text
 
 
+# INS-PROOF-01 verify round 8 (MEDIUM): a view whose body reads a table macro or
+# query_table() was opaque to the PII walker, so the marked values went through
+# the whole pin lifecycle: preview showed the headline, confirm pinned it, GET
+# /pins listed it, and replay certified it L0 "Unchanged".
+_OPAQUE_VIEWS = {
+    "macro": ["CREATE MACRO tm() AS TABLE SELECT territory_id, upper(name) AS zone "
+              "FROM Sales.Territory",
+              "CREATE VIEW Sales.TV AS SELECT territory_id, zone FROM tm()"],
+    "query_table": ["CREATE VIEW Sales.TV AS SELECT territory_id, upper(name) AS zone "
+                    "FROM query_table('Sales.Territory')"],
+}
+_OPAQUE_HEADLINE = "2 of 4 Territory.zone values (NORTH, SOUTH) carry 86.4 pct of order_amount"
+_OPAQUE_LABELS = ("NORTH", "SOUTH", "86.4")
+
+
+@pytest.mark.parametrize("kind", sorted(_OPAQUE_VIEWS))
+def test_a_view_over_a_table_function_never_shows_marked_values_in_the_pin_lifecycle(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    wh = _seed_sales(tmp_path / "lake_opaque.duckdb")
+    for sql in _OPAQUE_VIEWS[kind]:
+        _update(wh, sql)
+    w = _build(monkeypatch, wh, approved_store=True,
+               grants={**_B_GRANTS, "Sales.TV": "TRUE"})
+    for it in w.onto.approved:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = "Sales.TV"
+            it["payload"]["attributes"] = ["territory_id", "zone"]
+
+    # Control, before the mark: the view's column is an ordinary pinnable insight.
+    iid = _insight_id(w, _OPAQUE_HEADLINE)
+    pre = w.preview(iid)
+    assert pre.status_code == 200, pre.text
+    assert pre.json()["envelope"]["text"] == _OPAQUE_HEADLINE
+    got = w.confirm(pre.json()["token"])
+    assert got.status_code == 200, got.text
+    asset_id = str(got.json()["asset_id"])
+    assert w.pins().json()["pins"][0]["headline"] == _OPAQUE_HEADLINE
+    late = w.preview(iid)  # a second token, previewed before the mark, confirmed after
+    assert late.status_code == 200, late.text
+
+    w.onto.approved.append(_pii_item())  # Sales.Territory.name, which the macro reads
+    before = list(w.cortex.submits)
+    pinned_before = len(w.cortex.events("insight.pinned"))
+
+    # /run: nothing over the view is served.
+    ran = w.run()
+    assert ran.status_code == 200, ran.text
+    assert _OPAQUE_HEADLINE not in [i["envelope"]["text"] for i in ran.json()["insights"]]
+    assert not [i for i in ran.json()["insights"] if "Territory" in i["envelope"]["text"]]
+    codes = {r.get("candidate"): r.get("code") for r in ran.json().get("refused", [])}
+    assert codes.get("order_amount by Territory.zone") == "pii_dimension"
+
+    # Preview: no headline, no token.
+    again = w.preview(iid)
+    assert again.status_code != 200 or again.json()["envelope"]["abstained"] is True
+    assert "token" not in again.json() or not again.json().get("token")
+
+    # Confirm with the token minted before the mark: nothing new is pinned.
+    late_confirm = w.confirm(late.json()["token"])
+    assert late_confirm.status_code != 200, late_confirm.text
+    assert len(w.cortex.events("insight.pinned")) == pinned_before
+
+    # Replay: ABSTAIN, definition_changed:pii_dimension, zero submits.
+    res = w.replay(asset_id)
+    assert res.status_code == 200, res.text
+    env = res.json()["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["text"] == _PII_TEXT
+    assert env["values"] == [] and env["rows"] == [] and env["sql_used"] is None
+    assert_envelope_valid(env)
+    assert res.json()["verdict"] == "definition_changed"
+    assert res.json()["proof"]["code"] == "definition_changed:pii_dimension"
+
+    # GET /pins: listed, headline withheld.
+    listed = w.pins()
+    pins = listed.json()["pins"]
+    assert len(pins) == 1 and pins[0]["asset_id"] == asset_id
+    assert pins[0]["headline"] is None and pins[0]["headline_withheld"] == "pii_dimension"
+
+    for body in (ran.text, again.text, late_confirm.text, res.text, listed.text):
+        for label in _OPAQUE_LABELS:
+            assert label not in body
+    new_submits = w.cortex.submits[len(before):]
+    assert not any("territory" in str(s).casefold() or "sales.tv" in str(s).casefold()
+                   for s in new_submits)
+
+
 @pytest.mark.parametrize("how", ["object_and_link", "link_only", "new_version"])
 def test_a_revoked_or_reversioned_dimension_or_link_is_definition_changed(
     world: _World, how: str
@@ -1470,3 +1558,51 @@ def test_cortex_down_mid_replay_is_503_with_no_replay_entry(
     ok = world.replay(asset_id)
     assert ok.status_code == 200 and ok.json()["verdict"] == "unchanged"
     assert len(world.cortex.events("insight.replayed")) == 1
+
+
+@pytest.mark.parametrize(
+    ("spelling", "code"),
+    [
+        ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "steward_identity_unset"),
+        ("{BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB}", "steward_identity_unset"),
+        ("", "steward_identity_unset"),
+        ("jane.doe@example.com", "steward_identity_invalid"),
+    ],
+)
+def test_replay_and_revoke_need_a_configured_uuid_steward(
+    world: _World, monkeypatch: pytest.MonkeyPatch, spelling: str, code: str
+) -> None:
+    """INS-PROOF-03 verify round 8 (LOW): only confirm refused the shipped default,
+    so revoke wrote revoked_by=bbbbbbbb-... and a non-UUID steward reached the ledger."""
+    asset_id, _pre, _got = _pin(world)
+    appended = len(world.cortex.ledger)
+    submits = len(world.cortex.submits)
+    gate_calls = len(world.gate.calls)
+    monkeypatch.setenv("DMS_ACTOR_USER_ID", spelling)
+    _clear_settings()
+    for res in (world.replay(asset_id), world.revoke(asset_id)):
+        assert res.status_code == 403, res.text
+        assert res.json()["code"] == code
+        assert "envelope" not in res.json()
+        for label in ("North", "South", "86.4"):
+            assert label not in res.text
+    # Refused before the gate: no F5 call, no submit, no ledger append.
+    assert len(world.gate.calls) == gate_calls
+    assert len(world.cortex.submits) == submits
+    assert len(world.cortex.ledger) == appended
+    if code == "steward_identity_invalid":
+        pre = world.preview(_insight_id(world))
+        assert pre.status_code == 200, pre.text
+        got = world.confirm(pre.json()["token"])
+        assert got.status_code == 403, got.text
+        assert got.json()["code"] == code
+        assert "approved_by" not in got.json()
+        pinned = world.cortex.events("insight.pinned")
+        assert len(pinned) == 1 and pinned[0].actor == _ACTOR
+    monkeypatch.setenv("DMS_ACTOR_USER_ID", _ACTOR)
+    _clear_settings()
+    pins = world.pins().json()["pins"]
+    assert [p["asset_id"] for p in pins] == [asset_id]  # still pinned, not revoked
+    assert pins[0]["approved_by"] == _ACTOR
+    assert world.cortex.events("insight.pin_revoked") == []
+    assert world.cortex.events("insight.replayed") == []
