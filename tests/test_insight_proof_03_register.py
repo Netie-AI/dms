@@ -917,6 +917,48 @@ def test_a_pii_mark_under_a_view_stops_replay_and_withholds_the_listed_headline(
         assert label not in listed.text
 
 
+def test_a_pii_mark_under_a_generated_column_stops_replay_and_withholds_the_headline(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INS-PROOF-01 verify round 6: the pin gate reads generated columns, as the run does."""
+    wh = _seed_sales(tmp_path / "lake_gen.duckdb")
+    _update(wh, "DROP TABLE Sales.Territory")
+    _update(wh, "CREATE TABLE Sales.Territory (territory_id INTEGER, name VARCHAR, "
+                "region VARCHAR GENERATED ALWAYS AS (upper(name)) VIRTUAL)")
+    _update(wh, "INSERT INTO Sales.Territory (territory_id, name) VALUES "
+                "(1,'North'),(2,'South'),(3,'East'),(4,'West')")
+    w = _build(monkeypatch, wh, approved_store=True, grants=_B_GRANTS)
+    for it in w.onto.approved:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["attributes"] = ["territory_id", "region"]
+    headline = "2 of 4 Territory.region values (NORTH, SOUTH) carry 86.4 pct of order_amount"
+    pre = w.preview(_insight_id(w, headline))
+    assert pre.status_code == 200, pre.text
+    got = w.confirm(pre.json()["token"])
+    assert got.status_code == 200, got.text
+    asset_id = str(got.json()["asset_id"])
+    assert w.pins().json()["pins"][0]["headline"] == headline
+
+    w.onto.approved.append(_pii_item())  # Sales.Territory.name, which region reads
+    assert w.run().json()["insights"] == []
+    before = list(w.cortex.submits)
+    res = w.replay(asset_id)
+    assert res.status_code == 200, res.text
+    env = res.json()["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["text"] == _PII_TEXT
+    assert env["values"] == [] and env["rows"] == [] and env["sql_used"] is None
+    assert_envelope_valid(env)
+    assert res.json()["proof"]["code"] == "definition_changed:pii_dimension"
+    assert w.cortex.submits == before
+    listed = w.pins()
+    pins = listed.json()["pins"]
+    assert pins[0]["headline"] is None and pins[0]["headline_withheld"] == "pii_dimension"
+    for label in ("NORTH", "SOUTH", "86.4"):
+        assert label not in res.text
+        assert label not in listed.text
+
+
 @pytest.mark.parametrize("how", ["object_and_link", "link_only", "new_version"])
 def test_a_revoked_or_reversioned_dimension_or_link_is_definition_changed(
     world: _World, how: str
