@@ -1,0 +1,977 @@
+"""Run model SQL on the extract, return the error, retry.
+
+The read-only run is the extract engine (DuckDB). Conjunct comparison and
+SQL normalisation use that dialect, supplied by the caller. This module
+names no warehouse table or column.
+
+Retry only on a database execution error or a checker flag. Hostile SQL,
+multi-statement SQL, file reads, ungranted tables, a missing extract, and
+a reply with no SQL abstain at once and are not pasted into a retry prompt.
+The second reading sets ``recover_failures`` and also feeds back a pre-run
+refusal and an empty result. Hostile SQL stays out of that prompt.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
+from typing import Any
+
+from cortex_client.compute import (
+    cloop_b_enabled,
+    generate_model_called,
+    insights_call_cap,
+)
+
+from dms_executor.demo_warehouse import SERVING_DIALECT
+from dms_executor.lake_registry import SERVING_ERRORS
+from dms_executor.sql_currency import dropped_conjuncts, sql_byte_equal
+
+#: sqlglot dialect for a connector kind. The extract engine is separate.
+#: The serving name is the imported constant, not a second literal.
+_CONNECTOR_DIALECT: dict[str, str] = {
+    "postgresql": "postgres",
+    "postgres": "postgres",
+    "mysql": "mysql",
+    "sqlserver": "tsql",
+    "mssql": "tsql",
+    "tsql": "tsql",
+    SERVING_DIALECT: SERVING_DIALECT,
+}
+#: Read-only extract engine. SQL that runs here is compared in this dialect.
+EXTRACT_DIALECT = SERVING_DIALECT
+MAX_SQL_RETRIES = 2
+EMPTY_NOTE = "no rows match"
+#: VALUE-EXISTS-01 later returns None from ``empty_result_reason`` so the
+#: caller can serve this empty answer. Until then the reason is an abstain.
+EMPTY_UNVERIFIED = "empty_result_unverified:value_exists_pending"
+_NO_RETRY_HEADS = frozenset(
+    {
+        "hostile_sql",
+        "ungranted",
+        "multi_statement",
+        "warehouse_missing",
+        "statement_not_allowed",
+        "sql_not_analyzable",
+    }
+)
+# Key-name segments after splitting on non-alphanumerics. "token" is a
+# segment, so "prompt_tokens" is not a secret key.
+_SECRET_SEGMENTS = frozenset(
+    {
+        "secret",
+        "password",
+        "apikey",
+        "authorization",
+        "accesstoken",
+        "bearer",
+        "token",
+        "cookie",
+        "xapikey",
+    }
+)
+_PII_KEYS = frozenset({"name", "dob", "passport", "contact"})
+_BEARER = re.compile(r"(?i)\bBearer\s+\S+")
+_ASSIGNED_KEY = re.compile(r"(?i)\b(?:api[_-]?key|key|token|secret)\s*=\s*\S+")
+_SK = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
+_LONG_TOKEN = re.compile(r"\b[A-Za-z0-9_\-]{24,}\b")
+
+
+class UnknownConnectorDialect(Exception):
+    """The connector kind is not a dialect this process can name.
+
+    ``envelope`` is the ``sql_dialect_unknown`` abstain from ``build_abstain``.
+    """
+
+    def __init__(self, envelope: dict[str, Any]) -> None:
+        self.envelope = envelope
+        super().__init__("sql_dialect_unknown")
+
+
+def dialect_for_connector(kind: str | None) -> str:
+    """sqlglot dialect for a connector kind.
+
+    An unknown kind does not become the extract dialect. It is the named
+    ``sql_dialect_unknown`` abstain, and the ticket is the one ``build_abstain``
+    writes.
+    """
+    key = str(kind or "").strip().lower()
+    found = _CONNECTOR_DIALECT.get(key)
+    if found is None:
+        from dms_executor.grant_struct import sql_refusal_envelope
+
+        raise UnknownConnectorDialect(
+            sql_refusal_envelope(
+                reason="sql_dialect_unknown",
+                space_id=None,
+                session_id=None,
+                route="connector",
+                question="",
+            )
+        )
+    return found
+
+
+def extract_dialect(dialect: str | None) -> str:
+    """The dialect the caller passed, when sqlglot knows that name.
+
+    An unknown or missing dialect is an empty name. It is not replaced
+    with the extract engine.
+    """
+    from dms_executor.grant_struct import sqlglot_dialect
+
+    return sqlglot_dialect(dialect) or ""
+
+
+def empty_result_reason(sql: str) -> str | None:
+    """Decision for a checker-clean empty result. Not a retry.
+
+    Returns a pipeline-failure reason. The caller abstains, keeps ``sql`` on
+    the stored attempt, and does not serve the rows.
+
+    VALUE-EXISTS-01 integration: when every filter literal is known to exist
+    in its column, return None. The caller then serves the empty answer
+    (rows [], note ``no rows match``) instead of abstaining. This function
+    is the only switch. It does not read a Cortex confirmation field.
+    """
+    if not isinstance(sql, str):
+        return EMPTY_UNVERIFIED
+    return EMPTY_UNVERIFIED
+
+
+#: A column of a granted table may ride in a db error code. Anything else may
+#: not: a name outside this shape could carry the separator or a value.
+_CODE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}")
+_CODE_COLUMN = re.compile(r"[\w ]{1,64}")
+
+
+def typed_db_error(exc: BaseException, columns: Iterable[str] = ()) -> str:
+    """Reduce a database error to ``Class`` or ``Class:name``, never the message.
+
+    DuckDB echoes the offending cell value in cast and constraint errors, an
+    ENUM member list in binder errors, and a file error echoes a path. The
+    message body therefore never leaves the run. ``columns`` come from
+    ``written_names``: a column the statement wrote, or a string literal that
+    is a cast operand. The name is attached only when exactly one of them
+    appears in the message, and the spelling is the schema or SQL spelling,
+    never text copied from the message. A message that names none, or several
+    (a binder candidate list), names none.
+    """
+    name = type(exc).__name__
+    code = name if _CODE_NAME.fullmatch(name) else "Error"
+    text = str(exc)
+    hits = {
+        col
+        for col in columns
+        if isinstance(col, str)
+        and _CODE_COLUMN.fullmatch(col)
+        and re.search(rf"(?<![A-Za-z0-9_]){re.escape(col)}(?![A-Za-z0-9_])", text, re.I)
+    }
+    if len(hits) == 1:
+        return f"{code}:{hits.pop()}"
+    return code
+
+
+def written_names(con: Any, sql: str) -> list[str]:
+    """Names ``sql`` itself writes, the only names a db error code may carry.
+
+    A name that is a column of a table the statement cites comes back in
+    schema spelling. Any other written name (a misspelt column, an alias the
+    statement refers to, a string literal that is a cast operand) comes back
+    as the SQL spelled it, so the retry still hears which name was wrong. A
+    cast of a column offers the column, not the cell value the message
+    quotes. No name is taken from the database message, so a cell value that
+    spells some other column cannot ride out as a name. A CTE name is not a
+    table, and a schema-qualified table matches only its own schema. Anything
+    that does not parse offers nothing.
+    """
+    try:
+        from sqlglot import exp, parse_one
+
+        tree = parse_one(sql, read=EXTRACT_DIALECT)
+        written: dict[str, str] = {}
+        for col in tree.find_all(exp.Column):
+            if col.name:
+                written.setdefault(col.name.lower(), col.name)
+        # TryCast is a Cast. The operand literal is the model's own text.
+        literals: dict[str, str] = {}
+        for cast in tree.find_all(exp.Cast):
+            lit = cast.this
+            if (
+                isinstance(lit, exp.Literal)
+                and lit.is_string
+                and isinstance(lit.this, str)
+                and lit.this
+            ):
+                literals.setdefault(lit.this.lower(), lit.this)
+        if not written and not literals:
+            return []
+        ctes = {c.alias_or_name.lower() for c in tree.find_all(exp.CTE)}
+        cited = {
+            (t.db.lower(), t.name.lower())
+            for t in tree.find_all(exp.Table)
+            if t.name and (t.db or t.name.lower() not in ctes)
+        }
+    except Exception:
+        return []
+    names = sorted({name for _, name in cited})
+    if names:
+        try:
+            marks = ",".join("?" for _ in names)
+            got = con.execute(
+                "SELECT table_schema, table_name, column_name FROM information_schema.columns "
+                f"WHERE lower(table_name) IN ({marks})",
+                names,
+            ).fetchall()
+        except Exception:
+            got = []
+        for schema, table, column in got:
+            key = str(column).lower()
+            here = (str(schema).lower(), str(table).lower())
+            if key in written and (here in cited or ("", here[1]) in cited):
+                written[key] = str(column)
+    for key, name in literals.items():
+        written.setdefault(key, name)
+    return sorted(written.values())
+
+
+#: Refusals for SQL that is not exactly one SELECT. Nothing executed.
+_REFUSED_SHAPES = frozenset(
+    {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}
+)
+
+
+def _one_select(con: Any, sql: str) -> str | None:
+    """None when ``sql`` is one SELECT, else the refusal code. Nothing ran.
+
+    ``WITH`` that ends in SELECT is a SELECT. Any other statement type and any
+    other count are refused without executing. The type comes from the parser,
+    not from the text of the question or the SQL.
+
+    A parse failure also executes nothing, but it is a syntax error, not a
+    hostile shape: it comes back as ``explain:<Error>``, the code main gave it,
+    so the extract loop still feeds the error back and the repaired SQL can be
+    served. Refusing it with no retry threw that repair away (R-0005).
+    """
+    import duckdb
+
+    try:
+        stmts = con.extract_statements(sql)
+    except Exception as exc:  # noqa: BLE001 - nothing ran; retryable like EXPLAIN
+        return f"explain:{type(exc).__name__}"
+    if len(stmts) != 1:
+        return "multi_statement"
+    if stmts[0].type != duckdb.StatementType.SELECT:
+        return "statement_not_allowed"
+    return None
+
+
+def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
+    try:
+        cur = con.execute(sql)
+        desc = cur.description or []
+        cols = [d[0] for d in desc]
+        rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        return rows, None
+    except SERVING_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001 — engine error is the extract result
+        # A typed code: DuckDB echoes cell values and paths in its messages.
+        return None, typed_db_error(exc, written_names(con, sql))
+
+
+def run_readonly(
+    sql: str, warehouse: Path
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Execute on a pooled serving cursor. ``(rows, None)`` or ``(None, error)``.
+
+    The cursor comes from ``connect_serving``: the lake registry's one parent
+    for this file, opened read-only with external access off and the config
+    locked. Every open of the file in the process shares that configuration,
+    so this open cannot clash with the schema index or the checker. A writer
+    waits for it, and a lease miss raises the registry's named serving error
+    to the ask boundary. One SELECT runs. A WITH that ends in SELECT is a
+    SELECT. Anything else, including a parse failure, is refused without
+    executing. An engine error comes back as a typed code from
+    ``typed_db_error``, never the database message.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
+    try:
+        con = connect_serving(Path(warehouse))
+    except SERVING_ERRORS:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        return None, typed_db_error(exc)
+    try:
+        gate = _one_select(con, sql)
+        if gate is not None:
+            return None, gate
+        return _fetch(con, sql)
+    finally:
+        con.close()
+
+
+def _norm_key(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def _key_segments(name: str) -> list[str]:
+    return [part for part in re.split(r"[^a-z0-9]+", name.lower()) if part]
+
+
+def _secret_key(name: str) -> bool:
+    parts = _key_segments(name)
+    joined = "".join(parts)
+    if joined in _SECRET_SEGMENTS or any(part in _SECRET_SEGMENTS for part in parts):
+        return True
+    return "apikey" in joined or "accesstoken" in joined
+
+
+def _high_entropy(token: str) -> bool:
+    if len(token) < 24 or any(ch.isspace() for ch in token):
+        return False
+    kinds = (
+        any(ch.islower() for ch in token),
+        any(ch.isupper() for ch in token),
+        any(ch.isdigit() for ch in token),
+    )
+    return sum(kinds) >= 2
+
+
+def _scrub_string(text: str) -> str:
+    text = _BEARER.sub("[redacted]", text)
+    text = _ASSIGNED_KEY.sub("[redacted]", text)
+    text = _SK.sub("[redacted]", text)
+
+    def _repl(match: re.Match[str]) -> str:
+        token = match.group(0)
+        return "[redacted]" if _high_entropy(token) else token
+
+    return _LONG_TOKEN.sub(_repl, text)
+
+
+def _scrub(value: Any) -> Any:
+    if isinstance(value, str):
+        return _scrub_string(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _scrub(item)
+            for key, item in value.items()
+            if not _secret_key(str(key))
+        }
+    if isinstance(value, list):
+        return [_scrub(item) for item in value]
+    return value
+
+
+def _drop_named_pii(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _drop_named_pii(item)
+            for key, item in value.items()
+            if _norm_key(str(key)) not in _PII_KEYS
+        }
+    if isinstance(value, list):
+        return [_drop_named_pii(item) for item in value]
+    return value
+
+
+def _pii_kept(original: Any, masked: Any) -> Any:
+    """Drop PII-shaped fields the masker left unchanged."""
+    if isinstance(original, dict):
+        masked_d = masked if isinstance(masked, dict) else {}
+        out: dict[str, Any] = {}
+        for key, item in original.items():
+            name = str(key)
+            if _norm_key(name) in _PII_KEYS:
+                got = masked_d.get(name, item)
+                if got == item or not (isinstance(got, str) and got.startswith("DMSMASK_")):
+                    continue
+                out[name] = got
+                continue
+            out[name] = _pii_kept(item, masked_d.get(name))
+        return out
+    if isinstance(original, list):
+        masked_l = masked if isinstance(masked, list) else []
+        return [
+            _pii_kept(item, masked_l[idx] if idx < len(masked_l) else None)
+            for idx, item in enumerate(original)
+        ]
+    return masked
+
+
+def mask_feedback_text(text: str) -> str:
+    """Mask row values and key material before a prompt, attempt, or envelope.
+
+    A masker failure stores nothing from the original text.
+    """
+    scrubbed = _scrub_string(text or "")
+    try:
+        from dms_core.pii import fail_closed_mask_payload
+
+        got = fail_closed_mask_payload(text=scrubbed)
+    except Exception:
+        return ""
+    if not isinstance(got, dict):
+        return ""
+    return str(got.get("text") or "")
+
+
+def _mask_stored(value: Any) -> Any:
+    """Run one stored value through the PII masker. Fail closed on the PII fields."""
+    scrubbed = _scrub(value)
+    try:
+        from dms_core.pii import fail_closed_mask_payload
+
+        if isinstance(scrubbed, dict):
+            got = fail_closed_mask_payload(rows=[scrubbed])
+            rows = got.get("rows") if isinstance(got, dict) else None
+            masked = rows[0] if isinstance(rows, list) and rows else {}
+            return _pii_kept(scrubbed, masked if isinstance(masked, dict) else {})
+        if isinstance(scrubbed, str):
+            got = fail_closed_mask_payload(text=scrubbed)
+            return str(got.get("text") or "") if isinstance(got, dict) else ""
+        if isinstance(scrubbed, list):
+            return [_mask_stored(item) for item in scrubbed]
+    except Exception:
+        return _drop_named_pii(scrubbed)
+    return scrubbed
+
+
+def _text(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _key_id(payload: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(payload, Mapping):
+        return None
+    for name in ("ov_key_id", "key_id", "route_key_id"):
+        got = _text(payload.get(name))
+        if got:
+            return got
+    return None
+
+
+def _tokens(payload: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("tokens")
+    if not isinstance(raw, dict):
+        raw = payload.get("usage")
+    if not isinstance(raw, dict):
+        flat: dict[str, Any] = {}
+        if "prompt_tokens" in payload:
+            flat["prompt_tokens"] = payload.get("prompt_tokens")
+        if "completion_tokens" in payload:
+            flat["completion_tokens"] = payload.get("completion_tokens")
+        raw = flat or None
+    if not isinstance(raw, dict):
+        return None
+    return {str(key): value for key, value in raw.items() if not _secret_key(str(key))}
+
+
+def _raw_reply(payload: Mapping[str, Any] | None) -> Any:
+    if not isinstance(payload, Mapping):
+        return None
+    if "raw_reply" in payload:
+        return payload.get("raw_reply")
+    return dict(payload)
+
+
+def _route_fields(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Key route only from Cortex's ``ov_route``. A learning-store id stays itself."""
+    store = _text(payload.get("route_store_id")) if isinstance(payload, Mapping) else None
+    route_id = _text(payload.get("route_id")) if isinstance(payload, Mapping) else None
+    ov_route = _text(payload.get("ov_route")) if isinstance(payload, Mapping) else None
+    out: dict[str, Any] = {
+        "ov_route": ov_route,
+        "ov_route_reason": None if ov_route else "unattributed",
+    }
+    if store is not None:
+        out["route_store_id"] = store
+    if route_id is not None:
+        out["route_id"] = route_id
+    return out
+
+
+def loop_entry(
+    *,
+    prompt: str,
+    payload: Mapping[str, Any] | None,
+    sql: str | None,
+    outcome: str,
+    dialect: str,
+) -> dict[str, Any]:
+    """One model attempt. ``outcome`` is never empty. Secrets are not stored."""
+    why = str(outcome or "").strip() or "no_outcome"
+    model = _text(payload.get("served_model") if isinstance(payload, Mapping) else None)
+    if model is None and isinstance(payload, Mapping):
+        model = _text(payload.get("model"))
+    provider = _text(payload.get("served_provider") if isinstance(payload, Mapping) else None)
+    entry: dict[str, Any] = {
+        "prompt": prompt,
+        "raw_reply": _raw_reply(payload),
+        "model": model,
+        "provider": provider,
+        "key": _key_id(payload),
+        "tokens": _tokens(payload),
+        "sql": sql,
+        "outcome": why,
+        "model_wrote": bool(sql),
+        "dialect": dialect,
+    }
+    entry.update(_route_fields(payload))
+    masked_prompt = _mask_stored(entry.get("prompt"))
+    entry["prompt"] = masked_prompt if isinstance(masked_prompt, str) else ""
+    entry["raw_reply"] = _mask_stored(entry.get("raw_reply"))
+    if isinstance(entry.get("sql"), str):
+        entry["sql"] = mask_feedback_text(entry["sql"])
+    return entry
+
+
+def feedback_prompt(question: str, *, previous_sql: str | None, reason: str | None) -> str:
+    """Prompt for one attempt. A retry appends the previous SQL and the error."""
+    if not reason:
+        return question
+    safe_reason = mask_feedback_text(reason)
+    safe_sql = mask_feedback_text(previous_sql or "")
+    return f"{question}\n\nprevious_sql:\n{safe_sql}\n\nfeedback:\n{safe_reason}"
+
+
+#: Pre-run refusals the second reading feeds back. Hostile stays in
+#: ``_NO_RETRY_HEADS`` and is not pasted into the prompt.
+_SECOND_RECOVER_HEADS = frozenset(
+    {
+        "statement_not_allowed",
+        "sql_not_analyzable",
+        "multi_statement",
+    }
+)
+
+
+def _refusal_head(why: str) -> str:
+    return why.split(":", 1)[0]
+
+
+def _no_model_retry(why: str, extra: frozenset[str]) -> bool:
+    """True when this checker reason must abstain without another model call."""
+    if why in extra:
+        return True
+    return _refusal_head(why) in _NO_RETRY_HEADS
+
+
+class AskCallBudget:
+    """One insights cap for the first reading, the second reading, and retries."""
+
+    def __init__(self) -> None:
+        self.cap = insights_call_cap()
+        self.used = 0
+
+    def allow(self) -> bool:
+        return self.used < self.cap
+
+    def take(self) -> bool:
+        if not self.allow():
+            return False
+        self.used += 1
+        return True
+
+
+def _can_retry(*, retries: int, budget: AskCallBudget) -> bool:
+    return retries < MAX_SQL_RETRIES and budget.allow()
+
+
+def _served_outcome(env: dict[str, Any]) -> str:
+    """Log ``served`` only when the envelope is not an abstain."""
+    if not env.get("abstained"):
+        return "served"
+    prefix = "GEN-01: "
+    for item in env.get("assumptions") or []:
+        text = str(item)
+        if text.startswith(prefix):
+            reason = text[len(prefix):].strip()
+            if reason and reason != "served":
+                return reason
+    return "abstain"
+
+
+def _finish_attempt(
+    env: dict[str, Any],
+    *,
+    attempts: list[dict[str, Any]],
+    prompt: str,
+    payload: dict[str, Any] | None,
+    sql: str,
+    dialect: str,
+) -> dict[str, Any]:
+    attempts.append(
+        loop_entry(
+            prompt=prompt,
+            payload=payload,
+            sql=sql,
+            outcome=_served_outcome(env),
+            dialect=dialect,
+        )
+    )
+    return env
+
+
+def _model_called(payload: dict[str, Any] | None, loop: list[dict[str, Any]] | None) -> bool:
+    if generate_model_called(payload):
+        return True
+    for attempt in loop or []:
+        raw = attempt.get("raw_reply")
+        if isinstance(raw, dict) and generate_model_called(raw):
+            return True
+        if attempt.get("model") or attempt.get("provider") or attempt.get("key"):
+            return True
+    return False
+
+
+def run_model_loop(
+    *,
+    question: str,
+    ctx: dict[str, Any],
+    payload: dict[str, Any] | None,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    dialect: str,
+    model_sql: Callable[[dict[str, Any] | None], str | None],
+    check: Callable[[str], str | None],
+    submit_sql: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    abstain: Callable[..., dict[str, Any]],
+    empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    no_retry_reasons: frozenset[str] = frozenset(),
+    recover_failures: bool = False,
+    budget: AskCallBudget,
+) -> dict[str, Any]:
+    """Checker, read-only run, feedback retry.
+
+    An empty result does not retry. It abstains until VALUE-EXISTS-01
+    switches ``empty_result_reason``. Hostile, multi-statement, file-read,
+    and ungranted SQL abstain on the first call.
+
+    ``budget`` is the ask's one cap. The opening compute already took a
+    call. Retries take from what is left. They do not start a new cap.
+
+    ``recover_failures`` is the second reading only. It feeds back a reply
+    with no SQL, a statement refused before execute, and an empty result.
+    The next SQL still goes through ``check``. Hostile SQL does not.
+    """
+    retries = 0
+    current = payload if isinstance(payload, dict) else None
+    reason: str | None = None
+    prev_sql: str | None = None
+    protected_sql: str | None = None
+
+    while True:
+        prompt = feedback_prompt(question, previous_sql=prev_sql, reason=reason)
+        sql = model_sql(current)
+        if not sql:
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=None,
+                    outcome="no_sql",
+                    dialect=dialect,
+                )
+            )
+            if recover_failures and _can_retry(retries=retries, budget=budget):
+                retries += 1
+                budget.take()
+                prev_sql = None
+                reason = "pre_run_refusal:no_sql"
+                current = _call(compute, ctx, prompt, reason, None)
+                continue
+            return abstain("no_sql", attempts, sql=None, retries=retries)
+
+        if protected_sql:
+            dropped = dropped_conjuncts(protected_sql, sql, dialect)
+            if dropped is None:
+                flag = "checker:filter_parse_failed"
+                attempts.append(
+                    loop_entry(
+                        prompt=prompt,
+                        payload=current,
+                        sql=sql,
+                        outcome=flag,
+                        dialect=dialect,
+                    )
+                )
+                if not _can_retry(retries=retries, budget=budget):
+                    head = f"loop_exhausted:{flag}"
+                    return abstain(head, attempts, sql=sql, retries=retries)
+                retries += 1
+                budget.take()
+                prev_sql = sql
+                reason = flag
+                current = _call(compute, ctx, prompt, reason, sql)
+                continue
+            if dropped:
+                attempts.append(
+                    loop_entry(
+                        prompt=prompt,
+                        payload=current,
+                        sql=sql,
+                        outcome="filter_dropped",
+                        dialect=dialect,
+                    )
+                )
+                if not _can_retry(retries=retries, budget=budget):
+                    head = "loop_exhausted:filter_dropped"
+                    return abstain(head, attempts, sql=sql, retries=retries)
+                retries += 1
+                budget.take()
+                prev_sql = sql
+                reason = "filter_dropped"
+                current = _call(compute, ctx, prompt, reason, sql)
+                continue
+
+        why = check(sql)
+        if why:
+            safe_why = mask_feedback_text(why)
+            outcome = f"checker:{safe_why}"
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome=outcome,
+                    dialect=dialect,
+                )
+            )
+            if why in no_retry_reasons:
+                return abstain(why, attempts, sql=sql, retries=retries)
+            blocked = _no_model_retry(why, no_retry_reasons)
+            if recover_failures and _refusal_head(why) in _SECOND_RECOVER_HEADS:
+                blocked = False
+            if blocked or not _can_retry(retries=retries, budget=budget):
+                head = outcome if blocked else f"loop_exhausted:{outcome}"
+                return abstain(head, attempts, sql=sql, retries=retries)
+            protected_sql = sql
+            retries += 1
+            budget.take()
+            prev_sql = sql
+            reason = outcome
+            current = _call(compute, ctx, prompt, reason, sql)
+            continue
+
+        if warehouse is None or not Path(warehouse).is_file():
+            outcome = "checker:warehouse_missing"
+            attempts.append(
+                loop_entry(
+                    prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
+                )
+            )
+            return abstain(outcome, attempts, sql=sql, retries=retries)
+
+        rows, exec_err = run_readonly(sql, Path(warehouse))
+        if exec_err in _REFUSED_SHAPES:
+            # Not one SELECT. The first reading stops. The second reading
+            # feeds the refusal back and still checks the next SQL.
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome=f"checker:{exec_err}",
+                    dialect=dialect,
+                )
+            )
+            if recover_failures and _can_retry(retries=retries, budget=budget):
+                retries += 1
+                budget.take()
+                prev_sql = sql
+                reason = f"pre_run_refusal:{exec_err}"
+                current = _call(compute, ctx, prompt, reason, sql)
+                continue
+            return abstain(exec_err, attempts, sql=sql, retries=retries)
+        if exec_err:
+            # A typed code from run_readonly. The database message never gets
+            # here. The name in it is one the SQL wrote, so it is masked like
+            # the SQL itself.
+            outcome = f"db_error:{mask_feedback_text(exec_err)}"
+            attempts.append(
+                loop_entry(
+                    prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
+                )
+            )
+            protected_sql = sql
+            if not _can_retry(retries=retries, budget=budget):
+                head = f"loop_exhausted:{outcome}"
+                return abstain(head, attempts, sql=sql, retries=retries)
+            retries += 1
+            budget.take()
+            prev_sql = sql
+            reason = outcome
+            current = _call(compute, ctx, prompt, reason, sql)
+            continue
+
+        got = rows or []
+        if not got:
+            decision = empty_result_reason(sql)
+            if decision:
+                attempts.append(
+                    loop_entry(
+                        prompt=prompt,
+                        payload=current,
+                        sql=sql,
+                        outcome=decision,
+                        dialect=dialect,
+                    )
+                )
+                if recover_failures and _can_retry(retries=retries, budget=budget):
+                    retries += 1
+                    budget.take()
+                    prev_sql = sql
+                    reason = decision
+                    current = _call(compute, ctx, prompt, reason, sql)
+                    continue
+                return abstain(decision, attempts, sql=sql, retries=retries)
+            return _finish_attempt(
+                empty_answer(sql, attempts),
+                attempts=attempts,
+                prompt=prompt,
+                payload=current,
+                sql=sql,
+                dialect=dialect,
+            )
+        env = _finish_attempt(
+            submit_sql(sql, attempts),
+            attempts=attempts,
+            prompt=prompt,
+            payload=current,
+            sql=sql,
+            dialect=dialect,
+        )
+        return env
+
+
+def _call(
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    ctx: dict[str, Any],
+    prompt: str,
+    reason: str,
+    previous_sql: str | None,
+) -> dict[str, Any] | None:
+    feedback = {
+        "previous_sql": mask_feedback_text(previous_sql or ""),
+        "reason": mask_feedback_text(reason),
+        "prompt": prompt,
+    }
+    nxt = dict(ctx)
+    nxt["sql_loop_feedback"] = feedback
+    try:
+        got = compute(nxt)
+    except Exception:
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def _clear_credit(env: dict[str, Any]) -> None:
+    """No model call: drop credit fields so none does not name a model.
+
+    Absent is null for readers. Writing the keys, even as null, changes
+    flag-off bytes versus f9ffc3e (those envelopes omitted them) and
+    ``ov_key_id`` puts ``ov_`` on the envelope.
+    """
+    env.pop("served_model", None)
+    env.pop("served_provider", None)
+    env.pop("ov_key_id", None)
+
+
+def _stamp_reported(
+    env: dict[str, Any], *, model: str, provider: str | None, key: str | None
+) -> None:
+    env["served_attribution"] = "reported"
+    env["served_model"] = model
+    if provider:
+        env["served_provider"] = provider
+    # Main never sends this key. Only the extract loop may add it.
+    if key and cloop_b_enabled():
+        env["ov_key_id"] = key
+
+
+def apply_sql_credit(
+    env: dict[str, Any],
+    payload: dict[str, Any] | None,
+    loop: list[dict[str, Any]] | None,
+    *,
+    dialect: str,
+) -> None:
+    """Name the model only when the served SQL is one a model attempt wrote.
+
+    With ``DMS_CLOOP_B`` off, this is a no-op besides dropping ``ov_key_id``.
+    Main never sends that key, and ``with_served_attribution`` has already
+    set ``served_attribution``. The rewrite runs only when the flag is on.
+    """
+    if not cloop_b_enabled():
+        env.pop("ov_key_id", None)
+        return
+    _apply_sql_credit(env, payload, loop, dialect=dialect)
+
+
+def _apply_sql_credit(
+    env: dict[str, Any],
+    payload: dict[str, Any] | None,
+    loop: list[dict[str, Any]] | None,
+    *,
+    dialect: str,
+) -> None:
+    """Name the model only when the served SQL is one a model attempt wrote.
+
+    Every path sets ``served_attribution``. ``reported`` is a loop attempt,
+    or the payload SQL when the loop did not write a different statement,
+    and only with a model plus a key or provider. ``missing`` means a model
+    call happened and nothing it wrote was served. ``none`` means no model
+    call; the credit fields are null.
+    """
+    served = env.get("sql_used")
+    served_s = served if isinstance(served, str) else None
+    called = _model_called(payload if isinstance(payload, dict) else None, loop)
+    match: dict[str, Any] | None = None
+    loop_wrote_other = False
+    for attempt in loop or []:
+        if not attempt.get("model_wrote"):
+            continue
+        attempt_dialect = _text(attempt.get("dialect")) or dialect
+        same = sql_byte_equal(served_s, _text(attempt.get("sql")), attempt_dialect)
+        if same and match is None:
+            match = attempt
+        elif not same:
+            loop_wrote_other = True
+    if match is not None:
+        model = _text(match.get("model"))
+        provider = _text(match.get("provider"))
+        key = _text(match.get("key"))
+        if model and (key or provider):
+            _stamp_reported(env, model=model, provider=provider, key=key)
+            return
+        env["served_attribution"] = "missing"
+        return
+    if isinstance(payload, dict) and not loop_wrote_other:
+        from cortex_client.compute import insights_query_sql
+
+        raw = _text(payload.get("query_sql")) or insights_query_sql(payload)
+        if raw and sql_byte_equal(served_s, raw, dialect):
+            model = _text(payload.get("served_model"))
+            provider = _text(payload.get("served_provider"))
+            key = _key_id(payload)
+            if model and (key or provider):
+                _stamp_reported(env, model=model, provider=provider, key=key)
+                return
+            env["served_attribution"] = "missing" if called else "none"
+            if env["served_attribution"] == "none":
+                _clear_credit(env)
+            return
+    if called:
+        env["served_attribution"] = "missing"
+        return
+    env["served_attribution"] = "none"
+    _clear_credit(env)
