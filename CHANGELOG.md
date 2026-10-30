@@ -20,6 +20,14 @@ Append-only. Never edited, only added to. Newest first.
 - **Decision.** DR-0008 is Proposed and needs the founder stamp. DR-0007 is reserved for the #440 / #461 DR-0006 renumber.
 - **Tests.** At `641bce4`, Postgres 16 (scratch container): the ticket command (`tests/test_act_01_spec.py`, `tests/control_plane/test_act_01_writeback.py`, `test_proposals.py`, `test_amend_receipt.py`, `tests/invariants`) was `137 passed`. One file per process, the same files plus `test_amend_space_scope.py`, `test_rls.py`, `test_verify_ledger.py` and `test_ask_audit_pg.py` all passed. `scripts/verify/act_01_writeback_demo.py` printed `ACT-01 PROOF OK @641bce4c`. The full suite was not run. Not PASS.
 
+## 2026-10-30 - WIRE-19: contract 1.9.0 client, `document` and `reconfirm` badges
+
+- **Defect.** The client generated from 1.5.0 had no `Badge.document` (Cortex 1.7.0). `Provenance.from_dict` raised ValueError, so a Cortex document answer reached the customer as HTTP 502 `submit_failed` (demo numbers with `DMS_DEMO_FALLBACK=1`). A Cortex `reconfirm` parsed, but DMS dropped its `{why, closest_question}` and showed "a confidence level this build does not recognise" with no Yes.
+- **Client.** `contract/openapi-1.9.0.json` + `.sha256` copied from Cortex main `aae3cbc` by `scripts/sync_contract.py --version 1.9.0`. `generated/` regenerated with openapi-python-client 0.27.1, not edited. Testvectors byte-identical. CI contract-pin and health report 1.9.0. The pip floor stays `cortex-contract>=1.2.0,<2` (hard rule 2); CI builds the 1.9.0 wheel from Cortex.
+- **Document.** Maps to the doc-RAG lane's amber `L2_VALIDATED`, never L0/L1. Route `document`, `sql_used` the no-SQL stub, the cited document cards kept (container = file), `drillthrough_token` null. E7 lets document cards go without a token only on route `document` with no executed SQL and no rows; a table card still needs one. An uncited figure still abstains (E9). UI Details copy says the documents answered.
+- **Reconfirm.** ABSTAIN with no values, sources or token. The envelope offer carries Cortex's `why` and `closest_question`. Yes re-asks the closest question with `plan_sql_confirm=yes`. No sends the original question with `plan_sql_confirm=no` (Cortex logs the ticket) and always shows "not found in the database", even if Cortex returns an answer.
+- **Tests.** `tests/test_cortex_19_badges.py`: 7 of 10 fail on `58fcaa5` (spec missing, Badge raises, document ask 502, reconfirm offer empty, Yes/No not sent to Cortex) and pass here. No DMS fixture encoded confirm-no as `session`; none changed.
+
 ## 2026-10-28 - DEF-VALIDATE-02: plain aggregates are not measure drift
 
 - **Flag.** `DMS_DEF_VALIDATE` stays default 0. The change runs only when it is on.

@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 VECTORS = ROOT / "contract" / "testvectors" / "manifest_canonical.jsonl"
 
 
-@pytest.mark.parametrize("version", ["1.2.0", "1.5.0"])
+@pytest.mark.parametrize("version", ["1.2.0", "1.5.0", "1.9.0"])
 def test_vendored_openapi_sha256(version: str) -> None:
     spec = ROOT / "contract" / f"openapi-{version}.json"
     digest = ROOT / "contract" / f"openapi-{version}.json.sha256"
