@@ -193,6 +193,8 @@ export const REFUSAL_TEXT: Record<string, string> = {
   key_field_missing: "The object key is missing a required field (SKU and location).",
   key_field_extra: "The object key has a field this action does not take.",
   key_value_blank: "SKU and location cannot be blank.",
+  key_value_invalid:
+    "The SKU or location reads as personal data or is longer than 200 characters, so nothing was proposed.",
   op_unknown: "Unknown operation: only set and clear are allowed.",
   value_not_number: "The new value must be a number.",
   value_not_finite: "The new value must be a finite number.",

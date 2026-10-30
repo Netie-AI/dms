@@ -22,6 +22,7 @@
     "key_field_extra",
     "key_field_missing",
     "key_value_blank",
+    "key_value_invalid",
     "ledger_append_failed",
     "ledger_chain_broken",
     "ledger_entry_reused",
