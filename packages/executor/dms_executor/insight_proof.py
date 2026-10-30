@@ -1993,8 +1993,11 @@ def _receipt(
     ):
         return demote_insight(p, "ledger_receipt_invalid")
     entry_id = entry_id.strip()
-    raw_seq = getattr(led, "seq", None)
-    seq = raw_seq if type(raw_seq) is int and raw_seq >= 0 else None
+    # A receipt with no seq is what contract 1.2.0 may return; one whose seq is
+    # present but not a non-negative int is malformed, not unknown (verify round 8).
+    seq = getattr(led, "seq", None)
+    if seq is not None and (type(seq) is not int or seq < 0):
+        return demote_insight(p, "ledger_receipt_invalid", orphan_ledger_entry=entry_id)
     env = dict(p.envelope)
     env["audit_id"] = entry_id
     proof = {**p.proof, "ledger": {"event_type": LEDGER_EVENT, "entry_id": entry_id, "seq": seq}}
