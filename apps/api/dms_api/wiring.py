@@ -727,3 +727,38 @@ def prove_insights(
 def demote_insight(insight: Any, code: str, *, orphan_ledger_entry: str | None = None) -> Any:
     """INS-PROOF-02 - a proven insight that may not be served, as an ABSTAIN refusal."""
     return dms_executor.demote_insight(insight, code, orphan_ledger_entry=orphan_ledger_entry)
+
+
+# INS-PROOF-03 - steward pins. Pass-throughs: the route never imports the executor.
+# ``actor`` is settings.dms_actor_user_id (DR-0004 Option A, the deployment actor).
+
+
+def preview_pin(ask: Any, *, space_id: str | None, insight_id: str) -> dict[str, Any]:
+    return dms_executor.preview_pin(ask, space_id=space_id, insight_id=insight_id)
+
+
+def confirm_pin(ask: Any, cortex: CortexClient, *, token: str, actor: str) -> dict[str, Any]:
+    return dms_executor.confirm_pin(
+        ask, token=token, actor=actor, ledger_append=_ledger_append(cortex)
+    )
+
+
+def replay_pin(ask: Any, cortex: CortexClient, asset_id: str) -> dict[str, Any]:
+    return dms_executor.replay_pin(ask, asset_id, ledger_append=_ledger_append(cortex))
+
+
+def revoke_pin(ask: Any, cortex: CortexClient, asset_id: str, *, actor: str) -> dict[str, Any]:
+    return dms_executor.revoke_pin(
+        ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex)
+    )
+
+
+def list_pinned(ask: Any, *, space_id: str | None) -> list[dict[str, Any]]:
+    return dms_executor.list_pinned(ask, space_id=space_id)
+
+
+def pin_owner_space(ask: Any, *, token: str | None = None, asset_id: str | None = None) -> Any:
+    """The Space a token or pin belongs to, for the F5 call's metadata. A read only."""
+    if token is not None:
+        return dms_executor.token_space(token)
+    return dms_executor.pin_space(ask, asset_id or "")

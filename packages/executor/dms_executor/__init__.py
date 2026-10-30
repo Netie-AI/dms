@@ -108,6 +108,15 @@ from dms_executor.grant_struct import (
     sql_refusal_envelope,
 )
 from dms_executor.insight_proof import demote_insight, insight_proof_enabled, prove_for_space
+from dms_executor.insight_register import (
+    confirm_pin,
+    list_pinned,
+    pin_space,
+    preview_pin,
+    replay_pin,
+    revoke_pin,
+    token_space,
+)
 from dms_executor.lake_registry import (
     SERVING_DEADLINE_EXCEEDED_REASON,
     SERVING_DEADLINE_RESERVE_REASON,
@@ -2048,4 +2057,11 @@ __all__ = [
     "demote_insight",
     "insight_proof_enabled",
     "prove_for_space",
+    "confirm_pin",
+    "list_pinned",
+    "pin_space",
+    "preview_pin",
+    "replay_pin",
+    "revoke_pin",
+    "token_space",
 ]

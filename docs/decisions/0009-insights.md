@@ -116,3 +116,25 @@ envelopes on the demo lake and on an approved store, the proof hashes against a
 re-fetch on the test's own connection, and every refusal code above that the fixtures
 can reach. `scripts/demo_insight_proof.py` prints the proof. Figures are local claims at
 the commit the PR names.
+
+## INS-PROOF-03 addendum (proposed, same stamp)
+
+A steward may pin a proven insight. This is the action-type equivalent of "a human
+confirmed it": nothing is auto-pinned, auto-replayed or auto-applied.
+
+- Preview re-proves the one candidate server side and mints a process-local, single-use
+  token (600 s). Confirm spends it, refuses a demo-ontology insight
+  (`measure_not_approved`), re-proves and refuses a changed result (`stale_preview`), then
+  appends one `insight.pinned` pointer (hashes and ids, no SQL, rows or labels) and only
+  then writes `main._proven_insights`, a DMS-owned DuckDB table on the
+  `main._verified_queries` precedent. No migration.
+- `approved_by` is the single configured deployment actor (DR-0004 Option A). There is no
+  dual-control claim. Who may confirm is F5's decision through `compliance_gate`.
+- Replay checks the approved definition first (no submit when it moved), then runs the
+  pinned SQL twice: unchanged is `L0_CERTIFIED`; changed is `L1_GOVERNED_METRIC` with a
+  label-level drift block and no computed delta. Every verdict appends `insight.replayed`.
+- Ceilings: tokens do not survive a restart (`confirm_token_unknown`); drift says
+  `source_change_unknown` when a watermark is unknown; contract 1.2.0 still cannot read
+  an entry back.
+- Hand-off to ACTIONS (DR-0008): `asset_id` plus `expected_result_hash` is the citation a
+  future writeback proposal must carry.

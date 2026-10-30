@@ -1101,7 +1101,21 @@ def test_nothing_on_main_imports_the_module() -> None:
             if "insight_proof" in text and re.search(r"^\s*(from|import)\s.*insight_proof",
                                                      text, re.M):
                 hits.append(path.relative_to(root).as_posix())
-    assert sorted(hits) == ["packages/executor/dms_executor/__init__.py"]
+    # INS-PROOF-03: the pin register is the one sibling that builds on this module,
+    # and only the package __init__ imports the register (checked below).
+    assert sorted(hits) == [
+        "packages/executor/dms_executor/__init__.py",
+        "packages/executor/dms_executor/insight_register.py",
+    ]
+    reg = []
+    for base in ("packages", "apps"):
+        for path in (root / base).rglob("*.py"):
+            if path.name == "insight_register.py":
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if re.search(r"^\s*(from|import)\s.*insight_register", text, re.M):
+                reg.append(path.relative_to(root).as_posix())
+    assert sorted(reg) == ["packages/executor/dms_executor/__init__.py"]
     app_text = (root / "apps/api/dms_api/app.py").read_text(encoding="utf-8")
     assert "    insight_proof,\n" in app_text
     assert (

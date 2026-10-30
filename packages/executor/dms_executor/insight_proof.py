@@ -1103,11 +1103,14 @@ def prove_insights(
     onto: Ontology | None = None,
     watermarks: Callable[..., Any] = bronze.lookup_ingest_watermarks,
     policy_tables: Collection[str] = (),
+    want: str | None = None,
 ) -> InsightRun:
     """Proven insights over the verified ontology, or the reason each was refused.
 
     ``policy_tables`` are readable only under a row predicate; a candidate that
     reads one is refused ``ungranted:row_policy`` before any submit.
+    ``want`` (INS-PROOF-03) returns only the insight with that id, unranked, so
+    a pin re-proves the one candidate a steward saw, not the run's top picks.
     """
     if not insight_proof_enabled():
         return InsightRun(status="off")
@@ -1153,7 +1156,10 @@ def prove_insights(
     finally:
         con.close()
 
-    picked = _pick(ctx.built, top=top, n_measures=len(loaded.measures))
+    if want is not None:
+        picked = [p for _s, p in ctx.built if p.insight_id == want][:1]
+    else:
+        picked = _pick(ctx.built, top=top, n_measures=len(loaded.measures))
     status = "ok" if picked else "refused"
     return InsightRun(
         status=status,
@@ -1657,6 +1663,58 @@ def _receipt(
     return served
 
 
+@dataclass(frozen=True)
+class SpaceAccess:
+    """A Space's grants and its Cortex submit, as ``prove_for_space`` uses them."""
+
+    warehouse: Path
+    granted: frozenset[str]
+    policy: frozenset[str]
+    submit: Callable[[str], Any]
+
+
+def space_access(executor: Any, *, space_id: str | None, session_id: str | None) -> SpaceAccess:
+    """Grants are the Executor's turn ACL for the Space; submit is its Cortex path."""
+    from dms_executor.demo_warehouse import warehouse_path
+
+    acl = executor.demo_acl(session_id=session_id, space_id=space_id, tables=None)
+    preds = {str(t): str(v) for t, v in dict(acl.row_predicates).items()}
+    granted = frozenset(t for t, v in preds.items() if v.strip().upper() == "TRUE")
+    policy = frozenset(t for t in preds if t not in granted)
+
+    def submit(sql: str) -> Any:
+        return executor._submit_verified_sql(
+            sql, space_id=space_id, session_id=session_id, tables=None
+        )
+
+    warehouse = getattr(executor, "_warehouse", None) or warehouse_path()
+    return SpaceAccess(Path(warehouse), granted, policy, submit)
+
+
+def space_run(
+    executor: Any,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    top: int = 6,
+    watermarks: Callable[..., Any] = bronze.lookup_ingest_watermarks,
+    want: str | None = None,
+) -> InsightRun:
+    """``prove_insights`` over a Space through Cortex submit. No ledger append."""
+    access = space_access(executor, space_id=space_id, session_id=session_id)
+    return prove_insights(
+        access.warehouse,
+        submit=access.submit,
+        granted=access.granted,
+        space_id=space_id,
+        session_id=session_id,
+        top=top,
+        watermarks=watermarks,
+        policy_tables=access.policy,
+        want=want,
+    )
+
+
 def prove_for_space(
     executor: Any,
     *,
@@ -1679,29 +1737,8 @@ def prove_for_space(
     """
     if not insight_proof_enabled():
         return InsightRun(status="off")
-    from dms_executor.demo_warehouse import warehouse_path
-
-    acl = executor.demo_acl(session_id=session_id, space_id=space_id, tables=None)
-    preds = {str(t): str(v) for t, v in dict(acl.row_predicates).items()}
-    granted = {t for t, v in preds.items() if v.strip().upper() == "TRUE"}
-    policy = {t for t in preds if t not in granted}
-
-    def submit(sql: str) -> Any:
-        return executor._submit_verified_sql(
-            sql, space_id=space_id, session_id=session_id, tables=None
-        )
-
-    warehouse = getattr(executor, "_warehouse", None) or warehouse_path()
-    run = prove_insights(
-        Path(warehouse),
-        submit=submit,
-        granted=granted,
-        space_id=space_id,
-        session_id=session_id,
-        top=top,
-        watermarks=watermarks,
-        policy_tables=policy,
-    )
+    run = space_run(executor, space_id=space_id, session_id=session_id, top=top,
+                    watermarks=watermarks)
     proven: list[ProvenInsight] = []
     refused = list(run.refused)
     for p in run.proven:
