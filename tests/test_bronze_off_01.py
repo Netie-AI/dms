@@ -255,7 +255,8 @@ def test_flag_off_ungranted_table_still_abstains(
     env = _ask(db, TOP_FORMS[0], space_id=OPS, monkeypatch=monkeypatch)
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
-    assert f"ungranted_table:{table}" in env["text"]
+    assert "ungranted_table" in env["text"]
+    assert table not in env["text"]
     assert not env["rows"]
     assert env.get("route") != "bronze_sheet"
     assert env.get("lane") != "bronze"

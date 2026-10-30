@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ao-vendor"
+version = "0.1.0"
+description = "Vendored NVIDIA auto-ontology catalog and semantic parsers (Apache-2.0)"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "httpx>=0.27",
+  "pydantic>=2.6",
+  "sqlglot>=27.0.0,<28",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ao_vendor*"]
+
+[tool.setuptools.package-data]
+ao_vendor = ["semantic/prompts/*"]

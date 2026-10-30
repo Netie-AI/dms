@@ -22,6 +22,9 @@ INSIGHTS_PATH = "/v1/insights"
 #: when DMS_SCHEMA_CONTEXT is on, so a pin that 422s unknown fields stays quiet.
 SCHEMA_CONTEXT_FIELD = "schema_context"
 SCHEMA_CONTEXT_ENV = "DMS_SCHEMA_CONTEXT"
+#: Catalog key for verified-example rows. Lifted before the Insights POST.
+#: Pin 279cbd85 does not declare it, so it must never be a body field.
+VERIFIED_EXAMPLES_FIELD = "verified_examples"
 #: Cortex's published demo viewer key (also the DMS settings default). Not a
 #: secret. Generate=true must not send it; KEY-01 (dms#273) removes the default.
 DEMO_VIEWER_KEY = "dms-demo-viewer-key"
@@ -170,6 +173,12 @@ def _request(
         merged = dict(headers or {})
         merged.update(extra_headers)
         headers = merged
+    if (
+        method.upper() == "POST"
+        and path.rstrip("/") == INSIGHTS_PATH
+        and isinstance(json_body, dict)
+    ):
+        json_body = without_route_fields(json_body)
     try:
         with httpx.Client(timeout=timeout) as http:
             res = http.request(
@@ -237,6 +246,14 @@ def schema_context_enabled() -> bool:
     return os.environ.get(SCHEMA_CONTEXT_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+def without_route_fields(body: dict[str, Any]) -> dict[str, Any]:
+    """Copy a Cortex body. OpenVault routes. DMS does not send model or strict."""
+    out = dict(body)
+    out.pop("model", None)
+    out.pop("strict", None)
+    return out
+
+
 def apply_schema_context(body: dict[str, Any], text: str | None) -> dict[str, Any]:
     """Put ``schema_context`` on the body only when the flag is on.
 
@@ -262,6 +279,7 @@ def insights_post(
     api_key: str | None = None,
     timeout: float = 120.0,
     schema_context: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     if generate:
         refuse = generate_bearer_refuse(api_key, base_url)
@@ -277,13 +295,18 @@ def insights_post(
         "consumer": consumer,
     }
     apply_schema_context(body, schema_context)
+    # Suggestion calls only. Generate posts omit it. Pin 279cbd85 InsightsAskIn
+    # drops unknown fields, so this does not change that pin's freeroute
+    # reservation until the pin forwards it. Do not send model or strict.
+    if max_tokens is not None:
+        body["max_tokens"] = int(max_tokens)
     extra_headers: dict[str, str] | None = None
     if generate:
-        from cortex_client.strict_pin import stamp_generate_body, stamp_generate_headers
+        from cortex_client.strict_pin import pin_config, stamp_generate_headers
 
-        body = stamp_generate_body(body)
-        if body.get("pin_refusal"):
-            return generate_abstain_payload(str(body["pin_refusal"]))
+        refusal = pin_config().refusal
+        if refusal:
+            return generate_abstain_payload(refusal)
         extra_headers = stamp_generate_headers({})
     return _request(
         "POST",
@@ -310,6 +333,7 @@ __all__ = [
     "SCHEMA_CONTEXT_ENV",
     "SCHEMA_CONTEXT_FIELD",
     "apply_schema_context",
+    "without_route_fields",
     "insights_get",
     "insights_post",
     "redact_secrets",

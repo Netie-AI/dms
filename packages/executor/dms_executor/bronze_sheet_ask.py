@@ -23,6 +23,7 @@ from dms_executor.abstain import build_abstain
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.demo_warehouse import connect_serving
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
 
 _IDENT = re.compile(r"^[A-Za-z0-9_]+$")
@@ -72,11 +73,11 @@ def bronze_sheet_lane_enabled() -> bool:
 
 
 def bronze_lane_table(question: str) -> str | None:
-    """Bronze table this question would read, or None if it is not that lane.
+    """Bronze table the sheet server would read, or None if it is not that lane.
 
     Same scope as ``maybe_bronze_sheet_ask`` before any DuckDB open. The
-    grant decision stays with ``table_is_granted`` on the caller's readable
-    set. This function does not decide grants.
+    phrase match only names that table. It does not grant, and it does not
+    build SQL. The grant decision is ``relation_gap`` on this name.
     """
     if _NO_SQL.search(question or ""):
         return None
@@ -212,6 +213,18 @@ def _bronze_origin(env: dict[str, Any] | None) -> dict[str, Any] | None:
     return env
 
 
+def _dropped_value(
+    question: str, *, workbook: str, sheet: str, sql: str, db: Path, table: str
+) -> str | None:
+    """STATED-VALUE-01 for this lane: a value the question states and the SQL leaves open.
+
+    The lane builds its own SQL, so the check reads the SQL it is about to run. The workbook
+    and sheet names scope the lane; they are not conditions.
+    """
+    asked = question.replace(workbook, " ").replace(sheet, " ")
+    return dropped_stated_value_reason(asked, sql, db, grantable={table})
+
+
 def _grouped_top_n(
     ident: str,
     *,
@@ -228,6 +241,18 @@ def _grouped_top_n(
     db = _db_with_table(ident, warehouse)
     if db is None:
         return None
+    gap = _dropped_value(
+        question,
+        workbook=workbook,
+        sheet=sheet,
+        sql=f'SELECT category, SUM("{measure}") FROM bronze."{ident}" GROUP BY 1 LIMIT {n}',
+        db=db,
+        table=table,
+    )
+    if gap:
+        return bronze_grant_abstain(
+            question, reason=gap, space_id=space_id, session_id=session_id
+        )
     con = connect_serving(db)
     try:
         cols = _cols(con, ident)
@@ -296,6 +321,19 @@ def _eq_filter_total(
     db = _db_with_table(ident, warehouse)
     if db is None:
         return None
+    quoted = value.replace("'", "''")
+    gap = _dropped_value(
+        question,
+        workbook=workbook,
+        sheet=sheet,
+        sql=f'SELECT SUM("{measure}") FROM bronze."{ident}" WHERE "{col}" = \'{quoted}\'',
+        db=db,
+        table=table,
+    )
+    if gap:
+        return bronze_grant_abstain(
+            question, reason=gap, space_id=space_id, session_id=session_id
+        )
     con = connect_serving(db)
     try:
         cols = _cols(con, ident)

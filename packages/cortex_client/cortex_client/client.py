@@ -66,6 +66,9 @@ from cortex_client.models import (
 )
 
 CONTRACT_MAJOR = 1
+#: Reconfirm suggestion only. Smaller than freeroute complete()'s default 600
+#: so a forward of this field does not reserve the answer's token budget.
+SUGGESTION_MAX_TOKENS = 64
 
 
 def _to_gen_manifest(m: ContractManifest) -> GenManifest:
@@ -112,7 +115,13 @@ class CortexClient:
         self.close()
 
     def ask(self, req: AskRequest) -> AskResponse:
-        body = GenAskRequest.from_dict(req.model_dump(mode="json"))
+        data = req.model_dump(mode="json")
+        # 1.5.0 keys go on the wire only when set, so an ask without them is
+        # the same body a 1.2.0 client sent.
+        for key in ("dms_payload", "plan_sql_confirm"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        body = GenAskRequest.from_dict(data)
         parsed = ask_api.sync(client=self._client, body=body)
         if parsed is None:
             raise RuntimeError("ask: empty response")
@@ -247,6 +256,39 @@ class CortexClient:
             timeout=bound,
             sql_feedback=sql_feedback,
         )
+
+    def complete(self, prompt: str, *, max_tokens: int = SUGGESTION_MAX_TOKENS) -> str:
+        """One generate completion for a suggested question. Not the answer ladder.
+
+        A dead engine or a refused generate returns ``""``. Nothing is filled in.
+        Skipped when this ask already used ``insights_call_cap`` generate posts,
+        so the suggestion cannot take a call the answer still needs.
+        ``max_tokens`` is sent on this POST only.
+        """
+        from cortex_client.compute import insights_call_cap, note_model_call, recorded_model_calls
+
+        if recorded_model_calls() >= insights_call_cap():
+            return ""
+        note_model_call()
+        try:
+            payload = insights_post(
+                self.base_url,
+                question=prompt,
+                ask=False,
+                generate=True,
+                api_key=self.api_key,
+                timeout=min(2.0, float(self.timeout)),
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("suggested_question", "answer", "text"):
+            val = payload.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip().splitlines()[0].strip()
+        return ""
 
     def insights_law(self) -> dict[str, Any]:
         return insights_get(self.base_url, api_key=self.api_key, timeout=min(8.0, self.timeout))

@@ -36,6 +36,7 @@ from cortex_client.insights import (
     SCHEMA_CONTEXT_FIELD,
     apply_schema_context,
     generate_bearer_refuse,
+    without_route_fields,
 )
 
 # Explicit generate-POST count for the answer in this context. Not usage
@@ -64,7 +65,12 @@ ONTOLOGY_MODE = "ontology_plan"
 PLAN_SOURCES = frozenset({"ontology_plan", "bind_plan", "other"})
 PLAN_ORIGIN_GENERATE_SQL = "generate_sql"
 PLAN_ORIGIN_ONTOLOGY_RANKING = "ontology_ranking"
-PLAN_ORIGINS = frozenset({PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING})
+#: DMS's own multi-grain compile (where-paths + importance). Served in place of
+#: any generate SQL, so it never carries the generate origin or a served model.
+PLAN_ORIGIN_ONTOLOGY_COMPILE = "ontology_compile"
+PLAN_ORIGINS = frozenset(
+    {PLAN_ORIGIN_GENERATE_SQL, PLAN_ORIGIN_ONTOLOGY_RANKING, PLAN_ORIGIN_ONTOLOGY_COMPILE}
+)
 INSIGHTS_REACHED = "insights_reached"
 INSIGHTS_STATUSES = frozenset({"CERTIFIED", "ABSTAIN", "REFUSE"})
 #: Product-lane Insights bound. Not CortexClient's 120s contract timeout and
@@ -873,12 +879,16 @@ def _insights_generate_post(
     from cortex_client.strict_pin import (
         abstain_payload,
         interpret,
+        pin_config,
         refusal_payload,
         stamp_generate_headers,
     )
 
-    if body.get("pin_refusal"):
-        return refusal_payload(str(body["pin_refusal"]))
+    body = without_route_fields(body)
+    # The pin is not sent, but a caller-error pin still stops this leg.
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     hdr = stamp_generate_headers(headers)
     note_model_call()
     try:
@@ -965,6 +975,44 @@ def classify_insights_fail(
     return INSIGHTS_FAIL_EMPTY
 
 
+def lift_verified_examples(
+    ontology: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Lift example rows off the catalog. They are not an Insights body field.
+
+    Cortex pin 279cbd85 drops unknown keys on some routes and 422s others.
+    The rows ride in the question text, which that pin already accepts.
+    """
+    from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
+
+    if not isinstance(ontology, dict) or VERIFIED_EXAMPLES_FIELD not in ontology:
+        return ontology, []
+    onto = dict(ontology)
+    raw = onto.pop(VERIFIED_EXAMPLES_FIELD, None)
+    rows = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+    return (onto or None), rows
+
+
+def question_with_examples(question: str, examples: list[dict[str, Any]]) -> str:
+    """Append example SQL to the question. A revoked row is skipped.
+
+    The text does not choose an answer. The caller still has to write SQL
+    and pass the checker. Repeating the same SQL is a no-op.
+    """
+    blocks: list[str] = []
+    for ex in examples:
+        if ex.get("revoked") is True:
+            continue
+        sql = str(ex.get("sql") or "").strip()
+        if not sql or sql in question:
+            continue
+        asked = str(ex.get("question") or "").strip()
+        blocks.append(f"example_question: {asked}\nexample_sql:\n{sql}")
+    if not blocks:
+        return question
+    return question + "\n\nverified_examples:\n" + "\n\n".join(blocks) + "\n"
+
+
 def _split_schema_context(
     ontology: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -1017,11 +1065,14 @@ def _insights_body(
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
     onto, schema_context = _split_schema_context(ontology)
+    onto, examples = lift_verified_examples(onto)
     evidence = None
     if isinstance(onto, dict) and NAME_MASK_KEY in onto:
         onto = dict(onto)
         evidence = onto.pop(NAME_MASK_KEY, None)
     asked = _masked_model_question(asked, evidence if isinstance(evidence, Mapping) else None)
+    if examples:
+        asked = question_with_examples(asked, examples)
     body: dict[str, Any] = {
         "intent": asked,
         "question": asked,
@@ -1045,9 +1096,7 @@ def _insights_body(
             "reason": str(sql_feedback.get("reason") or ""),
         }
     apply_schema_context(body, schema_context)
-    from cortex_client.strict_pin import stamp_generate_body
-
-    return stamp_generate_body(body)
+    return without_route_fields(body)
 
 
 def _leg_kind(payload: dict[str, Any] | None) -> str:
@@ -1135,8 +1184,11 @@ def _run_insights_legs(
     from cortex_client.qualifiers import retry_plan_covers_qualifiers
 
     legs: list[dict[str, Any]] = []
-    # ponytail: counts this compute call's model calls. One compute per ask
-    # today (maybe_generative_ask). A second compute seam per ask must share it.
+    # ponytail: this snapshot is one compute_insights. The ask path does not
+    # use it as a second cap. AskCallBudget in the extract loop is the one
+    # cap for both readings and their retries, and it stops before another
+    # compute is sent. Upgrade: thread the ask budget into this check when
+    # a second seam can call compute_insights without that budget.
     calls_before = recorded_model_calls()
     cap = insights_call_cap() if call_cap is None else call_cap
 
@@ -1248,10 +1300,11 @@ def compute_query(
         ontology=ontology,
         sql_feedback=sql_feedback,
     )
-    if insights_body.get("pin_refusal"):
-        from cortex_client.strict_pin import refusal_payload
+    from cortex_client.strict_pin import pin_config, refusal_payload
 
-        return refusal_payload(str(insights_body["pin_refusal"]))
+    refusal = pin_config().refusal
+    if refusal:
+        return refusal_payload(refusal)
     dms_body: dict[str, Any] = {
         "question": question,
         "session_id": session_id or "demo",
@@ -1416,6 +1469,7 @@ __all__ = [
     "ONTOLOGY_MODE",
     "PLAN_ORIGINS",
     "PLAN_ORIGIN_GENERATE_SQL",
+    "PLAN_ORIGIN_ONTOLOGY_COMPILE",
     "PLAN_ORIGIN_ONTOLOGY_RANKING",
     "PLAN_SOURCES",
     "SERVED_LEG_KEYS",

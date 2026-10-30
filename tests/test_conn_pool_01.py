@@ -69,6 +69,9 @@ _GROUNDED = "transactions"
 class _Cortex:
     asks: list[Any] = field(default_factory=list)
 
+    def close(self) -> None:
+        """The app lifespan closes ``app.state.cortex`` on shutdown; the fixture holds nothing."""
+
     def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
         sql = getattr(self, "hold_sql", None)
         lake = getattr(self, "lake", None)
@@ -210,6 +213,10 @@ def _boot(
 
     monkeypatch.setattr("dms_api.app.build_ask_service", _build)
     monkeypatch.setattr("dms_api.wiring.build_ask_service", _build)
+    # The lifespan builds a real CortexClient(settings.cortex_url, ...) and overwrites
+    # app.state.cortex. With a Cortex listening on the default :8010 the compliance gate
+    # then calls it for real and answers 403 gate_refused. Keep the fixture across lifespan.
+    monkeypatch.setattr("dms_api.app.CortexClient", lambda *_a, **_k: exe._cortex)
     try:
         app = create_app()
     finally:
@@ -804,7 +811,11 @@ def test_writer_prefers_over_continuous_asks(
 
 
 def _reasons(body: dict[str, Any]) -> list[str]:
-    return [str(item) for item in (body.get("assumptions") or [])]
+    out = [str(item) for item in (body.get("assumptions") or [])]
+    detail = body.get("detail")
+    if detail:
+        out.append(str(detail))  # a gate refusal is {"detail": ...}, never an empty reason
+    return out
 
 
 def test_queue_default_holds_the_short_burst(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -854,6 +865,7 @@ def test_ask_inside_the_reserve_abstains_at_once(
 ) -> None:
     """An ask with less than the reserve left abstains at once, named."""
     monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "0.40")
+    monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "0.40")
     monkeypatch.delenv("DMS_LAKE_SERVING_LEASE_RESERVE_S", raising=False)
     lake = tmp_path / "reserve-ask.duckdb"
     _lake(lake)
@@ -868,6 +880,8 @@ def test_ask_inside_the_reserve_abstains_at_once(
         body = resp.json()
         assert_envelope_valid(body)
         assert "serving_deadline_reserve" in _reasons(body), _reasons(body)
+        assert body.get("abstain_reason") == "serving_deadline_reserve"
+        assert body.get("serving_deadline_s") == 0.40
         assert elapsed < 0.5
         assert lease_refs(lake) == 0
     finally:
@@ -914,6 +928,7 @@ def test_reserve_under_and_lease_cap_are_different_codes(
     lake = tmp_path / "split.duckdb"
     _lake(lake)
     monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "0.40")
+    monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "0.40")
     monkeypatch.delenv("DMS_LAKE_SERVING_LEASE_RESERVE_S", raising=False)
     server, thread, port, exe = _boot(lake, monkeypatch)
     ensure_demo_warehouse(lake)
@@ -928,6 +943,7 @@ def test_reserve_under_and_lease_cap_are_different_codes(
         assert elapsed < 0.5
         assert lease_refs(lake) == 0
         monkeypatch.delenv("DMS_INSIGHTS_TIMEOUT_S", raising=False)
+        monkeypatch.delenv("DMS_SERVING_DEADLINE_S", raising=False)
         monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_CAP", "1")
         monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "0.2")
         holder = connect_serving(lake)
@@ -1298,6 +1314,9 @@ def test_abstain_including_watermark_stays_under_ask_timeout(
         holder.close()
         keeper.join(6.0)
     monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
+    # This half is the measured 8s ask clock (reserve fires while the slot
+    # is still held). The product default is the longer ladder budget.
+    monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "8")
     holder = connect_serving(lake)
     keeper = threading.Thread(target=_hold, args=(9.0,))
     keeper.start()
@@ -1516,6 +1535,7 @@ def test_late_grant_is_a_named_abstain_not_a_bare_timeout(
     monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_CAP", "1")
     monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_QUEUE_MAX", "4")
     monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
+    monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "8")
     monkeypatch.delenv("DMS_LAKE_SERVING_LEASE_RESERVE_S", raising=False)
     lake = tmp_path / "late-grant.duckdb"
     _lake(lake)
@@ -1545,6 +1565,8 @@ def test_late_grant_is_a_named_abstain_not_a_bare_timeout(
         assert_envelope_valid(body)
         reasons = _reasons(body)
         assert SERVING_DEADLINE_EXCEEDED_REASON in reasons, reasons
+        assert body.get("abstain_reason") == SERVING_DEADLINE_EXCEEDED_REASON
+        assert body.get("serving_deadline_s") == 8.0
         assert elapsed < 8.0
     finally:
         holder.close()
@@ -1569,6 +1591,7 @@ def test_deadline_probes_under_load_are_named_by_seven_five(
     """
     monkeypatch.delenv("DMS_LAKE_SERVING_DEADLINE_DELIVER_S", raising=False)
     monkeypatch.delenv("DMS_INSIGHTS_TIMEOUT_S", raising=False)
+    monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "8")
     assert serving_deadline_deliver_s() == DEFAULT_SERVING_DEADLINE_DELIVER_S
     lake = tmp_path / "deadline-load.duckdb"
     _lake(lake)
@@ -1772,6 +1795,7 @@ def test_serving_abstain_tickets_follow_the_flag(
             if kind == "deadline":
                 monkeypatch.setenv("DMS_LAKE_SERVING_LEASE_WAIT_S", "30")
                 monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "1")
+                monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "1")
                 cortex = exe._cortex
                 assert isinstance(cortex, _Cortex)
                 cortex.lake = lake

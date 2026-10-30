@@ -176,7 +176,9 @@ def test_db_error_text_stays_out_of_the_ticket(
     marker = "boom-ticket-7c2e"
 
     def compute(_ctx: dict[str, Any]) -> dict[str, Any]:
-        return _names(query_sql=f"SELECT error('{marker}')")
+        return _names(
+            query_sql=f"SELECT error('{marker}') FROM locations"
+        )
 
     env = _assert_abstain(_ask(tmp_path, "Which locations are cold storage?", compute))
     grouped = _groups(_records(caplog))
@@ -185,6 +187,25 @@ def test_db_error_text_stays_out_of_the_ticket(
     assert ticket["reason"] == "loop_exhausted:db_error"
     assert ticket["retries"] == 1
     assert ticket["ask_id"] == env["audit_id"]
+    _no_prose(ticket, marker)
+    assert marker not in caplog.text
+    assert marker in json.dumps(env.get("loop"))
+
+
+def test_cast_marker_stays_out_of_the_ticket(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CAST is an extra db-error. ``error()`` stays the original case."""
+    _loop(monkeypatch)
+    _watch(caplog)
+    marker = "boom-cast-7c2e"
+
+    def compute(_ctx: dict[str, Any]) -> dict[str, Any]:
+        return _names(query_sql=f"SELECT CAST('{marker}' AS INTEGER) FROM locations")
+
+    env = _assert_abstain(_ask(tmp_path, "Which locations are cold storage?", compute))
+    ticket = next(iter(_groups(_records(caplog)).values()))
+    assert ticket["reason"] == "loop_exhausted:db_error"
     _no_prose(ticket, marker)
     assert marker not in caplog.text
     assert marker in json.dumps(env.get("loop"))
