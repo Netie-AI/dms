@@ -707,3 +707,23 @@ def engine_clock_fields() -> dict[str, str]:
         return dms_executor.read_health_engine_clock()
     except Exception:  # noqa: BLE001 - health must stay up
         return {}
+
+
+def prove_insights(
+    ask: Any, cortex: CortexClient, *, space_id: str | None, session_id: str, top: int
+) -> Any:
+    """INS-PROOF-02 - proven insights for a Space, one Cortex ledger pointer each.
+
+    ``ask`` is the Executor; every statement goes through its Cortex submit, and
+    the pointer is appended through ``_ledger_append`` (dms_ledger -> Cortex
+    ``/v1/contract/ledger/append``). No local chain.
+    """
+    return dms_executor.prove_for_space(
+        ask, space_id=space_id, session_id=session_id, top=top,
+        ledger_append=_ledger_append(cortex),
+    )
+
+
+def demote_insight(insight: Any, code: str, *, orphan_ledger_entry: str | None = None) -> Any:
+    """INS-PROOF-02 - a proven insight that may not be served, as an ABSTAIN refusal."""
+    return dms_executor.demote_insight(insight, code, orphan_ledger_entry=orphan_ledger_entry)

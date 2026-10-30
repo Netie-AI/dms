@@ -107,6 +107,7 @@ from dms_executor.grant_struct import (
     serve_gap,
     sql_refusal_envelope,
 )
+from dms_executor.insight_proof import demote_insight, insight_proof_enabled, prove_for_space
 from dms_executor.lake_registry import (
     SERVING_DEADLINE_EXCEEDED_REASON,
     SERVING_DEADLINE_RESERVE_REASON,
@@ -2044,4 +2045,7 @@ __all__ = [
     "sync_bronze_to_serving",
     "tables_read_by_sql",
     "tables_read_checked_by_sql",
+    "demote_insight",
+    "insight_proof_enabled",
+    "prove_for_space",
 ]

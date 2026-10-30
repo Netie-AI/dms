@@ -1085,6 +1085,12 @@ def test_flag_off_is_main(value: str | None, monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_nothing_on_main_imports_the_module() -> None:
+    """INS-PROOF-02 wires exactly two importers, the route is mounted only with the flag.
+
+    The executor package exports ``prove_for_space`` (``.importlinter`` lets only
+    ``dms_api.wiring`` reach ``dms_executor``, by attribute), and ``app.py`` mounts
+    the route only when ``DMS_INSIGHT_PROOF=1``. Nothing else may import it.
+    """
     root = Path(__file__).resolve().parents[1]
     hits = []
     for base in ("packages", "apps"):
@@ -1094,8 +1100,13 @@ def test_nothing_on_main_imports_the_module() -> None:
             text = path.read_text(encoding="utf-8", errors="replace")
             if "insight_proof" in text and re.search(r"^\s*(from|import)\s.*insight_proof",
                                                      text, re.M):
-                hits.append(str(path))
-    assert hits == []
+                hits.append(path.relative_to(root).as_posix())
+    assert sorted(hits) == ["packages/executor/dms_executor/__init__.py"]
+    app_text = (root / "apps/api/dms_api/app.py").read_text(encoding="utf-8")
+    assert "    insight_proof,\n" in app_text
+    assert (
+        "    if insight_proof.enabled():\n        app.include_router(insight_proof.router)\n"
+    ) in app_text
 
 
 def test_route_stamp_keeps_the_new_stage_only_as_an_addition() -> None:
