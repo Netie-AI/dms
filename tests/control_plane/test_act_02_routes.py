@@ -1086,6 +1086,9 @@ def test_distinct_change_refs_stay_distinct_on_the_ledger(h: Harness) -> None:
         "4111 1111 1111 1111",
         "CAB-1\u200b",
         "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+        # Ticket-shaped, but kept verbatim it would put an NRIC or a card on the ledger.
+        "CHG-900101-14-5678",
+        "REF-4111-1111-1111-1111",
     ],
 )
 def test_ref_that_is_not_a_ticket_is_refused_before_anything(h: Harness, ref: str) -> None:

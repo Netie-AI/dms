@@ -287,6 +287,12 @@ def test_approval_ref_is_a_ticket_shape_kept_verbatim() -> None:
         "CAB-1​",
         "ＣAB-1",
         "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789",
+        # Ticket-shaped, but kept verbatim it would put an NRIC or a card on the ledger.
+        "CHG-900101-14-5678",
+        "X900101-14-5678",
+        "NRIC900101145678",
+        "A4111111111111111",
+        "REF-4111-1111-1111-1111",
     ):
         assert approval_ref_problem(bad) == "approval_ref_invalid", bad
     assert approval_ref_problem("X" * 201) == "approval_ref_too_long"
