@@ -308,6 +308,13 @@ def _bad(msg: str) -> ProofShapeError:
     return ProofShapeError(msg)
 
 
+def insight_id_for(measure: str, label: str, kind: str, sql_hash: str) -> str:
+    """``ins_`` + sha256(measure|label|kind|sql_hash)[:16]: what ``_emit`` assigns."""
+    return "ins_" + hashlib.sha256(
+        f"{measure}|{label}|{kind}|{sql_hash}".encode()
+    ).hexdigest()[:16]
+
+
 def order_hash(rows: Sequence[Any]) -> str:
     """sha256 of result rows IN ORDER: one ``item_result_hash`` per row, in sequence."""
     from dms_executor.skills_quarantine import item_result_hash
@@ -323,8 +330,14 @@ def assert_proof_shape(
     onto: Ontology | None = None,
     sql: str | None = None,
     rows: Sequence[Mapping[str, Any]] | None = None,
+    label: str | None = None,
 ) -> None:
     """Raise ``ProofShapeError`` unless ``proof`` is the proof grammar and self-consistent.
+
+    With ``label`` (the insight's dimension) the insight_id must be the hash of
+    measure, label, kind and sql_hash, so an id cannot ride on another kind's or
+    another statement's proof. Two kinds read from one statement share every
+    other proof field, so the id is what tells their proofs apart.
 
     Shape: closed keys, hashes, UTC timestamps, identifiers, finite numbers.
     Consistency: conserves within tolerance, both runs and both executions share
@@ -469,6 +482,10 @@ def assert_proof_shape(
         raise _bad("negative_parts must be the integer 0")
     if sql is not None and item_content_hash(sql) != proof["sql_hash"]:
         raise _bad("sql_hash does not hash the executed SQL")
+    if label is not None and proof["insight_id"] != insight_id_for(
+        d["measure"], label, proof["kind"], proof["sql_hash"]
+    ):
+        raise _bad("insight_id is not the hash of measure, label, kind and sql_hash")
     if rows is not None:
         from dms_executor.skills_quarantine import item_result_hash
 
@@ -549,7 +566,10 @@ def _submit_rows(submit: Callable[[str], Any], sql: str) -> list[dict[str, Any]]
         if err.code == "path_not_allowed":
             raise _Refused("ungranted") from exc
         raise _Refused(f"cortex_submit_failed:{err.code}") from exc
-    if getattr(result, "ok", True) is False:
+    # A dict-shaped result carries ``ok`` as a key, not an attribute (verify round
+    # 5: ``{'ok': False, 'output': rows}`` was read as a success).
+    ok = result.get("ok", True) if isinstance(result, Mapping) else getattr(result, "ok", True)
+    if ok is False:
         raise _Refused("cortex_submit_failed:not_ok")
     return rows_from_submit_result(result)
 
@@ -991,9 +1011,32 @@ def _identity_columns(onto: Ontology, obj: str) -> set[str]:
     return cols
 
 
+def _statement_gap(sql: str, granted: set[str]) -> str | None:
+    """Main's statement check, ``grant_struct.serve_gap`` in the serving dialect.
+
+    None when ``sql`` is one granted read. ``table_is_granted`` compares bare
+    names, so ``Secret.Territory`` passed against a grant of ``Sales.Territory``
+    (verify round 5). ``serve_gap`` keeps the qualifier: a qualified relation is
+    granted only when that exact key is. It is the check
+    ``generative_ask.validate_compiled_sql`` runs before main submits.
+    """
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+    from dms_executor.grant_struct import serve_gap
+
+    try:
+        return serve_gap(sql, grantable=set(granted), dialect=SERVING_DIALECT,
+                         cite_missing=False)
+    except Exception:  # noqa: BLE001 - a check that cannot answer refuses
+        return "ungranted"
+
+
 def _granted_relation(relation: str, granted: set[str]) -> bool:
     tables = _read_tables(relation)
-    return bool(tables) and all(table_is_granted(t, granted) for t in tables or ())
+    return (
+        bool(tables)
+        and all(table_is_granted(t, granted) for t in tables or ())
+        and _statement_gap(f"SELECT 1 FROM {relation} f", granted) is None
+    )
 
 
 @dataclass
@@ -1289,7 +1332,7 @@ def _prove_measure(ctx: _Ctx, m: Measure, dims_of: Callable[[str], _Dims]) -> bo
         tables = sorted(read or ())
         if not readable or not read or not all(
             table_is_granted(t, ctx.granted) for t in tables
-        ):
+        ) or _statement_gap(got.sql, ctx.granted) is not None:
             _refuse(ctx, candidate, "ungranted")
             continue
         outcome = _prove_candidate(ctx, m, obj, attr, label, got, tables, candidate)
@@ -1319,6 +1362,13 @@ def _prove_candidate(
         raw_sql = f"SELECT {m.expression} AS raw_total FROM {fact_rel} f"
         parts_sql = _parts_sql(m, fact_rel, list(fact.key))
         sql = _wrapper_sql(compiled.sql, f"{obj}_{attr}", m.name)
+        # Every statement this candidate submits passes main's statement check
+        # first: the raw total, the parts count and the wrapper, not only the
+        # compiled SQL the wrapper encloses.
+        for stmt in (raw_sql, parts_sql, sql):
+            if stmt is not None and _statement_gap(stmt, ctx.granted) is not None:
+                _refuse(ctx, candidate, "ungranted")
+                return "refused"
         before = _read_marks(ctx.watermarks, ctx.warehouse, tables)
         try:
             raw_rows = _submit_rows(ctx.submit, raw_sql)
@@ -1502,9 +1552,7 @@ def _emit(
     if headline_numbers_backed(headline, rows, {k, n}):
         _refuse(ctx, where, "headline_unbacked")
         return None
-    insight_id = "ins_" + hashlib.sha256(
-        f"{m.name}|{label}|{kind}|{sql_hash}".encode()
-    ).hexdigest()[:16]
+    insight_id = insight_id_for(m.name, label, kind, sql_hash)
     assumptions = [m.description or f"measure {m.name}", CONSERVATION_ASSUMPTION]
     if ctx.source == "demo_ontology":
         assumptions.append(DEMO_ASSUMPTION)
@@ -1546,7 +1594,7 @@ def _emit(
         return None
     proof = {**proof_base, "insight_id": insight_id, "kind": kind}
     try:
-        assert_proof_shape(proof, onto=ctx.onto, sql=sql, rows=rows)
+        assert_proof_shape(proof, onto=ctx.onto, sql=sql, rows=rows, label=label)
     except ProofShapeError:
         _refuse(ctx, where, "envelope_invalid:proof_shape")
         return None
