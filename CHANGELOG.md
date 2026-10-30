@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-03: governed actions on AmendPage behind the ACT-02 probe
+
+- **Flag.** UI only. AmendPage probes `GET /v1/amend/actions/types`; only a 200 (server `DMS_ACTIONS=1`) renders the new section. Probing (null) and off render origin/main `58fcaa5`'s AmendPage markup byte for byte (`AmendPage.test.ts` against a committed render of that commit's file). An action-kind row keeps the legacy Confirm while off.
+- **UI.** `Governed actions`: typed propose form (SKU, location, reorder level, reason, optional cited audit id), an `ActionCard` per pending action (field diff, required approval reference, Apply disabled under 3 characters, firedRef guard, Decline), receipt panels for this session's applies, recent decisions with Propose revert (a new proposal, never an apply), current overrides.
+- **Proof.** `ActionReceiptPanel` says "Applied - 1 row in DMS writeback changed and re-read" only when status is applied, verified, rows_changed 1, the write executed, a ledger entry id exists, the hashes differ and `chain.ok` is true. Otherwise it names the defect and never says "Applied". Same-identity apply is disclosed. Every ACT-01/02 refusal code has one sentence; the code set is pinned to `tests/fixtures/actions/act02_refusal_codes.json`, which `tests/test_act_03_refusal_fixture.py` pins to the server source.
+- **Held files.** None touched (`api.ts`, `types.ts`, `AnswerMessage.tsx`, `ResultView.tsx`, `AppContext.tsx`, `ChatPage.tsx`, `StudioPage.tsx`). `AmendPage.tsx` is free.
+- **Tests.** At `6a6456f`: the five ACT-03 vitest files 41 passed, the full UI vitest 168 passed (29 files), `npm run build` (tsc + vite) passed, `tests/test_act_03_refusal_fixture.py` 2 passed, every `tests/invariants` file passed, `ruff` and `lint-imports` clean. `scripts/verify/act_03_ui_demo.py` printed `ACT-03 PROOF OK @6a6456f0`. The live visual check (Cursor) was not run. DR-0008 is still Proposed. Not PASS.
+
 ## 2026-10-30 - ACT-02: governed action routes behind DMS_ACTIONS
 
 - **Flag.** `DMS_ACTIONS` defaults 0; only `1` is on. Off, nothing under `/v1/amend/actions` matches: every method and body (malformed JSON included) gets main's 404 bytes, and `/openapi.json` hashes the same as origin/main `58fcaa5` (`scripts/verify/act_flag_off_parity.py`). No route is in the schema with the flag on either. `app.py`, `settings.py`, `chat.py` and MCP `TOOLS` are untouched.
