@@ -946,3 +946,83 @@ def test_the_body_forbids_extra_keys_and_bounds_top(world: _World) -> None:
     assert world.run(top=0).status_code == 422
     assert world.run(top=21).status_code == 422
     assert world.gate.calls == []
+
+
+# --------------------------------------------------------------------------
+# 13. verify round 7: a chained generated column over a marked column
+# --------------------------------------------------------------------------
+
+
+def _chained_world(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, pii: bool
+) -> _World:
+    """Sales fixture whose Territory.region reads g1, which reads the name column."""
+    from dms_core.control_plane import onto_data
+    from dms_executor.manifest import SessionAcl
+
+    from tests.test_insight_proof_01 import _items, _seed_sales
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    wh = _seed_sales(tmp_path / "lake_chain.duckdb")
+    con = dw.connect_file(wh)
+    try:
+        con.execute("DROP TABLE Sales.Territory")
+        con.execute(
+            "CREATE TABLE Sales.Territory (territory_id INTEGER, name VARCHAR, "
+            "g1 VARCHAR GENERATED ALWAYS AS (upper(name)) VIRTUAL, "
+            "region VARCHAR GENERATED ALWAYS AS (lower(g1)) VIRTUAL)")
+        con.execute("INSERT INTO Sales.Territory (territory_id, name) VALUES "
+                    "(1,'North'),(2,'South'),(3,'East'),(4,'West')")
+    finally:
+        con.close()
+    items = _items(pii_on_name=pii)
+    for it in items:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["attributes"] = ["territory_id", "region"]
+    onto_data.reset_ontology_data_store()
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", "1")
+    store = onto_data.ontology_data_store()
+    monkeypatch.setattr(store, "approved_items", lambda: copy.deepcopy(items))
+    monkeypatch.setattr(store, "revoked_items", lambda: [])
+    w = _world(wh, monkeypatch)
+    exe = w.client.app.state.ask_service
+    real = exe.demo_acl
+
+    def _acl(**kw: Any) -> SessionAcl:
+        acl = real(**kw)
+        grants = {"Sales.Orders": "TRUE", "Sales.Territory": "TRUE"}
+        return SessionAcl(**{**acl.__dict__, "row_predicates": grants})
+
+    exe.demo_acl = _acl
+    return w
+
+
+_CHAIN_HEADLINE = "2 of 4 Territory.region values (north, south) carry 86.4 pct of order_amount"
+
+
+def test_run_never_serves_a_chained_generated_column_over_a_marked_column(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_core.control_plane import onto_data
+
+    try:
+        # Control: unmarked, the chained column is an ordinary proven segment.
+        open_body = _chained_world(tmp_path / "a", monkeypatch, pii=False).run().json()
+        got = _proven_by_text(open_body, _CHAIN_HEADLINE)
+        assert got["envelope"]["text"] == _CHAIN_HEADLINE
+        assert_envelope_valid(got["envelope"])
+
+        w = _chained_world(tmp_path / "b", monkeypatch, pii=True)
+        res = w.run()
+        assert res.status_code == 200, res.text
+        body = res.json()
+        texts = [i["envelope"]["text"] for i in body["insights"]]
+        assert _CHAIN_HEADLINE not in texts
+        assert not [t for t in texts if "Territory" in t]
+        codes = {r.get("candidate"): r.get("code") for r in body.get("refused", [])}
+        assert codes.get("order_amount by Territory.region") == "pii_dimension"
+        for label in ("north", "south", "86.4"):
+            assert label not in res.text.casefold()
+        assert not any("territory" in str(s).casefold() for s in w.cortex.submits)
+    finally:
+        onto_data.reset_ontology_data_store()
