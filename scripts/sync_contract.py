@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 #: The contract line DMS generates its client from. Older specs stay vendored
 #: and pinned (CI checks every vendored spec against its .sha256).
-CURRENT_VERSION = "1.5.0"
+CURRENT_VERSION = "1.9.0"
 #: The generator release regenerate_client was checked with: regenerating the
 #: committed 1.2.0 spec reproduces the 1.2.0 client up to five blank lines.
 GENERATOR = "openapi-python-client==0.27.1"

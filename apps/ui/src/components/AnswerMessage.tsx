@@ -78,6 +78,18 @@ const LAYER_COPY: Record<BadgeKind, { headline: string; detail: string }> = {
   },
 };
 
+/** A document answer carries the amber L2 chip, but no SQL ran: say what did. */
+const DOCUMENT_LAYER_COPY = {
+  headline: "Answered from this Space's documents.",
+  detail:
+    "No query ran. The answer quotes the documents listed under Sources. It is not governed data, so read the cited passage before acting on it.",
+};
+
+export function layerCopy(envelope: AnswerEnvelope): { headline: string; detail: string } {
+  if (envelope.route === "document" && !envelope.abstained) return DOCUMENT_LAYER_COPY;
+  return LAYER_COPY[envelope.badge];
+}
+
 /** Tokenize answer text so each values[].id becomes a button — no regex over prose. */
 function renderWithValues(
   text: string,
@@ -477,10 +489,10 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
       {showLayer && (
         <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
           <p className="text-sm font-medium text-[var(--color-ink)]">
-            {LAYER_COPY[envelope.badge].headline}
+            {layerCopy(envelope).headline}
           </p>
           <p className="mt-1 text-xs leading-relaxed text-[var(--color-ink-muted)]">
-            {LAYER_COPY[envelope.badge].detail}
+            {layerCopy(envelope).detail}
           </p>
           <p className="mt-2 flex flex-wrap gap-3 text-xs">
             <Link

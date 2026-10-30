@@ -3,7 +3,12 @@
 Needs ``DATABASE_URL``, ``DMS_AO_COMPILE=1``, and ``DMS_ONTO_PG=1``.
 Refuses otherwise. Opens ``--warehouse``, runs ``compile_source`` through
 OpenVault, and ``store_proposal`` on the persisted store for ``--tenant``.
-Prints the version id and counts by kind (object, link, unkeyed).
+Prints the version id, counts by kind (object, link, unkeyed), and the number
+of OpenVault model calls behind the proposal.
+A model-call failure (no ``ov_`` key, a 401/403, an unreachable OpenVault, an
+output that does not parse) is a named refusal: exit non-zero, nothing stored.
+The credential is ``OPENVAULT_API_KEY``, else ``CORTEX_API_KEY``. It is an
+``ov_`` key. The DMS signing-service token is not accepted by chat.
 Writes ``onto_proposal.json`` in the grade52 run directory, beside the
 grader artifacts. Does not approve.
 
@@ -89,6 +94,7 @@ def compile_warehouse(
     uses OpenVault plus ``ontology_data_store`` after the env checks.
     """
     _bootstrap()
+    from ao_vendor.llm.ov_client import AoCompileRefused
     from dms_core.control_plane.onto_data import ontology_data_store, reset_ontology_data_store
     from dms_executor.ao_compile import compile_source
 
@@ -101,6 +107,8 @@ def compile_warehouse(
     conn = duckdb.connect(str(path), read_only=True)
     try:
         proposal = compile_source(conn, transport=transport)
+    except AoCompileRefused as exc:
+        raise SystemExit(f"onto_compile: REFUSED {exc.code}") from None
     finally:
         conn.close()
     body = proposal.to_json()
@@ -118,6 +126,7 @@ def compile_warehouse(
         "created_by": created_by,
         "status": stored.get("status"),
         "served": False,
+        "model_calls": proposal.model_calls,
         "counts": counts,
         "proposal": body,
     }
@@ -141,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         f"version_id={result['version_id']} "
         f"object={counts.get('object', 0)} "
         f"link={counts.get('link', 0)} "
-        f"unkeyed={counts.get('unkeyed', 0)}"
+        f"unkeyed={counts.get('unkeyed', 0)} "
+        f"model_calls={result['model_calls']}"
     )
     print(f"onto_proposal.json {result['path']}")
     return 0

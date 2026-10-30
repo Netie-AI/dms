@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     dms_actor_user_id: str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     dms_actor_role: str = "steward"
     cortex_contract_major: int = 1
-    cortex_contract_version: str = "1.5.0"
+    cortex_contract_version: str = "1.9.0"
     cortex_engine_image: str = "ghcr.io/netie/cortex:2.5.0-core"
 
 

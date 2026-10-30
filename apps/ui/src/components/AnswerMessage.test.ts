@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
-import { AnswerMessage } from "@/components/AnswerMessage";
+import { AnswerMessage, layerCopy } from "@/components/AnswerMessage";
 import { AppProvider } from "@/context/AppContext";
 import type { AnswerEnvelope } from "@/lib/types";
 
@@ -83,5 +83,31 @@ describe("Chat reconfirm card", () => {
       }),
     );
     expect(html).not.toContain('data-testid="chat-reconfirm-yes"');
+  });
+});
+
+describe("Document answer layer copy", () => {
+  const doc: AnswerEnvelope = {
+    answer_id: "ans_doc",
+    text: "Damaged goods may be returned with the original receipt.",
+    values: [{ id: "v_count", value: 0, label: "row_count" }],
+    badge: "L2_VALIDATED",
+    abstained: false,
+    sql_used: "-- document retrieval (no SQL)",
+    assumptions: [],
+    as_of: "2026-10-30T00:00:00Z",
+    contributing_sources: [],
+    route: "document",
+  };
+
+  it("says the documents answered, not generated SQL", () => {
+    expect(layerCopy(doc).headline).toBe("Answered from this Space's documents.");
+    expect(layerCopy(doc).headline).not.toMatch(/SQL/);
+  });
+
+  it("keeps the badge copy for every other route", () => {
+    expect(layerCopy({ ...doc, route: "rag" }).headline).toBe(
+      "This SQL was generated, then checked.",
+    );
   });
 });

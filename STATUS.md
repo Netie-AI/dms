@@ -48,6 +48,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
 | SAFE-01: one grant function, one parser | #454 |
 | WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
+| WIRE-19: contract 1.9.0 client, `document` badge (was a 502), Cortex `reconfirm` Yes/No | this branch |
 | SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |

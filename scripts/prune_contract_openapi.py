@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 #: The contract line DMS generates its client from. Older specs stay vendored.
-CURRENT_VERSION = "1.5.0"
+CURRENT_VERSION = "1.9.0"
 REF_RE = re.compile(r"#/components/schemas/(.+)$")
 
 
