@@ -865,6 +865,12 @@ def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
 
     raw_sql = f"SELECT {m.expression} AS raw_total FROM {fact.relation} f"
     parts_sql = ip._parts_sql(m, fact.relation, list(fact.key))
+    # INS-PROOF-01 round 5: the bare-name lookup above grants Secret.Orders on a
+    # grant of Sales.Orders. Every statement replay submits passes main's
+    # statement check (serve_gap) first, as the prove path does.
+    for stmt in (raw_sql, parts_sql, sql):
+        if stmt is not None and ip._statement_gap(stmt, set(access.granted)) is not None:
+            return _refused(pin, "ungranted")
     executed_trace.begin()
     try:
         before = ip._read_marks(_marks, wh, tables)

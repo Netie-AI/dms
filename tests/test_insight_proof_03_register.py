@@ -557,6 +557,46 @@ def test_replay_abstains_when_the_definition_changed(world: _World, how: str) ->
     assert rec[-1].executed_sql == "" and rec[-1].row_count == 0
 
 
+def test_replay_under_a_same_bare_name_grant_of_another_schema_never_submits(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INS-PROOF-01 round 5 (HIGH) on the replay path: a grant of Secret.Orders /
+    Secret.Territory matched the pinned Sales.* tables by bare name. Replay now
+    runs main's statement check on every statement before any submit."""
+    wh = _seed_sales(tmp_path / "lake_b.duckdb")
+    _update(wh, "CREATE SCHEMA IF NOT EXISTS Secret")
+    _update(wh, "CREATE TABLE Secret.Orders AS SELECT * FROM Sales.Orders")
+    _update(wh, "CREATE TABLE Secret.Territory AS SELECT * FROM Sales.Territory")
+    grants = dict(_B_GRANTS)
+    w = _build(monkeypatch, wh, approved_store=True, grants=grants)
+    asset_id, pre, _ = _pin(w)
+    assert pre["envelope"]["text"] == _B_HEADLINE
+    grants.clear()
+    grants.update({"Secret.Orders": "TRUE", "Secret.Territory": "TRUE"})
+    before = list(w.cortex.submits)
+    exe = w.client.app.state.ask_service
+    tried: list[str] = []
+    real_submit = exe._submit_verified_sql
+
+    def _spy(sql: str, **kw: Any) -> Any:
+        tried.append(sql)
+        return real_submit(sql, **kw)
+
+    monkeypatch.setattr(exe, "_submit_verified_sql", _spy)
+    res = w.replay(asset_id)
+    assert tried == []  # refused before the submit path is entered, not inside it
+    assert res.status_code == 200, res.text
+    env = res.json()["envelope"]
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert env["values"] == [] and env["rows"] == []
+    assert env["text"] != _B_HEADLINE
+    for token in ("North", "South", "86.4"):
+        assert token not in env["text"]
+    assert_envelope_valid(env)
+    assert w.cortex.submits == before
+
+
 # --------------------------------------------------------------------------
 # A8. refusals with no side effects
 # --------------------------------------------------------------------------
