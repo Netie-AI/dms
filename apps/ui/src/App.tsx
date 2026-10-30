@@ -5,6 +5,7 @@ import { AdminPage } from "@/pages/AdminPage";
 import { AmendPage } from "@/pages/AmendPage";
 import { AuditPage } from "@/pages/AuditPage";
 import { ChatPage } from "@/pages/ChatPage";
+import { InsightsPage } from "@/pages/InsightsPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { OntologyPage } from "@/pages/OntologyPage";
 import { RunsPage } from "@/pages/RunsPage";
@@ -28,6 +29,7 @@ export default function App() {
             <Route path="trust" element={<TrustPage />} />
             <Route path="runs" element={<RunsPage />} />
             <Route path="admin" element={<AdminPage />} />
+            <Route path="insights" element={<InsightsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

@@ -247,6 +247,11 @@ class ProvenInsight:
     envelope: dict[str, Any]
     proof: dict[str, Any]
     trace: Any
+    #: INS-PROOF-03: the (object, attribute, via) the SQL was compiled from, so a
+    #: pin can recompile it at replay and re-check the PII gate on that column.
+    dim_object: str = ""
+    dim_attribute: str = ""
+    via: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1451,11 +1456,14 @@ def prove_insights(
     onto: Ontology | None = None,
     watermarks: Callable[..., Any] = bronze.lookup_ingest_watermarks,
     policy_tables: Collection[str] = (),
+    want: str | None = None,
 ) -> InsightRun:
     """Proven insights over the verified ontology, or the reason each was refused.
 
     ``policy_tables`` are readable only under a row predicate; a candidate that
     reads one is refused ``ungranted:row_policy`` before any submit.
+    ``want`` (INS-PROOF-03) returns only the insight with that id, unranked, so
+    a pin re-proves the one candidate a steward saw, not the run's top picks.
     """
     if not insight_proof_enabled():
         return InsightRun(status="off")
@@ -1504,7 +1512,10 @@ def prove_insights(
     finally:
         con.close()
 
-    picked = _pick(ctx.built, top=top, n_measures=len(loaded.measures))
+    if want is not None:
+        picked = [p for _s, p in ctx.built if p.insight_id == want][:1]
+    else:
+        picked = _pick(ctx.built, top=top, n_measures=len(loaded.measures))
     status = "ok" if picked else "refused"
     return InsightRun(
         status=status,
@@ -1567,7 +1578,8 @@ def _prove_measure(ctx: _Ctx, m: Measure, dims_of: Callable[[str], _Dims]) -> bo
             seen = read if readable else _read_tables(onto.objects[obj].relation)
             _refuse(ctx, candidate, _ungranted_code(ctx, seen))
             continue
-        outcome = _prove_candidate(ctx, m, obj, attr, label, got, tables, candidate)
+        outcome = _prove_candidate(ctx, m, obj, attr, label, got, tables, candidate,
+                                   via=via)
         if outcome == "measure_signed":
             break
     return False
@@ -1582,6 +1594,8 @@ def _prove_candidate(
     compiled: CompiledQuery,
     tables: list[str],
     candidate: str,
+    *,
+    via: dict[str, str] | None = None,
 ) -> str:
     from dms_executor.skills_quarantine import item_content_hash, item_result_hash
     from dms_executor.sql_vote import rows_equal
@@ -1702,7 +1716,10 @@ def _prove_candidate(
             made = _emit(ctx, m, kind, headline, k, n, label, sql, sql_hash,
                          run2, reexecuted_at, proof_base, candidate)
             if made is not None:
-                pending.append((surprise, made))
+                pending.append((surprise, replace(
+                    made, dim_object=obj, dim_attribute=attr,
+                    via=tuple(sorted((via or {}).items())),
+                )))
         return "done"
     finally:
         trace = executed_trace.take()
@@ -2023,6 +2040,58 @@ def _receipt(
     return served
 
 
+@dataclass(frozen=True)
+class SpaceAccess:
+    """A Space's grants and its Cortex submit, as ``prove_for_space`` uses them."""
+
+    warehouse: Path
+    granted: frozenset[str]
+    policy: frozenset[str]
+    submit: Callable[[str], Any]
+
+
+def space_access(executor: Any, *, space_id: str | None, session_id: str | None) -> SpaceAccess:
+    """Grants are the Executor's turn ACL for the Space; submit is its Cortex path."""
+    from dms_executor.demo_warehouse import warehouse_path
+
+    acl = executor.demo_acl(session_id=session_id, space_id=space_id, tables=None)
+    preds = {str(t): str(v) for t, v in dict(acl.row_predicates).items()}
+    granted = frozenset(t for t, v in preds.items() if v.strip().upper() == "TRUE")
+    policy = frozenset(t for t in preds if t not in granted)
+
+    def submit(sql: str) -> Any:
+        return executor._submit_verified_sql(
+            sql, space_id=space_id, session_id=session_id, tables=None
+        )
+
+    warehouse = getattr(executor, "_warehouse", None) or warehouse_path()
+    return SpaceAccess(Path(warehouse), granted, policy, submit)
+
+
+def space_run(
+    executor: Any,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    top: int = 6,
+    watermarks: Callable[..., Any] = bronze.lookup_ingest_watermarks,
+    want: str | None = None,
+) -> InsightRun:
+    """``prove_insights`` over a Space through Cortex submit. No ledger append."""
+    access = space_access(executor, space_id=space_id, session_id=session_id)
+    return prove_insights(
+        access.warehouse,
+        submit=access.submit,
+        granted=access.granted,
+        space_id=space_id,
+        session_id=session_id,
+        top=top,
+        watermarks=watermarks,
+        policy_tables=access.policy,
+        want=want,
+    )
+
+
 def prove_for_space(
     executor: Any,
     *,
@@ -2056,29 +2125,8 @@ def prove_for_space(
     """
     if not insight_proof_enabled():
         return InsightRun(status="off")
-    from dms_executor.demo_warehouse import warehouse_path
-
-    acl = executor.demo_acl(session_id=session_id, space_id=space_id, tables=None)
-    preds = {str(t): str(v) for t, v in dict(acl.row_predicates).items()}
-    granted = {t for t, v in preds.items() if v.strip().upper() == "TRUE"}
-    policy = {t for t in preds if t not in granted}
-
-    def submit(sql: str) -> Any:
-        return executor._submit_verified_sql(
-            sql, space_id=space_id, session_id=session_id, tables=None
-        )
-
-    warehouse = getattr(executor, "_warehouse", None) or warehouse_path()
-    run = prove_insights(
-        Path(warehouse),
-        submit=submit,
-        granted=granted,
-        space_id=space_id,
-        session_id=session_id,
-        top=top,
-        watermarks=watermarks,
-        policy_tables=policy,
-    )
+    run = space_run(executor, space_id=space_id, session_id=session_id, top=top,
+                    watermarks=watermarks)
     proven: list[ProvenInsight] = []
     refused = list(run.refused)
     got_all = [

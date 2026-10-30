@@ -134,3 +134,65 @@ envelopes on the demo lake and on an approved store, the proof hashes against a
 re-fetch on the test's own connection, and every refusal code above that the fixtures
 can reach. `scripts/demo_insight_proof.py` prints the proof. Figures are local claims at
 the commit the PR names.
+
+## INS-PROOF-03 addendum (proposed, same stamp)
+
+A steward may pin a proven insight. This is the action-type equivalent of "a human
+confirmed it": nothing is auto-pinned, auto-replayed or auto-applied.
+
+- Preview re-proves the one candidate server side and mints a process-local, single-use
+  token (600 s). Confirm spends it, refuses a demo-ontology insight
+  (`measure_not_approved`), re-proves and refuses a changed result (`stale_preview`), then
+  appends one `insight.pinned` pointer (hashes and ids, no SQL, rows or labels) and only
+  then writes `main._proven_insights`, a DMS-owned DuckDB table on the
+  `main._verified_queries` precedent. No migration.
+- `approved_by` is the single configured deployment actor (DR-0004 Option A). There is no
+  dual-control claim. Who may confirm is F5's decision through `compliance_gate`.
+- Replay checks the approved definition first (no submit when it moved), then runs the
+  pinned SQL twice: unchanged is `L0_CERTIFIED`; changed is `L1_GOVERNED_METRIC` with a
+  label-level drift block and no computed delta. Every verdict appends `insight.replayed`.
+- Ceilings: tokens do not survive a restart (`confirm_token_unknown`); drift says
+  `source_change_unknown` when a watermark is unknown; contract 1.2.0 still cannot read
+  an entry back.
+- Hand-off to ACTIONS (DR-0008): `asset_id` plus `expected_result_hash` is the citation a
+  future writeback proposal must carry.
+- Verify round 1. Replay re-checks governance, not only the measure, before any submit:
+  every ontology item the pinned SQL was compiled from (measure, objects, links) must
+  still be served at its approved version, the SQL must recompile byte-identically, and
+  the INS-PROOF-01 PII gate runs on the pinned dimension. A miss is
+  `definition_changed`. GET /pins withholds a stored headline whose dimension is now PII,
+  and revoke clears the stored headline and rows. A replay re-reads the pin under the
+  revoke lock before its append. A re-prove that fails on Cortex is a 503
+  (`cortex_unavailable` / `cortex_submit_failed`) and gives the token back. A served
+  replay whose audit row is dropped is demoted to ABSTAIN `audit_unrecorded` and names its
+  orphan entry; confirm reports `audit_recorded`. The replay receipt names the deployment
+  actor. One active pin per (space, SQL) is also a UNIQUE index on `active_key`.
+- Verify round 2.
+  - Every pin route (preview, confirm, replay, revoke, the list) calls `compliance_gate`
+    with `actor` = the configured deployment actor and `filled_template.space_id` = the
+    Space (from the request, the token or the pin), exactly as `/run` does. F5 is told who
+    is confirming; it is still F5's decision.
+  - Confirm refuses the shipped default actor (`bbbbbbbb-...`) as `steward_identity_unset`
+    (403) before the gate, the token or any append. The check parses the UUID, so upper-case,
+    hyphenless, braced and `urn:uuid:` spellings of the default (and an empty value) are
+    refused too. With no steward configured, no pin may
+    say a steward approved it (ACT-02 refuses the same case). One configured steward, no
+    dual control. Since verify round 8, replay and revoke refuse it the same way, and all
+    three refuse an actor that is not a UUID (an email, say) as `steward_identity_invalid`
+    (403), so no pin-lifecycle ledger entry names a steward that cannot be one.
+  - Receipts are deduplicated across the pin lifecycle. `main._proven_insight_receipts`
+    holds one row per receipt a pin, replay or revoke accepted (entry id primary key,
+    seq unique); the register's own pointers are checked too. A receipt seen before is
+    `ledger_receipt_invalid:repeated` (503) and nothing is written or served. The register
+    and this receipts table are the only tables INS-PROOF-03 writes; a replay now writes
+    one receipts row and no register row.
+  - A register write that raised is re-read before the answer. A pin row (or revoke) that
+    landed is reported as landed (200); only a row that is truly absent is
+    `pin_commit_failed` / `revoke_commit_failed` with its orphan entry; an unreadable
+    register is `pin_commit_unknown` / `revoke_commit_unknown`. A replay whose receipt row
+    cannot be confirmed is `ledger_receipt_unrecorded` (503) and is not served.
+  - A Cortex failure during replay is not a verdict: it is `cortex_unavailable` /
+    `cortex_submit_failed` (503) with no `insight.replayed` append, as at preview and
+    confirm. "Every verdict appends `insight.replayed`" holds for data verdicts only.
+  - Ceiling: receipts from `/run` (`insight.proven`) are deduplicated within one run only;
+    they are not persisted, so a pin route cannot compare against them.

@@ -877,11 +877,20 @@ def test_flag_off_openapi_is_flag_on_minus_the_new_paths(
     _clear_settings()
 
     new_paths = {p for p in on["paths"] if p.startswith("/v1/insight-proof")}
-    assert new_paths == {"/v1/insight-proof/status", "/v1/insight-proof/run"}
+    # INS-PROOF-03 adds the steward pin paths under the same flag.
+    assert new_paths == {
+        "/v1/insight-proof/status",
+        "/v1/insight-proof/run",
+        "/v1/insight-proof/pins",
+        "/v1/insight-proof/pins/preview",
+        "/v1/insight-proof/pins/confirm",
+        "/v1/insight-proof/pins/{asset_id}/replay",
+        "/v1/insight-proof/pins/{asset_id}/revoke",
+    }
     refs = set(_refs({p: on["paths"][p] for p in new_paths}))
     rest = set(_refs({p: v for p, v in on["paths"].items() if p not in new_paths}))
     only_new = {r.rsplit("/", 1)[-1] for r in refs - rest}
-    assert only_new == {"InsightProofRunIn"}
+    assert only_new == {"InsightProofRunIn", "PinPreviewIn", "PinConfirmIn"}
     stripped = copy.deepcopy(on)
     for p in new_paths:
         del stripped["paths"][p]

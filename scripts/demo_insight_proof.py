@@ -5,6 +5,8 @@
   ... --tamper     # the second run returns a changed row; the insight must refuse
   ... --via-api    # INS-PROOF-02: POST /v1/insight-proof/run through create_app()
   ... --via-api --ledger-down   # the ledger append raises; nothing is served
+  DMS_INSIGHT_PROOF=1 DMS_ONTO_FROM_DATA=1 DMS_DEMO_FALLBACK=0 python \
+      scripts/demo_insight_proof.py --fixture approved --via-api --pin-and-replay
 
 ``--warehouse DIR`` seeds the thin demo warehouse at ``DIR/warehouse.duckdb``.
 The submit here is a LOCAL stand-in for Cortex submit: each statement runs on a
@@ -25,11 +27,21 @@ allow. It prints each envelope's badge, text, rows and audit_id, both execution
 hashes, the ledger payload keys and the audit-store row. Still no Cortex run, no
 real ledger entry and no hosted result is claimed. With the flag unset it
 prints the 404 and the relative OpenAPI check instead.
+
+``--fixture approved --via-api --pin-and-replay`` (INS-PROOF-03) seeds a small
+Sales.Orders / Sales.Territory lake (``--warehouse`` defaults to a temp dir),
+serves the approved store from in-process fixture items, and walks the steward
+pin through the API: preview, confirm, a replayed token, replay unchanged, an
+UPDATE of one fixture order then replay, an altered measure expression then
+replay, revoke, and the list of tables whose row counts changed. The ingest
+watermark is a fixed demo stamp, so ``drift_without_source_change`` is a claim
+about that stamp only. Same stand-ins as above: no Cortex run, no real ledger.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -78,8 +90,8 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--warehouse", type=Path, required=True,
-                    help="directory to seed the demo warehouse in")
+    ap.add_argument("--warehouse", type=Path, default=None,
+                    help="directory to seed the warehouse in (default: a temp dir)")
     ap.add_argument("--top", type=int, default=6)
     ap.add_argument("--tamper", action="store_true",
                     help="the second run returns a changed row")
@@ -87,7 +99,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="POST /v1/insight-proof/run through create_app() (INS-PROOF-02)")
     ap.add_argument("--ledger-down", action="store_true",
                     help="with --via-api: the ledger append raises")
+    ap.add_argument("--fixture", choices=("demo", "approved"), default="demo",
+                    help="approved: a Sales lake served from approved store items")
+    ap.add_argument("--pin-and-replay", action="store_true",
+                    help="with --fixture approved --via-api: the steward pin walk (INS-PROOF-03)")
     args = ap.parse_args(argv)
+    if args.warehouse is None:
+        import tempfile
+
+        args.warehouse = Path(tempfile.mkdtemp(prefix="insproof_"))
+    if args.pin_and_replay:
+        if args.fixture != "approved" or not args.via_api:
+            ap.error("--pin-and-replay needs --fixture approved --via-api")
+        return _pin_and_replay(args)
     if args.via_api:
         return _via_api(args)
 
@@ -190,7 +214,6 @@ class _StubCortex:
         self.ledger: list[Any] = []
 
     def submit(self, req: Any) -> Any:
-        import json
         from decimal import Decimal
 
         from cortex_contract.execution import QueryResult
@@ -241,7 +264,6 @@ def _test_minter() -> Any:
 
 def _openapi_relative() -> bool:
     import copy
-    import json
     import os
 
     from dms_api.app import create_app
@@ -259,7 +281,8 @@ def _openapi_relative() -> bool:
     stripped = copy.deepcopy(on)
     for path in [p for p in stripped["paths"] if p.startswith("/v1/insight-proof")]:
         del stripped["paths"][path]
-    stripped["components"]["schemas"].pop("InsightProofRunIn", None)
+    for name in ("InsightProofRunIn", "PinPreviewIn", "PinConfirmIn"):
+        stripped["components"]["schemas"].pop(name, None)
     return json.dumps(stripped, sort_keys=True) == json.dumps(off, sort_keys=True)
 
 
@@ -353,6 +376,251 @@ def _via_api(args: argparse.Namespace) -> int:
         return 1
     print("\nPASS every served envelope passed assert_envelope_valid and assert_proof_shape; "
           "the stub key is not in the response.")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# INS-PROOF-03: the steward pin walk, through the API
+# --------------------------------------------------------------------------
+
+_SALES_GRANTS = {"Sales.Orders": "TRUE", "Sales.Territory": "TRUE"}
+_DEMO_STAMP = "2026-10-01T00:00:00Z"
+
+
+def _seed_sales(db: Path) -> None:
+    from dms_executor.demo_warehouse import connect_file
+
+    con = connect_file(db, write=True)
+    try:
+        con.execute("CREATE SCHEMA IF NOT EXISTS Sales")
+        con.execute("DROP TABLE IF EXISTS Sales.Orders")
+        con.execute("DROP TABLE IF EXISTS Sales.Territory")
+        con.execute("CREATE TABLE Sales.Orders (order_id INTEGER, territory_id INTEGER, "
+                    "amount DECIMAL(12,2))")
+        con.execute("INSERT INTO Sales.Orders VALUES (1,1,700),(2,1,200),(3,2,50),(4,3,30),"
+                    "(5,4,20),(6,NULL,100)")
+        con.execute("CREATE TABLE Sales.Territory (territory_id INTEGER, name VARCHAR)")
+        con.execute("INSERT INTO Sales.Territory VALUES (1,'North'),(2,'South'),(3,'East'),"
+                    "(4,'West')")
+    finally:
+        con.close()
+
+
+def _approved_items(expression: str) -> list[dict[str, Any]]:
+    """Fixture items standing in for steward approvals in the ontology store."""
+
+    def item(item_id: str, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"id": item_id, "version_id": "ver_sales_demo", "kind": kind,
+                "status": "approved", "payload": payload}
+
+    return [
+        item("item_obj_orders", "object",
+             {"name": "Orders", "relation": "Sales.Orders", "key": ["order_id"]}),
+        item("item_obj_territory", "object",
+             {"name": "Territory", "relation": "Sales.Territory", "key": ["territory_id"],
+              "attributes": ["territory_id", "name"]}),
+        item("item_link_order_territory", "link",
+             {"name": "order_in_territory", "from_object": "Orders",
+              "from_columns": ["territory_id"], "to_object": "Territory",
+              "to_columns": ["territory_id"]}),
+        item("item_measure_order_amount", "measure",
+             {"name": "order_amount", "grain": "Orders", "expression": expression,
+              "additive": True, "description": "order amount, one contribution per order"}),
+    ]
+
+
+_DEMO_STEWARD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+
+
+def _table_counts(db: Path) -> dict[str, int]:
+    from dms_executor.demo_warehouse import connect_serving
+
+    con = connect_serving(db)
+    try:
+        names = con.execute("SELECT table_schema, table_name FROM information_schema.tables "
+                            "WHERE table_type = 'BASE TABLE'").fetchall()
+        return {t: int(con.execute(f'SELECT COUNT(*) FROM "{s}"."{t}"').fetchone()[0])
+                for s, t in names}
+    finally:
+        con.close()
+
+
+def _pin_and_replay(args: argparse.Namespace) -> int:  # noqa: PLR0915 - one linear walk
+    import os
+
+    from cortex_client.gate import ComplianceDecision
+    from dms_api.app import create_app
+    from dms_api.routes import insight_proof as route
+    from dms_core.control_plane import onto_data
+    from dms_core.control_plane.ask_audit import InMemoryAskAuditStore
+    from dms_executor import Executor, bronze
+    from dms_executor import insight_proof as ip
+    from dms_executor.demo_warehouse import connect_file
+    from dms_executor.envelope import assert_envelope_valid
+    from dms_executor.manifest import SessionAcl
+    from fastapi.testclient import TestClient
+
+    if not ip.insight_proof_enabled():
+        res = TestClient(create_app()).get("/v1/insight-proof/pins")
+        print(f"GET /v1/insight-proof/pins -> {res.status_code} (flag off: not mounted)")
+        return 0 if res.status_code == 404 else 1
+    if os.environ.get("DMS_ONTO_FROM_DATA", "0").strip() != "1":
+        print("FAIL --fixture approved needs DMS_ONTO_FROM_DATA=1 (the approved store)")
+        return 1
+
+    args.warehouse.mkdir(parents=True, exist_ok=True)
+    db = args.warehouse / "lake_sales.duckdb"
+    _seed_sales(db)
+    expression = ["ROUND(SUM(f.amount), 2)"]
+    store = onto_data.ontology_data_store()
+    store.approved_items = lambda: _approved_items(expression[0])  # type: ignore[method-assign]
+    store.revoked_items = lambda: []  # type: ignore[method-assign]
+    cortex = _StubCortex(db, ledger_down=False)
+    # Confirm refuses the shipped default actor (steward_identity_unset): this
+    # in-process demo configures one steward for itself (DR-0004 Option A).
+    if os.environ.get("DMS_ACTOR_USER_ID", route.DEFAULT_ACTOR).strip().lower() in (
+        "", route.DEFAULT_ACTOR
+    ):
+        os.environ["DMS_ACTOR_USER_ID"] = _DEMO_STEWARD
+        from dms_api.settings import get_settings
+
+        get_settings.cache_clear()
+    print(f"steward (DMS_ACTOR_USER_ID): {os.environ['DMS_ACTOR_USER_ID']}")
+    route.compliance_gate = lambda **kw: ComplianceDecision(  # type: ignore[assignment]
+        allowed=True, reason="ok", action=str(kw.get("action"))
+    )
+    bronze.lookup_ingest_watermarks = lambda *, path=None: {  # type: ignore[assignment]
+        t: {"extracted_at": _DEMO_STAMP} for t in ("orders", "territory")
+    }
+    app = create_app()
+    app.state.cortex = cortex
+    exe = Executor(cortex=cortex, minter=_test_minter(), warehouse_path=db)  # type: ignore[arg-type]
+    real_acl = exe.demo_acl
+
+    def _acl(**kw: Any) -> SessionAcl:
+        acl = real_acl(**kw)
+        return SessionAcl(**{**acl.__dict__, "row_predicates": dict(_SALES_GRANTS)})
+
+    exe.demo_acl = _acl  # type: ignore[method-assign]
+    app.state.ask_service = exe
+    audit = InMemoryAskAuditStore()
+    app.state.ask_audit_store = audit
+    client = TestClient(app)
+    print("in-process Cortex stub, F5 stubbed to allow, approved store from fixture items; "
+          "no Cortex run and no real ledger entry is claimed")
+
+    envelopes: list[dict[str, Any]] = []
+    fails: list[str] = []
+
+    def check(cond: bool, what: str) -> None:
+        if not cond:
+            fails.append(what)
+            print(f"  FAIL {what}")
+
+    run = client.post("/v1/insight-proof/run", json={}).json()
+    hit = [i for i in run["insights"] if "carry 86.4 pct of order_amount" in i["envelope"]["text"]]
+    if not hit:
+        print("FAIL the North/South concentration was not proven")
+        return 1
+    insight_id = hit[0]["proof"]["insight_id"]
+    counts_before = _table_counts(db)
+
+    # (1) preview
+    pre = client.post("/v1/insight-proof/pins/preview",
+                      json={"space_id": None, "insight_id": insight_id})
+    body = pre.json()
+    print(f"\n(1) POST /pins/preview -> {pre.status_code}")
+    check(pre.status_code == 200, "preview 200")
+    env = body["envelope"]
+    envelopes.append(env)
+    print(f"    {env['badge']}  {env['text']}")
+    print("    " + " | ".join(ip.PROOF_COLUMNS))
+    for r in env["rows"]:
+        print("    " + " | ".join(str(r[c]) for c in ip.PROOF_COLUMNS))
+    print(f"    result_hash {body['proof']['result_hash']}  token expires {body['expires_at']}")
+
+    # (2) confirm
+    got = client.post("/v1/insight-proof/pins/confirm", json={"token": body["token"]})
+    print(f"\n(2) POST /pins/confirm -> {got.status_code}  asset_id {got.json().get('asset_id')}")
+    check(got.status_code == 200, "confirm 200")
+    asset_id = got.json()["asset_id"]
+    pinned = [q for q in cortex.ledger if q.event_type == "insight.pinned"]
+    keys = sorted(pinned[-1].payload) if pinned else []
+    print(f"    insight.pinned payload keys {keys}  (sql/rows: "
+          f"{'sql' in keys or 'rows' in keys})")
+    check(len(pinned) == 1 and "sql" not in keys and "rows" not in keys, "one pointer entry")
+
+    # (3) the same token again
+    again = client.post("/v1/insight-proof/pins/confirm", json={"token": body["token"]})
+    print(f"\n(3) POST /pins/confirm (same token) -> {again.status_code} {again.json()['code']}")
+    check(again.status_code == 409 and again.json()["code"] == "confirm_token_used",
+          "replayed token refused")
+
+    # (4) replay, unchanged
+    rep = client.post(f"/v1/insight-proof/pins/{asset_id}/replay").json()
+    env = rep["envelope"]
+    envelopes.append(env)
+    print(f"\n(4) POST /pins/{asset_id}/replay -> {env['badge']} {env['text']}")
+    print(f"    audit_id {env['audit_id']}  result_hash {rep['proof']['result_hash']}")
+    check(env["badge"] == "L0_CERTIFIED", "unchanged replay is L0")
+
+    # (5) one fixture order changes, then replay
+    con = connect_file(db, write=True)
+    try:
+        con.execute("UPDATE Sales.Orders SET amount = 300 WHERE order_id = 2")
+    finally:
+        con.close()
+    rep = client.post(f"/v1/insight-proof/pins/{asset_id}/replay").json()
+    env, drift = rep["envelope"], rep["proof"]["drift"] or {}
+    envelopes.append(env)
+    print("\n(5) UPDATE Sales.Orders SET amount = 300 WHERE order_id = 2 (tmp fixture), replay ->")
+    print(f"    {env['badge']} Figures changed since approval; "
+          f"labels_changed={drift.get('labels_changed')}; {drift.get('reason')}")
+    print(f"    {env['text']}")
+    print(f"    approved_result_hash {drift.get('approved_result_hash')}")
+    print(f"    current_result_hash  {drift.get('current_result_hash')}")
+    check(env["badge"] == "L1_GOVERNED_METRIC" and drift.get("labels_changed") == ["North"],
+          "drift by label")
+
+    # (6) the approved expression changes, then replay
+    expression[0] = "ROUND(SUM(f.amount) * 2, 2)"
+    before = len(cortex.submits)
+    rep = client.post(f"/v1/insight-proof/pins/{asset_id}/replay").json()
+    env = rep["envelope"]
+    envelopes.append(env)
+    during = len(cortex.submits) - before
+    print(f"\n(6) order_amount expression altered, replay -> {env['badge']} definition changed - "
+          f"reconfirm")
+    print(f"    {env['text']}")
+    print(f"    submits during replay: {during}")
+    check(env["abstained"] is True and during == 0, "definition change abstains, zero submits")
+    expression[0] = "ROUND(SUM(f.amount), 2)"
+
+    # (7) revoke, then list
+    rev = client.post(f"/v1/insight-proof/pins/{asset_id}/revoke")
+    pins = client.get("/v1/insight-proof/pins").json()["pins"]
+    print(f"\n(7) POST /pins/{asset_id}/revoke -> {rev.status_code}; GET /pins: {pins}")
+    check(rev.status_code == 200 and pins == [], "revoked pin is not listed")
+
+    # (8) what changed on disk
+    after = _table_counts(db)
+    changed = sorted(t for t in set(counts_before) | set(after)
+                     if counts_before.get(t) != after.get(t))
+    print(f"\n(8) tables changed: [{', '.join(changed)}]  (the UPDATE in (5) changes values, "
+          f"not row counts)")
+    check(changed == ["_proven_insight_receipts", "_proven_insights"],
+          "only the register and its receipts changed row count")
+
+    for e in envelopes:
+        try:
+            assert_envelope_valid(e)
+        except AssertionError as exc:
+            fails.append(f"assert_envelope_valid: {exc}")
+    check(_DEMO_KEY not in json.dumps(envelopes), "stub key not in any envelope")
+    if fails:
+        print(f"\nFAIL {fails}")
+        return 1
+    print(f"\nPASS all {len(envelopes)} printed envelopes passed assert_envelope_valid.")
     return 0
 
 
