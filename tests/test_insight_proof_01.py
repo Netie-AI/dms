@@ -1275,6 +1275,94 @@ def test_a_catalogued_relation_on_a_marked_table_still_proves(
         ("WEST", 20.0, 1.8), (None, 100.0, 9.1)]
 
 
+# Verify round 9 (MEDIUM): DuckDB renames the second of two equal output names
+# of one SELECT (case-insensitive) to ``<name>_1``. The taint walker marked by
+# alias text, so ``'x' AS zone, upper(name) AS zone`` tainted ``zone`` while the
+# engine served the marked values as ``zone_1``: a proven L1 headline over a
+# steward-marked column. A SELECT with two outputs equal after casefold, at any
+# depth (view, subquery relation, view under a view), now makes the object
+# all-PII.
+_DUP_ZONE = "SELECT territory_id, 'x' AS zone, upper(name) AS zone FROM Sales.Territory"
+_DUPLICATE_OUTPUTS = [
+    # (statements, object relation, attribute)
+    ([f"CREATE VIEW Sales.TV AS {_DUP_ZONE}"], "Sales.TV", "zone_1"),
+    (["CREATE VIEW Sales.TV AS SELECT territory_id, 'x' AS \"Zone\", upper(name) AS zone "
+      "FROM Sales.Territory"], "Sales.TV", "zone_1"),
+    ([], f"({_DUP_ZONE})", "zone_1"),
+    ([], "(SELECT territory_id, 'x' AS name, name FROM Sales.Territory)", "name_1"),
+    (["CREATE VIEW Sales.TV AS SELECT territory_id, 'x' AS name, name FROM Sales.Territory"],
+     "Sales.TV", "name_1"),
+    (["CREATE VIEW Sales.TU AS SELECT territory_id, 'x' AS r, upper(name) AS r "
+      "FROM Sales.Territory",
+      "CREATE VIEW Sales.TV AS SELECT territory_id, r_1 AS zone FROM Sales.TU"],
+     "Sales.TV", "zone"),
+    (["CREATE VIEW Sales.TU AS SELECT territory_id, 'x' AS name, name FROM Sales.Territory",
+      "CREATE VIEW Sales.TV AS SELECT territory_id, name_1 AS zone FROM Sales.TU"],
+     "Sales.TV", "zone"),
+    ([], "(SELECT territory_id, name_1 AS zone FROM "
+         "(SELECT territory_id, 'x' AS name, name FROM Sales.Territory) s)", "zone"),
+]
+
+
+@pytest.mark.parametrize(("statements", "relation", "attr"), _DUPLICATE_OUTPUTS)
+def test_a_duplicate_output_name_over_a_marked_column_never_executes(
+    tmp_path: Path, statements: list[str], relation: str, attr: str
+) -> None:
+    wh = _seed_sales(tmp_path / "pii_dup.duckdb")
+    _exec(wh, *statements)
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items(relation, attr, pii=True))
+    run = _run(wh, stub, set(_B_GRANTS) | {"Sales.TV", "Sales.TU"}, onto=onto)
+    _assert_no_marked_values(run, stub, attr)
+
+
+@pytest.mark.parametrize(("relation", "tainted"), [
+    ("(SELECT territory_id, 'x' AS zone, upper(name) AS zone FROM t)", None),
+    ("(SELECT territory_id, 'x' AS \"ZONE\", upper(name) AS zone FROM t)", None),
+    ("(SELECT territory_id, 'x' AS name, name FROM t)", None),
+    ("(SELECT t.name, u.name FROM t JOIN u ON u.id = t.id)", None),
+    ("(WITH c AS (SELECT 'x' AS name, name FROM t) SELECT name_1 AS zone FROM c)", None),
+    ("(SELECT territory_id, 'x' AS tag, upper(name) AS zone FROM t)", {"name", "zone"}),
+])
+def test_subquery_taint_refuses_duplicate_outputs(relation: str, tainted: set[str] | None) -> None:
+    """In addition to the envelope tests above: the duplicate-output rule itself."""
+    assert ip._subquery_taint(relation, {"name"}) == tainted
+
+
+@pytest.mark.parametrize(("statements", "relation", "attr", "values"), [
+    ([f"CREATE VIEW Sales.TV AS {_DUP_ZONE}"], "Sales.TV", "zone_1", "(NORTH, SOUTH)"),
+    ([], "(SELECT territory_id, 'x' AS name, name FROM Sales.Territory)", "name_1",
+     "(North, South)"),
+])
+def test_a_duplicate_output_name_is_renamed_by_the_engine(
+    tmp_path: Path, statements: list[str], relation: str, attr: str, values: str
+) -> None:
+    """Control: with no pii item the same relations prove, so the rename is real."""
+    wh = _seed_sales(tmp_path / "dup_ok.duckdb")
+    _exec(wh, *statements)
+    onto = Ontology.from_store(items=_territory_items(relation, attr, pii=False))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS) | {"Sales.TV"}, onto=onto)
+    got = _by_text(
+        run, f"2 of 4 Territory.{attr} values {values} carry 86.4 pct of order_amount")
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert [t[:3] for t in _tuples(got.envelope["rows"])][:2] == [
+        (values[1:-1].split(", ")[0], 900.0, 81.8), (values[1:-1].split(", ")[1], 50.0, 4.5)]
+
+
+def test_a_distinct_alias_on_a_marked_table_still_proves(tmp_path: Path) -> None:
+    """Control: one 'zone' output, read from an unmarked column, is not refused."""
+    wh = _seed_sales(tmp_path / "dup_ctl.duckdb")
+    _seed_generated(wh, "spare INTEGER")
+    _exec(wh, "CREATE VIEW Sales.TV AS SELECT territory_id, 'x' AS tag, upper(zone) AS area "
+              "FROM Sales.Territory")
+    onto = Ontology.from_store(items=_territory_items("Sales.TV", "area", pii=True))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS) | {"Sales.TV"}, onto=onto)
+    got = _by_text(
+        run, "2 of 4 Territory.area values (NORTH, SOUTH) carry 86.4 pct of order_amount")
+    assert_envelope_valid(got.envelope)
+
+
 def test_an_unreadable_table_catalog_is_all_pii(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

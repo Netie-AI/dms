@@ -772,7 +772,9 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
     returns None (all-PII): a positional reference, ``COLUMNS()``, a bracket or
     struct access, an unlisted function, a window, a scalar subquery, a star, a
     set operation, PIVOT/UNPIVOT, VALUES, UNNEST, LATERAL, a table or CTE alias
-    column list, an unaliased computed projection, or text that does not parse.
+    column list, an unaliased computed projection, two outputs of one SELECT
+    whose names are equal after casefold (the engine renames the second), or
+    text that does not parse.
 
     Over-approximates within the allowlist: an output name is tainted when any
     name part of any column it reads is tainted, to a fixpoint, so
@@ -807,6 +809,7 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
     allowed = _projection_allowlist()
     projections: list[tuple[str, set[str]]] = []
     for select in tree.find_all(exp.Select):
+        seen: set[str] = set()
         for proj in select.expressions:
             if isinstance(proj, exp.Alias):
                 out, body = str(proj.alias or "").casefold(), proj.this
@@ -816,6 +819,13 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
                 return None  # an unaliased computed projection: the engine names it
             if not out:
                 return None
+            if out in seen:
+                # Verify round 9: DuckDB renames the second of two equal output
+                # names (case-insensitive) to ``<name>_1``, a name this walker
+                # never sees, so ``'x' AS zone, upper(name) AS zone`` served the
+                # marked values as ``zone_1``. Fail closed.
+                return None
+            seen.add(out)
             for node in body.walk():
                 if not isinstance(node, allowed):
                     return None
