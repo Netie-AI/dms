@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-02: the route demo has no shared-server default
+
+- **Demo.** `act_02_route_demo.py` no longer defaults to `127.0.0.1:5432`; it refuses (exit 2) unless `ACT02_DEMO_URL` is set, as `act_01_writeback_demo.py` already does. The demo creates, migrates and drops a database and grants cluster-wide roles, so it must name a scratch server.
+
 ## 2026-10-30 - ACT-02: carries the ACT-01 receipt fix to the routes
 
 - **Refusals.** `actor_required` (403), `receipt_mismatch` (409, with `field`) and `ledger_entry_reused` (409) are mapped. A receipt refused after the Cortex append appends an `action.apply.void` / `action.decline.void` and rolls the write back.
