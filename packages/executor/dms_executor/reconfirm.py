@@ -22,7 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-_NOT_FOUND = "not found in the database"
+NOT_FOUND = "not found in the database"
 _LOCK = threading.Lock()
 _PENDING: dict[str, dict[str, Any]] = {}
 _HOLDS: dict[str, dict[str, Any]] = {}
@@ -147,6 +147,13 @@ def _refusal_codes(env: dict[str, Any]) -> list[str]:
                 code = text[len("GEN-01:") :].strip()
                 if code:
                     found.append(code)
+                # The armed lane writes ``GEN-01: validate:<code>``. ``validate``
+                # names the stage, not the refusal: read the code under it too,
+                # so ``validate:ungranted`` stays a direct abstain (F114).
+                if code.startswith("validate:"):
+                    inner = code[len("validate:") :].strip()
+                    if inner:
+                        found.append(inner)
     return found
 
 
@@ -513,6 +520,13 @@ def apply_reconfirm(
         "tables": list(tables) if tables else None,
         "ask_path": ask_path,
     }
+    cortex_origin = isinstance(prior, dict) and prior.get("origin") == "cortex"
+    if cortex_origin:
+        # Yes and No go back to Cortex as plan_sql_confirm (contract 1.5.0+).
+        pending["cortex_confirm"] = True
+        why = prior.get("why") if isinstance(prior, dict) else None
+        if isinstance(why, str) and why.strip():
+            reason_text = why.strip()
     if hold is not None:
         pending["sql"] = hold["sql"]
         pending["grantable"] = list(hold["grantable"])
@@ -595,7 +609,7 @@ def decline_envelope(pending: dict[str, Any]) -> dict[str, Any]:
         stage="reconfirm_no",
         ask_id=ask_id,
         answer_id=ask_id,
-        text=_NOT_FOUND,
+        text=NOT_FOUND,
         abstain_reason=str(pending.get("reason_code") or "abstain"),
         values=[],
         rows=[],

@@ -2,6 +2,39 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
+
+- **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
+- **Evidence.** The receipt's evidence must equal what propose pinned (plus the bound `decline_reason` on a decline). A key added at record time, `audit_id` included, is refused (`ReceiptMismatch` on `evidence`). Propose refuses evidence that pins `decline_reason`. `decline_action_version` takes `reason=`.
+- **Refused record.** Apply and decline hold a savepoint until `record_decision` stores the decision; any refusal rolls it back, so a caller that commits anyway keeps no write, no status flip and no binding.
+- **Masking.** Integers in evidence are masked by their text. A key value that reads as PII or is longer than 200 characters is refused at propose (`key_value_invalid`, a new refusal code). An actor that is not a user id and reads as PII is refused (`ActorRequired`). A reason that masks past 500 characters is refused at propose.
+- **Docs.** DR-0008 items 6-9 updated (still Proposed).
+## 2026-10-30 - ACT-01 fix: the receipt is rebuilt from the database, not trusted
+
+- **Receipt.** `record_decision` rebuilds every receipt field from the stored version, its pins and the writeback row the version last wrote, and refuses a caller record that differs (`ReceiptMismatch`). A forged `applied` for a pending version, and a real apply recorded as `declined`, are refused; the real receipt can still be written. The Space is the proposal's own (`space_id`, if passed, must match). One Cortex entry id backs one pointer (`LedgerEntryReused`).
+- **Pins.** `dms.action_proposals` also pins the one version id and the whole-diff sha256. `create_proposal_version` refuses a second version on an action proposal (`ActionVersionFixed`). Apply recomputes the expected hashes, summary and cited `audit_id` from the spec and refuses a diff that disagrees, so a stale proposal cannot be re-armed.
+- **PII.** Evidence, `approval_ref` and reason are secret-scrubbed and PII-masked (the `0005_ask_audit` masker) before they reach the append-only row.
+- **Identity.** Apply and decline refuse a blank, `None` or shipped-default actor (`ActorRequired`); `action_decisions.actor_id` records it. DR-0004 Option A, no dual-control claim.
+- **Inputs.** Decline checks `approval_ref` before it flips the status. `approval_ref` needs 3 visible characters (code and table CHECK). Values are ASCII digits, at most 40 significant digits. The VerifyFailed branch is tested. The demo needs an explicit `ACT01_DEMO_URL`.
+- **Not fixed.** The advisory-lock unlock on an aborted transaction (pre-existing `advisory_lock.py`, shared with main's confirm) is left for its own ticket.
+
+## 2026-10-29 - ACT-01: governed action core behind DMS_ACTIONS
+
+- **Flag.** `DMS_ACTIONS` defaults 0; only `1` is on. No route. Nothing on main calls the new code. With the flag off, propose, apply, decline and record refuse with `ActionsDisabled`.
+- **Schema.** Alembic `0009_action_writeback` on `0008_ontology_approval_ref`: `dms.action_proposals`, `dms.action_writeback` (DMS-owned; no DELETE grant), `dms.action_decisions` (append-only: SELECT and INSERT only). RLS ENABLE + FORCE. No cross-schema FK.
+- **Action.** One code-declared type, `inventory.set_reorder_level`. Writes the writeback table only, never a source system or an Excel file. Every apply needs a steward `approval_ref`. The plain amend confirm refuses an action version (`ActionRequiresApply`).
+- **Proof.** Apply checks token and pinned spec digest, checks the before-state hash (ABA-safe), writes, re-reads and verifies the after-state hash. Refusals roll back to a savepoint. The decision points at `dms.ledger_ref`; the Cortex append is ACT-02.
+- **Decision.** DR-0008 is Proposed and needs the founder stamp. DR-0007 is reserved for the #440 / #461 DR-0006 renumber.
+- **Tests.** At `641bce4`, Postgres 16 (scratch container): the ticket command (`tests/test_act_01_spec.py`, `tests/control_plane/test_act_01_writeback.py`, `test_proposals.py`, `test_amend_receipt.py`, `tests/invariants`) was `137 passed`. One file per process, the same files plus `test_amend_space_scope.py`, `test_rls.py`, `test_verify_ledger.py` and `test_ask_audit_pg.py` all passed. `scripts/verify/act_01_writeback_demo.py` printed `ACT-01 PROOF OK @641bce4c`. The full suite was not run. Not PASS.
+
+## 2026-10-30 - WIRE-19: contract 1.9.0 client, `document` and `reconfirm` badges
+
+- **Defect.** The client generated from 1.5.0 had no `Badge.document` (Cortex 1.7.0). `Provenance.from_dict` raised ValueError, so a Cortex document answer reached the customer as HTTP 502 `submit_failed` (demo numbers with `DMS_DEMO_FALLBACK=1`). A Cortex `reconfirm` parsed, but DMS dropped its `{why, closest_question}` and showed "a confidence level this build does not recognise" with no Yes.
+- **Client.** `contract/openapi-1.9.0.json` + `.sha256` copied from Cortex main `aae3cbc` by `scripts/sync_contract.py --version 1.9.0`. `generated/` regenerated with openapi-python-client 0.27.1, not edited. Testvectors byte-identical. CI contract-pin and health report 1.9.0. The pip floor stays `cortex-contract>=1.2.0,<2` (hard rule 2); CI builds the 1.9.0 wheel from Cortex.
+- **Document.** Maps to the doc-RAG lane's amber `L2_VALIDATED`, never L0/L1. Route `document`, `sql_used` the no-SQL stub, the cited document cards kept (container = file), `drillthrough_token` null. E7 lets document cards go without a token only on route `document` with no executed SQL and no rows; a table card still needs one. An uncited figure still abstains (E9). UI Details copy says the documents answered.
+- **Reconfirm.** ABSTAIN with no values, sources or token. The envelope offer carries Cortex's `why` and `closest_question`. Yes re-asks the closest question with `plan_sql_confirm=yes`. No sends the original question with `plan_sql_confirm=no` (Cortex logs the ticket) and always shows "not found in the database", even if Cortex returns an answer.
+- **Tests.** `tests/test_cortex_19_badges.py`: 7 of 10 fail on `58fcaa5` (spec missing, Badge raises, document ask 502, reconfirm offer empty, Yes/No not sent to Cortex) and pass here. No DMS fixture encoded confirm-no as `session`; none changed.
+
 ## 2026-10-28 - DEF-VALIDATE-02: plain aggregates are not measure drift
 
 - **Flag.** `DMS_DEF_VALIDATE` stays default 0. The change runs only when it is on.

@@ -78,6 +78,8 @@ class OntologyProposal:
     joins: tuple[dict[str, Any], ...]
     served: bool = False
     unkeyed: tuple[str, ...] = ()
+    #: Successful OpenVault calls behind this proposal. Not part of ``to_json``.
+    model_calls: int = 0
 
     def __post_init__(self) -> None:
         if self.served:
@@ -116,6 +118,7 @@ class OntologyProposal:
             joins=_rows(payload.get("joins")),
             served=False,
             unkeyed=_names(payload.get("unkeyed")),
+            model_calls=int(payload.get("model_calls") or 0),
         )
         check_proposal_schema(proposal.to_json())
         return proposal

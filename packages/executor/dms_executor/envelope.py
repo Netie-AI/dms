@@ -42,7 +42,18 @@ _BADGE_MAP = {
     "l2_anomalous": "L2_ANOMALOUS",
     "abstain": "ABSTAIN",
     "blocked": "ABSTAIN",
+    # Contract 1.7.0: cited from the Space's documents. Not governed data, so
+    # never L0/L1; the doc-RAG lane's amber "check sources" badge.
+    "document": "L2_VALIDATED",
+    # Contract 1.5.0: Cortex is asking, not answering. No figure is served; the
+    # offer rides on envelope.reconfirm.
+    "reconfirm": "ABSTAIN",
 }
+
+#: Route of a Cortex ``document`` answer on the envelope. Its source cards cite
+#: passages, not rows, so E7 does not ask them for a drillthrough token.
+DOCUMENT_ROUTE = "document"
+_DOCUMENT_CARD_KINDS = frozenset({"pdf"})
 
 _NUMBER_IN_TEXT = re.compile(
     r"(?<![A-Za-z0-9_])(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+\.\d+|-?\d+)(?![A-Za-z0-9_])"
@@ -1950,8 +1961,19 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             "E6: demo_fallback_used requires demo_fallback_banner"
         )
 
-    # E7
-    if sources:
+    # E7. A Cortex document answer ran no SQL, so there is nothing to drill.
+    # Its cards may go without a token only when every card is a document and
+    # the envelope carries no rows. A table card always needs one.
+    document_cards = (
+        envelope.get("route") == DOCUMENT_ROUTE
+        and not abstained
+        and not _executed_query(sql_used)
+        and not (envelope.get("rows") or [])
+        and all(
+            isinstance(s, dict) and s.get("kind") in _DOCUMENT_CARD_KINDS for s in sources
+        )
+    )
+    if sources and not document_cards:
         assert token, "E7: contributing_sources non-empty requires drillthrough_token"
         # Live verify hook — demo tokens may be opaque stubs.
         if envelope.get("ask_mode") == "live" and not str(token).startswith("demo_"):
@@ -2025,6 +2047,7 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
 
 __all__ = [
     "ALLOWED_BADGES",
+    "DOCUMENT_ROUTE",
     "asked_calendar_years",
     "assert_envelope_valid",
     "build_answer_envelope",

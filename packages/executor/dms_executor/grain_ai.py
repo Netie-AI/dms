@@ -13,6 +13,15 @@ keys. ``reading`` stays None until a model sentence arrives. This module
 does not build that sentence from words in the question.
 
 Off, this module is not on the ask path. The existing detector stays.
+
+Credential: an OpenVault API key (``ov_...``) from ``OPENVAULT_API_KEY``,
+else ``CORTEX_API_KEY``. ``POST /v1/chat/completions`` verifies the bearer
+against OpenVault's issued-key store (``vault/auth.py resolve_caller``). The
+DMS signing-service token (``DMS_OV_SERVICE_TOKEN``) is not an issued key, so
+OpenVault answers 401 to it (#481). With no ``ov_`` key the ask is refused by
+name before any call. A call that cannot be made or is refused (401/403,
+unreachable, another HTTP error) is a named refusal, never a reconfirm: an
+auth failure is not model doubt.
 """
 
 from __future__ import annotations
@@ -21,7 +30,7 @@ import json
 import os
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar, Token
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
 GRAIN_AI_ENV = "DMS_GRAIN_AI"
@@ -64,10 +73,29 @@ _MODEL_KEYS = frozenset(
         "strict",
     }
 )
-TOKEN_ENV = "DMS_OV_SERVICE_TOKEN"
-TOKEN_FILE_ENV = "DMS_OV_SERVICE_TOKEN_FILE"
+# Same relay as ``cortex_client.strict_pin`` and ``ao_vendor.llm.ov_client``
+# (#493). Duplicated, not imported: that module is held by an open PR.
+API_KEY_ENVS = ("OPENVAULT_API_KEY", "CORTEX_API_KEY")
+API_KEY_PREFIX = "ov_"
 URL_ENV = "OPENVAULT_URL"
 CHAT_PATH = "/v1/chat/completions"
+
+REFUSE_KEY_MISSING = "ov_api_key_missing"
+REFUSE_UNAUTHORIZED = "ov_unauthorized"
+REFUSE_UNREACHABLE = "ov_unreachable"
+_REFUSAL_TEXT = {
+    REFUSE_KEY_MISSING: (
+        "I could not read this question's grains: no OpenVault API key (ov_...) "
+        "is set for DMS, so no model was called. Nothing was run."
+    ),
+    REFUSE_UNAUTHORIZED: (
+        "I could not read this question's grains: OpenVault refused the DMS "
+        "API key. Nothing was run."
+    ),
+    REFUSE_UNREACHABLE: (
+        "I could not read this question's grains: OpenVault could not be reached. Nothing was run."
+    ),
+}
 
 Transport = Callable[[dict[str, Any]], Any]
 _TRANSPORT: ContextVar[Transport | None] = ContextVar("dms_grain_ai_transport", default=None)
@@ -170,6 +198,10 @@ def map_question_to_grains(
     Candidates come from ``Ontology.from_store``. Two readings must name the
     same candidates and both clear ``CONFIDENCE_MIN``. Otherwise this returns
     ``reconfirm_envelope`` (Yes runs the closest question).
+
+    A reading that could not be sent or was refused (:class:`GrainCallError`:
+    no ``ov_`` key, 401/403, unreachable) returns a named ABSTAIN instead, with
+    no rows and no reconfirm offer of its own. The second reading is not sent.
     """
     understand = load_understand_question()
     heard = understand(question, examples)
@@ -179,8 +211,16 @@ def map_question_to_grains(
     question_text = str(heard.get("question") or "")
     candidates = approved_grain_names()
     transport = _TRANSPORT.get() or default_transport
-    first = _one_reading(transport, reading=1, question_text=question_text, candidates=candidates)
-    second = _one_reading(transport, reading=2, question_text=question_text, candidates=candidates)
+    try:
+        first = _one_reading(
+            transport, reading=1, question_text=question_text, candidates=candidates
+        )
+        second = _one_reading(
+            transport, reading=2, question_text=question_text, candidates=candidates
+        )
+    except GrainCallError as exc:
+        # A refused or failed call stops the readings. It is not model doubt.
+        return _refused(question, exc.code, space_id=space_id, session_id=session_id)
     if first is None or second is None:
         return _reconfirm(question, WHY_LOW, space_id=space_id, session_id=session_id)
     if set(first["grains"]) != set(second["grains"]):
@@ -216,6 +256,47 @@ def _reconfirm(
     )
 
 
+def _refused(
+    question: str,
+    code: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Named ABSTAIN for a call that was not made or was refused. No rows.
+
+    ``reconfirm`` is present and None. ``try_compile_multi_grain`` returns a
+    mapped dict as the envelope only when it carries that key; any other dict
+    is read as grains. The key holds no offer: this is not a reconfirm.
+    """
+    from dms_executor.abstain import build_abstain
+    from dms_executor.envelope import assert_envelope_valid
+
+    text = _REFUSAL_TEXT.get(code) or (
+        f"I could not read this question's grains: the model call failed ({code}). Nothing was run."
+    )
+    env = build_abstain(
+        reason=code,
+        question=question,
+        stage="grain_ai",
+        answer_id="ans_grain_ai_refused",
+        text=text,
+        abstain_reason=code,
+        rows=[],
+        sql_used=None,
+        values=[],
+        assumptions=[f"grain_ai: {code}"],
+        as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="generated",
+    )
+    assert_envelope_valid(env)
+    env["reconfirm"] = None
+    return env
+
+
 def _one_reading(
     transport: Transport,
     *,
@@ -237,10 +318,13 @@ def _one_reading(
         ],
         "schema": SCHEMA_NAME,
     }
+    _reject_model_keys(body)
     try:
-        _reject_model_keys(body)
         payload = transport(body)
-    except Exception:  # noqa: BLE001 - a missed reading reconfirms
+    except GrainCallError:
+        # Auth, reachability, or a refused body. The caller names it.
+        raise
+    except Exception:  # noqa: BLE001 - an unreadable reading reconfirms
         return None
     return _parse_reading(payload, question=question_text, candidates=candidates)
 
@@ -334,18 +418,17 @@ def _reject_model_keys(value: Any) -> None:
             _reject_model_keys(item)
 
 
-def load_service_token() -> str:
-    """Bearer from the env, else from the token file. Empty when neither is set."""
-    token = os.environ.get(TOKEN_ENV, "").strip()
-    if token:
-        return token
-    raw = os.environ.get(TOKEN_FILE_ENV, "").strip()
-    if not raw:
-        return ""
-    path = Path(raw).expanduser()
-    if not path.is_file():
-        return ""
-    return path.read_text(encoding="utf-8").strip()
+def load_api_key() -> str:
+    """The ``ov_`` key OpenVault accepts for chat. Empty when none is set.
+
+    A value that is not an ``ov_`` key (the demo viewer key, a Cortex steward
+    key, a signing-service token) is skipped: OpenVault would answer 401.
+    """
+    for name in API_KEY_ENVS:
+        raw = os.environ.get(name, "").strip()
+        if raw.startswith(API_KEY_PREFIX):
+            return raw
+    return ""
 
 
 def endpoint_url() -> str:
@@ -356,19 +439,32 @@ def endpoint_url() -> str:
 
 
 def default_transport(body: dict[str, Any]) -> Any:
-    """POST the body. Chat-completion envelopes unwrap to the JSON object."""
+    """POST the body. Chat-completion envelopes unwrap to the JSON object.
+
+    No ``ov_`` key raises before anything is sent. 401/403 is
+    ``ov_unauthorized``; a host that cannot be reached is ``ov_unreachable``.
+    The code never carries the key.
+    """
     import httpx
 
     url = endpoint_url()
-    token = load_service_token()
-    if not token:
-        raise GrainCallError("ov_service_token_missing")
+    key = load_api_key()
+    if not key:
+        raise GrainCallError(REFUSE_KEY_MISSING)
     headers = {
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
     }
-    response = httpx.post(url, headers=headers, json=body, timeout=60.0)
-    response.raise_for_status()
+    try:
+        response = httpx.post(url, headers=headers, json=body, timeout=60.0)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in (401, 403):
+            raise GrainCallError(REFUSE_UNAUTHORIZED) from None
+        raise GrainCallError(f"ov_http_{status}") from None
+    except httpx.HTTPError:
+        raise GrainCallError(REFUSE_UNREACHABLE) from None
     data = response.json()
     if isinstance(data, dict) and isinstance(data.get("choices"), list) and data["choices"]:
         message = data["choices"][0].get("message") or {}
