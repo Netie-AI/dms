@@ -33,6 +33,18 @@ Labels the ontology prefers for a grain the object plays (``GRAIN_COLUMNS``)
 are tried first, so two columns that split a measure identically report under
 the name a steward would use.
 
+A warehouse that defines ANY function or macro of its own is refused whole,
+before the ontology is verified against it and before anything is submitted
+(``user_macro_present``), and again after the last
+submit if one appeared while the run was in flight. A persisted macro can shadow
+a builtin (``lower``, ``abs``, ``trim``, ``round``, ``sum``...) and read a marked
+or ungranted table from inside a view the PII walker reads as a plain call
+(verify round 10). Name matching is not complete: DuckDB resolves a call against
+the catalog search path at run time, so the only exact rule is that no
+non-internal entry exists in ``duckdb_functions()`` on the serving connection.
+A catalog that cannot be listed refuses the same way
+(``function_catalog_unreadable``).
+
 Scope, stated in ``PROOF_SCOPE``: the result hash covers rows before PII
 masking, and contract 1.2.0 has no ledger read-back. ``prove_insights`` leaves
 ``proof['ledger']`` null; INS-PROOF-02's ``prove_for_space`` appends one Cortex
@@ -185,6 +197,15 @@ REFUSALS: dict[str, str] = {
     "audit_unrecorded": (
         "The audit record for this insight could not be written, so it was not shown. "
         "No figure was returned."
+    ),
+    "user_macro_present": (
+        "This warehouse defines its own SQL functions or macros. One can stand in for "
+        "a built-in function and read data the proof cannot trace, so no insight was "
+        "run. No figure was returned."
+    ),
+    "function_catalog_unreadable": (
+        "The list of SQL functions in this warehouse could not be read, so no insight "
+        "was run. No figure was returned."
     ),
 }
 
@@ -1046,6 +1067,51 @@ def _generated_columns(con: Any) -> dict[str, list[tuple[str, str | None]]] | No
     return out
 
 
+USER_FUNCTIONS_SQL = (
+    "SELECT count(*) FROM duckdb_functions() WHERE NOT internal"
+)
+
+
+def user_function_count(con: Any) -> int | None:
+    """Non-internal functions and macros on ``con``. None when the catalog cannot answer.
+
+    Every scalar macro, table macro and user-registered function on every attached
+    catalog counts, whatever its name. Read on the serving connection
+    (``demo_warehouse.connect_serving``) so it sees what the served SQL resolves
+    against.
+    """
+    try:
+        row = con.execute(USER_FUNCTIONS_SQL).fetchone()
+    except Exception:  # noqa: BLE001 - a catalog that cannot answer fails closed
+        return None
+    if not row or type(row[0]) is not int or row[0] < 0:
+        return None
+    return row[0]
+
+
+def user_function_refusal(warehouse: Path) -> str | None:
+    """None when the serving warehouse defines no function of its own, else the refusal code.
+
+    ``user_macro_present`` when any non-internal function or macro exists (verify
+    round 10: a persisted ``lower``/``abs``/``trim``/``round`` macro read a marked,
+    ungranted table and its values reached a proven L1 headline);
+    ``function_catalog_unreadable`` when the warehouse or its catalog cannot be read.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
+    try:
+        con = connect_serving(Path(warehouse))
+    except Exception:  # noqa: BLE001 - a warehouse that cannot be opened fails closed
+        return "function_catalog_unreadable"
+    try:
+        n = user_function_count(con)
+    finally:
+        con.close()
+    if n is None:
+        return "function_catalog_unreadable"
+    return "user_macro_present" if n else None
+
+
 def _generated_reads_marked(expression: str | None, marked: set[str]) -> bool:
     """True when a generated column's expression carries a ``marked`` column.
 
@@ -1464,6 +1530,12 @@ def prove_insights(
         return InsightRun(status="ok")
     from dms_executor.generative_ask import cached_verify_violations, load_verified_ontology
 
+    gate = user_function_refusal(Path(warehouse))
+    if gate is not None:
+        # Before verify and before any submit: a user macro can shadow a builtin
+        # the PII walker trusts, or one verify() itself runs (``sum``, ``count``).
+        entry = _refuse(None, "warehouse", gate, space_id=space_id, session_id=session_id)
+        return InsightRun(status="refused", refused=(entry,))
     loaded = load_verified_ontology(Path(warehouse), onto)
     if loaded is None or cached_verify_violations(loaded) != []:
         entry = _refuse(None, "ontology", "ontology_unverified",
@@ -1503,6 +1575,24 @@ def prove_insights(
             stopped = _prove_measure(ctx, m, dims_of)
     finally:
         con.close()
+
+    gate = user_function_refusal(ctx.warehouse)
+    if gate is not None:
+        # A function that appeared while the run was in flight: the rows already
+        # returned may have resolved through it, so none of them is served. The
+        # refusal carries what ran for the discarded insights, for its audit row.
+        ran: list[tuple[str, int]] = []
+        seen: set[int] = set()
+        for _s, p in ctx.built:
+            if isinstance(p.trace, ExecutedTrace) and id(p.trace) not in seen:
+                seen.add(id(p.trace))
+                ran.extend(p.trace.statements)
+        ctx.built.clear()
+        late = _refuse(ctx, "warehouse", gate)
+        if ran:
+            late["trace"] = ExecutedTrace(statements=tuple(ran))
+        return InsightRun(status="refused", refused=tuple(ctx.refused),
+                          skipped=tuple(ctx.skipped))
 
     picked = _pick(ctx.built, top=top, n_measures=len(loaded.measures))
     status = "ok" if picked else "refused"

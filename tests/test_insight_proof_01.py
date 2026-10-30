@@ -1189,16 +1189,40 @@ def _assert_no_marked_values(run: ip.InsightRun, stub: _Stub, attr: str) -> None
     assert not any(re.search(r"\btv\b|\btu\b", c, re.IGNORECASE) for c in stub.calls)
 
 
+def _assert_macro_refused(run: ip.InsightRun, stub: _Stub) -> None:
+    """Verify round 10: a warehouse with a user macro is refused whole, nothing submitted."""
+    assert [p.envelope["text"] for p in run.proven] == []
+    assert run.proven == ()
+    assert run.status == "refused"
+    assert _codes(run) == {"warehouse": "user_macro_present"}
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    assert stub.calls == []
+
+
+@pytest.fixture
+def walker_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The run-level macro gate off, so the PII walker behind it is tested alone."""
+    monkeypatch.setattr(ip, "user_function_refusal", lambda _wh: None)
+
+
+@pytest.mark.parametrize("gate", [True, False], ids=["gate", "walker_only"])
 @pytest.mark.parametrize(("statements", "body"), _TABLE_FUNCTION_VIEWS)
 def test_a_view_over_a_table_function_never_executes(
-    tmp_path: Path, statements: list[str], body: str
+    tmp_path: Path, statements: list[str], body: str, gate: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wh = _seed_sales(tmp_path / "pii_tfn.duckdb")
     _exec(wh, *statements, f"CREATE VIEW Sales.TV AS {body}")
+    if not gate:
+        monkeypatch.setattr(ip, "user_function_refusal", lambda _wh: None)
     stub = _Stub(wh)
     onto = Ontology.from_store(items=_territory_items("Sales.TV", "area", pii=True))
     run = _run(wh, stub, set(_B_GRANTS) | {"Sales.TV", "Sales.TU"}, onto=onto)
-    _assert_no_marked_values(run, stub, "area")
+    if gate and statements:
+        _assert_macro_refused(run, stub)
+    else:
+        _assert_no_marked_values(run, stub, "area")
 
 
 @pytest.mark.parametrize("relation", [
@@ -1206,8 +1230,13 @@ def test_a_view_over_a_table_function_never_executes(
     "(SELECT t.territory_id, m.area FROM Sales.Territory t JOIN tm() m "
     "ON m.territory_id = t.territory_id)",
 ])
-def test_a_relation_over_a_table_function_never_executes(tmp_path: Path, relation: str) -> None:
-    """A table function in the object's own relation, granted or not, is all-PII."""
+def test_a_relation_over_a_table_function_never_executes(
+    tmp_path: Path, relation: str, walker_only: None
+) -> None:
+    """A table function in the object's own relation, granted or not, is all-PII.
+
+    The run-level macro gate is off here: the walker alone must refuse.
+    """
     wh = _seed_sales(tmp_path / "pii_tfn_rel.duckdb")
     _exec(wh, "CREATE MACRO tm() AS TABLE SELECT territory_id, upper(name) AS area "
               "FROM Sales.Territory")
@@ -1222,9 +1251,12 @@ def test_a_relation_over_a_table_function_never_executes(tmp_path: Path, relatio
 
 
 def test_a_view_over_a_macro_on_an_ungranted_marked_table_never_executes(
-    tmp_path: Path,
+    tmp_path: Path, walker_only: None
 ) -> None:
-    """Only the view is granted; the macro reads a marked table in another schema."""
+    """Only the view is granted; the macro reads a marked table in another schema.
+
+    The run-level macro gate is off here: the walker alone must refuse.
+    """
     wh = _seed_sales(tmp_path / "pii_tfn_secret.duckdb")
     _exec(wh, "CREATE SCHEMA IF NOT EXISTS Secret",
           "CREATE TABLE Secret.People (territory_id INTEGER, name VARCHAR)",
@@ -1273,6 +1305,179 @@ def test_a_catalogued_relation_on_a_marked_table_still_proves(
     assert [t[:3] for t in _tuples(got.envelope["rows"])] == [
         ("NORTH", 900.0, 81.8), ("SOUTH", 50.0, 4.5), ("EAST", 30.0, 2.7),
         ("WEST", 20.0, 1.8), (None, 100.0, 9.1)]
+
+
+# Verify round 10 (MEDIUM): a persisted scalar macro named like a builtin the
+# PII walker allowlists (lower, abs, trim, round, sum) read a marked, ungranted
+# table; a view over Sales.Territory called it, the walker saw a plain builtin
+# call on territory_id, and Alice/Bob reached a proven L1 headline. Name
+# matching is not complete (DuckDB resolves a call through the search path at
+# run time), so ANY non-internal function or macro on the serving connection now
+# refuses the whole run before the first submit.
+_V10_GRANTS = {"Sales.Orders", "Sales.TV", "Sales.Territory"}
+_V10_LEAKS = (
+    "2 of 4 Territory.zone values (Alice, Bob) carry 86.4 pct of order_amount",
+    "9.1 pct of order_amount lands on rows with no Territory.zone value",
+)
+_V10_VIEW = ("CREATE VIEW Sales.TV AS SELECT territory_id, "
+             "lower(CAST(territory_id AS VARCHAR)) AS zone FROM Sales.Territory")
+_V10_DIGITS = "2 of 4 Territory.zone values (1, 2) carry 86.4 pct of order_amount"
+
+
+def _shadow(fn: str) -> str:
+    return f"CREATE MACRO {fn}(x) AS (SELECT name FROM Secret.People WHERE id = x)"
+
+
+def _v10_world(tmp_path: Path, tag: str, relation: str, *setup: str) -> tuple[Path, Ontology]:
+    wh = _seed_sales(tmp_path / f"v10_{tag}.duckdb")
+    _exec(wh, "CREATE SCHEMA IF NOT EXISTS Secret",
+          "CREATE TABLE Secret.People (id INTEGER, name VARCHAR)",
+          "INSERT INTO Secret.People VALUES (1,'Alice'),(2,'Bob'),(3,'Carol'),(4,'Dave')",
+          *setup)
+    items = _territory_items(relation, "zone", pii=True)
+    items.append({"id": "item_pii_people", "version_id": _B_VERSION, "kind": "pii",
+                  "status": "approved",
+                  "payload": {"name": "people_name", "relation": "Secret.People",
+                              "column": "name"}})
+    return wh, Ontology.from_store(items=items)
+
+
+def _assert_v10_refused(
+    run: ip.InsightRun, stub: _Stub, code: str = "user_macro_present"
+) -> None:
+    texts = [p.envelope["text"] for p in run.proven]
+    for leaked in _V10_LEAKS:
+        assert leaked not in texts
+    assert texts == []
+    assert run.proven == ()
+    assert run.status == "refused"
+    assert _codes(run) == {"warehouse": code}
+    (entry,) = run.refused
+    _assert_refused_envelope(entry)
+    assert entry["envelope"]["text"] == ip.REFUSALS[code]
+    shown = json.dumps([r["envelope"] for r in run.refused]).casefold()
+    for token in ("alice", "bob", "carol", "dave", "86.4", "9.1", "secret", "people"):
+        assert token not in shown
+    assert len(stub.calls) == 0
+
+
+@pytest.mark.parametrize("fn", ["lower", "upper", "trim", "abs", "round", "sum"])
+def test_a_view_over_a_builtin_shadowing_macro_never_submits(tmp_path: Path, fn: str) -> None:
+    wh, onto = _v10_world(
+        tmp_path, fn, "Sales.TV", _shadow(fn),
+        f"CREATE VIEW Sales.TV AS SELECT territory_id, {fn}(territory_id) AS zone "
+        "FROM Sales.Territory")
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_V10_GRANTS), onto=onto)
+    _assert_v10_refused(run, stub)
+
+
+def test_a_subquery_relation_over_a_builtin_shadowing_macro_never_submits(
+    tmp_path: Path,
+) -> None:
+    wh, onto = _v10_world(
+        tmp_path, "subq",
+        "(SELECT territory_id, lower(territory_id) AS zone FROM Sales.Territory)",
+        _shadow("lower"))
+    stub = _Stub(wh)
+    run = _run(wh, stub, {"Sales.Orders", "Sales.Territory"}, onto=onto)
+    _assert_v10_refused(run, stub)
+
+
+@pytest.mark.parametrize("statement", [
+    # Not named like a builtin, and no object reads it.
+    "CREATE MACRO zone_of(x) AS x",
+    # A table macro no object reads.
+    "CREATE MACRO tm() AS TABLE SELECT * FROM Secret.People",
+    # Off the default search path: refused all the same, no name rule is trusted.
+    "CREATE MACRO Secret.lower(x) AS (SELECT name FROM Secret.People WHERE id = x)",
+])
+def test_any_user_macro_refuses_the_whole_run(tmp_path: Path, statement: str) -> None:
+    """The rule is exact, not by name: an unused macro refuses too (stated over-refusal)."""
+    wh, onto = _v10_world(tmp_path, "any", "Sales.TV", statement, _V10_VIEW)
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_V10_GRANTS), onto=onto)
+    _assert_v10_refused(run, stub)
+    assert _V10_DIGITS not in [p.envelope["text"] for p in run.proven]
+
+
+def test_a_macro_created_during_the_run_serves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gate is read again after the last submit; a macro that appeared mid-run refuses."""
+    wh, onto = _v10_world(tmp_path, "midrun", "Sales.TV", _V10_VIEW)
+    real = ip.user_function_refusal
+    seen: list[str | None] = []
+
+    def flips(warehouse: Path) -> str | None:
+        got = real(warehouse) if not seen else "user_macro_present"
+        seen.append(got)
+        return got
+
+    monkeypatch.setattr(ip, "user_function_refusal", flips)
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_V10_GRANTS), onto=onto)
+    assert seen == [None, "user_macro_present"]
+    assert len(stub.calls) == 4  # the proof ran ...
+    assert [p.envelope["text"] for p in run.proven] == []  # ... and serves nothing
+    assert run.proven == ()
+    assert run.status == "refused"
+    assert _codes(run)["warehouse"] == "user_macro_present"
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+
+
+def test_an_unreadable_function_catalog_refuses_the_whole_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wh, onto = _v10_world(tmp_path, "unreadable", "Sales.TV", _V10_VIEW)
+    monkeypatch.setattr(ip, "user_function_count", lambda _con: None)
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_V10_GRANTS), onto=onto)
+    _assert_v10_refused(run, stub, code="function_catalog_unreadable")
+
+
+def test_user_function_count_reads_the_serving_catalog(tmp_path: Path) -> None:
+    wh = _seed_sales(tmp_path / "v10_count.duckdb")
+    con = connect_serving(wh)
+    try:
+        assert ip.user_function_count(con) == 0
+    finally:
+        con.close()
+    assert ip.user_function_refusal(wh) is None
+    _exec(wh, "CREATE MACRO lower(x) AS x", "CREATE MACRO tm() AS TABLE SELECT 1 AS a")
+    con = connect_serving(wh)
+    try:
+        assert ip.user_function_count(con) == 2
+    finally:
+        con.close()
+    assert ip.user_function_refusal(wh) == "user_macro_present"
+    assert ip.user_function_refusal(tmp_path / "missing" / "nope.duckdb") == (
+        "function_catalog_unreadable")
+
+
+def test_the_same_view_with_the_real_builtin_still_proves(tmp_path: Path) -> None:
+    """Control: no macro, the builtin lower() of the id proves digits, not names."""
+    wh, onto = _v10_world(tmp_path, "ctl", "Sales.TV", _V10_VIEW)
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_V10_GRANTS), onto=onto)
+    got = _by_text(run, _V10_DIGITS)
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert "warehouse" not in _codes(run)
+    assert len(stub.calls) == 4
+    for p in run.proven:
+        blob = json.dumps(p.envelope).casefold()
+        assert not any(n in blob for n in ("alice", "bob", "carol", "dave"))
+
+
+def test_dropping_the_macro_proves_again(tmp_path: Path) -> None:
+    wh, onto = _v10_world(tmp_path, "drop", "Sales.TV", _shadow("lower"), _V10_VIEW)
+    stub = _Stub(wh)
+    _assert_v10_refused(_run(wh, stub, set(_V10_GRANTS), onto=onto), stub)
+    _exec(wh, "DROP MACRO lower")
+    run = _run(wh, stub, set(_V10_GRANTS), onto=onto)
+    _by_text(run, _V10_DIGITS)
 
 
 # Verify round 9 (MEDIUM): DuckDB renames the second of two equal output names

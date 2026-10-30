@@ -1104,6 +1104,13 @@ def test_run_never_serves_a_view_over_a_table_function_on_a_marked_column(
     from dms_core.control_plane import onto_data
 
     try:
+        if kind == "macro":
+            # Verify round 10: a warehouse with any user macro is refused whole,
+            # marked or not, before a submit (the walker is tested alone in -01).
+            for sub, pii in (("a", False), ("b", True)):
+                w = _opaque_view_world(tmp_path / sub, monkeypatch, pii=pii, kind=kind)
+                _assert_macro_run_refused(w, w.run(), (_OPAQUE_HEADLINE,))
+            return
         # Control: unmarked, the view's column is an ordinary proven segment.
         open_body = _opaque_view_world(
             tmp_path / "a", monkeypatch, pii=False, kind=kind).run().json()
@@ -1180,5 +1187,121 @@ def test_run_never_serves_a_duplicate_output_name_over_a_marked_column(
             assert label not in res.text.casefold()
         assert not any("territory" in str(s).casefold() or "sales.tv" in str(s).casefold()
                        for s in w.cortex.submits)
+    finally:
+        onto_data.reset_ontology_data_store()
+
+
+# --------------------------------------------------------------------------
+# 16. verify round 10: a persisted macro that shadows a builtin
+# --------------------------------------------------------------------------
+
+
+# A scalar macro named like a builtin the walker allowlists read the marked
+# Sales.Territory.name from inside a view the walker read as a plain call on
+# territory_id. POST /run served North/South as a proven L1 headline with an
+# insight.proven ledger entry. Any non-internal function or macro on the serving
+# connection now refuses the run before verify, a submit or an append.
+def _shadow_views(fn: str) -> dict[str, list[str]]:
+    return {fn: [f"CREATE MACRO {fn}(x) AS (SELECT name FROM Sales.Territory t "
+                 "WHERE t.territory_id = x)",
+                 f"CREATE VIEW Sales.TV AS SELECT territory_id, {fn}(territory_id) AS zone "
+                 "FROM Sales.Territory"]}
+
+
+_SHADOW_LEAKS = (
+    "2 of 4 Territory.zone values (North, South) carry 86.4 pct of order_amount",
+    "9.1 pct of order_amount lands on rows with no Territory.zone value",
+)
+_REAL_LOWER = {"real": ["CREATE VIEW Sales.TV AS SELECT territory_id, "
+                        "lower(CAST(territory_id AS VARCHAR)) AS zone FROM Sales.Territory"]}
+_REAL_HEADLINE = "2 of 4 Territory.zone values (1, 2) carry 86.4 pct of order_amount"
+
+
+def _assert_macro_run_refused(
+    w: _World, res: Any, leaks: tuple[str, ...], *, submits: int = 0
+) -> None:
+    """200, no insight, one named refusal, ``submits`` submits, no insight.proven append."""
+    assert res.status_code == 200, res.text
+    body = res.json()
+    texts = [i["envelope"]["text"] for i in body["insights"]]
+    for leaked in leaks:
+        assert leaked not in texts
+    assert texts == []
+    assert body["insights"] == []
+    assert body["refused"] == [{"candidate": "warehouse", "code": "user_macro_present",
+                                "text": ip.REFUSALS["user_macro_present"]}]
+    assert body["counts"] == {"proven": 0, "refused": 1}
+    assert body["orphan_ledger_entries"] == []
+    for label in ("north", "south", "east", "west", "86.4", "9.1"):
+        assert label not in res.text.casefold()
+    assert len(w.cortex.submits) == submits
+    assert [r.event_type for r in w.cortex.ledger] == []
+    assert w.cortex.receipts == {}
+    (rec,) = w.records()
+    assert rec.question == "insight:warehouse"
+    assert rec.badge == "abstain" and rec.cortex_entry_id == ""
+
+
+@pytest.mark.parametrize("fn", ["lower", "upper", "trim", "abs", "round", "sum"])
+def test_run_refuses_a_warehouse_with_a_builtin_shadowing_macro(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fn: str
+) -> None:
+    from dms_core.control_plane import onto_data
+
+    try:
+        w = _opaque_view_world(tmp_path, monkeypatch, pii=True, kind=fn,
+                               views=_shadow_views(fn))
+        _assert_macro_run_refused(w, w.run(), _SHADOW_LEAKS)
+        assert w.gate.calls  # the route was gated; the refusal is the run's own
+    finally:
+        onto_data.reset_ontology_data_store()
+
+
+def test_run_over_the_real_builtin_still_proves_and_appends(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Control: the same view with no macro proves digits and appends insight.proven."""
+    from dms_core.control_plane import onto_data
+
+    try:
+        w = _opaque_view_world(tmp_path, monkeypatch, pii=True, kind="real",
+                               views=_REAL_LOWER)
+        body = w.run().json()
+        got = _proven_by_text(body, _REAL_HEADLINE)
+        assert got["envelope"]["badge"] == "L1_GOVERNED_METRIC"
+        assert_envelope_valid(got["envelope"])
+        assert "warehouse" not in {r["candidate"] for r in body["refused"]}
+        assert ip.LEDGER_EVENT in [r.event_type for r in w.cortex.ledger]
+        assert w.cortex.submits
+    finally:
+        onto_data.reset_ontology_data_store()
+
+
+def test_run_serves_nothing_when_a_macro_appears_mid_run(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check is read again after the last submit: no insight, no append, audit kept."""
+    from dms_core.control_plane import onto_data
+
+    real = ip.user_function_refusal
+    seen: list[str | None] = []
+
+    def flips(warehouse: Path) -> str | None:
+        got = real(warehouse) if not seen else "user_macro_present"
+        seen.append(got)
+        return got
+
+    try:
+        w = _opaque_view_world(tmp_path, monkeypatch, pii=False, kind="real",
+                               views=_REAL_LOWER)
+        monkeypatch.setattr(ip, "user_function_refusal", flips)
+        res = w.run()
+        assert seen == [None, "user_macro_present"]
+        n = len(w.cortex.submits)
+        assert n > 0
+        _assert_macro_run_refused(w, res, (_REAL_HEADLINE,), submits=n)
+        (rec,) = w.records()
+        # The refusal's audit row records the statements that did run.
+        assert rec.executed_sql
     finally:
         onto_data.reset_ontology_data_store()
