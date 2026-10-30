@@ -30,6 +30,7 @@ def _get_kwargs(
 
     _kwargs["json"] = body.to_dict()
 
+
     headers["Content-Type"] = "application/json"
 
     _kwargs["headers"] = headers
@@ -78,7 +79,12 @@ def sync_detailed(
      Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
-        body (AskRequest):
+        body (AskRequest): Ask plane request.
+
+            Unknown keys are ignored, as on main. ``model``, ``strict`` and
+            ``provider`` are rejected by name before any model call. Routing stays
+            in OpenVault's route config. Full request strictness is a breaking
+            change tracked in #388.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -111,7 +117,12 @@ def sync(
      Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
-        body (AskRequest):
+        body (AskRequest): Ask plane request.
+
+            Unknown keys are ignored, as on main. ``model``, ``strict`` and
+            ``provider`` are rejected by name before any model call. Routing stays
+            in OpenVault's route config. Full request strictness is a breaking
+            change tracked in #388.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -139,7 +150,12 @@ async def asyncio_detailed(
      Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
-        body (AskRequest):
+        body (AskRequest): Ask plane request.
+
+            Unknown keys are ignored, as on main. ``model``, ``strict`` and
+            ``provider`` are rejected by name before any model call. Routing stays
+            in OpenVault's route config. Full request strictness is a breaking
+            change tracked in #388.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -172,7 +188,12 @@ async def asyncio(
      Answer a governed question (DMS ask plane). Requires a prior submit bind.
 
     Args:
-        body (AskRequest):
+        body (AskRequest): Ask plane request.
+
+            Unknown keys are ignored, as on main. ``model``, ``strict`` and
+            ``provider`` are rejected by name before any model call. Routing stays
+            in OpenVault's route config. Full request strictness is a breaking
+            change tracked in #388.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

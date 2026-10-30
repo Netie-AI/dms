@@ -149,6 +149,7 @@ def test_generative_cold_storage_validates(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -182,6 +183,7 @@ def test_generative_above_90_keep_gt_validates(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -205,6 +207,7 @@ def test_compute_miss_binds_and_validates(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -227,6 +230,7 @@ def test_compute_unsure_is_not_overridden(tmp_path: Path) -> None:
         submit=lambda sql: submits.append(sql) or _submit_ok(sql),
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -246,6 +250,7 @@ def test_ops_spend_does_not_green_ungranted_suppliers(tmp_path: Path) -> None:
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -264,6 +269,7 @@ def test_product_path_compute_miss_does_not_bind(tmp_path: Path) -> None:
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is None
 
@@ -282,6 +288,7 @@ def test_isolated_gen_untyped_miss_abstains_after_retrieve(tmp_path: Path) -> No
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"

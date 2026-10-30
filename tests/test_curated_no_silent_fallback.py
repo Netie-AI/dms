@@ -201,6 +201,7 @@ def test_maybe_pack_ask_ledger_bad_hash_names_ledger() -> None:
         grantable={"inventory", "suppliers"},
         submit=_submit,
         ledger_append=_ledger,
+        dialect="duckdb",
     )
     assert env is not None
     assert "ledger fail" in env["text"]
