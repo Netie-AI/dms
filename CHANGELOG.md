@@ -2,6 +2,17 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-31 - ACT-03 fix: an apply whose outcome is unknown is not called a refusal
+
+- **Outcome unknown (#489 MEDIUM).** An apply or decline answered 5xx with no route code (a 500 page, a proxy 502/504 while the route waits on the ledger append), a dropped connection, or an unreadable 2xx body is now `outcome_unknown`, not `http_504` / `network_error`. The card says "Outcome unknown - this was not confirmed either way." and "The server answered HTTP 504 without a result, so it is not known whether this decision was recorded. Check Recent decisions before doing anything else.", keeps Apply and Decline off, and asks the page to refresh Recent decisions. `commit_outcome_unknown` locks the card the same way. A coded refusal (for example 503 `ledger_unavailable`) still re-arms Apply. Non-decision 5xx are `server_error` with the status. Two client codes added to `tests/fixtures/actions/act02_refusal_codes.json`.
+- **F5 statuses.** A 403 whose detail is not one of our codes (an F5 status passed through by `enforce`, such as `blocked`) renders "The compliance gate refused this action (Cortex F5 status: blocked), so nothing was written." instead of "Refused: blocked".
+- **Recent decisions.** An applied row whose apply receipt is on screen with a defect reads, for example, "applied (ledger chain not read back)"; rows with no ledger entry say so; the table says a row is the DMS database record, not by itself a ledger proof.
+- **Space switch.** Reloads are last-request-wins, so a slower answer for the previous Space no longer lands under the new one.
+
+## 2026-10-31 - ACT-03 fix: the reused-entry refusal claims no void
+
+- **UI.** The `ledger_entry_reused` sentence no longer says "a void entry was requested": the route now appends no void for it (ACT-02 fix 5). With `reused_entry_id` it names the entry: "The ledger returned entry e1, which already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it." No refusal code was added or removed.
+
 ## 2026-10-31 - ACT-02 fix 5: a reused entry id is never voided
 
 - **Reused entry id.** When Cortex returns an entry id that already backs an earlier, committed decision (`LedgerEntryReused`), apply and decline no longer append `action.*.void` naming that id (it put "did not commit" on the ledger over a real decision). They answer 409 `ledger_entry_reused` with `reused_entry_id` and `voided: false`, roll back, and append nothing. The entry Cortex really wrote for the refused attempt cannot be named, so it is disclosed as an orphan. Other refusals after the append (`receipt_mismatch`) still void the entry they name. DR-0008 item 4 updated (still Proposed).
@@ -30,6 +41,10 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Demo.** `act_02_route_demo.py` no longer defaults to `127.0.0.1:5432`; it refuses (exit 2) unless `ACT02_DEMO_URL` is set, as `act_01_writeback_demo.py` already does. The demo creates, migrates and drops a database and grants cluster-wide roles, so it must name a scratch server.
 
+## 2026-10-30 - ACT-03: sentences for the three new ACT-01/02 refusals
+
+- **UI.** `REFUSAL_TEXT` gains `actor_required`, `receipt_mismatch` and `ledger_entry_reused`; `tests/fixtures/actions/act02_refusal_codes.json` lists them, so the server scan and the UI pin still agree. None says "Applied".
+
 ## 2026-10-30 - ACT-02: carries the ACT-01 receipt fix to the routes
 
 - **Refusals.** `actor_required` (403), `receipt_mismatch` (409, with `field`) and `ledger_entry_reused` (409) are mapped. A receipt refused after the Cortex append appends an `action.apply.void` / `action.decline.void` and rolls the write back.
@@ -43,6 +58,14 @@ Append-only. Never edited, only added to. Newest first.
 - **Identity.** Apply and decline refuse a blank, `None` or shipped-default actor (`ActorRequired`); `action_decisions.actor_id` records it. DR-0004 Option A, no dual-control claim.
 - **Inputs.** Decline checks `approval_ref` before it flips the status. `approval_ref` needs 3 visible characters (code and table CHECK). Values are ASCII digits, at most 40 significant digits. The VerifyFailed branch is tested. The demo needs an explicit `ACT01_DEMO_URL`.
 - **Not fixed.** The advisory-lock unlock on an aborted transaction (pre-existing `advisory_lock.py`, shared with main's confirm) is left for its own ticket.
+
+## 2026-10-30 - ACT-03: governed actions on AmendPage behind the ACT-02 probe
+
+- **Flag.** UI only. AmendPage probes `GET /v1/amend/actions/types`; only a 200 (server `DMS_ACTIONS=1`) renders the new section. Probing (null) and off render origin/main `58fcaa5`'s AmendPage markup byte for byte (`AmendPage.test.ts` against a committed render of that commit's file). An action-kind row keeps the legacy Confirm while off.
+- **UI.** `Governed actions`: typed propose form (SKU, location, reorder level, reason, optional cited audit id), an `ActionCard` per pending action (field diff, required approval reference, Apply disabled under 3 characters, firedRef guard, Decline), receipt panels for this session's applies, recent decisions with Propose revert (a new proposal, never an apply), current overrides.
+- **Proof.** `ActionReceiptPanel` says "Applied - 1 row in DMS writeback changed and re-read" only when status is applied, verified, rows_changed 1, the write executed, a ledger entry id exists, the hashes differ and `chain.ok` is true. Otherwise it names the defect and never says "Applied". Same-identity apply is disclosed. Every ACT-01/02 refusal code has one sentence; the code set is pinned to `tests/fixtures/actions/act02_refusal_codes.json`, which `tests/test_act_03_refusal_fixture.py` pins to the server source.
+- **Held files.** None touched (`api.ts`, `types.ts`, `AnswerMessage.tsx`, `ResultView.tsx`, `AppContext.tsx`, `ChatPage.tsx`, `StudioPage.tsx`). `AmendPage.tsx` is free.
+- **Tests.** At `6a6456f`: the five ACT-03 vitest files 41 passed, the full UI vitest 168 passed (29 files), `npm run build` (tsc + vite) passed, `tests/test_act_03_refusal_fixture.py` 2 passed, every `tests/invariants` file passed, `ruff` and `lint-imports` clean. `scripts/verify/act_03_ui_demo.py` printed `ACT-03 PROOF OK @6a6456f0`. The live visual check (Cursor) was not run. DR-0008 is still Proposed. Not PASS.
 
 ## 2026-10-30 - ACT-02: governed action routes behind DMS_ACTIONS
 
