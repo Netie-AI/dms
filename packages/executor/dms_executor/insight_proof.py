@@ -962,6 +962,58 @@ def _view_bodies(con: Any) -> dict[str, list[str | None]] | None:
     return out
 
 
+def _known_relations(con: Any, views: Mapping[str, Any]) -> frozenset[str] | None:
+    """Bare casefolded names of every table and view on the serving connection.
+
+    None when the catalog cannot answer, which callers treat as all-PII.
+    """
+    try:
+        rows = con.execute("SELECT table_name FROM duckdb_tables()").fetchall()
+    except Exception:  # noqa: BLE001 - a catalog that cannot answer fails closed
+        return None
+    return frozenset({str(name).casefold() for (name,) in rows} | set(views))
+
+
+def _reads_unmodelled(
+    relation: str, tables: frozenset[str], known: frozenset[str] | None
+) -> bool:
+    """True when ``relation`` reads a name the taint walker cannot see into.
+
+    A table function anywhere in the relation (a table macro ``tm()``,
+    ``query_table('...')``, ``query('...')``, ``read_csv``, ``range``) returns
+    rows the catalog does not describe as a table or a view, so no pii item can
+    be traced through it (verify round 8: a view over a table macro served a
+    marked column's values as a proven headline). With ``known``, any name the
+    relation reads that is neither a known table nor a known view (CTE names
+    aside) is unmodelled too. Text that does not parse is unmodelled.
+    """
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import SqlglotError
+
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    if any(name.endswith(")") for name in tables):
+        return True
+    text = relation.strip()
+    while text.startswith("(") and text.endswith(")"):
+        text = text[1:-1].strip()
+    if not re.match(r"(?is)^\s*(select|with|from)\b", text):
+        text = f"SELECT * FROM {text}"
+    try:
+        tree = sqlglot.parse_one(text, read=SERVING_DIALECT)
+    except (SqlglotError, ValueError):
+        return True
+    if tree is None:
+        return True
+    if any(not isinstance(t.this, exp.Identifier) for t in tree.find_all(exp.Table)):
+        return True
+    if known is None:
+        return False
+    ctes = {str(c.alias).casefold() for c in tree.find_all(exp.CTE) if c.alias}
+    return any(name not in known for name in tables - ctes)
+
+
 def _generated_columns(con: Any) -> dict[str, list[tuple[str, str | None]]] | None:
     """Bare casefolded table -> ``(column, generation expression)`` for its generated columns.
 
@@ -1023,6 +1075,7 @@ def _relation_taint(
     views: Mapping[str, list[str | None]],
     depth: int = 0,
     generated: Mapping[str, list[tuple[str, str | None]]] | None = None,
+    known: frozenset[str] | None = None,
 ) -> Collection[str]:
     """Casefolded output names of ``relation`` that carry a marked column.
 
@@ -1038,10 +1091,14 @@ def _relation_taint(
     under a new name, because it reads as a plain column of a base table). The
     pass runs to a fixpoint, so a generated column that reads a marked generated
     column is marked too (verify round 7).
+
+    A relation, or any view body under it, that reads a table function or a
+    name outside ``known`` (the catalog's tables and views) is all-PII
+    (``_reads_unmodelled``, verify round 8).
     """
     generated = generated or {}
     tables = _read_tables(relation)
-    if not tables:
+    if not tables or _reads_unmodelled(relation, tables, known):
         return _ALL_PII
     marked = {column for rel, column in items if not rel or rel in tables}
     for table in sorted(tables & set(generated)):
@@ -1067,7 +1124,7 @@ def _relation_taint(
         for body in views[table]:
             if body is None:
                 return _ALL_PII
-            inner = _relation_taint(body, items, views, depth + 1, generated)
+            inner = _relation_taint(body, items, views, depth + 1, generated, known)
             if isinstance(inner, _AllColumns):
                 return _ALL_PII
             marked |= set(inner)
@@ -1090,7 +1147,8 @@ def _pii_columns(onto: Ontology, obj: str, con: Any = None) -> Collection[str]:
     and a generated column whose expression reads a marked column is marked.
     An object whose tables cannot be resolved, whose subquery does not parse,
     or whose views or generated columns cannot be listed is all-PII: nothing
-    of it is grouped by.
+    of it is grouped by. So is one that reads, directly or through a view, a
+    table function or a name that is not a table or view in the catalog.
     """
     items = _pii_items(onto)
     if not items:
@@ -1100,7 +1158,10 @@ def _pii_columns(onto: Ontology, obj: str, con: Any = None) -> Collection[str]:
     generated = _generated_columns(con) if con is not None else {}
     if views is None or generated is None:
         return _ALL_PII
-    return _relation_taint(relation, items, views, generated=generated)
+    known = _known_relations(con, views) if con is not None else None
+    if con is not None and known is None:
+        return _ALL_PII
+    return _relation_taint(relation, items, views, generated=generated, known=known)
 
 
 def _item_meta(onto: Ontology) -> list[dict[str, Any]]:
