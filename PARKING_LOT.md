@@ -315,7 +315,7 @@ not send `dms_payload` yet, so Cortex's plan+SQL path is not armed from DMS.
 **Unlock:** WIRE-01b (#452) merges `dms_payload` on the ask; then `masked` comes
 from the PII column classification, fail closed (absent is masked).
 
-## P-DMS-37 - Free-text measure expressions, measure filters, arithmetic, ratios (dms#283)
+## P-DMS-39 - Free-text measure expressions, measure filters, arithmetic, ratios (dms#283)
 
 A measure in ONTO-CONFIRM-01 is a structured spec: one aggregate enum over one landed
 column of one grain object. No expression text, no filters, no `SUM(qty*unit_price)`, no
@@ -323,7 +323,7 @@ ratios. Such questions abstain `no_declared_measure` on the Space.
 **Unlock:** a paying pilot's real question set needs one. Design it then as structured
 predicates reusing `Ontology.compile`'s filter allowlist, never as text.
 
-## P-DMS-38 - A model or Cortex measure proposer, and the `cortex` source value (dms#283)
+## P-DMS-40 - A model or Cortex measure proposer, and the `cortex` source value (dms#283)
 
 The proposer is deterministic code in DMS (`source` is `derived` or `manual`); contract
 1.2.0 has no Cortex proposal call and Cortex is the gate only.
@@ -331,14 +331,14 @@ The proposer is deterministic code in DMS (`source` is `derived` or `manual`); c
 that returns structured specs only. Same validator, same steward confirm, and only then
 add `cortex` to the source enum.
 
-## P-DMS-39 - Steward-declared or steward-confirmed LINKS (dms#283/#284)
+## P-DMS-41 - Steward-declared or steward-confirmed LINKS (dms#283/#284)
 
 Links stay MEASURED only. A steward click can never override a measurement (Databricks
 `rely.at_most_one_match` is the counter-example). A missing declaration abstains
 `no_declared_link`.
 **Unlock:** a pilot source with no declared foreign keys.
 
-## P-DMS-40 - ONTO-PROMOTE-01: ontology version promotion (routes to prd-agent)
+## P-DMS-42 - ONTO-PROMOTE-01: ontology version promotion (routes to prd-agent)
 
 Today a changed schema fingerprint leaves the old version answering and its measures
 bound to the old catalog; a drifted Space cannot gain measures. Promotion
@@ -346,7 +346,7 @@ bound to the old catalog; a drifted Space cannot gain measures. Promotion
 **Unlock:** the prd-agent slices ONTO-PROMOTE-01 and the founder answers the promotion
 question (founder question 4 in the spec).
 
-## P-DMS-41 - Measure edit, revise/supersede, retire state, audit GET, bulk confirm, proposal expiry
+## P-DMS-43 - Measure edit, revise/supersede, retire state, audit GET, bulk confirm, proposal expiry
 
 A confirmed definition is immutable; to change one, withdraw it and confirm again. No
 edit route, no supersede route, no new state, no audit GET (onto_audit rows exist), no
@@ -354,32 +354,32 @@ bulk route (Studio fans out single confirms), and proposals never silently expir
 **Unlock:** a steward workflow gap observed in a pilot; each is its own ticket via the
 prd-agent. Four gate ids is the smallest live-Cortex exposure.
 
-## P-DMS-42 - Ledgering refused confirms to Cortex
+## P-DMS-44 - Ledgering refused confirms to Cortex
 
 A refused confirm writes `onto_audit` `measure.confirm_refused` only; it is not ledgered.
 **Unlock:** an auditor or pilot asks for refusal evidence in the one ledger.
 
-## P-DMS-43 - Four-eyes (proposer != confirmer)
+## P-DMS-45 - Four-eyes (proposer != confirmer)
 
 Impossible today: the confirmer is the configured actor (DR-0004 Option A), "steward
 confirmed" means configuration plus network position, not a person.
 **Unlock:** OIDC identity replaces DR-0004 Option A.
 
-## P-DMS-44 - Steward alias phrases and Bahasa Malaysia fit tokens
+## P-DMS-46 - Steward alias phrases and Bahasa Malaysia fit tokens
 
 The measure fit check's aggregate, quantity and qualifier vocabularies are English only; its
 condition test reads every script, so a BM question has unbound words and falls to the
 labelled (non-certified) lane. BM steward messages are not written.
 **Unlock:** steward alias phrases designed, and a pilot customer asking in BM.
 
-## P-DMS-45 - Ad hoc ROUND/CAST-of-aggregate answers; a steward reject vetoing the ad hoc lane
+## P-DMS-47 - Ad hoc ROUND/CAST-of-aggregate answers; a steward reject vetoing the ad hoc lane
 
 The ad hoc lane answers only simple aggregates (no wrapping of the aggregate output),
 and a steward reject does not veto it ("without a confirmed measure").
 **Unlock:** the founder reopens the ad hoc-lane scope after measuring the abstain rate on
 a pilot's real questions.
 
-## P-DMS-46 - Small hardening items deliberately left out of the measures slice
+## P-DMS-48 - Small hardening items deliberately left out of the measures slice
 
 Retyping `Settings.dms_actor_role` to a Literal (would turn an existing config typo into
 a startup failure); live `schema_fingerprint` comparison at ask time (the per-measure
@@ -391,14 +391,14 @@ INVARIANT-CHANGE line the founder has not given).
 a DELETE misuse, `live_ask` growing another lane, a second API consumer, and a founder
 INVARIANT-CHANGE respectively.
 
-## P-DMS-47 - Standing P0 candidate: EXPLAIN on a write-mode DuckDB connection
+## P-DMS-49 - Standing P0 candidate: EXPLAIN on a write-mode DuckDB connection
 
 `EXPLAIN` on a write-mode DuckDB connection can execute a trailing non-query statement.
 Containment today is `resolve_declared_relations` refusing non-Query roots first. The
 cheap fix is a read-only connection for EXPLAIN.
 **Unlock:** its own ticket via the prd-agent; do not fold it into the measures slice.
 
-## P-DMS-48 - Founder/Cursor-gated steps of the confirmed-measures build (DR-0007)
+## P-DMS-50 - Founder/Cursor-gated steps of the confirmed-measures build (DR-0007)
 
 Held back: the new badge value `L2_UNCONFIRMED` anywhere in product code
 (`envelope.ALLOWED_BADGES`, `xlsx_export`, executor `_BADGE_MAP`, any emitted envelope),
@@ -411,7 +411,7 @@ and the flip of confirmed-measure answers to `L1_GOVERNED_METRIC` (step 11).
 founder releases the badge policy; the L1 flip additionally needs every gate in spec
 section 7.4/7.5 green.
 
-## P-DMS-49 - Measure names may be SQL keywords
+## P-DMS-51 - Measure names may be SQL keywords
 
 `measure_spec.NAME_RE` (`^[a-z][a-z0-9_]{1,47}$`) accepts a SQL keyword such as `select` or
 `group` as a measure name. Safe today: the measure builder quotes every identifier it emits
@@ -420,7 +420,7 @@ and a name must also differ from every table, column and demo-pack id.
 template), or a steward reports a keyword name confusing a viewer; then add a reserved-word
 list to the name rule and to migration 0010's `onto_measure_name_ck` together.
 
-## P-DMS-50 - GET /ontology/measures is ungated under the single-actor model
+## P-DMS-52 - GET /ontology/measures is ungated under the single-actor model
 
 The list route does not call `compliance_gate`; only the mutation routes do (hard rule 8
 covers mutations). Under the single configured actor (DR-0004) there is no second principal
@@ -428,7 +428,7 @@ to deny, and the view already strips probe SQL and values unless the caller may 
 **Unlock:** DR-0004 is superseded by real per-user authentication, or a role other than
 viewer/steward/admin is introduced; the read then gets its own Cortex task id and gate.
 
-## P-DMS-51 - compliance_gate metadata beyond filled_template/resource is not forwarded
+## P-DMS-53 - compliance_gate metadata beyond filled_template/resource is not forwarded
 
 `cortex_client.gate` forwards only `filled_template` and `resource` to Cortex. The measure
 routes put `space_id`, `actor_role` and `measure_id` in the gate metadata, and they are
@@ -437,7 +437,7 @@ dropped on the wire, so Cortex F5 cannot yet decide on them.
 (cortex-contract bump); `cortex_client.gate` then forwards it and the routes' tests assert
 it on the wire.
 
-## P-DMS-52 - Confirmed measures stay answers_certified=true on GET after a lake retype
+## P-DMS-54 - Confirmed measures stay answers_certified=true on GET after a lake retype
 
 `GET /ontology/measures` reports `answers_certified` from the stored row and the active
 version. A column retyped in the lake after the confirm is caught only at ask time (step 6
@@ -446,7 +446,7 @@ ask will refuse.
 **Unlock:** a steward is misled by it in a pilot, or the list gains a lake probe cheap enough
 to run per request; until then ask-time pruning is the authority and the answer abstains.
 
-## P-DMS-53 - Confirmed-lane coverage is by word, not by relation (dms#284)
+## P-DMS-55 - Confirmed-lane coverage is by word, not by relation (dms#284)
 
 `account_for_question` accounts for tokens and literals, so it cannot tell which column a
 shared word belongs to: a literal the question states is accepted whatever column the plan
@@ -458,9 +458,9 @@ The confirmed-lane adversary round found it concretely: "total budget of 2 schoo
 filter `school_id = 2` is accepted (the number sits before the word instead of after a word of
 its column). A numeric literal that must follow a word of its own column is the candidate rule.
 **Unlock:** a pilot shows a wrong certified figure from either, or steward alias phrases
-(P-DMS-44) give the lane a proven phrase-to-value mapping to re-admit normalised values.
+(P-DMS-46) give the lane a proven phrase-to-value mapping to re-admit normalised values.
 
-## P-DMS-54 - A source column named _src or _ingest_id displaces the row provenance
+## P-DMS-56 - A source column named _src or _ingest_id displaces the row provenance
 
 `write_bronze_rows` builds `SELECT src.*, [...] AS _src, ... AS _ingest_id`. A source column
 literally named `_src` (or `_ingest_id`) lands under that name and DuckDB renames the real
@@ -472,7 +472,7 @@ injection, and is not fixed there.
 the fix is to rename the colliding source column at landing (as a control character already
 is) and name it on the receipt.
 
-## P-DMS-55 - A very large confirmed total reads as a PII mask token under a green badge
+## P-DMS-57 - A very large confirmed total reads as a PII mask token under a green badge
 
 A confirmed `SUM` of 16 or more digits (a `numeric(20,2)` budget total) comes back from the
 envelope's PII layer as `DMSMASK_account_01` with `abstained=false`: the digit run looks like an
@@ -483,7 +483,7 @@ masked figure is a product decision.
 reason, or exempt a numeric aggregate the lane computed from the scan); the lane then asserts
 it at the envelope.
 
-## P-DMS-56 - A second subject between two values hides a cross-column AND (dms#284)
+## P-DMS-58 - A second subject between two values hides a cross-column AND (dms#284)
 
 The confirmed lane refuses two stated values that the question joins with `and` or a comma while
 the plan filters them on two different columns ("How many schools are there in North and
@@ -493,10 +493,10 @@ them. A value restated with a phrase of its own ("schools in North and schools i
 them: a believable 0 or a small wrong figure under the confirmed badge. The text cannot tell a
 second subject from a second condition ("In North, how many schools are public?" is one). The
 opposite cost is accepted: "schools that are public and in North" is refused.
-**Unlock:** Cortex reports an OR / list intent on the plan, or steward alias phrases (P-DMS-44)
+**Unlock:** Cortex reports an OR / list intent on the plan, or steward alias phrases (P-DMS-46)
 give a phrase-to-column map; the lane then admits the explicit AND and refuses the rest.
 
-## P-DMS-57 - A contract ask's own badge reaches a SQL-source Space as L1 or L0 (dms#284)
+## P-DMS-59 - A contract ask's own badge reaches a SQL-source Space as L1 or L0 (dms#284)
 
 On a non-demo Space, the contract-ask tail of `Executor._live_ask` maps the engine's badge straight
 onto the envelope. An engine `governed_metric` or `certified` over single-table SQL (so
@@ -505,7 +505,7 @@ with `abstained=false`, the engine's own text and rows, no `measure_basis`, on a
 confirmed measure and no verified query. DR-0007 says only a steward-confirmed measure backs a
 certified-tier answer on a Space. Not a regression: it reproduces identically on the merged #316
 baseline `1fb6ab0`, and the confirmed lane's own answers stay `L2_VALIDATED` plus `measure_basis`.
-It is the contract-ask half of the egress finalizer held back in P-DMS-48 (spec 5.7), found by the
+It is the contract-ask half of the egress finalizer held back in P-DMS-50 (spec 5.7), found by the
 regression-honesty adversary, and not built under that carve-out.
 Pinned as a KNOWN GAP by `tests/test_space_contract_ask_badge_gap.py`: it asserts today's badge, the
 rendered text, the rows and the absent basis through `POST /v1/chat/ask`, and turns red the day the
@@ -515,7 +515,7 @@ green, and the 891 tests of the Space, ask-mapping, generative and invariants fi
 **Decision the founder owes:** the adversary's clamp (`L2_VALIDATED`, both badges) and spec 5.7
 differ. 5.7 leaves `L0_CERTIFIED` untouched (a Cortex verified-query hit may be legitimate) and
 abstains an L1 without a valid basis as `uncertified_l1`.
-**Unlock:** P-DMS-48 unlocks (Cursor UI parity and the founder's badge policy). Then pick clamp or
+**Unlock:** P-DMS-50 unlocks (Cursor UI parity and the founder's badge policy). Then pick clamp or
 abstain, whether L0 is touched, invert the pin to assert no L0/L1 without a valid `measure_basis`
 (and an abstain's reason and text if that is the choice), and strike this entry.
 

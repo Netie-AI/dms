@@ -1,4 +1,4 @@
-"""KNOWN GAP (P-DMS-57, carve-out of P-DMS-48 / spec step 9): the contract ask's own badge.
+"""KNOWN GAP (P-DMS-59, carve-out of P-DMS-50 / spec step 9): the contract ask's own badge.
 
 A SQL-source Space answers a certified-tier badge only through a steward-confirmed measure
 (DR-0007). The contract-ask tail of ``Executor._live_ask`` does not enforce that: it maps the
@@ -16,7 +16,7 @@ These tests do NOT bless the badge. They pin today's behaviour exactly so that:
   turn red. Invert them then: assert the badge is not ``L0_CERTIFIED``/``L1_GOVERNED_METRIC``
   without a valid ``measure_basis`` (and take the rung the founder decides: clamp to
   ``L2_VALIDATED`` as the adversary proposed, or abstain ``uncertified_l1`` as spec 5.7 reads),
-  then strike P-DMS-57 from PARKING_LOT.md.
+  then strike P-DMS-59 from PARKING_LOT.md.
 
 Everything is asserted at the customer envelope (``POST /v1/chat/ask`` via
 ``assert_envelope_valid``), on the rendered text and the returned rows, not on the SQL.

@@ -86,7 +86,7 @@ question about "total budget" with SQL it invented, and the envelope calls that
 
 Carve-out in force for this build: steps 8, 9, 9b and 11 are founder/Cursor gated and are
 NOT built. No new badge value appears in product code, `CONFIRMED_MEASURE_BADGE` stays
-`L2_VALIDATED`, and ad hoc generated SQL keeps today's `L2_VALIDATED` path. See P-DMS-48.
+`L2_VALIDATED`, and ad hoc generated SQL keeps today's `L2_VALIDATED` path. See P-DMS-50.
 
 ## Step 0 verification (2026-10-01, branch `claude/onto-derive-01`, HEAD `20211d6`)
 
@@ -160,7 +160,7 @@ against a non-seed database in this step.
 - Cost: one measures query, one DESCRIBE per distinct grain relation and up to one probe
   per plan filter literal per ask.
 - Questions needing arithmetic, ratios or measure-level filters abstain on a Space until a
-  pilot needs them (P-DMS-37).
+  pilot needs them (P-DMS-39).
 
 ## Ask-time lane as built (step 10)
 
@@ -328,18 +328,18 @@ against a non-seed database in this step.
 - Accounting is by token and literal, not by relation. A literal is stated when the question
   contains it exactly; the gate cannot tell whether it is stated about the column the plan
   filters ("district 2" and "2 districts" both state `2`). The value probe bounds it
-  (`unmatched_filter_value`) and P-DMS-53 stays open. A dangling frame phrase ("...in a") is
+  (`unmatched_filter_value`) and P-DMS-55 stays open. A dangling frame phrase ("...in a") is
   accepted: it names no value. A vocabulary word that is also a value (a table called `us`)
   is accepted, because it is a name the plan itself carries.
 - Coverage ceiling of the certified lane: Cortex ranks by name tokens and slot filling is
   demo-shaped, so early L1 hits will be mostly ungrouped totals and simple dimensions;
   English tokens only. Measure and report certified hit rate per Space; never claim coverage.
 - Standing P0 candidate outside this slice: EXPLAIN on a write-mode DuckDB connection
-  (P-DMS-47).
-- **Until the egress finalizer ships (P-DMS-48), an `L1_GOVERNED_METRIC` or `L0_CERTIFIED` on a
+  (P-DMS-49).
+- **Until the egress finalizer ships (P-DMS-50), an `L1_GOVERNED_METRIC` or `L0_CERTIFIED` on a
   SQL-source Space is NOT proof of a steward-confirmed measure.** The contract-ask tail trusts the
   engine's badge, so a `governed_metric` or `certified` answer over single-table SQL keeps it with
-  no `measure_basis` (P-DMS-57, pinned by `tests/test_space_contract_ask_badge_gap.py`). A
+  no `measure_basis` (P-DMS-59, pinned by `tests/test_space_contract_ask_badge_gap.py`). A
   confirmed-measure answer is recognised by `measure_basis` and the `measure confirmed:` line, not
   by the badge. Pre-existing on the #316 baseline; this lane did not introduce it.
 
@@ -371,4 +371,4 @@ and dms#284.
 ## Related
 
 DR-0004 (identity is configuration), CLAUDE.md rules 1-12, PARKING_LOT P-DMS-4 and
-P-DMS-37 to P-DMS-48, `docs/decisions/0001-record-decisions-in-this-repo.md`.
+P-DMS-39 to P-DMS-50, `docs/decisions/0001-record-decisions-in-this-repo.md`.
