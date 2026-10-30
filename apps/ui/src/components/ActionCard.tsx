@@ -90,7 +90,7 @@ export function ActionCardView({
         <input
           data-testid="action-approval-ref"
           aria-label="Approval reference"
-          placeholder="Approval reference (required)"
+          placeholder="Change ticket id, e.g. CHG-1234 (required)"
           required
           value={approvalRef}
           onChange={(e) => onApprovalRefChange(e.target.value)}

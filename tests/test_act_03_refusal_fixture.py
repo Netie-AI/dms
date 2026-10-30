@@ -34,6 +34,8 @@ def _server_codes() -> set[str]:
         codes |= set(re.findall(r'ActionSpecError\(\s*"([a-z_]+)"', text))
         codes |= set(re.findall(r'PreconditionFailed\(\s*"([a-z_]+)"', text))
         codes |= set(re.findall(r'^\s*code = "([a-z_]+)"', text, re.M))
+        # approval_ref_problem returns its refusal code (ApprovalRefInvalid carries it).
+        codes |= set(re.findall(r'return "(approval_ref_[a-z_]+)"', text))
     queries = _read("packages/core/dms_core/control_plane/action_queries.py")
     codes |= set(re.findall(r'EvidenceRefused\(\s*"([a-z_]+)"', queries))
     amend = _read("apps/api/dms_api/routes/amend.py")

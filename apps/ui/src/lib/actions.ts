@@ -203,6 +203,9 @@ export const REFUSAL_TEXT: Record<string, string> = {
   reason_too_long: "The reason is too long.",
   approval_ref_required: "An approval reference of at least 3 characters is required.",
   approval_ref_too_long: "The approval reference is longer than 200 characters; use the ticket or change id.",
+  approval_ref_invalid:
+    "The approval reference must be one ticket or change id (letters, digits and - _ . / : #, with at least one letter), not an email, a sentence or a bare number. Nothing was written.",
+  evidence_id_invalid: "The cited answer's audit id is not a valid id, so nothing was proposed.",
   // state (409)
   object_changed: "The value changed since this was proposed. Propose again from the current value.",
   token_diff_mismatch:
@@ -225,6 +228,8 @@ export const REFUSAL_TEXT: Record<string, string> = {
     "A ledger entry was written but the change did not commit; a void entry was requested and nothing changed.",
   receipt_mismatch:
     "The receipt did not match what the database holds, so it was refused; a void entry was requested and nothing changed.",
+  record_failed_after_append:
+    "A ledger entry was written but the database failed before the decision was recorded; a void entry was requested and nothing changed.",
   commit_outcome_unknown:
     "A ledger entry was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.",
   ledger_entry_reused:
@@ -297,6 +302,9 @@ export function describeRefusal(code: string, detail?: RefusalDetail | null): st
   }
   if (c === "commit_failed_after_append" && detail?.cortex_entry_id) {
     return `Ledger entry ${detail.cortex_entry_id} was written but the change did not commit; a void entry was requested and nothing changed.`;
+  }
+  if (c === "record_failed_after_append" && detail?.cortex_entry_id) {
+    return `Ledger entry ${detail.cortex_entry_id} was written but the database failed before the decision was recorded; a void entry was requested and nothing changed.`;
   }
   if (c === "commit_outcome_unknown" && detail?.cortex_entry_id) {
     return `Ledger entry ${detail.cortex_entry_id} was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.`;

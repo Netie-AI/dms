@@ -117,6 +117,23 @@ describe("refusals", () => {
     expect(s).not.toContain("Applied");
   });
 
+  it("record_failed_after_append names the voided entry and says nothing changed", () => {
+    const s = describeRefusal("record_failed_after_append", {
+      code: "record_failed_after_append",
+      cortex_entry_id: "e1",
+    });
+    expect(s).toBe(
+      "Ledger entry e1 was written but the database failed before the decision was recorded; a void entry was requested and nothing changed.",
+    );
+    expect(s).not.toContain("Applied");
+  });
+
+  it("approval_ref_invalid says what a ref must look like", () => {
+    const s = describeRefusal("approval_ref_invalid", { code: "approval_ref_invalid", max: 200 });
+    expect(s).toContain("one ticket or change id");
+    expect(s).toContain("Nothing was written.");
+  });
+
   it("object_changed names the current value", () => {
     const s = describeRefusal("object_changed", {
       code: "object_changed",
