@@ -499,6 +499,24 @@ def test_replay_after_an_update_reports_drift_by_label(world: _World, bump: bool
     assert world.cortex.events("insight.replayed")[-1].payload["verdict"] == "changed"
 
 
+def test_a_replay_proof_cannot_widen_its_own_tolerance(world: _World) -> None:
+    """INS-PROOF-01 verify round 4: tolerance is conservation_tolerance(n_groups)."""
+    from dms_executor import insight_proof as ip
+    from dms_executor.insight_register import check_replay_proof
+
+    asset_id, _pre, _ = _pin(world)
+    res = world.replay(asset_id)
+    assert res.status_code == 200, res.text
+    proof = res.json()["proof"]
+    assert proof["verdict"] == "unchanged"
+    assert proof["tolerance"] == ip.conservation_tolerance(proof["n_groups"])
+    check_replay_proof(proof)
+    widened = {**proof, "tolerance": proof["tolerance"] + 1000.0,
+               "grouped_total": proof["raw_total"] + 500.0}
+    with pytest.raises(ValueError, match="tolerance not bound"):
+        check_replay_proof(widened)
+
+
 def test_drift_with_unknown_watermarks_does_not_claim_no_source_change(world: _World) -> None:
     world.marks.stamp = None
     asset_id, _pre, _ = _pin(world)
@@ -816,6 +834,47 @@ def test_a_pii_mark_after_the_pin_stops_replay_and_withholds_the_listed_headline
         assert label not in listed.text
     rec = [r for r in world.records() if r.question == "insight:" + pre["proof"]["insight_id"]]
     assert rec[-1].badge == "abstain" and rec[-1].row_count == 0
+
+
+def test_a_pii_mark_under_a_view_stops_replay_and_withholds_the_listed_headline(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INS-PROOF-01 verify round 4: the pin gate reads views, as the run gate does."""
+    wh = _seed_sales(tmp_path / "lake_view.duckdb")
+    _update(wh, "CREATE VIEW Sales.TerritoryV AS SELECT territory_id, name AS region "
+                "FROM Sales.Territory")
+    w = _build(monkeypatch, wh, approved_store=True,
+               grants={**_B_GRANTS, "Sales.TerritoryV": "TRUE"})
+    for it in w.onto.approved:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = "Sales.TerritoryV"
+            it["payload"]["attributes"] = ["territory_id", "region"]
+    headline = "2 of 4 Territory.region values (North, South) carry 86.4 pct of order_amount"
+    pre = w.preview(_insight_id(w, headline))
+    assert pre.status_code == 200, pre.text
+    got = w.confirm(pre.json()["token"])
+    assert got.status_code == 200, got.text
+    asset_id = str(got.json()["asset_id"])
+    assert w.pins().json()["pins"][0]["headline"] == headline
+
+    w.onto.approved.append(_pii_item())  # Sales.Territory.name, which the view renames
+    assert w.run().json()["insights"] == []
+    before = list(w.cortex.submits)
+    res = w.replay(asset_id)
+    assert res.status_code == 200, res.text
+    env = res.json()["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["text"] == _PII_TEXT
+    assert env["values"] == [] and env["rows"] == [] and env["sql_used"] is None
+    assert_envelope_valid(env)
+    assert res.json()["proof"]["code"] == "definition_changed:pii_dimension"
+    assert w.cortex.submits == before
+    listed = w.pins()
+    pins = listed.json()["pins"]
+    assert pins[0]["headline"] is None and pins[0]["headline_withheld"] == "pii_dimension"
+    for label in ("North", "South", "86.4"):
+        assert label not in res.text
+        assert label not in listed.text
 
 
 @pytest.mark.parametrize("how", ["object_and_link", "link_only", "new_version"])

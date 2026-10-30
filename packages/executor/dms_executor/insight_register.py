@@ -360,7 +360,7 @@ def list_pinned(executor: Any, *, space_id: str | None) -> list[dict[str, Any]]:
     if not rows:
         return []
     loaded = _verified(wh)
-    return [_public(r, _headline_withheld(loaded, r)) for r in rows]
+    return [_public(r, _headline_withheld(loaded, r, wh)) for r in rows]
 
 
 def _verified(wh: Path) -> Any:
@@ -391,21 +391,34 @@ def _dimension_of(pin: Mapping[str, Any]) -> tuple[str, str, dict[str, str]] | N
     return obj, attr, {k: v for k, v in via}
 
 
-def _pii_hit(loaded: Any, obj: str, attr: str) -> bool:
-    """INS-PROOF-01's PII gate on the pinned dimension, now. Unknown object: a hit."""
+def _pii_hit(loaded: Any, obj: str, attr: str, wh: Path) -> bool:
+    """INS-PROOF-01's PII gate on the pinned dimension, now. Unknown object: a hit.
+
+    The gate reads views through the serving connection (a view over a marked
+    table carries the mark); a warehouse that cannot be opened is a hit.
+    """
+    from dms_executor.demo_warehouse import connect_serving
+
     if loaded is None or obj not in loaded.objects:
         return True
-    return attr.casefold() in ip._pii_columns(loaded, obj)
+    try:
+        con = connect_serving(wh)
+    except Exception:  # noqa: BLE001 - a catalog that cannot be read clears nothing
+        return True
+    try:
+        return attr.casefold() in ip._pii_columns(loaded, obj, con)
+    finally:
+        con.close()
 
 
-def _headline_withheld(loaded: Any, pin: Mapping[str, Any]) -> str | None:
+def _headline_withheld(loaded: Any, pin: Mapping[str, Any], wh: Path) -> str | None:
     """Why a stored headline (it names labels) may not be listed now, or None."""
     if loaded is None:
         return "ontology_unverified"
     dim = _dimension_of(pin)
     if dim is None:
         return "definition_changed"
-    return "pii_dimension" if _pii_hit(loaded, dim[0], dim[1]) else None
+    return "pii_dimension" if _pii_hit(loaded, dim[0], dim[1], wh) else None
 
 
 # --------------------------------------------------------------------------
@@ -755,6 +768,10 @@ def check_replay_proof(proof: Mapping[str, Any]) -> None:
         raise ValueError("not a served verdict")
     if proof.get("conserves") is not True:
         raise ValueError("does not conserve")
+    # INS-PROOF-01 verify round 4: the tolerance is a fixed function of n_groups,
+    # so a replay proof cannot widen its own slack.
+    if float(proof["tolerance"]) != ip.conservation_tolerance(int(proof["n_groups"])):
+        raise ValueError("tolerance not bound to n_groups")
     if abs(float(proof["raw_total"]) - float(proof["grouped_total"])) > float(
         proof["tolerance"]
     ) + 1e-6:
@@ -816,7 +833,7 @@ def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
     if dim is None or dim[0] not in loaded.objects:
         return _refused(pin, "definition_changed:dimension", "definition_changed")
     dim_obj, dim_attr, via = dim
-    if _pii_hit(loaded, dim_obj, dim_attr):
+    if _pii_hit(loaded, dim_obj, dim_attr, wh):
         return _refused(pin, "definition_changed:pii_dimension", "definition_changed")
 
     sql = str(pin["sql_text"])
@@ -879,7 +896,7 @@ def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
     groups = len(run1)
     grouped_sum = sum(float(v) for v in values)
     totals = {float(r["grouped_total"]) for r in run1 if ip._finite(r["grouped_total"])}
-    tol = 0.005 * groups + 0.005
+    tol = ip.conservation_tolerance(groups)
     slack = tol + 1e-6
     if not (len(totals) == 1 and abs(grouped_sum - raw_total) <= slack
             and abs(next(iter(totals)) - raw_total) <= slack):
