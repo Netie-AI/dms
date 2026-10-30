@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from cortex_client import CortexClient
@@ -741,8 +741,12 @@ class Executor:
         session_id: str | None = None,
         tables: list[str] | None = None,
         ask_path: str | None = None,
+        plan_sql_confirm: Literal["yes", "no"] | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
+
+        ``plan_sql_confirm`` rides on the contract ask only: it is the Yes to a
+        Cortex reconfirm (``confirm_reconfirm``).
 
         Every ask envelope carries ``served_attribution``. When the Insights
         generate seam ran, its setup fields reach the envelope on every path,
@@ -793,6 +797,7 @@ class Executor:
                         tables=tables,
                         ask_path=ask_path,
                         seen=seen,
+                        plan_sql_confirm=plan_sql_confirm,
                     )
                     if serving_deadline_missed():
                         raise ServingDeadlineExceeded()
@@ -939,6 +944,7 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
         seen: list[dict[str, Any] | None],
+        plan_sql_confirm: Literal["yes", "no"] | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -1356,6 +1362,7 @@ class Executor:
                     question=question,
                     session_id=acl.session_id,
                     space_id=space_id,
+                    plan_sql_confirm=plan_sql_confirm,
                 )
             )
         except (
@@ -1377,6 +1384,7 @@ class Executor:
                         question=question,
                         session_id=acl.session_id,
                         space_id=space_id,
+                        plan_sql_confirm=plan_sql_confirm,
                     )
                 )
             else:
@@ -1555,7 +1563,11 @@ class Executor:
         pending = take_pending(token)
         if pending is None:
             raise KeyError(token)
+        # A Cortex reconfirm is answered on the contract (plan_sql_confirm).
+        cortex_origin = pending.get("cortex_confirm") is True
         if not yes:
+            if cortex_origin:
+                return self._cortex_confirm_no(pending)
             return decline_envelope(pending)
         if reconfirm_run_held_enabled() and held_ready(pending):
             return self._run_held_sql(pending)
@@ -1568,6 +1580,7 @@ class Executor:
             session_id=pending.get("session_id"),
             tables=pending.get("tables"),
             ask_path=pending.get("ask_path"),
+            plan_sql_confirm="yes" if cortex_origin else None,
         )
         offered = self.offer_reconfirm(
             env,
@@ -1596,6 +1609,71 @@ class Executor:
                 or str(offered.get("badge") or "") == "ABSTAIN",
             )
         return offered
+
+    def _cortex_confirm_no(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """No on a Cortex reconfirm. Cortex logs the pipeline-failure ticket.
+
+        The original question goes back with ``plan_sql_confirm=no``. Whatever
+        Cortex returns, the customer reads "not found in the database": a No
+        never serves. If Cortex cannot be reached the local decline runs, so
+        the ticket is still written, and the envelope says so.
+        """
+        from dms_executor.envelope import assert_envelope_valid
+        from dms_executor.reconfirm import NOT_FOUND, decline_envelope
+
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        question = str(pending.get("question") or "").strip()
+        raw_tables = pending.get("tables")
+        tables = list(raw_tables) if isinstance(raw_tables, list) else None
+        try:
+            if self._cortex is None:
+                raise RuntimeError("CortexClient required for a reconfirm No")
+            acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
+            if acl.session_id not in self._bound_sessions:
+                self.bind_session(acl)
+            resp = self._cortex.ask(
+                AskRequest(
+                    question=question,
+                    session_id=acl.session_id,
+                    space_id=space_id,
+                    plan_sql_confirm="no",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            env = decline_envelope(pending)
+            code = classify_submit_error(exc).code
+            env["assumptions"] = [
+                *(env.get("assumptions") or []),
+                f"cortex confirm-no not delivered: {code}",
+            ]
+            return env
+        assumptions = ["reconfirm declined", "cortex plan_sql_confirm=no"]
+        if not resp.abstained and str(resp.badge or "").lower() != "abstain":
+            # Cortex answered a No. That is not a No; serve nothing.
+            assumptions.append(f"cortex confirm-no returned badge {resp.badge!r}; withheld")
+        audit = resp.receipt_id or resp.audit_id
+        env = build_abstain(
+            reason="reconfirm_no",
+            question=question,
+            stage="reconfirm_no",
+            answer_id=audit or "ans_reconfirm_no",
+            audit_id=audit,
+            text=NOT_FOUND,
+            abstain_reason="reconfirm_no",
+            values=[],
+            rows=[],
+            sql_used=None,
+            assumptions=assumptions,
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="abstain",
+        )
+        assert_envelope_valid(env)
+        return env
 
     def _run_held_sql(self, pending: dict[str, Any]) -> dict[str, Any]:
         """Execute SQL the user confirmed. Grant and read-only checks run again."""
@@ -1808,6 +1886,7 @@ def map_ask_response_to_envelope(
     executed_trace.record(resp.sql_used, len(resp.rows or []))
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
+        DOCUMENT_ROUTE,
         assert_envelope_valid,
         build_answer_envelope,
         normalize_badge,
@@ -1905,7 +1984,17 @@ def map_ask_response_to_envelope(
         resp.contributing_sources, space_id=space_id
     )
     token = resp.drillthrough_token
-    if sources and not token:
+    # Contract 1.7.0 document answer: its cards are the documents it cites
+    # (container "documents", member the file). No SQL ran, so Cortex mints
+    # no drillthrough token and DMS does not invent one.
+    document = str(badge_raw or "").lower() == "document" and not abstained
+    if document and not token:
+        sources = [
+            {**s, "container": s.get("member") or s["container"]}
+            for s in sources
+            if s.get("kind") == "pdf"
+        ]
+    elif sources and not token:
         # E7: never claim sources without a drillthrough token.
         sources = []
     route = (resp.route or "").lower()
@@ -1939,19 +2028,30 @@ def map_ask_response_to_envelope(
         "chart": None if abstained else chart,
         "suggestions": list(resp.suggestions or []),
         "audit_id": resp.receipt_id or resp.audit_id,
-        "route": resp.route,
+        "route": DOCUMENT_ROUTE if document else resp.route,
         "drillthrough_token": None if abstained else token,
         "grounded_tables": grounded_tables,
         "competing_scopes": competing_scopes,
         "exclude_reasons": list(resp.exclude_reasons) if resp.exclude_reasons else None,
     }
+    offer = resp.reconfirm if str(badge_raw or "").lower() == "reconfirm" else None
     if abstained:
         env = build_abstain(
-            reason="abstain",
+            reason="reconfirm" if offer else "abstain",
             question=question or "",
             stage="cortex_ask",
             **fields,
         )
+        why = offer.get("why") if isinstance(offer, dict) else None
+        closest = offer.get("closest_question") if isinstance(offer, dict) else None
+        if isinstance(why, str) and why.strip() and isinstance(closest, str) and closest.strip():
+            # Cortex is asking. The chat route turns this into the Yes/No card
+            # (reconfirm.apply_reconfirm); the answer goes back as plan_sql_confirm.
+            env["reconfirm"] = {
+                "why": why.strip(),
+                "closest_question": closest.strip(),
+                "origin": "cortex",
+            }
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
