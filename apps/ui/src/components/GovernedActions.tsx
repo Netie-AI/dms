@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActionCard, type ActionCardOutcome } from "@/components/ActionCard";
 import { ActionReceiptPanel } from "@/components/ActionReceiptPanel";
 import {
@@ -15,13 +15,30 @@ import {
   type ActionReceipt,
   type RefusalInfo,
 } from "@/lib/actions";
-import { cellText } from "@/lib/actionReceipt";
+import { cellText, decisionText } from "@/lib/actionReceipt";
 
 export type GovernedActionsSeed = {
   proposals?: ActionProposal[];
   decisions?: ActionDecision[];
   overrides?: ActionOverride[];
+  receipts?: ActionReceipt[];
 };
+
+/**
+ * Last-request-wins guard for reloads. ``begin()`` starts a load and returns
+ * ``isCurrent``; only the most recent load may write state. A Space switch
+ * starts a new load, so a slower answer for the previous Space is dropped
+ * instead of showing that Space's cards under the new one.
+ */
+export function createLatestGate(): { begin: () => () => boolean } {
+  let seq = 0;
+  return {
+    begin() {
+      const mine = ++seq;
+      return () => mine === seq;
+    },
+  };
+}
 
 function keyText(key: Record<string, string> | null | undefined): string {
   return Object.values(key ?? {}).join(" @ ");
@@ -47,7 +64,7 @@ export function GovernedActions({
   const [proposals, setProposals] = useState<ActionProposal[]>(seed?.proposals ?? []);
   const [decisions, setDecisions] = useState<ActionDecision[]>(seed?.decisions ?? []);
   const [overrides, setOverrides] = useState<ActionOverride[]>(seed?.overrides ?? []);
-  const [receipts, setReceipts] = useState<ActionReceipt[]>([]);
+  const [receipts, setReceipts] = useState<ActionReceipt[]>(seed?.receipts ?? []);
   const [loadError, setLoadError] = useState<RefusalInfo | null>(null);
 
   const [sku, setSku] = useState("");
@@ -60,24 +77,31 @@ export function GovernedActions({
   const [proposeRefusal, setProposeRefusal] = useState<RefusalInfo | null>(null);
   const [revertMsg, setRevertMsg] = useState<string | null>(null);
 
+  const gate = useRef(createLatestGate());
+
   const reload = () => {
+    const isCurrent = gate.current.begin();
     if (!spaceId) return;
     setLoadError(null);
     Promise.all([listActionProposals(spaceId), fetchDecisions(spaceId), fetchOverrides(spaceId)])
       .then(([p, d, o]) => {
+        if (!isCurrent()) return;
         setProposals(p);
         setDecisions(d);
         setOverrides(o);
       })
-      .catch((e: unknown) => setLoadError(refusalInfo(e)));
+      .catch((e: unknown) => {
+        if (isCurrent()) setLoadError(refusalInfo(e));
+      });
   };
 
   useEffect(() => {
-    // A Space switch must not leave another Space's proposals on screen.
+    // A Space switch must not leave another Space's proposals on screen, and a
+    // slower answer for the previous Space must not land after it (the gate).
     setProposals(seed?.proposals ?? []);
     setDecisions(seed?.decisions ?? []);
     setOverrides(seed?.overrides ?? []);
-    setReceipts([]);
+    setReceipts(seed?.receipts ?? []);
     reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [spaceId]);
@@ -190,7 +214,12 @@ export function GovernedActions({
           <p className="text-sm text-[var(--color-ink-muted)]">No pending governed actions.</p>
         )}
         {pending.map((p) => (
-          <ActionCard key={`${p.proposal_id}:${p.version_num}`} proposal={p} onDone={done} />
+          <ActionCard
+            key={`${p.proposal_id}:${p.version_num}`}
+            proposal={p}
+            onDone={done}
+            onOutcomeUnknown={changed}
+          />
         ))}
       </div>
 
@@ -215,6 +244,10 @@ export function GovernedActions({
       )}
 
       <h3 className="mt-6 text-sm font-semibold">Recent decisions</h3>
+      <p data-testid="action-decisions-note" className="mt-1 text-xs text-[var(--color-ink-muted)]">
+        Each row is what the DMS database recorded. The ledger chain is read back only on an
+        apply receipt, so a row is not by itself a ledger proof.
+      </p>
       <table data-testid="action-decisions" className="mt-2 w-full text-left text-xs">
         <thead>
           <tr className="text-[var(--color-ink-muted)]">
@@ -243,9 +276,8 @@ export function GovernedActions({
                   ? `${cellText(d.before)} -> ${cellText(d.after)}`
                   : "nothing written"}
               </td>
-              <td className="py-1 pr-3">
-                {d.decision}
-                {d.decision === "applied" && !d.verified ? " (not verified)" : ""}
+              <td className="py-1 pr-3" data-testid="action-decision-status">
+                {decisionText(d, receipts)}
               </td>
               <td className="py-1 pr-3 font-mono">{d.cortex_entry_id ?? "none"}</td>
               <td className="py-1">

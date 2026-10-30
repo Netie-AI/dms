@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-31 - ACT-03 fix: an apply whose outcome is unknown is not called a refusal
+
+- **Outcome unknown (#489 MEDIUM).** An apply or decline answered 5xx with no route code (a 500 page, a proxy 502/504 while the route waits on the ledger append), a dropped connection, or an unreadable 2xx body is now `outcome_unknown`, not `http_504` / `network_error`. The card says "Outcome unknown - this was not confirmed either way." and "The server answered HTTP 504 without a result, so it is not known whether this decision was recorded. Check Recent decisions before doing anything else.", keeps Apply and Decline off, and asks the page to refresh Recent decisions. `commit_outcome_unknown` locks the card the same way. A coded refusal (for example 503 `ledger_unavailable`) still re-arms Apply. Non-decision 5xx are `server_error` with the status. Two client codes added to `tests/fixtures/actions/act02_refusal_codes.json`.
+- **F5 statuses.** A 403 whose detail is not one of our codes (an F5 status passed through by `enforce`, such as `blocked`) renders "The compliance gate refused this action (Cortex F5 status: blocked), so nothing was written." instead of "Refused: blocked".
+- **Recent decisions.** An applied row whose apply receipt is on screen with a defect reads, for example, "applied (ledger chain not read back)"; rows with no ledger entry say so; the table says a row is the DMS database record, not by itself a ledger proof.
+- **Space switch.** Reloads are last-request-wins, so a slower answer for the previous Space no longer lands under the new one.
+
 ## 2026-10-31 - ACT-03 fix: the reused-entry refusal claims no void
 
 - **UI.** The `ledger_entry_reused` sentence no longer says "a void entry was requested": the route now appends no void for it (ACT-02 fix 5). With `reused_entry_id` it names the entry: "The ledger returned entry e1, which already backs an earlier decision, so this change was refused and rolled back. That earlier decision stands; no void was appended over it." No refusal code was added or removed.

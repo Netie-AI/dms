@@ -1,4 +1,4 @@
-import type { ActionReceipt, CellState, ObjectKey } from "./actions";
+import type { ActionDecision, ActionReceipt, CellState, ObjectKey } from "./actions";
 
 export type ActionReceiptDefect =
   | "unverified"
@@ -97,4 +97,33 @@ export function describeActionReceipt(r: ActionReceipt): {
     defect: null,
     sentence: `${change}. Verified by re-read. Receipt ${r.ledger_entry_id} recorded in the ledger.${source}`,
   };
+}
+
+const RECEIPT_CAVEAT: Record<ActionReceiptDefect, string> = {
+  unverified: "receipt not verified",
+  not_executed: "receipt says no write executed",
+  no_ledger_entry: "no ledger entry",
+  hash_unchanged: "receipt hashes unchanged",
+  chain_unverified: "ledger chain did not verify",
+  chain_unproven: "ledger chain not read back",
+};
+
+/**
+ * The Decision cell of a Recent decisions row. The row is the DMS database
+ * record, so 'applied' is true of the database; it is not a ledger proof. When
+ * the apply receipt for the same decision is on screen and had a defect (for
+ * example chain_unproven), the row carries that caveat instead of reading as an
+ * unqualified 'applied' next to a receipt that said 'unproven'.
+ */
+export function decisionText(d: ActionDecision, receipts: readonly ActionReceipt[] = []): string {
+  if (d.decision !== "applied") return d.decision;
+  const caveats: string[] = [];
+  if (!d.verified) caveats.push("not verified");
+  if (!d.cortex_entry_id) caveats.push("no ledger entry");
+  const receipt = receipts.find((r) => r.decision_id === d.id);
+  if (receipt) {
+    const { defect } = describeActionReceipt(receipt);
+    if (defect && !caveats.includes(RECEIPT_CAVEAT[defect])) caveats.push(RECEIPT_CAVEAT[defect]);
+  }
+  return caveats.length ? `applied (${caveats.join("; ")})` : "applied";
 }

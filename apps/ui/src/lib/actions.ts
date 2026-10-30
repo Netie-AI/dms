@@ -259,7 +259,7 @@ export const REFUSAL_TEXT: Record<string, string> = {
   // compliance gate (403, reason string)
   denied: "The compliance gate denied this action.",
   gate_denied: "The compliance gate denied this action.",
-  gate_refused: "The compliance gate refused this action.",
+  gate_refused: "The compliance gate refused this action, so nothing was written.",
   gate_task_unknown:
     "The compliance gate has no policy for this action yet (Cortex F5 holds no action.* policy), so it was refused.",
   gate_unavailable: "The compliance gate (Cortex) is unreachable, so the action was refused.",
@@ -267,9 +267,32 @@ export const REFUSAL_TEXT: Record<string, string> = {
   not_found: "Governed actions are turned off on this server.",
   invalid_request: "The request was malformed, so nothing was sent to be written.",
   network_error: "The server could not be reached. Nothing is known to have changed.",
+  server_error:
+    "The server failed before giving a reason, so the result is not known. Reload before trying again.",
+  outcome_unknown:
+    "The server did not answer cleanly, so it is not known whether this decision was recorded. Check Recent decisions before doing anything else.",
 };
 
+/**
+ * Codes after which a decision (apply / decline) may or may not have committed.
+ * The card must not re-arm Apply for these: a second click is a second attempt
+ * at a write that may already exist. The steward is sent to Recent decisions.
+ */
+export const OUTCOME_UNKNOWN_CODES: ReadonlySet<string> = new Set([
+  "commit_outcome_unknown",
+  "outcome_unknown",
+]);
+
+export function isOutcomeUnknown(code: string): boolean {
+  return OUTCOME_UNKNOWN_CODES.has(code);
+}
+
 export const REFUSAL_CODES: readonly string[] = Object.freeze(Object.keys(REFUSAL_TEXT));
+
+/** Own keys only: "constructor" or "toString" is not a refusal code. */
+function hasSentence(code: string): boolean {
+  return Object.prototype.hasOwnProperty.call(REFUSAL_TEXT, code);
+}
 
 function keyText(key: ObjectKey | undefined): { sku: string; loc: string } | null {
   if (!key || typeof key.sku !== "string") return null;
@@ -312,8 +335,28 @@ export function describeRefusal(code: string, detail?: RefusalDetail | null): st
   if (c === "commit_outcome_unknown" && detail?.cortex_entry_id) {
     return `Ledger entry ${detail.cortex_entry_id} was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.`;
   }
-  return REFUSAL_TEXT[c] ?? `Refused: ${c}`;
+  if (c === "outcome_unknown" && detail && typeof detail.http_status === "number") {
+    const how =
+      detail.http_status > 0
+        ? `The server answered HTTP ${detail.http_status} without a result`
+        : "The connection dropped before the server answered";
+    return `${how}, so it is not known whether this decision was recorded. Check Recent decisions before doing anything else.`;
+  }
+  if (c === "server_error" && detail && typeof detail.http_status === "number") {
+    return `The server answered HTTP ${detail.http_status} without a reason, so the result is not known. Reload before trying again.`;
+  }
+  if (c === "gate_refused" && typeof detail?.reason === "string" && GATE_STATUS_RE.test(detail.reason)) {
+    return `The compliance gate refused this action (Cortex F5 status: ${detail.reason}), so nothing was written.`;
+  }
+  const http = /^http_(\d{3})$/.exec(c);
+  if (http) {
+    return `The server answered HTTP ${http[1]} without a refusal code, so this was not accepted.`;
+  }
+  return hasSentence(c) ? REFUSAL_TEXT[c] : `Refused: ${c}`;
 }
+
+/** An F5 status string is echoed only when it is a plain identifier. */
+const GATE_STATUS_RE = /^[a-z][a-z0-9_]{0,39}$/;
 
 export class ActionRefusal extends Error {
   readonly status: number;
@@ -336,24 +379,44 @@ export class ActionRefusal extends Error {
   }
 }
 
-/** Server error body -> (code, detail). FastAPI detail is a string, an object or a list. */
-function refusalFrom(status: number, text: string): ActionRefusal {
+/**
+ * Server error body -> (code, detail). FastAPI detail is a string, an object or a list.
+ *
+ * ``decision`` marks an apply / decline. For those, any 5xx that carries no code
+ * the routes are known to send (a 500 page, a proxy 502/504 while the route still
+ * waits on the ledger append) is ``outcome_unknown``: the write may have committed.
+ * A 403 whose detail is not one of our codes is an F5 status passed through by
+ * ``enforce`` (for example ``blocked``), so it is a gate refusal.
+ */
+function refusalFrom(status: number, text: string, decision: boolean): ActionRefusal {
+  const unexplained = (): ActionRefusal => {
+    if (status >= 500) {
+      const code = decision ? "outcome_unknown" : "server_error";
+      return new ActionRefusal(status, code, { code, http_status: status });
+    }
+    return new ActionRefusal(status, `http_${status}`, null);
+  };
   let detail: unknown = null;
   try {
     detail = (JSON.parse(text) as { detail?: unknown }).detail ?? null;
   } catch {
-    return new ActionRefusal(status, `http_${status}`, null);
+    return unexplained();
   }
   if (typeof detail === "string") {
     const code = detail === "Not Found" ? "not_found" : detail;
+    if (hasSentence(code)) return new ActionRefusal(status, code, null);
+    if (status === 403) {
+      return new ActionRefusal(status, "gate_refused", { code: "gate_refused", reason: code });
+    }
+    if (status >= 500) return unexplained();
     return new ActionRefusal(status, code, null);
   }
   if (Array.isArray(detail)) return new ActionRefusal(status, "invalid_request", null);
   if (detail && typeof detail === "object") {
     const d = detail as RefusalDetail;
-    return new ActionRefusal(status, String(d.code ?? `http_${status}`), d);
+    if (typeof d.code === "string" && d.code) return new ActionRefusal(status, d.code, d);
   }
-  return new ActionRefusal(status, `http_${status}`, null);
+  return unexplained();
 }
 
 /** Any thrown value -> RefusalInfo for rendering. */
@@ -363,23 +426,45 @@ export function refusalInfo(e: unknown): RefusalInfo {
   return { code: msg || "unknown", detail: null };
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+async function call<T>(path: string, init?: RequestInit, decision = false): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BASE}${path}`, init);
   } catch {
+    // For a decision the request may have reached the server before the drop.
+    if (decision) {
+      throw new ActionRefusal(0, "outcome_unknown", { code: "outcome_unknown", http_status: 0 });
+    }
     throw new ActionRefusal(0, "network_error", null);
   }
-  if (!res.ok) throw refusalFrom(res.status, await res.text());
-  return (await res.json()) as T;
+  if (!res.ok) {
+    let text = "";
+    try {
+      text = await res.text();
+    } catch {
+      text = "";
+    }
+    throw refusalFrom(res.status, text, decision);
+  }
+  try {
+    return (await res.json()) as T;
+  } catch {
+    // A 2xx whose body cannot be read: for a decision the outcome is still unknown.
+    const code = decision ? "outcome_unknown" : "server_error";
+    throw new ActionRefusal(res.status, code, { code, http_status: res.status });
+  }
 }
 
-function post<T>(path: string, body: unknown): Promise<T> {
-  return call<T>(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+function post<T>(path: string, body: unknown, decision = false): Promise<T> {
+  return call<T>(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+    decision,
+  );
 }
 
 function q(spaceId: string): string {
@@ -432,10 +517,11 @@ export function applyAction(
   idempotencyToken: string,
   approvalRef: string,
 ): Promise<ActionReceipt> {
-  return post<ActionReceipt>(`/proposals/${encodeURIComponent(proposalId)}/apply`, {
-    idempotency_token: idempotencyToken,
-    approval_ref: approvalRef,
-  });
+  return post<ActionReceipt>(
+    `/proposals/${encodeURIComponent(proposalId)}/apply`,
+    { idempotency_token: idempotencyToken, approval_ref: approvalRef },
+    true,
+  );
 }
 
 export function declineAction(
@@ -444,11 +530,11 @@ export function declineAction(
   approvalRef: string,
   reason = "",
 ): Promise<DeclineResult> {
-  return post<DeclineResult>(`/proposals/${encodeURIComponent(proposalId)}/decline`, {
-    idempotency_token: idempotencyToken,
-    approval_ref: approvalRef,
-    reason,
-  });
+  return post<DeclineResult>(
+    `/proposals/${encodeURIComponent(proposalId)}/decline`,
+    { idempotency_token: idempotencyToken, approval_ref: approvalRef, reason },
+    true,
+  );
 }
 
 /** Creates a NEW pending proposal that undoes a decision. It does not apply it. */

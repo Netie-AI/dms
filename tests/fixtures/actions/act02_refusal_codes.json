@@ -62,6 +62,8 @@
   "client_codes": [
     "invalid_request",
     "network_error",
-    "not_found"
+    "not_found",
+    "outcome_unknown",
+    "server_error"
   ]
 }
