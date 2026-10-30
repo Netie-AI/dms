@@ -1,59 +1,59 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-01  
+**Last updated:** 2026-10-28, DEF-VALIDATE-02
 **Remote:** https://github.com/Netie-AI/dms
+**Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
-## Direct interact
+## Direction
 
-```powershell
-D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -OpenBrowser
-python D:\DMS\scripts\verify_demo_live.py
-python D:\DMS\scripts\verify_l2_vs_l1.py
-python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
-python D:\DMS\scripts\walk_buyer_studio.py --self-check
-pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants -q
-python D:\DMS\scripts\ontology_bench.py      # 896 cases, 494 shapes
-```
+AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 
-Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**; prove IAP = section 2.1, origin `https://studio.netie.ai`, `:8090` loopback) - AirGPT MAX: `D:\AirGPT\tests\RAG\DEMO_RAG.md` (`python clipdrop.py` -> :8765)
+Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm with Yes. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not route provider keys.
 
-## Shipped / verified
+## 52 pack - number of record (STUB)
 
-| ID | Result |
-|----|--------|
-| Demo | `verify_demo_live.py` **31/31** live on a cold stack. Bounds error at ~3/31, not zero (R-0010) |
-| Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape, **E13** include/exclude/unsure receipt (#235) - all on the customer envelope. Not #178 COMPLETE. |
-| **A-0005 CLOSED** (#70) | The ledger actor is resolved server-side. `sign_gold_metric` requires it, with no fallback to caller data, so `/gold/sign` and `/run` both close at the binding (R-0004) |
-| **DR-0004 accepted** (#71) | **Option A** - identity from config, never a request. `x-dms-*` headers are **refused** with 400, not ignored. 7 invariants; 4 go red against a pass-through (R-0007) |
-| Predictive (#67) | A literal-list guard certified 4 forecast asks with historical numbers under `L2_VALIDATED`. Now intent-based. KB **F-0021** |
-| Ontology (#68) | `scripts/ontology.py` grain guard - refuses fan-out, ambiguous and unverified roll-ups; multi-hop; `via=`; a blocked short route refuses rather than silently taking a longer one |
-| Engine bench | 811 answerable over 494 shapes, **0 disagreements with an independent oracle**. Bound ~0.61% on shapes (R-0010) - **but the corpus is 3 variants of ONE schema family**: AdventureWorksLT2022 shares 9 of its 12 table names with AW2025, and DW2025 is the same fictional company as a star schema. Every declared key is correct **by construction** (110 PKs unique, 146 FKs no orphans), so the four failure classes that decide customer viability - FK on the wrong column, orphan rows, duplicate business key behind a clean surrogate, a column whose name lies - **cannot occur in it**. On the honest coarse unit (3 databases) the bound is 100%. Falsified: LEFT->INNER exits 1 |
-| Free-form | **Not a measurement.** Quote "no recorded green run" until Cortex#11 closes the engine half of F40 (R-0011). DMS half is closed (#66): `map_ask_response_to_envelope` demotes `route=refused` even when badge is `session`. `repro_refused_badge.py` LINK 2 is that map; exit 1 = DMS half closed. LINK 1 is Cortex#11 |
-| Bench in CI | **Fixture vs lake CLI (R-0011).** `tests/test_ontology_bench.py` is in `pytest tests/`. Lake CLI `scripts/ontology_bench.py` is **not** a GitHub job. **F42 / #35 CLOSED**: `score_answers --oracle-only` is a CI step and can fail (empty docs exit 1). `verify_freeform_demo --self-check` is still not CI (warehouse drift). Local 2026-08-28: **488 passed, 31 skipped** |
-| AW lake | 114 tables, 146 links held, 110 objects. Compiled revenue == oracle, conserves to 123.2M. **Never read by `apps/` or `packages/`** |
-| Insights + brief | `insights.py` -> `brief.py`; `main()` reads the deck back before PASS (R-0001) |
-| Local CI parity | `bash scripts/ci_local.sh all`; `python scripts/try_changes.py [--live]` - 41 checks, each states what it does *not* prove |
-| **CSV-01 (#18)** | Download CSV: BOM + RFC 4180 + answer_id name; no clock/locale/model |
-| **EXPORT-02 (#189)** | PBI/Superset stubs from ask envelope (`POST /v1/chat/export.bi`). Live connector NEEDS-YOU. Not COMPLETE |
-| **A-0007 CLOSED** (#72) | "Company (default ACL)" is a real scope, not a skipped check. `alerts` - granted by **no** Space - was served unscoped and refused under every named one; now refused under all. Enumeration oracle closed with it: missing and ungranted both answer 403 |
-| **#73 + #74 CLOSED** | The boundary invariant classifies by what a route **reaches**, not by HTTP verb, and **ten** ungated data-revealing GETs are now gated (five were never in the reported list). No allowlist. A second test guards the guard - emptying the check's scope goes red |
-| **EPIC-025 CLOSED** (#87) | Gold promote calls Cortex `ledger.verify` at the GATE, not only at sign. Unreachable Cortex refuses. Attestation/actor invariant re-derived like #74 (R-0007). F70/F52(b)/A-0005 stay closed. Contract 1.2.0 has no get-entry; chain verify is the read-back |
-| **#75 CLOSED**, ingest P0 (#103) | Three states on the sync receipt. And the `DEMO_TABLES` filter that **silently dropped** a customer table named `transactions` / `inventory` / `alerts` is gone - chat had been answering from the 15-row demo seed under a green badge. Skips are now reported; the copy swaps in a transaction |
-| **F40 DMS half (#66)** | `route=refused` does not ship as `L2_VALIDATED`. Engine half is Cortex#11 |
-| **#28 ENV-E4 (#91)** | Listing shortfall no longer 500s; unciteable money abstains. qty×100 cannot launder invent |
-| **#25 SPACE-UI (#90)** | Runs/Amend send `space_id`; Library/Studio clear on Space switch |
-| **#23 RAG-04 (#94)** | Customer envelope asserts text, rows, sources on `POST /v1/chat/ask` |
-| **EPIC-CCA** (#148) | Binders sound (pack proposes, landed values decide, exact match); **ask-path hook ships OFF, `DMS_CCA_CASCADE=0`**. R-0003 round two measured the engagement rule at 46/106 false engage and 35/37 false miss, so it does not gate a customer ask until measured on a real question log (F-2026-09-05 engagement-rule). Polarity fails closed both ways. `grounded_tables` boundary leak fixed. Claim: abstains on a missing encoding and discloses spellings; does **not** check the executed SQL |
+STUB at `7392972`, `grade52 --main`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
-## Open next
+| Run | 52 included | paths | metric |
+|-----|-------------|-------|--------|
+| flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-| ID | Work |
-|----|------|
-| **NEEDS-YOU** | **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands; EPIC-020 + EPIC-024 in flight. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Constructor works on :8012 with `CORTEX_API_KEY` |
-| **This tick** | **STUDIO-RESULT-01** (#365) renders the ask envelope in Studio. UI only. No payload (#364), no mint (#362), no prove pin. Nothing PASS. Prove owner stays vault / OV mint 401. |
-| **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
-| Epics | **In flight: EPIC-020b (#173) + EPIC-024 (#109)**. EPIC-020 **#108 CLOSED** (do not reopen COMPLETE). Open: **#184** (020b), **#116** leftover, **#113 #115 #117-#119** (024). **#6 #33 #35 CLOSED**. EPIC-008 #8 OPEN (host-online). |
-| Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |
-| CI / PRs | ORACLE-FIX-01 #301 curated oracles txn_type='outbound'. 1b records this merge as the oracle file commit. ONTO-STORE-01 #279 in flight. Do not reseat #237. |
-## Agent models
-PRD/epic/ticket/verify = Grok 4.5 high. Research/web = Composer 2.5.
+Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43, tries omitted_pin_mismatch=0. Suite 3573 passed, 41 skipped, 33 xfailed. n=348 not run. Armed 52 not re-run.
+
+With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
+
+## Merged since 2026-10-09
+
+| PR | Squash | What |
+|----|--------|------|
+| [#420](https://github.com/Netie-AI/dms/pull/420) | `404f3999` | CONN-POOL-01: one DuckDB connection per lake |
+| [#432](https://github.com/Netie-AI/dms/pull/432) | `8ff2623a` | GRADER-VALUES-01: grade52 and the copy-only number of record |
+| [#423](https://github.com/Netie-AI/dms/pull/423) | `a52ccb22` | VALUE-HINT-SPAN: mask only person-classified columns |
+| [#342](https://github.com/Netie-AI/dms/pull/342) | `5b2456fb` | BANK-02: auditor export of ask, SQL, tables and outcome |
+| [#445](https://github.com/Netie-AI/dms/pull/445) | `2a78c4bb` | CI: lint-type-test timeout 30 minutes |
+| [#442](https://github.com/Netie-AI/dms/pull/442) | `79b7a274` | P0 DROP-ROUTE-FIELDS-01: stop sending `model` and `strict` to Cortex (the 422). Supersedes #429, still open |
+| [#447](https://github.com/Netie-AI/dms/pull/447) | `2083e6ac` | Extract and result-hash probe on the pooled serving cursor. Supersedes #426, still open |
+| [#448](https://github.com/Netie-AI/dms/pull/448) | `ed7c4011` | EVAL-01: grade52 wrong-rate bound, worst-case repeats, baseline diff |
+| [#446](https://github.com/Netie-AI/dms/pull/446) | `3d19dea3` | INGEST-COLNAME-01 (P1 security): a source column name is one quoted identifier |
+
+## Open work
+
+[GitHub issues](https://github.com/Netie-AI/dms/issues) and [open PRs](https://github.com/Netie-AI/dms/pulls) are the source of truth. Never a markdown backlog. P0s first.
+
+| Item | PR |
+|------|----|
+| P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
+| CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
+| COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
+| SAFE-01: one grant function, one parser | #454 |
+| WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
+| WIRE-19: contract 1.9.0 client, `document` badge (was a 502), Cortex `reconfirm` Yes/No | this branch |
+| SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
+| DR-0006: writer family | #440 |
+| ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
+| AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
+| GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
+| GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |
+
+Not listed: 15 older open drafts (#424, #408, #398, #397, #391, #379, #378, #376, #375, #344, #343, #339, #336, #331, #329).

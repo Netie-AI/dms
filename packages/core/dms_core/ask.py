@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 
@@ -28,6 +29,20 @@ class AskServicePort(Protocol):
     ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class ExecutedTrace:
+    """What actually ran for one ask, kept apart from the customer envelope (BANK-02).
+
+    ``statements`` are ``(sql, row_count)`` for each statement the engine ran, in
+    order. ``ledger`` are ``(entry_id, seq)`` for each ledger entry DMS appended;
+    ``seq`` is None when the append response did not say. An ask service that can
+    report this offers ``take_executed()``; the audit recorder reads it once.
+    """
+
+    statements: tuple[tuple[str, int], ...] = ()
+    ledger: tuple[tuple[str, int | None], ...] = ()
 
 
 class AskServiceError(Exception):
