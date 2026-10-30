@@ -282,10 +282,12 @@ oracles:
     cortex_id: cq_active_alerts
     sql: "SELECT alert_id FROM alerts WHERE resolved = false"
     expect: refuse
+    trap: true
     why: alerts is granted by no Space (DR-0002 / A-0007)
 
   trap_high_risk_pending:
     cortex_id: cq_high_risk_pending
+    trap: true
     sql: >
       SELECT DISTINCT s.supplier_name, sh.shipment_id
       FROM suppliers s JOIN shipments sh ON s.supplier_id = sh.supplier_id
@@ -296,16 +298,20 @@ oracles:
   ops_supplier_rank_boundary:
     cortex_id: cq_supplier_ranking
     expect: refuse
+    trap: true
     why: Ops is not granted suppliers
 
   trap_delayed_count:
     expect: refuse
+    trap: true
     why: Cortex golden delayed_incoming_per_wh is TARGET, not certified
 
   trap_stock_by_bin:
     expect: refuse
+    trap: true
     why: no Cortex certified query for stock by storage_bin
 
   trap_how_full_synonym:
     expect: refuse
+    trap: true
     why: paraphrase of cq_capacity_utilisation; certified asset has no synonyms

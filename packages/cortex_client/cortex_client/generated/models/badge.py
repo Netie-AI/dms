@@ -5,8 +5,10 @@ class Badge(str, Enum):
     ABSTAIN = "abstain"
     BLOCKED = "blocked"
     CERTIFIED = "certified"
+    DOCUMENT = "document"
     GOVERNED_METRIC = "governed_metric"
     QUERY_SKILL = "query_skill"
+    RECONFIRM = "reconfirm"
     SESSION = "session"
 
     def __str__(self) -> str:

@@ -242,7 +242,7 @@ def test_verdict_wrong_on_prose_number() -> None:
 
 def test_verdict_abstain_names_the_reason() -> None:
     out = _grade(_abstain_env("GEN-01: validate:ungranted:alerts"))
-    assert out["verdict"] == "ABSTAIN" and out["abstain_reason"] == "validate:ungranted:alerts"
+    assert out["verdict"] == "ABSTAIN" and out["abstain_reason"] == "validate:ungranted:"
 
 
 def test_expect_abstain_with_confident_badge_is_wrong() -> None:

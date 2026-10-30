@@ -9,6 +9,8 @@ passes the connection schema. No schema, a schema qualify cannot use,
 or a column that is still untraced: that column stays masked.
 This module does not load a schema and does not read DEMO_TABLES.
 No FX conversion. Mismatch or unresolved currency is ABSTAIN.
+``tables_read`` (BANK-02 / dms#269) also lives here so the parser keeps one swap
+point: it names the tables an executed statement reads, for the audit export.
 """
 
 from __future__ import annotations
@@ -19,14 +21,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 from sqlglot import exp, parse_one
 from sqlglot.lineage import lineage
 from sqlglot.optimizer.qualify import qualify
-from sqlglot.optimizer.scope import Scope, build_scope
+from sqlglot.optimizer.scope import Scope, build_scope, traverse_scope
 
-from dms_executor.demo_warehouse import connect_file
+from dms_executor.demo_warehouse import SERVING_DIALECT, connect_serving
 
-_DIALECT = "duckdb"
+_DIALECT = SERVING_DIALECT
 
 # Unambiguous ISO 4217 tokens. Skip codes that are common English words (TRY, ALL, TOP).
 _ISO = frozenset(
@@ -431,7 +434,7 @@ def _col_type(schema: dict[str, dict[str, str]], table: str, column: str) -> str
 def _load_schema(warehouse: Path | None) -> dict[str, dict[str, str]]:
     if warehouse is None or not Path(warehouse).is_file():
         return {}
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     out: dict[str, dict[str, str]] = {}
     try:
         rows = con.execute(
@@ -456,7 +459,7 @@ def _load_relation_units(
     result: dict[str, tuple[str | None, bool]] = {}
     if warehouse is None or not Path(warehouse).is_file() or not schema:
         return result
-    con = connect_file(Path(warehouse))
+    con = connect_serving(Path(warehouse))
     try:
         for table, cols in schema.items():
             ccy_cols = [c for c in cols if is_currency_column(c)]
@@ -960,11 +963,263 @@ def served_column_sources(
     return out
 
 
+def normalize_sql(sql: str, dialect: str) -> str | None:
+    """Canonical SQL text for one connector dialect. None if it does not parse.
+
+    The caller passes the dialect. This does not assume a warehouse or a source.
+    """
+    try:
+        tree = parse_one(sql or "", read=dialect)
+    except Exception:
+        return None
+    return tree.sql(dialect=dialect)
+
+
+def sql_byte_equal(left: str | None, right: str | None, dialect: str) -> bool:
+    """True when both statements normalise to the same bytes in ``dialect``."""
+    if not left or not right:
+        return False
+    a = normalize_sql(left, dialect)
+    b = normalize_sql(right, dialect)
+    return a is not None and a == b
+
+
+def _predicate(node: exp.Expression | None) -> exp.Expression | None:
+    if node is None:
+        return None
+    if isinstance(node, (exp.Where, exp.Having)):
+        return node.this
+    return node
+
+
+def _conjuncts(node: exp.Expression | None) -> list[exp.Expression]:
+    """AND-split only. OR stays one conjunct. No identifier list."""
+    pred = _predicate(node)
+    if pred is None:
+        return []
+    if isinstance(pred, exp.And):
+        return _conjuncts(pred.left) + _conjuncts(pred.right)
+    return [pred]
+
+
+def _root_selects(tree: exp.Expression) -> list[exp.Select]:
+    """Outermost selects. CTE bodies and nested subqueries stay closed."""
+    if isinstance(tree, exp.Select):
+        return [tree]
+    if isinstance(tree, exp.With):
+        inner = tree.this
+        return _root_selects(inner) if isinstance(inner, exp.Expression) else []
+    if isinstance(tree, (exp.Union, exp.Except, exp.Intersect)):
+        out: list[exp.Select] = []
+        for side in (tree.this, tree.expression):
+            if isinstance(side, exp.Expression):
+                out.extend(_root_selects(side))
+        return out
+    if type(tree).__name__ == "Paren":
+        inner = tree.this
+        return _root_selects(inner) if isinstance(inner, exp.Expression) else []
+    return []
+
+
+def _select_conjuncts(select: exp.Select, dialect: str) -> set[str]:
+    nodes: list[exp.Expression | None] = [
+        select.args.get("where"),
+        select.args.get("having"),
+    ]
+    for join in select.args.get("joins") or []:
+        if hasattr(join, "args"):
+            nodes.append(join.args.get("on"))
+    return {expr.sql(dialect=dialect) for node in nodes for expr in _conjuncts(node)}
+
+
+def top_level_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
+    """Normalised top-level WHERE, HAVING, and JOIN ON conjuncts.
+
+    None if ``sql`` does not parse in ``dialect``. An empty set is a
+    statement with no such predicate. Subquery predicates are not pulled out.
+    """
+    try:
+        tree = parse_one(sql or "", read=dialect)
+    except Exception:
+        return None
+    found: set[str] = set()
+    for select in _root_selects(tree):
+        found |= _select_conjuncts(select, dialect)
+    return frozenset(found)
+
+
+def scoped_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
+    """WHERE, HAVING, and JOIN ON conjuncts in every select scope.
+
+    CTEs, subqueries, and derived tables are included. None if ``sql`` does
+    not parse in ``dialect``. An empty set is a statement with no predicate.
+    """
+    try:
+        tree = parse_one(sql or "", read=dialect)
+    except Exception:
+        return None
+    found: set[str] = set()
+    for select in tree.find_all(exp.Select):
+        found |= _select_conjuncts(select, dialect)
+    return frozenset(found)
+
+
+def is_multi_statement(sql: str, dialect: str) -> bool:
+    """True when ``sql`` parses as more than one statement in ``dialect``."""
+    from sqlglot import parse
+
+    try:
+        trees = parse(sql or "", read=dialect)
+    except Exception:
+        return False
+    return len([tree for tree in trees if tree is not None]) > 1
+
+
+def dropped_conjuncts(
+    previous: str, nxt: str, dialect: str
+) -> frozenset[str] | None:
+    """Conjuncts in ``previous`` missing from ``nxt``, every select scope.
+
+    None if either statement fails to parse. Callers treat None as fail-closed.
+    """
+    prev = scoped_conjuncts(previous, dialect)
+    cur = scoped_conjuncts(nxt, dialect)
+    if prev is None or cur is None:
+        return None
+    return frozenset(prev - cur)
+
+
+#: ``tables_read`` parses at most this many characters. Beyond it, and on a parse failure,
+#: it scans for names instead. 20,000 characters is a long hand-written or generated
+#: statement; a CTE chain or UNION of that size parses in about a tenth of a second.
+TABLES_PARSE_CAP = 20_000
+#: The scan reads no more than this, and reports no more than ``_MAX_SCANNED_TABLES`` names.
+_SCAN_CAP = 1_000_000
+_MAX_SCANNED_TABLES = 500
+#: Bounded name scan: the identifier after FROM / JOIN / INTO / UPDATE / TABLE. Linear: every
+#: repeat is bounded or possessive.
+_TABLE_SCAN = re.compile(
+    r"(?i)\b(?:from|join|into|update|table)\s{1,16}+(?:only\s{1,16}+)?"
+    r'(?P<n>"[^"\n]{1,128}+"|`[^`\n]{1,128}+`|[A-Za-z_][\w.$]{0,255}+)'
+)
+_NOT_A_TABLE = frozenset({"select", "lateral", "values", "unnest", "table", "only"})
+
+
+def _scan_tables(text: str) -> tuple[str, ...]:
+    """Table names after FROM / JOIN / INTO / UPDATE / TABLE, with no parse. Bounded."""
+    names: dict[str, str] = {}
+    for m in _TABLE_SCAN.finditer(text[:_SCAN_CAP]):
+        name = m.group("n").strip('"`')
+        if name and name.casefold() not in _NOT_A_TABLE:
+            names.setdefault(name.casefold(), name)
+            if len(names) >= _MAX_SCANNED_TABLES:
+                break
+    return tuple(sorted(names.values(), key=str.casefold))
+
+
+def _table_label(node: exp.Table) -> str:
+    """``catalog.db.name`` as written; a table function is ``read_csv()``.
+
+    The function name only. Its arguments (a file path) are in the executed SQL
+    column already and are not a table name.
+    """
+    if isinstance(node.this, exp.Func):
+        return f"{str(node.this.sql_name()).lower()}()"
+    return ".".join(p for p in (node.catalog, node.db, node.name) if p)
+
+
+def _cte_alias_keys(tree: exp.Expression) -> set[str]:
+    keys: set[str] = set()
+    for cte in tree.find_all(exp.CTE):
+        alias = cte.alias
+        if isinstance(alias, str) and alias:
+            keys.add(alias.casefold())
+    return keys
+
+
+def _in_cte_body(node: exp.Expression) -> bool:
+    current = node.parent
+    while current is not None:
+        if isinstance(current, exp.CTE):
+            return True
+        current = current.parent
+    return False
+
+
+def tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
+    """``(tables, approximate)``: the tables an executed statement reads, sorted.
+
+    A name is a CTE reference only where sqlglot's scope resolves it to a CTE (or
+    derived table) of an enclosing query. That is scope, not spelling:
+    ``WITH sales AS (SELECT * FROM sales) SELECT * FROM sales`` reads the base
+    table ``sales`` inside the CTE's own body and the CTE outside it, so
+    ``sales`` is reported. Excluding by name dropped it, and an audit row that
+    says "read nothing" for a query that read something is a false record.
+
+    Never parses unbounded input. sqlglot is pure Python and its cost grows faster
+    than the statement (a 400,000 character CTE chain took ten seconds), and the audit
+    record is written on the request path. A statement longer than ``TABLES_PARSE_CAP``,
+    or one sqlglot cannot parse or scope, gets the bounded identifier scan instead
+    (``_scan_tables``): looser (a CTE name, or "from x" inside a string literal, would
+    count) but never empty for SQL that plainly names a table, and ``approximate`` is
+    True so the audit row says so. A comment-only statement, such as the
+    document-retrieval stub, reads none.
+    """
+    text = (sql or "").strip()
+    if not text:
+        return (), False
+    if len(text) > TABLES_PARSE_CAP:
+        return _scan_tables(text), True
+    try:
+        trees = [t for t in sqlglot.parse(text, dialect=_DIALECT) if t is not None]
+        seen: dict[str, str] = {}
+        for tree in trees:
+            cte_keys = _cte_alias_keys(tree)
+            for scope in traverse_scope(tree):
+                for node in scope.tables:
+                    # Only an unqualified name can be a CTE: ``main.t`` is the base
+                    # table even when a CTE called ``t`` is in scope.
+                    unqualified = not node.db and not node.catalog
+                    if unqualified and isinstance(scope.sources.get(node.alias_or_name), Scope):
+                        continue  # a CTE or derived table of an enclosing query
+                    # ``TABLE t`` inside a CTE does not become a scope, so the
+                    # alias is reported as a base table and the inner name is
+                    # lost. The alias is not a relation. A base table of the
+                    # same name inside the CTE body still is.
+                    bare = node.name or node.alias_or_name
+                    if (
+                        unqualified
+                        and isinstance(bare, str)
+                        and bare.casefold() in cte_keys
+                        and not _in_cte_body(node)
+                    ):
+                        continue
+                    label = _table_label(node)
+                    if label:
+                        seen.setdefault(label.casefold(), label)
+    except Exception:  # noqa: BLE001 - any parser or scope failure takes the scan
+        return _scan_tables(text), True
+    return tuple(sorted(seen.values(), key=str.casefold)), False
+
+
+def tables_read(sql: str | None) -> tuple[str, ...]:
+    """The tables an executed statement reads (see ``tables_read_checked``)."""
+    return tables_read_checked(sql)[0]
+
+
 __all__ = [
     "SourceColumn",
     "asked_currencies",
     "asked_currency",
     "currency_mismatch_reason",
+    "dropped_conjuncts",
     "is_currency_column",
+    "is_multi_statement",
+    "scoped_conjuncts",
+    "normalize_sql",
     "served_column_sources",
+    "sql_byte_equal",
+    "tables_read",
+    "tables_read_checked",
+    "top_level_conjuncts",
 ]

@@ -3527,6 +3527,7 @@ def run_ab_curated(
                 grantable=grants,
                 submit=submit,
                 ledger_append=ledger,
+                dialect=exe.dialect,
             )
             if exact_env is None:
                 # Step 1: curated l0 phrase is not in PACK_METRICS (cq_sku_count).
@@ -3547,6 +3548,7 @@ def run_ab_curated(
                 submit=submit,
                 ledger_append=ledger,
                 ontology=onto,
+                dialect=exe.dialect,
             )
             gen_env = gen_env if gen_env is not None else _ab_miss()
             exact_r = judge_detailed(

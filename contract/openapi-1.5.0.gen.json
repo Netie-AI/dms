@@ -1,0 +1,1350 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cortex Contract API",
+    "version": "1.5.0",
+    "description": "Pruned generation surface \u2014 five contract operationIds only."
+  },
+  "paths": {
+    "/v1/contract/ask": {
+      "post": {
+        "description": "Answer a governed question (DMS ask plane). Requires a prior submit bind.",
+        "operationId": "ask",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractAskRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractAnswer"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ask",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/drillthrough": {
+      "post": {
+        "description": "Re-derive contributing rows under the same session manifest (T7).",
+        "operationId": "drillthrough",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractDrillthroughRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractDrillthroughResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Drillthrough",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/ledger/append": {
+      "post": {
+        "operationId": "ledger.append",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LedgerAppendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractLedgerEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ledger Append",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/ledger/verify": {
+      "post": {
+        "operationId": "ledger.verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LedgerVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractChainVerification"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Ledger Verify",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/submit": {
+      "post": {
+        "description": "Submit a plan under a signed session manifest (C4).",
+        "operationId": "submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContractSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContractQueryResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Contract Submit",
+        "tags": [
+          "contract"
+        ]
+      }
+    },
+    "/v1/contract/tools": {
+      "get": {
+        "description": "List tools DMS may invoke through the contract runtime.",
+        "operationId": "tool.registry",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolRegistryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Contract Tool Registry",
+        "tags": [
+          "contract"
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ContractAskPayloadTable": {
+        "description": "1.5.0: one selected table and its schema.",
+        "properties": {
+          "columns": {
+            "items": {
+              "$ref": "#/components/schemas/ContractAskPayloadColumn"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AskPayloadTable",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ContractMemoryRead": {
+        "description": "1.4.0: provenance of one per-Space memory entry an answer read.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "served_at": {
+            "title": "Served At",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "space_id": {
+            "title": "Space Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "written_at": {
+            "title": "Written At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "space_id",
+          "source",
+          "version",
+          "written_at",
+          "served_at"
+        ],
+        "title": "MemoryRead",
+        "type": "object"
+      },
+      "ContractDrillthroughRequest": {
+        "properties": {
+          "token": {
+            "minLength": 1,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "DrillthroughRequest",
+        "type": "object"
+      },
+      "ContractManifest": {
+        "description": "A signed grant of what one session may read.\n\nDMS mints and signs; Cortex enforces; OpenVault roots the key. Every field\nadded in 1.1.0 is optional on the wire so a 1.0.0 producer still validates \u2014\nthe requirement that a manifest carry an issuer, an issue time and a pool is\nenforced by the verifier (``CortexOS.execution.manifest``), which rejects\nwhat it cannot check. A permissive type with a strict gate keeps DMS pinned\nto contract major 1 while the engine refuses anything unverifiable.",
+        "properties": {
+          "allowed_paths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Paths",
+            "type": "array"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "issued_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issued At"
+          },
+          "issuer_key_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Issuer Key Id"
+          },
+          "org_id": {
+            "title": "Org Id",
+            "type": "string"
+          },
+          "pool_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Pool Id"
+          },
+          "row_predicate_sql": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Predicate Sql"
+          },
+          "row_predicates": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Table name -> SQL boolean expression, injected per referenced table.",
+            "title": "Row Predicates",
+            "type": "object"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "org_id",
+          "expires_at",
+          "signature"
+        ],
+        "title": "Manifest",
+        "type": "object"
+      },
+      "ContractQueryResult": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "output": {
+            "default": null,
+            "title": "Output"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "title": "QueryResult",
+        "type": "object"
+      },
+      "LedgerAppendRequest": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "actor",
+          "event_type"
+        ],
+        "title": "LedgerAppendRequest",
+        "type": "object"
+      },
+      "ContractChainVerification": {
+        "properties": {
+          "broken_at": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Broken At"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ChainVerification",
+        "type": "object"
+      },
+      "ContractAskPayload": {
+        "description": "1.5.0: selected tables, their schema and ontology joins for one question.\n\nThe payload can only narrow what the signed grant allows: a table or join\noutside the grant is refused before any model call.",
+        "properties": {
+          "joins": {
+            "items": {
+              "$ref": "#/components/schemas/ContractAskPayloadJoin"
+            },
+            "title": "Joins",
+            "type": "array"
+          },
+          "tables": {
+            "items": {
+              "$ref": "#/components/schemas/ContractAskPayloadTable"
+            },
+            "minItems": 1,
+            "title": "Tables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tables"
+        ],
+        "title": "AskPayload",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "ContractAskPayloadColumn": {
+        "description": "1.5.0: one column of a table the consumer selected for this ask.",
+        "properties": {
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Type"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AskPayloadColumn",
+        "type": "object"
+      },
+      "ContractContributingSource": {
+        "description": "One source card for the Sources panel (architecture \u00a74.7 / \u00a74.8).",
+        "properties": {
+          "container": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Container"
+          },
+          "contribution": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Contribution"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Kind"
+          },
+          "member": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Member"
+          },
+          "ref_id": {
+            "title": "Ref Id",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Count"
+          }
+        },
+        "required": [
+          "ref_id"
+        ],
+        "title": "ContributingSource",
+        "type": "object"
+      },
+      "ContractToolSpec": {
+        "properties": {
+          "class_name": {
+            "$ref": "#/components/schemas/ContractToolClass"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "class_name",
+          "description"
+        ],
+        "title": "ToolSpec",
+        "type": "object"
+      },
+      "ContractPoolSpec": {
+        "properties": {
+          "class_name": {
+            "default": "default",
+            "title": "Class Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "max_concurrency": {
+            "default": 1,
+            "title": "Max Concurrency",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PoolSpec",
+        "type": "object"
+      },
+      "ContractToolClass": {
+        "enum": [
+          "read",
+          "propose",
+          "apply"
+        ],
+        "title": "ToolClass",
+        "type": "string"
+      },
+      "ContractAskPayloadJoin": {
+        "description": "1.5.0: one ontology join between two selected tables.",
+        "properties": {
+          "left_column": {
+            "minLength": 1,
+            "title": "Left Column",
+            "type": "string"
+          },
+          "left_table": {
+            "minLength": 1,
+            "title": "Left Table",
+            "type": "string"
+          },
+          "relation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Relation"
+          },
+          "right_column": {
+            "minLength": 1,
+            "title": "Right Column",
+            "type": "string"
+          },
+          "right_table": {
+            "minLength": 1,
+            "title": "Right Table",
+            "type": "string"
+          }
+        },
+        "required": [
+          "left_table",
+          "left_column",
+          "right_table",
+          "right_column"
+        ],
+        "title": "AskPayloadJoin",
+        "type": "object"
+      },
+      "ToolRegistryResponse": {
+        "properties": {
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/ContractToolSpec"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tools"
+        ],
+        "title": "ToolRegistryResponse",
+        "type": "object"
+      },
+      "ContractSubmitRequest": {
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "title": "Body",
+            "type": "object"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/ContractManifest"
+          },
+          "plan": {
+            "additionalProperties": true,
+            "title": "Plan",
+            "type": "object"
+          },
+          "pool": {
+            "$ref": "#/components/schemas/ContractPoolSpec"
+          }
+        },
+        "required": [
+          "pool",
+          "plan",
+          "body",
+          "manifest"
+        ],
+        "title": "SubmitRequest",
+        "type": "object"
+      },
+      "ContractAnswer": {
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "answer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Answer Id"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "audit_id": {
+            "title": "Audit Id",
+            "type": "string"
+          },
+          "contributing_sources": {
+            "items": {
+              "$ref": "#/components/schemas/ContractContributingSource"
+            },
+            "title": "Contributing Sources",
+            "type": "array"
+          },
+          "drillthrough_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Drillthrough Token"
+          },
+          "memory_ids_read": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Memory Ids Read",
+            "type": "array"
+          },
+          "memory_reads": {
+            "items": {
+              "$ref": "#/components/schemas/ContractMemoryRead"
+            },
+            "title": "Memory Reads",
+            "type": "array"
+          },
+          "model_calls": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "1.5.0 logical FreeRoute complete() calls per ladder step, plus total. One count per complete() the ladder issues. Transport or proxy retries (an upstream 429 retried by the cap proxy or the FreeRoute client) are not counted. Keys that ran: plan, error-fed-retry-<N> (N starts at 1), stronger-model, reconfirm. total is their sum. DMS reads per-step counts only from this object. Null when this path made no model call. 1.4 clients ignore it.",
+            "title": "Model Calls"
+          },
+          "plan_sql_rung": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan Sql Rung"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/ContractProvenance"
+          },
+          "reconfirm": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContractPlanSqlReconfirm"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reused": {
+            "default": false,
+            "title": "Reused",
+            "type": "boolean"
+          },
+          "route": {
+            "title": "Route",
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Count"
+          },
+          "rows": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rows"
+          },
+          "served_local": {
+            "default": false,
+            "title": "Served Local",
+            "type": "boolean"
+          },
+          "served_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Served Model"
+          },
+          "served_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Served Provider"
+          },
+          "served_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Served Reason"
+          },
+          "sql_used": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sql Used"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer",
+          "audit_id",
+          "route",
+          "provenance"
+        ],
+        "title": "Answer",
+        "type": "object"
+      },
+      "ContractBadge": {
+        "enum": [
+          "certified",
+          "governed_metric",
+          "query_skill",
+          "session",
+          "abstain",
+          "blocked",
+          "reconfirm"
+        ],
+        "title": "Badge",
+        "type": "string"
+      },
+      "LedgerVerifyRequest": {
+        "properties": {
+          "start_seq": {
+            "default": 0,
+            "title": "Start Seq",
+            "type": "integer"
+          }
+        },
+        "title": "LedgerVerifyRequest",
+        "type": "object"
+      },
+      "ContractAskRequest": {
+        "description": "Ask plane request.\n\nUnknown keys are ignored, as on main. ``model``, ``strict`` and\n``provider`` are rejected by name before any model call. Routing stays\nin OpenVault's route config. Full request strictness is a breaking\nchange tracked in #388.",
+        "properties": {
+          "dms_payload": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContractAskPayload"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "plan_sql_confirm": {
+            "anyOf": [
+              {
+                "enum": [
+                  "yes",
+                  "no"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan Sql Confirm"
+          },
+          "question": {
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "scored_pack_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Scored Pack Id"
+          },
+          "session_id": {
+            "default": "demo",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "space_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Space Id"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "AskRequest",
+        "type": "object"
+      },
+      "ContractLedgerEntry": {
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "entry_hash": {
+            "title": "Entry Hash",
+            "type": "string"
+          },
+          "event_type": {
+            "title": "Event Type",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "prev_hash": {
+            "title": "Prev Hash",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "seq",
+          "actor",
+          "event_type",
+          "payload",
+          "prev_hash",
+          "entry_hash",
+          "created_at"
+        ],
+        "title": "LedgerEntry",
+        "type": "object"
+      },
+      "ContractProvenance": {
+        "properties": {
+          "assumptions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Assumptions"
+          },
+          "badge": {
+            "$ref": "#/components/schemas/ContractBadge"
+          },
+          "layer": {
+            "title": "Layer",
+            "type": "string"
+          },
+          "metric_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Metric Id"
+          },
+          "query_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Query Source"
+          }
+        },
+        "required": [
+          "layer",
+          "badge"
+        ],
+        "title": "Provenance",
+        "type": "object"
+      },
+      "ContractDrillthroughResponse": {
+        "properties": {
+          "answer_id": {
+            "title": "Answer Id",
+            "type": "string"
+          },
+          "approximate": {
+            "default": false,
+            "title": "Approximate",
+            "type": "boolean"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sql_used": {
+            "title": "Sql Used",
+            "type": "string"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Total Count"
+          }
+        },
+        "required": [
+          "answer_id",
+          "session_id",
+          "sql_used",
+          "row_count"
+        ],
+        "title": "DrillthroughResponse",
+        "type": "object"
+      },
+      "ContractPlanSqlReconfirm": {
+        "description": "1.5.0: why the plan+SQL loop would abstain, and the closest question it can run.\n\nPresent only when the loop could not ground an answer. Yes\n(``AskRequest.plan_sql_confirm`` = ``yes``, with ``question`` set to\n``closest_question``) runs that question. No answers\n``not found in the database``. Older clients ignore the object.",
+        "properties": {
+          "closest_question": {
+            "minLength": 1,
+            "title": "Closest Question",
+            "type": "string"
+          },
+          "why": {
+            "minLength": 1,
+            "title": "Why",
+            "type": "string"
+          }
+        },
+        "required": [
+          "why",
+          "closest_question"
+        ],
+        "title": "PlanSqlReconfirm",
+        "type": "object"
+      }
+    }
+  }
+}
