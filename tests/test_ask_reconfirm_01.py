@@ -421,3 +421,194 @@ def test_confirm_yes_honors_the_insights_call_cap(
     blob = json.dumps(body)
     assert "insights_call_cap" in blob
     get_settings.cache_clear()
+
+
+# F114 / #276: the armed generative lane writes ``GEN-01: validate:ungranted``.
+# The ``validate`` head is the stage. Ungranted under it is still a direct abstain.
+OPS_SPACE = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+FINANCE_SPACE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+_UNGRANTED_CASES = (
+    (
+        "What is our total spend by supplier country?",
+        OPS_SPACE,
+        "suppliers",
+        "SELECT s.country, SUM(t.amount) AS spend FROM transactions t "
+        "JOIN suppliers s ON s.supplier_id = t.supplier_id GROUP BY s.country",
+    ),
+    (
+        "List active alerts across the warehouse network",
+        FINANCE_SPACE,
+        "alerts",
+        "SELECT * FROM alerts WHERE status = 'active'",
+    ),
+)
+
+
+def _armed_ask(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    question: str,
+    space_id: str,
+    sql: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """POST /v1/chat/ask on the armed lane. The model SQL is planted; nothing is live."""
+    from cortex_client import CortexClient
+    from cortex_contract.execution import Manifest
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.envelope import assert_envelope_valid
+    from dms_executor.manifest import ManifestMinter, SessionAcl
+    from dms_executor.reconfirm import _reset_reconfirm
+
+    _reset_reconfirm()
+    monkeypatch.setenv("DMS_PIPELINE_FAILURE_JSONL", str(tmp_path / "failures.jsonl"))
+    prompts: list[str] = []
+
+    class _Product(CortexClient):
+        """A CortexClient arms the product lane: a pack grant miss falls through."""
+
+        def compute_insights(self, _question: str, **_kwargs: Any) -> dict[str, Any]:
+            return {"query_sql": sql, "plan_source": "ontology_plan"}
+
+        def complete(self, prompt: str) -> str:
+            prompts.append(prompt)
+            return "closest stock question"
+
+        def ask(self, _req: Any) -> Any:
+            raise AssertionError("contract ask")
+
+        def submit(self, _req: Any) -> Any:
+            raise AssertionError("an ungranted relation was submitted")
+
+        def ledger_append(self, _req: Any) -> Any:
+            raise AssertionError("a refusal appended a ledger row")
+
+    class _RouteCortex:
+        def complete(self, prompt: str) -> str:
+            prompts.append(prompt)
+            return "closest stock question"
+
+    db = ensure_demo_warehouse(tmp_path / "warehouse.duckdb")
+    minter = ManifestMinter()
+
+    def _mint(acl: SessionAcl) -> Manifest:
+        return Manifest(
+            session_id=acl.session_id,
+            org_id=acl.org_id,
+            space_id=acl.space_id,
+            pool_id=acl.pool_id,
+            issuer_key_id="test-kid",
+            allowed_paths=list(acl.allowed_paths),
+            row_predicates=dict(acl.row_predicates),
+            issued_at="2026-07-30T00:00:00+00:00",
+            expires_at="2026-07-30T01:00:00+00:00",
+            signature="dGVzdHNpZw",
+        )
+
+    monkeypatch.setattr(minter, "mint_manifest", _mint)
+    monkeypatch.setattr(minter, "fetch_intermediate", lambda: None)
+    monkeypatch.setattr(minter, "close", lambda: None)
+    monkeypatch.setattr(minter, "invalidate", lambda *_a, **_k: None)
+    product = _Product("http://127.0.0.1:9")
+    try:
+        app = create_app()
+        app.state.ask_service = Executor(cortex=product, minter=minter, warehouse_path=db)
+        app.state.cortex = _RouteCortex()
+        app.dependency_overrides[get_settings] = lambda: Settings(
+            _env_file=None,  # type: ignore[call-arg]
+            dms_ask_mode="live",
+            dms_demo_fallback=False,
+        )
+        response = TestClient(app).post(
+            "/v1/chat/ask",
+            json={"question": question, "session_id": "ses_f114", "space_id": space_id},
+        )
+    finally:
+        product.close()
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert_envelope_valid(body)
+    return body, prompts
+
+
+@pytest.mark.parametrize(("question", "space_id", "table", "sql"), _UNGRANTED_CASES)
+def test_armed_gen01_validate_ungranted_is_a_direct_abstain(
+    question: str,
+    space_id: str,
+    table: str,
+    sql: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Must fail without the F114 fix: the envelope carried a reconfirm token."""
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.gen_path_refuse import customer_abstain_text
+    from dms_executor.reconfirm import _PENDING
+
+    grants = Executor(
+        warehouse_path=ensure_demo_warehouse(tmp_path / "grants.duckdb")
+    ).grantable_tables(space_id=space_id)
+    assert table not in grants
+
+    body, prompts = _armed_ask(monkeypatch, tmp_path, question=question, space_id=space_id, sql=sql)
+    assert "GEN-01: validate:ungranted" in body["assumptions"]
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert body["rows"] == []
+    assert body["values"] == []
+    assert body["sql_used"] is None
+    assert body["text"] == customer_abstain_text("validate:ungranted")
+    assert "not executing" in body["text"]
+    assert "reconfirm" not in body
+    assert _PENDING == {}
+    assert prompts == [], "the model wrote a question for a direct abstain"
+
+
+def test_armed_gen01_binder_failure_keeps_its_reconfirm_offer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A validate failure that is not ungranted is still offered another question."""
+    from dms_executor.reconfirm import _PENDING, peek_pending
+
+    body, prompts = _armed_ask(
+        monkeypatch,
+        tmp_path,
+        question="what is the mauve widget total",
+        space_id=OPS_SPACE,
+        sql="SELECT no_such_column FROM inventory",
+    )
+    assert "GEN-01: validate:explain:BinderException" in body["assumptions"]
+    assert body["abstained"] is True
+    assert body["badge"] == "ABSTAIN"
+    assert body["rows"] == []
+    assert body["values"] == []
+    offer = body["reconfirm"]
+    assert offer["reason_code"] == "validate:explain:BinderException"
+    assert offer["suggested_question"] == "closest stock question"
+    assert peek_pending(offer["token"]) is not None
+    assert len(_PENDING) == 1
+    assert len(prompts) == 1
+
+
+@pytest.mark.parametrize(
+    ("assumption", "direct"),
+    (
+        ("GEN-01: validate:ungranted", "ungranted"),
+        ("GEN-01: validate:ungranted:file", "ungranted:file"),
+        ("GEN-01: validate:sql_relation_not_granted", "sql_relation_not_granted"),
+        ("GEN-01: validate:explain:BinderException", None),
+        ("GEN-01: validate:keep_gt_empty", None),
+        ("GEN-01: unknown_measure", None),
+    ),
+)
+def test_gen01_validate_code_reads_the_code_under_the_stage(
+    assumption: str, direct: str | None
+) -> None:
+    from dms_executor.reconfirm import direct_abstain_reason
+
+    env = {"abstained": True, "badge": "ABSTAIN", "assumptions": [assumption]}
+    assert direct_abstain_reason(env, "how many widgets") == direct
