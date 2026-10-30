@@ -81,7 +81,12 @@ closed code and a fixed customer sentence:
    bracket or `struct_extract`, a whole-row reference, a window, a scalar subquery, a
    table or CTE alias column list, a star, a set operation, PIVOT, VALUES, UNNEST,
    LATERAL, an unaliased computed projection) is all-PII, and an object whose tables
-   cannot be resolved is all-PII), `result_out_of_order`, `ungranted` (zero submits; the
+   cannot be resolved is all-PII; a view is read through its own SELECT from
+   `duckdb_views()`, nested views included, so a view that renames a marked column
+   carries the mark, and an unreadable view or catalog is all-PII; a column that shares
+   a JOIN, WHERE, HAVING or QUALIFY conjunct with a marked column carries the mark; the
+   name-only pii form `Schema.Table.column` splits at its last dot),
+   `result_out_of_order`, `ungranted` (zero submits; the
    same united table set is checked before any submit), `measure_revoked`, `not_conserved`,
    `result_changed_between_runs`, `source_refreshed_during_proof`, `headline_unbacked`,
    `too_few_groups`, `too_many_groups`, `cortex_unavailable`, `cortex_submit_failed`,

@@ -214,6 +214,13 @@ _DEF_KEYS = frozenset(
 _EXEC_KEYS = frozenset({"engine", "result_hash", "row_count"})
 
 
+def conservation_tolerance(n_groups: int) -> float:
+    """Slack ``grouped_total`` may differ from ``raw_total`` by: half a cent per group
+    plus one, what ``ROUND(.., 2)`` per group can drift. A fixed function of
+    ``n_groups``, so a proof cannot widen its own tolerance."""
+    return round(0.005 * int(n_groups) + 0.005, 6)
+
+
 def insight_proof_enabled() -> bool:
     """``DMS_INSIGHT_PROOF=1`` exactly. Unset, ``0`` and ``true`` are off."""
     return os.environ.get(FLAG, "0").strip() == "1"
@@ -504,6 +511,8 @@ def assert_proof_shape(
         raise _bad("n_groups disagrees with the executions' row_count")
     if proof["n_groups"] < 2:
         raise _bad("n_groups is below two")
+    if abs(float(proof["tolerance"]) - conservation_tolerance(proof["n_groups"])) > 1e-9:
+        raise _bad("tolerance is not the conservation tolerance for n_groups")
     if type(proof["negative_parts"]) is not int or proof["negative_parts"] != 0:
         raise _bad("negative_parts must be the integer 0")
     if sql is not None and item_content_hash(sql) != proof["sql_hash"]:
@@ -518,6 +527,17 @@ def assert_proof_shape(
             raise _bad("order_hash does not hash the rows in order")
         if len(projected) != proof["n_groups"]:
             raise _bad("n_groups disagrees with the rows")
+        # The figures, not only the hashes: every row's grouped_total cell is the
+        # proof's grouped_total, and the rows' values add back to raw_total.
+        cells = [r["grouped_total"] for r in projected]
+        if not all(_finite(c) and abs(float(c) - float(proof["grouped_total"])) <= 1e-9
+                   for c in cells):
+            raise _bad("grouped_total is not the rows' grouped_total cell")
+        values = [r["value"] for r in projected]
+        if not all(_finite(v) for v in values) or abs(
+            sum(float(v) for v in values) - float(proof["raw_total"])
+        ) > slack:
+            raise _bad("the rows' values do not add back to raw_total within tolerance")
 
 
 # --------------------------------------------------------------------------
@@ -775,6 +795,23 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
             for col in body.find_all(exp.Column):
                 cols |= _column_parts(col)
             projections.append((out, cols))
+    # Implicit flow (verify round 4): ``JOIN c ON c.code = t.name`` makes c.code
+    # carry t.name's values. Every column that shares a predicate conjunct with
+    # a tainted column is tainted by its own name.
+    predicates: list[tuple[set[str], set[str]]] = []
+    for clause in tree.find_all(exp.Join, exp.Where, exp.Having, exp.Qualify):
+        conds = [clause.args.get("on")] if isinstance(clause, exp.Join) else [clause.this]
+        for cond in conds:
+            if cond is None:
+                continue
+            for conj in (cond.flatten() if isinstance(cond, exp.And) else [cond]):
+                refs = list(conj.find_all(exp.Column))
+                parts: set[str] = set()
+                for col in refs:
+                    parts |= _column_parts(col)
+                names = {str(col.name).casefold() for col in refs if col.name}
+                if names:
+                    predicates.append((parts, names))
     tainted = set(marked)
     changed = True
     while changed:
@@ -782,6 +819,10 @@ def _subquery_taint(relation: str, marked: set[str]) -> set[str] | None:
         for out, cols in projections:
             if out not in tainted and cols & tainted:
                 tainted.add(out)
+                changed = True
+        for parts, names in predicates:
+            if parts & tainted and not names <= tainted:
+                tainted |= names
                 changed = True
     return tainted
 
@@ -822,38 +863,130 @@ def _scoped_tables(sql: str) -> frozenset[str] | None:
     return frozenset(t.rsplit(".", 1)[-1].strip('"').casefold() for t in parsed)
 
 
-def _pii_columns(onto: Ontology, obj: str) -> Collection[str]:
-    """Casefolded columns of ``obj`` a steward marked as personal data.
+def _pii_items(onto: Ontology) -> list[tuple[str, str]]:
+    """``(bare table or '', casefolded column)`` for every pii item that names a column.
 
-    A pii item applies when the table it names is one the object's relation
-    reads (``_read_tables``: subqueries and comma joins included), or when it
-    names no table. An object whose tables cannot be resolved, or whose subquery does
-    not parse, is all-PII: nothing of it is grouped by.
+    The name-only form splits at the LAST dot: ``Sales.Territory.name`` is column
+    ``name`` of table ``territory`` (verify round 4: splitting at the first dot made
+    it column ``territory.name`` of table ``sales``, which matched nothing).
     """
-    relation = str(onto.objects[obj].relation or "")
-    tables = _read_tables(relation)
-    marked: set[str] = set()
+    out: list[tuple[str, str]] = []
     for payload in onto.__dict__.get("_pii", []) or []:
         if not isinstance(payload, dict):
             continue
         rel = _bare(str(payload.get("relation") or payload.get("table") or ""))
-        column = str(payload.get("column") or "").strip().casefold()
+        column = str(payload.get("column") or "").strip().strip('"').casefold()
         name = str(payload.get("name") or "")
         if not column and "." in name:
-            left, right = name.split(".", 1)
-            rel, column = _bare(left), right.strip().casefold()
-        if not column:
-            continue
-        if not tables:
+            left, right = name.rsplit(".", 1)
+            rel, column = _bare(left), right.strip().strip('"').casefold()
+        if column:
+            out.append((rel, column))
+    return out
+
+
+#: Views nest; past this depth a relation is treated as all-PII.
+_MAX_VIEW_DEPTH = 8
+
+
+def _view_body(create_sql: str) -> str | None:
+    """The SELECT of a ``CREATE VIEW`` statement, or None when it cannot be read.
+
+    A view with a column list (``CREATE VIEW v (a, b) AS ...``) renames by
+    position; its body is returned as ``SELECT * FROM (body) AS _v(a, b)``, which
+    the taint walker fails closed on when the body reads a marked column.
+    """
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import SqlglotError
+
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    try:
+        tree = sqlglot.parse_one(create_sql.strip().rstrip(";"), read=SERVING_DIALECT)
+    except (SqlglotError, ValueError):
+        return None
+    if not isinstance(tree, exp.Create) or str(tree.args.get("kind") or "").upper() != "VIEW":
+        return None
+    body = tree.expression
+    if body is None:
+        return None
+    text = body.sql(dialect=SERVING_DIALECT)
+    if isinstance(tree.this, exp.Schema) and tree.this.expressions:
+        cols = ", ".join(_q(str(c.name)) for c in tree.this.expressions)
+        text = f"SELECT * FROM ({text}) AS _v({cols})"
+    return text
+
+
+def _view_bodies(con: Any) -> dict[str, list[str | None]] | None:
+    """Bare casefolded view name -> the SELECT each such view runs. None: unreadable."""
+    try:
+        rows = con.execute(
+            "SELECT view_name, sql FROM duckdb_views() WHERE NOT internal"
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - a catalog that cannot answer fails closed
+        return None
+    out: dict[str, list[str | None]] = {}
+    for name, create in rows:
+        out.setdefault(str(name).casefold(), []).append(_view_body(str(create or "")))
+    return out
+
+
+def _relation_taint(
+    relation: str,
+    items: list[tuple[str, str]],
+    views: Mapping[str, list[str | None]],
+    depth: int = 0,
+) -> Collection[str]:
+    """Casefolded output names of ``relation`` that carry a marked column.
+
+    A base table's marked columns are its pii items. A view's are what its own
+    SELECT carries, computed the same way, so a view that renames a marked
+    column (``name AS region``) marks ``region`` (verify round 4: a view hid the
+    pii item, because sqlglot does not expand views). A view that cannot be
+    read, or nests past ``_MAX_VIEW_DEPTH``, makes the relation all-PII.
+    """
+    tables = _read_tables(relation)
+    if not tables:
+        return _ALL_PII
+    marked = {column for rel, column in items if not rel or rel in tables}
+    for table in sorted(tables & set(views)):
+        if depth >= _MAX_VIEW_DEPTH:
             return _ALL_PII
-        if not rel or rel in tables:
-            marked.add(column)
+        for body in views[table]:
+            if body is None:
+                return _ALL_PII
+            inner = _relation_taint(body, items, views, depth + 1)
+            if isinstance(inner, _AllColumns):
+                return _ALL_PII
+            marked |= set(inner)
     if not marked:
         return marked
-    if relation.strip().startswith("(") or " " in relation.strip():
+    text = relation.strip()
+    if text.startswith("(") or " " in text:
         tainted = _subquery_taint(relation, marked)
         return _ALL_PII if tainted is None else tainted
     return marked
+
+
+def _pii_columns(onto: Ontology, obj: str, con: Any = None) -> Collection[str]:
+    """Casefolded columns of ``obj`` a steward marked as personal data.
+
+    A pii item applies when the table it names is one the object's relation
+    reads (``_read_tables``: subqueries and comma joins included), or when it
+    names no table. With ``con``, a relation that reads a view reads what the
+    view reads, and the view's renames carry the mark (``_relation_taint``).
+    An object whose tables cannot be resolved, whose subquery does not parse,
+    or whose views cannot be listed is all-PII: nothing of it is grouped by.
+    """
+    items = _pii_items(onto)
+    if not items:
+        return set()
+    relation = str(onto.objects[obj].relation or "")
+    views = _view_bodies(con) if con is not None else {}
+    if views is None:
+        return _ALL_PII
+    return _relation_taint(relation, items, views)
 
 
 def _item_meta(onto: Ontology) -> list[dict[str, Any]]:
@@ -929,7 +1062,7 @@ def _dimensions(con: Any, onto: Ontology, obj: str) -> _Dims:
         c for c in declared if c not in preferred
     )
     identity = _identity_columns(onto, obj)
-    pii = _pii_columns(onto, obj)
+    pii = _pii_columns(onto, obj, con)
     types = {
         str(name).casefold(): (str(name), str(typ).upper())
         for name, typ, *_ in con.execute(f"DESCRIBE SELECT * FROM {rel}").fetchall()
@@ -1121,6 +1254,9 @@ def prove_insights(
     """
     if not insight_proof_enabled():
         return InsightRun(status="off")
+    if top < 1:
+        # Zero insights asked for: nothing is opened, submitted or stated.
+        return InsightRun(status="ok")
     from dms_executor.generative_ask import cached_verify_violations, load_verified_ontology
 
     loaded = load_verified_ontology(Path(warehouse), onto)
@@ -1298,7 +1434,7 @@ def _prove_candidate(
         groups = len(run1)
         grouped_sum = sum(float(v) for v in values)
         cell_totals = {float(r["grouped_total"]) for r in run1 if _finite(r["grouped_total"])}
-        tol = 0.005 * groups + 0.005
+        tol = conservation_tolerance(groups)
         slack = tol + 1e-6
         conserves = (
             groups > 0
@@ -1524,6 +1660,8 @@ def _pick(
     grain labels first, names both, so the (grain, dimension, kind) key cannot
     be dodged by a twin column.
     """
+    if top < 1:
+        return []
     alias: dict[str, str] = {}
     first_by_shape: dict[tuple[str, str, tuple[Any, ...]], str] = {}
     for _surprise, p in built:  # candidate order
