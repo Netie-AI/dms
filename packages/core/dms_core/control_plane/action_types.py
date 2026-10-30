@@ -69,6 +69,8 @@ ACTION_TYPES: dict[str, ActionType] = {
 ALLOWED_KEYS = frozenset({"action_type", "object_key", "value", "op", "reason"})
 OPS = ("set", "clear")
 REASON_MAX = 500
+#: The longest key value (a SKU or location id) an action accepts.
+KEY_VALUE_MAX = 200
 _MAX_EXPONENT = 64
 #: Significant digits a value may carry, and the longest text read as a number.
 #: The registry's widest range is 8 integer digits; 40 leaves room for a fraction.
@@ -183,7 +185,15 @@ def validate_spec(raw: Any) -> ActionSpec:
         v = key_raw[k]
         if not isinstance(v, str) or not v.strip():
             raise ActionSpecError("key_value_blank", k)
-        object_key[k] = v.strip()
+        v = v.strip()
+        if len(v) > KEY_VALUE_MAX:
+            raise ActionSpecError("key_value_invalid", f"{k} is longer than {KEY_VALUE_MAX}")
+        # A key is copied verbatim into the writeback row, the diff summary, the
+        # append-only receipt and the Cortex ledger. It cannot be masked without
+        # losing which object changed, so one that reads as PII or a secret is refused.
+        if mask_text(v) != v:
+            raise ActionSpecError("key_value_invalid", f"{k} reads as personal data or a secret")
+        object_key[k] = v
 
     op = raw.get("op", "set")
     if op not in OPS:
@@ -212,6 +222,10 @@ def validate_spec(raw: Any) -> ActionSpec:
         raise ActionSpecError("reason_too_long", f"{len(reason)} > {REASON_MAX}")
     # The reason lands in an append-only diff and receipt: no secret, no PII.
     reason = mask_text(reason)
+    # Checked again once masked: apply re-validates the stored (masked) reason, so a
+    # mask that lengthens it must be refused here, not at every later apply.
+    if len(reason) > REASON_MAX:
+        raise ActionSpecError("reason_too_long", f"{len(reason)} > {REASON_MAX} once masked")
 
     return ActionSpec(action_type=at.name, object_key=object_key, value=value, op=op, reason=reason)
 
@@ -239,13 +253,22 @@ def mask_text(text: str) -> str:
 
 
 def mask_json(value: Any) -> Any:
-    """``mask_text`` over every string (keys too) in a JSON-shaped value."""
+    """``mask_text`` over every string (keys too) and integer in a JSON-shaped value.
+
+    An integer is masked by its decimal text: one the masker would change (an
+    NRIC or a phone number written as a number) becomes the masked string, any
+    other stays an integer. Masked text masks to itself, so this is idempotent.
+    """
     if isinstance(value, Mapping):
         return {mask_text(str(k)): mask_json(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [mask_json(v) for v in value]
     if isinstance(value, str):
         return mask_text(value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        text = str(value)
+        masked = mask_text(text)
+        return value if masked == text else masked
     return value
 
 

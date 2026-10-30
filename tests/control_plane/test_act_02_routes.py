@@ -949,3 +949,60 @@ def test_apply_payload_and_propose_reason_are_masked(h: Harness) -> None:
     assert payload["approval_ref"] == "CAB DMSMASK_email_01"
     assert "jian@example.com" not in json.dumps(payload)
     assert "900101-14-5678" not in json.dumps(payload)
+
+
+# --- ACT-01 fix 2 carried to the routes ------------------------------------------------
+
+
+def test_key_value_reading_as_pii_is_refused(h: Harness) -> None:
+    """A key that reads as an NRIC or an email never reaches a receipt or the ledger."""
+    for key in (
+        {"sku": "900101-14-5678", "location_id": "WH-B"},
+        {"sku": "SKU-BETA", "location_id": "ali@example.com"},
+        {"sku": "S" * 201, "location_id": "WH-B"},
+    ):
+        resp = h.propose("450", object_key=key)
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["detail"] == {"code": "key_value_invalid"}
+    assert h.cortex.events == []
+    assert h.counts() == (0, 0, 0, 0)
+
+
+def test_receipt_actor_ref_and_reason_are_the_bound_ones(h: Harness) -> None:
+    """Gate, ledger payload, binding row and decision row name one actor and one ref."""
+    applied = _ok(h.apply(_ok(h.propose("450")), "CAB-2026-1030-A"))
+    declined_prop = _ok(h.propose("500"))
+    declined = _ok(
+        h.client.post(
+            f"{A}/proposals/{declined_prop['proposal_id']}/decline",
+            json={
+                "idempotency_token": declined_prop["idempotency_token"],
+                "approval_ref": "CAB-2026-1030-D",
+                "reason": "supplier lead time, ask jian@example.com",
+            },
+        )
+    )
+    apply_ev, decline_ev = h.cortex.events
+    assert apply_ev.payload["approval_ref"] == applied["approval_ref"] == "CAB-2026-1030-A"
+    assert decline_ev.payload["reason"] == "supplier lead time, ask DMSMASK_email_01"
+    h.conn.rollback()
+    rows = h.conn.execute(
+        """
+        SELECT d.decision, d.approval_ref, d.actor_id, d.evidence->>'decline_reason',
+               c.approval_ref, c.actor_id, c.decline_reason
+          FROM dms.action_decisions d
+          JOIN dms.action_confirmations c ON c.version_id = d.proposal_version_id
+         WHERE d.tenant_id = %s
+         ORDER BY d.decided_at
+        """,
+        (h.tenant,),
+    ).fetchall()
+    actor = str(h.user)
+    reason = "supplier lead time, ask DMSMASK_email_01"
+    assert rows == [
+        ("applied", "CAB-2026-1030-A", actor, None, "CAB-2026-1030-A", actor, None),
+        ("declined", "CAB-2026-1030-D", actor, reason, "CAB-2026-1030-D", actor, reason),
+    ]
+    assert apply_ev.actor == decline_ev.actor == actor
+    assert {c["actor"] for c in h.gate.calls} == {actor}
+    assert declined["status"] == "rejected"

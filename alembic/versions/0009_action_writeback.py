@@ -1,6 +1,6 @@
 """Alembic revision: governed action writeback (ACT-01).
 
-Three tables for one typed, steward-confirmed action:
+Four tables for one typed, steward-confirmed action:
 
 * ``dms.action_proposals`` marks a ``dms.proposals`` row as an action and pins
   the sha256 of its validated spec, the one version it may have and the sha256
@@ -12,6 +12,11 @@ Three tables for one typed, steward-confirmed action:
   is a canonical Decimal string, and NULL means "no override, the source value
   applies". ``row_version`` bumps on every write, which makes the apply
   precondition ABA-safe. There is no DELETE grant: a clear is an UPDATE to NULL.
+* ``dms.action_confirmations`` binds who confirmed a version and under which
+  ``approval_ref`` (and, for a decline, the reason). The apply or decline writes
+  it in the same transaction as the status flip; ``record_decision`` reads the
+  receipt's actor, approval_ref and decline reason back from it and refuses a
+  caller record that names others. Append-only, one row per version.
 * ``dms.action_decisions`` is append-only (the ``0005_ask_audit`` precedent):
   SELECT and INSERT, and no UPDATE or DELETE for any app role. An applied row
   must have verified the re-read. It records the actor, and its approval_ref
@@ -115,6 +120,18 @@ def upgrade() -> None:
           UNIQUE (tenant_id, object_type, object_key_hash, field)
         );
 
+        CREATE TABLE dms.action_confirmations (
+          version_id UUID PRIMARY KEY REFERENCES dms.proposal_versions(id),
+          tenant_id UUID NOT NULL REFERENCES dms.tenants(id) ON DELETE CASCADE,
+          decision TEXT NOT NULL CHECK (decision IN ('applied', 'declined')),
+          approval_ref TEXT NOT NULL CHECK (
+            length(regexp_replace(approval_ref, '@INVISIBLE@', '', 'g')) >= 3
+          ),
+          actor_id TEXT NOT NULL CHECK (length(btrim(actor_id)) > 0),
+          decline_reason TEXT CHECK (decision = 'declined' OR decline_reason IS NULL),
+          confirmed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+
         CREATE TABLE dms.action_decisions (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           tenant_id UUID NOT NULL REFERENCES dms.tenants(id) ON DELETE CASCADE,
@@ -154,11 +171,14 @@ def upgrade() -> None:
     )
     _rls("action_proposals", update=False)
     _rls("action_writeback", update=True)
+    # Append-only too: who confirmed and under which approval_ref, bound at apply.
+    _rls("action_confirmations", update=False)
     # Append-only: SELECT and INSERT, nothing that edits or removes.
     _rls("action_decisions", update=False)
 
 
 def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS dms.action_decisions CASCADE")
+    op.execute("DROP TABLE IF EXISTS dms.action_confirmations CASCADE")
     op.execute("DROP TABLE IF EXISTS dms.action_writeback CASCADE")
     op.execute("DROP TABLE IF EXISTS dms.action_proposals CASCADE")
