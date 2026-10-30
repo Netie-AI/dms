@@ -1865,7 +1865,7 @@ def test_three_hundred_table_shortlist_p95_under_two_seconds(
     assert data_sql == [], timing
     assert build_rows > 0, timing
     assert p95 < 2.0, timing
-    Path("/tmp/schema_index_timing.txt").write_text(timing + "\n", encoding="utf-8")
+    (tmp_path / "schema_index_timing.txt").write_text(timing + "\n", encoding="utf-8")
 
 
 def test_schema_from_serving_reuses_the_serving_connection(

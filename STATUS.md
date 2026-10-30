@@ -1,27 +1,25 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-20, VQ-RAG-01
+**Last updated:** 2026-10-28, DEF-VALIDATE-02
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_VQ_RAG` default off. Replay stays off-flag. Few-shot when on. n=348 not run. Not PASS.
+**Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
 ## Direction
 
-AI-first, DB-GPT/Genie-style text-to-SQL. The model writes the SQL from ontology, schema, and verified-example context, then executes, checks, and retries.
+AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 
-Escalation ladder: plan-then-solve, error-fed self-correct, stronger model via an OpenVault tier, then reconfirm with the closest answerable question and a Yes button.
-
-Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules. DMS never holds or routes provider keys. Routing lives in OpenVault.
+Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm with Yes. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not route provider keys.
 
 ## 52 pack - number of record (STUB)
 
-STUB: an in-process TestClient that replays recorded Cortex responses, not a live-model run. Layout copy-only: the shipped image does not copy `tests/`, so the score-pack fixture is absent. Graded by `scripts/verify/grade52.py` (on main via #432).
+STUB at `7392972`, `grade52 --main`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
-| Main | 52: correct / wrong / abstain | 45 | Served paths |
-|------|------|------|------|
-| `57d85c52` (`tests/fixtures/ask_guide/copy_only_57d85c52.jsonl`) | 16 / 0 / 27 | 16 / 0 / 20 | ai=0 rule=16 |
-| this branch stub-exec `--main`. Not a score. | 43 / 0 / 0 reconfirm=5 | 36 / 0 / 0 | ai=0 rule=43 |
+| Run | 52 included | paths | metric |
+|-----|-------------|-------|--------|
+| flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-Copy-only row: refusal_ok=8, refusal_wrong=0, gold_broken=1. stub-exec flag off and on: refusal_ok=3, refusal_wrong=0, gold_broken=1, wrong_ub95=6.7%, coverage 43/43, split ai=0 rule=43 unattributed=0 abstain=9. Not PASS.
+Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43, tries omitted_pin_mismatch=0. Suite 3573 passed, 41 skipped, 33 xfailed. n=348 not run. Armed 52 not re-run.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
@@ -50,6 +48,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
 | SAFE-01: one grant function, one parser | #454 |
 | WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
+| WIRE-19: contract 1.9.0 client, `document` badge (was a 502), Cortex `reconfirm` Yes/No | this branch |
 | SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |

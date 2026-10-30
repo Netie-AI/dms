@@ -47,6 +47,18 @@ unreachable, Cortex says FreeRoute is unarmed, the mint fails, a question
 carries a stub/placeholder answer or an unarmed Insights reason, or no answer
 was served from the model's own SQL (``split ai=0``).
 
+``DMS_ONTO_FROM_DATA=1`` (default off) makes ``--armed`` read approved items
+from the persisted store before the first question. Zero approved objects
+exits non-zero with ``no approved ontology version``. It does not fall
+back to the spine. grade52 never approves. The artifact then records
+``ontology_version_id``, approved counts by kind, and the approver actor
+id beside ``paths_served``. Every armed artifact also records
+``ov_calls_by_caller_role`` from the OpenVault usage ledger window of the
+run (Cortex versus DMS-direct grain and ontology), so a model mismatch is
+counted per role. ``--all-flags`` applies ``ARMED_ALL_FLAGS_ON`` for that
+run, including ``DMS_RECONFIRM_RUN_HELD=1``. Plain ``--armed`` leaves those
+flags off.
+
 The risk line states what a score supports: per route, served answers with
 gold, how many were wrong, and the exact one-sided 95 percent upper bound on
 the wrong-served rate (0 wrong in n is about 3/n). Abstains are not served
@@ -65,6 +77,7 @@ Usage:
     python scripts/verify/grade52.py --envelopes RUN1 --envelopes RUN2 --envelopes RUN3 --gate
     python scripts/verify/grade52.py --envelopes PATH --baseline OLD/grade52.json
     python scripts/verify/grade52.py --armed --layout copy-only
+    python scripts/verify/grade52.py --armed --layout copy-only --all-flags
 """
 
 from __future__ import annotations
@@ -141,7 +154,8 @@ _BUCKET_KEYS = (
 )
 # Bump when a bucket rule or the row comparison changes. A baseline graded by
 # another version is not comparable and is refused.
-GRADER_VERSION = 3
+# 4: printed wrong includes refusal_wrong. not_scored lists pin_mismatch ids.
+GRADER_VERSION = 4
 CONFIDENCE = 0.95
 # Higher is worse. A case's worst-of-runs bucket is the one ranked highest.
 _SEVERITY = {
@@ -1336,6 +1350,9 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
     dest = _artifact_dir() / name
     slim_cases = []
     for item in report["cases"]:
+        reason = ""
+        for row in not_scored_entries([item]):
+            reason = row["reason"]
         slim_cases.append(
             {
                 "id": item["id"],
@@ -1349,10 +1366,12 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
                 "as_of": item["as_of"],
                 "pack_gold_served": bool(item.get("pack_gold_served")),
                 "served_n": item.get("served_n"),
+                "not_scored": reason or None,
                 **({"runs": item["runs"]} if "runs" in item else {}),
             }
         )
-    without = report["without_pack_gold_served"]
+    without = dict(report["without_pack_gold_served"])
+    without["wrong"] = headline_wrong(without)
     body = {
         "mode": report["mode"],
         "run": run_label(report),
@@ -1365,7 +1384,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "n": report["n"],
         "graded": report["graded"],
         "correct": report["correct"],
-        "wrong": report["wrong"],
+        "wrong": headline_wrong(report),
         "reconfirm": report["reconfirm"],
         "abstain": report["abstain"],
         "refusal_ok": report["refusal_ok"],
@@ -1379,6 +1398,8 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "empty_gold_served": report["empty_gold_served"],
         "score": True,
         "grader_version": GRADER_VERSION,
+        "tries": tries_line(report["cases"]),
+        "not_scored": not_scored_entries(report["cases"]),
         "risk": risk_bounds(report["cases"]),
         "runs": int(report.get("runs") or 1),
         "unstable": int(report.get("unstable") or 0),
@@ -1386,6 +1407,14 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "without_pack_gold_served": without,
         "cases": slim_cases,
     }
+    for key in (
+        "ontology_version_id",
+        "approved_counts",
+        "approver_actor_id",
+        "ov_calls_by_caller_role",
+    ):
+        if report.get(key) is not None:
+            body[key] = report[key]
     dest.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return dest
 
@@ -1459,6 +1488,19 @@ def abstain_part_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def metric_line(report: Mapping[str, Any]) -> str:
+    """AI share among correct answers, and the wrong count beside it.
+
+    ``ai_share`` is ``ai/correct``. ``0/0`` means nothing was correct, which
+    is not a share. Wrong is the served-wrong bucket and must stay 0.
+    """
+    rolls = path_counts(report["cases"])
+    ai = int(rolls["correct"]["ai"])
+    correct = int(report["correct"])
+    wrong = int(report["wrong"])
+    return f"metric ai_share={ai}/{correct} wrong={wrong}"
+
+
 def split_line(report: Mapping[str, Any]) -> str:
     counts = route_split(report["cases"])
     parts = " ".join(f"{key}={counts[key]}" for key in SERVED_ROUTES)
@@ -1469,27 +1511,73 @@ def split_line(report: Mapping[str, Any]) -> str:
 
 
 def tries_line(cases: Sequence[Mapping[str, Any]]) -> str:
-    """Correct on the first generate, and correct only after a retry. Mismatches are out."""
+    """Correct on the first generate, and correct only after a retry.
+
+    A correct answer whose served model is not the requested pin is omitted.
+    ``correct_first + correct_retry`` is less than ``correct`` by that count.
+    """
     first = 0
     retry = 0
+    omitted = 0
     for item in cases:
-        if item.get("bucket") != BUCKET_CORRECT or item.get("pin_mismatch"):
+        if item.get("bucket") != BUCKET_CORRECT:
+            continue
+        if item.get("pin_mismatch"):
+            omitted += 1
             continue
         if int(item.get("model_calls") or 0) > 1:
             retry += 1
         else:
             first += 1
-    return f"tries correct_first={first} correct_retry={retry}"
+    line = f"tries correct_first={first} correct_retry={retry} omitted_pin_mismatch={omitted}"
+    if omitted:
+        line += " reason=pin_mismatch_not_in_tries"
+    return line
+
+
+def not_scored_entries(cases: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """Per question the tries line left out, with the pin that did not match."""
+    rows: list[dict[str, str]] = []
+    for item in cases:
+        if not item.get("pin_mismatch"):
+            continue
+        requested = str(item.get("model_requested") or "missing")
+        served = str(item.get("served_model") or "missing")
+        rows.append(
+            {
+                "id": str(item.get("id") or ""),
+                "reason": f"pin_mismatch:{requested}/{served}",
+            }
+        )
+    return rows
 
 
 def not_scored_line(cases: Sequence[Mapping[str, Any]]) -> str:
-    """Served model differs from the requested pin. Not in the tries counts."""
-    mismatched = sum(1 for item in cases if item.get("pin_mismatch"))
-    return f"not_scored pin_mismatch={mismatched}"
+    """Served model differs from the requested pin. Not in the tries counts.
+
+    The count is followed by each question id and its pin_mismatch reason.
+    """
+    rows = not_scored_entries(cases)
+    head = f"not_scored pin_mismatch={len(rows)}"
+    if not rows:
+        return head
+    shown = " ".join(
+        f"{row['id']}={row['reason']}" if row["id"] else row["reason"] for row in rows
+    )
+    return f"{head} {shown}"
+
+
+def headline_wrong(report: Mapping[str, Any]) -> int:
+    """Wrong served answers. A trap that was served counts. The WRONG=0 bar reads this."""
+    return _bucket_count(report, "wrong") + _bucket_count(report, "refusal_wrong")
 
 
 def summary_line(report: Mapping[str, Any]) -> str:
-    """One score line. The buckets are disjoint and add up to n."""
+    """One score line. The buckets are disjoint and add up to n.
+
+    Printed ``wrong`` is bucket wrong plus refusal_wrong, so a served trap
+    is not a zero on the WRONG=0 bar. ``refusal_wrong`` stays on the line.
+    """
     _require_label(report)
     counts = {key: _bucket_count(report, key) for key in _BUCKET_KEYS}
     if sum(counts.values()) != int(report["n"]):
@@ -1498,9 +1586,10 @@ def summary_line(report: Mapping[str, Any]) -> str:
     head = f"sha={report['dms_sha']}"
     if isinstance(layout, str) and layout:
         head += f" layout={layout}"
+    shown_wrong = counts["wrong"] + counts["refusal_wrong"]
     return (
         f"{head} pack_gold_served={report['pack_gold_served']} "
-        f"{report['n']}: correct={counts['correct']} wrong={counts['wrong']} "
+        f"{report['n']}: correct={counts['correct']} wrong={shown_wrong} "
         f"reconfirm={counts['reconfirm']} abstain={counts['abstain']} "
         f"refusal_ok={counts['refusal_ok']} "
         f"refusal_wrong={counts['refusal_wrong']} empty_gold={counts['empty_gold']} "
@@ -1689,6 +1778,7 @@ def _prepare_flag_off() -> None:
     _bootstrap()
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
+    os.environ.pop("DMS_AI_FIRST", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     _scrub_credentials()
 
@@ -1734,9 +1824,16 @@ def _resolve_mode(mode: str | None) -> str:
     return str(mode)
 
 
-def replay_executing() -> list[dict[str, Any]]:
-    """Same capture, but submit executes the SQL it is given."""
+def replay_executing(*, ai_first: bool = False) -> list[dict[str, Any]]:
+    """Same capture, but submit executes the SQL it is given.
+
+    ``ai_first`` sets ``DMS_AI_FIRST`` after the flag-off scrub. The default
+    stays off, which is the number of record. The flag is cleared before
+    return so a later in-process grade stays off.
+    """
     _prepare_flag_off()
+    if ai_first:
+        os.environ["DMS_AI_FIRST"] = "1"
     from cortex_client.models import (
         AskRequest,
         AskResponse,
@@ -1866,6 +1963,8 @@ def replay_executing() -> list[dict[str, Any]]:
         rows.append({"id": question["id"], "env": body})
     if len(rows) != 52:
         raise SystemExit(f"replay size {len(rows)} != 52")
+    if ai_first:
+        os.environ.pop("DMS_AI_FIRST", None)
     return rows
 
 
@@ -2393,15 +2492,162 @@ def _armed_ask(
     return records
 
 
+_CALLER_ROLES = ("cortex", "grain", "ontology")
+_GATEWAY_UNSET_MODEL = "auto"
+
+
+def _onto_from_data_on() -> bool:
+    return os.environ.get("DMS_ONTO_FROM_DATA", "0").strip() == "1"
+
+
+def approved_counts_by_kind(items: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Approved item counts by kind. ``unkeyed`` is not a stored kind."""
+    counts = {"object": 0, "link": 0}
+    for row in items:
+        kind = str(row.get("kind") or "")
+        if not kind:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+    return counts
+
+
+def approved_ontology_precheck(store: Any = None) -> dict[str, Any]:
+    """Read approved items before the first armed question.
+
+    With no injected store, the factory must be the Postgres store
+    (``DMS_ONTO_PG=1`` and ``DATABASE_URL``) and ``DMS_TENANT_ID`` must be
+    set. An empty object list exits non-zero. There is no spine fallback.
+    """
+    _bootstrap()
+    if store is None:
+        from dms_core.control_plane.onto_data import (
+            PostgresOntologyDataStore,
+            onto_pg_enabled,
+            ontology_data_store,
+        )
+
+        if not os.environ.get("DMS_TENANT_ID", "").strip():
+            raise SystemExit("grade52 armed: FAIL tenant_unset")
+        if not onto_pg_enabled() or not os.environ.get("DATABASE_URL", "").strip():
+            raise SystemExit("grade52 armed: FAIL ontology store is not persisted")
+        store = ontology_data_store()
+        if not isinstance(store, PostgresOntologyDataStore):
+            raise SystemExit("grade52 armed: FAIL ontology store is not persisted")
+    items = list(store.approved_items())
+    objects = [row for row in items if str(row.get("kind") or "") == "object"]
+    if not objects:
+        raise SystemExit("grade52 armed: FAIL no approved ontology version")
+    versions = {str(row.get("version_id") or "") for row in objects}
+    versions.discard("")
+    actors = {str(row.get("approved_by") or "") for row in objects}
+    actors.discard("")
+    if len(versions) != 1:
+        raise SystemExit("grade52 armed: FAIL multiple approved ontology versions")
+    if len(actors) != 1:
+        raise SystemExit("grade52 armed: FAIL mixed approver on approved ontology")
+    return {
+        "ontology_version_id": next(iter(versions)),
+        "approved_counts": approved_counts_by_kind(items),
+        "approver_actor_id": next(iter(actors)),
+    }
+
+
+def ov_calls_by_caller_role(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Count ledger rows and model mismatches per caller role.
+
+    A row names its role in ``caller_role`` or ``role``. Cortex, grain, and
+    ontology are the roles this grade reports. A row with no role and a
+    pinned model request is Cortex. A row with no role and no pinned model
+    stays ``unattributed`` so a DMS-direct call is not counted as Cortex.
+    """
+    out: dict[str, dict[str, int]] = {
+        role: {"calls": 0, "model_mismatch": 0} for role in _CALLER_ROLES
+    }
+    for event in events:
+        role = _ledger_role(event)
+        bucket = out.setdefault(role, {"calls": 0, "model_mismatch": 0})
+        bucket["calls"] += 1
+        requested = str(event.get("model_requested") or "")
+        served = str(event.get("model_served") or "")
+        if _pin_mismatch(requested, served):
+            bucket["model_mismatch"] += 1
+    return out
+
+
+def _ledger_role(event: Mapping[str, Any]) -> str:
+    for key in ("caller_role", "role"):
+        raw = event.get(key)
+        if isinstance(raw, str) and raw.strip() in _CALLER_ROLES:
+            return raw.strip()
+    requested = str(event.get("model_requested") or "").strip()
+    if requested and requested != _GATEWAY_UNSET_MODEL:
+        return "cortex"
+    return "unattributed"
+
+
+def read_ov_calls(openvault_url: str, since: float) -> dict[str, Any]:
+    """Usage-ledger window. A failed read is named on the artifact, not a score."""
+    import httpx
+
+    url = openvault_url.rstrip("/") + "/api/usage"
+    try:
+        response = httpx.get(url, params={"since": since, "limit": 1000}, timeout=5.0)
+        response.raise_for_status()
+        body = response.json()
+    except Exception as exc:  # noqa: BLE001 - the grade keeps the failure name
+        return {"read": "failed", "reason": type(exc).__name__}
+    events = body.get("events") if isinstance(body, dict) else None
+    if not isinstance(events, list):
+        return {"read": "failed", "reason": "usage_ledger_shape"}
+    rows = [row for row in events if isinstance(row, dict)]
+    return ov_calls_by_caller_role(rows)
+
+
+# Armed landing with every current product flag on. Each still defaults off
+# in the product. Plain ``--armed`` and ``--main`` do not apply this set.
+# ``DMS_DEMO_FALLBACK`` stays 0. ``DMS_ASK_CLARIFY`` and ``DMS_CLOOP_B`` stay unset.
+ARMED_ALL_FLAGS_ON: dict[str, str] = {
+    "DMS_AI_FIRST": "1",
+    "DMS_AO_COMPILE": "1",
+    "DMS_DEF_VALIDATE": "1",
+    "DMS_DEMO_FALLBACK": "0",
+    "DMS_GRAIN_AI": "1",
+    "DMS_ONTO_FROM_DATA": "1",
+    "DMS_ONTO_PG": "1",
+    "DMS_RECONFIRM_RUN_HELD": "1",
+    "DMS_VQ_RAG": "1",
+}
+
+
+def apply_armed_all_flags_on() -> None:
+    """Write ``ARMED_ALL_FLAGS_ON`` into the process env. Does not approve."""
+    for name, value in ARMED_ALL_FLAGS_ON.items():
+        os.environ[name] = value
+
+
+def _prepare_armed_flags(*, all_flags: bool) -> None:
+    """Flag-off armed scrub, then the all-flags-on config when requested."""
+    os.environ.pop("DMS_ASK_CLARIFY", None)
+    os.environ.pop("DMS_CLOOP_B", None)
+    os.environ.pop("DMS_AI_FIRST", None)
+    os.environ["DMS_DEMO_FALLBACK"] = "0"
+    if all_flags:
+        apply_armed_all_flags_on()
+
+
 def armed_replay(
-    layout: str = "copy-only", cfg: ArmedConfig | None = None
+    layout: str = "copy-only",
+    cfg: ArmedConfig | None = None,
+    *,
+    all_flags: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every pack question through the real ask path against a live Cortex.
 
     Order: settings, Cortex health and FreeRoute posture, one OpenVault mint,
     then 52 asks with flags off (the stub's flag set, without its credential
-    scrub), then the armed checks. Returns ``{id, env, served}`` records and
-    the capture header fields.
+    scrub), then the armed checks. ``all_flags`` applies ``ARMED_ALL_FLAGS_ON``
+    after that scrub, so ``DMS_RECONFIRM_RUN_HELD`` is 1 for the landing run.
+    Returns ``{id, env, served}`` records and the capture header fields.
     """
     if layout not in LAYOUTS:
         raise SystemExit("grade52: layout must be one of " + ", ".join(LAYOUTS))
@@ -2412,10 +2658,12 @@ def armed_replay(
     if len(questions) != 52:
         raise SystemExit(f"pack size {len(questions)} != 52")
     posture = armed_preflight(cfg)
-    os.environ.pop("DMS_ASK_CLARIFY", None)
-    os.environ.pop("DMS_CLOOP_B", None)
-    os.environ["DMS_DEMO_FALLBACK"] = "0"
+    _prepare_armed_flags(all_flags=all_flags)
+    onto_fields: dict[str, Any] | None = None
+    if _onto_from_data_on():
+        onto_fields = approved_ontology_precheck()
     # The minter tells Cortex to refresh JWKS at CORTEX_URL after each key fetch.
+    started = time.time()
     with _env_value("CORTEX_URL", cfg.cortex_url):
         minter = _armed_minter(cfg)
         try:
@@ -2429,8 +2677,11 @@ def armed_replay(
         "cortex_sha": cfg.cortex_sha,
         "layout": layout,
         "cortex": public_url(cfg.cortex_url),
+        "ov_calls_by_caller_role": read_ov_calls(cfg.openvault_url, started),
         **posture,
     }
+    if onto_fields:
+        meta.update(onto_fields)
     return records, meta
 
 
@@ -2501,6 +2752,7 @@ def _finish(
     print(prefix + summary_line(report))
     print(prefix + summary_line(without))
     print(prefix + paths_line(rolls))
+    print(prefix + metric_line(report))
     print(prefix + risk_line(report))
     print(prefix + split_line(report))
     print(prefix + tries_line(report["cases"]))
@@ -2518,11 +2770,13 @@ def grade_loaded(
     dms_sha: str | None = None,
     layout: str | None = None,
     cortex_sha: str | None = None,
+    extra: Mapping[str, Any] | None = None,
     **finish: Any,
 ) -> dict[str, Any]:
     """Grade served rows. A submit-stub pack is labelled stub and is not a score.
 
     An armed grade first refuses any record that is not a live answer.
+    ``extra`` is copied onto the artifact (ontology version, OV role counts).
     """
     if mode == MODE_ARMED:
         armed_check(envelopes)
@@ -2533,36 +2787,57 @@ def grade_loaded(
     if not isinstance(dms_sha, str):
         raise SystemExit("grade52: envelopes commit missing")
     report = grade_envelopes(envelopes, mode=mode)
+    if extra:
+        report.update(dict(extra))
     return _finish(report, mode, _commit_sha(dms_sha), layout, cortex_sha=cortex_sha, **finish)
 
 
-def grade_main(mode: str | None = None) -> dict[str, Any]:
-    """In-repo proof: exec-SQL stub, flags off. Same product as main 57d85c5."""
+def grade_main(mode: str | None = None, *, ai_first: bool = False) -> dict[str, Any]:
+    """In-repo proof: exec-SQL stub. Default flags off.
+
+    ``ai_first`` turns ``DMS_AI_FIRST`` on for this replay only.
+    """
     chosen = MODE_STUB_EXEC if mode is None else _resolve_mode(mode)
     if chosen != MODE_STUB_EXEC:
         raise SystemExit("grade52: --main grades the exec-SQL stub as stub-exec")
-    return grade_loaded(replay_executing(), mode=MODE_STUB_EXEC, dms_sha=product_sha())
+    return grade_loaded(
+        replay_executing(ai_first=ai_first), mode=MODE_STUB_EXEC, dms_sha=product_sha()
+    )
 
 
-def grade_armed(layout: str = "copy-only", **finish: Any) -> dict[str, Any]:
+def grade_armed(
+    layout: str = "copy-only", *, all_flags: bool = False, **finish: Any
+) -> dict[str, Any]:
     """Armed capture of this checkout against a live Cortex, then the grade.
 
     Settings are refused before the product sha is read, so a missing key
     never reaches the network. The capture (env, model SQL, rows, answer text
-    per question) is written beside the artifact.
+    per question) is written beside the artifact. ``all_flags`` applies
+    ``ARMED_ALL_FLAGS_ON`` before the first question.
     """
     cfg = armed_config()
     sha = product_sha()
-    records, meta = armed_replay(layout, cfg=cfg)
+    records, meta = armed_replay(layout, cfg=cfg, all_flags=all_flags)
     dest = _artifact_dir() / "grade52.armed.jsonl"
     capture = write_capture(records, {"dms_sha": sha, **meta}, dest)
     print(f"armed capture: {capture}")
+    extra = {
+        key: meta[key]
+        for key in (
+            "ontology_version_id",
+            "approved_counts",
+            "approver_actor_id",
+            "ov_calls_by_caller_role",
+        )
+        if key in meta
+    }
     return grade_loaded(
         records,
         mode=MODE_ARMED,
         dms_sha=sha,
         layout=layout,
         cortex_sha=str(meta["cortex_sha"]),
+        extra=extra,
         **finish,
     )
 
@@ -3158,10 +3433,35 @@ def self_test() -> dict[str, str]:
         "model_calls": 0,
     }
     sample = [first, retried, mismatched, abstained, refused]
-    if tries_line(sample) != "tries correct_first=1 correct_retry=1":
+    if tries_line(sample) != (
+        "tries correct_first=1 correct_retry=1 omitted_pin_mismatch=1 "
+        "reason=pin_mismatch_not_in_tries"
+    ):
         raise SystemExit(f"self-test: tries line drifted ({tries_line(sample)})")
-    if not_scored_line(sample) != "not_scored pin_mismatch=1":
-        raise SystemExit("self-test: pin mismatch was scored")
+    mismatched["id"] = "cq_pin"
+    if not_scored_line(sample) != (
+        "not_scored pin_mismatch=1 "
+        "cq_pin=pin_mismatch:openai/gpt-oss-120b/openai/gpt-oss-20b"
+    ):
+        raise SystemExit(f"self-test: pin mismatch was scored ({not_scored_line(sample)})")
+    shown = summary_line(
+        {
+            "mode": MODE_SERVED,
+            "dms_sha": "0" * 40,
+            "pack_gold_served": "included",
+            "n": 2,
+            "correct": 1,
+            "wrong": 0,
+            "reconfirm": 0,
+            "abstain": 0,
+            "refusal_ok": 0,
+            "refusal_wrong": 1,
+            "empty_gold": 0,
+            "gold_broken": 0,
+        }
+    )
+    if "wrong=1" not in shown or "refusal_wrong=1" not in shown:
+        raise SystemExit(f"self-test: refusal_wrong was not in headline wrong ({shown})")
     parts = abstain_part_counts(sample)
     if parts["abstain"] + parts["refusal_ok"] != 2 or sum(parts.values()) != 2:
         raise SystemExit(f"self-test: abstain parts do not add up ({parts})")
@@ -3172,6 +3472,31 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: pacer accepted a rate at the cap")
     if pace_backoff_s(1) != 2 or pace_backoff_s(2) != 4 or pace_backoff_s(8) != 60:
         raise SystemExit("self-test: 429 backoff drifted")
+    share = metric_line(
+        {
+            "correct": 2,
+            "wrong": 0,
+            "cases": [
+                {
+                    "serve_path": "ai",
+                    "bucket": BUCKET_CORRECT,
+                    "answered": True,
+                    "stamp_contradiction": False,
+                },
+                {
+                    "serve_path": "L1",
+                    "bucket": BUCKET_CORRECT,
+                    "answered": True,
+                    "stamp_contradiction": False,
+                },
+            ],
+        }
+    )
+    if share != "metric ai_share=1/2 wrong=0":
+        raise SystemExit(f"self-test: metric line was {share}")
+    empty_share = metric_line({"correct": 0, "wrong": 0, "cases": []})
+    if empty_share != "metric ai_share=0/0 wrong=0":
+        raise SystemExit(f"self-test: empty metric line was {empty_share}")
     if _pin_mismatch("", "openai/gpt-oss-20b") or not _pin_mismatch(
         "openai/gpt-oss-120b", "openai/gpt-oss-20b"
     ):
@@ -3194,6 +3519,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--main", action="store_true")
     parser.add_argument(
+        "--ai-first",
+        action="store_true",
+        help="with --main, set DMS_AI_FIRST=1 for the stub replay",
+    )
+    parser.add_argument(
         "--envelopes",
         type=Path,
         action="append",
@@ -3211,6 +3541,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=LAYOUTS,
         help="--armed only: copy-only (the API image, default) or full-tree",
     )
+    parser.add_argument(
+        "--all-flags",
+        action="store_true",
+        help="--armed only: apply ARMED_ALL_FLAGS_ON (includes DMS_RECONFIRM_RUN_HELD=1)",
+    )
     args = parser.parse_args(argv)
     sources = int(args.main) + int(args.envelopes is not None) + int(args.armed)
     if sources > 1:
@@ -3219,6 +3554,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("grade52: --baseline and --gate grade --envelopes or --armed")
     if args.layout and not args.armed:
         raise SystemExit("grade52: --layout is for --armed; a capture carries its own layout")
+    if args.all_flags and not args.armed:
+        raise SystemExit("grade52: --all-flags is for --armed")
+    if args.ai_first and not args.main:
+        raise SystemExit("grade52: --ai-first is the stub switch for --main")
     if args.self_test or sources == 0:
         self_test()
     baseline = None
@@ -3228,12 +3567,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.envelopes is not None:
         report = grade_runs(args.envelopes, baseline=baseline)
     elif args.armed:
-        report = grade_armed(args.layout or "copy-only", baseline=baseline)
+        report = grade_armed(
+            args.layout or "copy-only", all_flags=bool(args.all_flags), baseline=baseline
+        )
     elif args.main:
-        grade_main()
+        grade_main(ai_first=bool(args.ai_first))
     if args.gate and report is not None:
-        if int(report["wrong"]) + int(report["refusal_wrong"]) > 0:
-            print(f"gate FAIL wrong={report['wrong']} refusal_wrong={report['refusal_wrong']}")
+        if headline_wrong(report) > 0:
+            print(
+                f"gate FAIL wrong={headline_wrong(report)} "
+                f"refusal_wrong={report['refusal_wrong']}"
+            )
             return 1
     return 0
 

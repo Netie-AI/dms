@@ -66,8 +66,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -85,6 +86,36 @@ Cardinality = Literal["many_to_one", "many_to_many", "unverified"]
 #: declared objects; a grain with no object or join abstains rather than pad.
 SUPPLY_CHAIN_GRAINS = ("sku", "supplier", "plant", "lane", "day")
 NO_SILENT_PAD = "missing groups not zero-padded"
+
+
+def onto_from_data_enabled() -> bool:
+    """True only when ``DMS_ONTO_FROM_DATA`` is the digit 1. Unset is off."""
+    return os.environ.get("DMS_ONTO_FROM_DATA", "0").strip() == "1"
+
+
+def _grain_ai_on() -> bool:
+    """True only when ``DMS_GRAIN_AI`` is the digit 1. Unset is off."""
+    from dms_executor.grain_ai import grain_ai_enabled
+
+    return grain_ai_enabled()
+
+
+def _catalog_grains(onto: Ontology | None = None) -> tuple[str, ...]:
+    """Grain names the catalog walks.
+
+    Flag off keeps ``SUPPLY_CHAIN_GRAINS``. ``DMS_ONTO_FROM_DATA`` uses
+    approved grain aliases on ``onto``. ``DMS_GRAIN_AI`` uses
+    ``Ontology.from_store`` and does not read that tuple.
+    """
+    if _grain_ai_on():
+        from dms_executor.grain_ai import approved_grain_names
+
+        return approved_grain_names()
+    if onto_from_data_enabled():
+        if onto is None:
+            return ()
+        return tuple(onto.grain_aliases)
+    return SUPPLY_CHAIN_GRAINS
 
 
 def _ident(name: str) -> str:
@@ -349,7 +380,13 @@ _GRAIN_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def detect_supply_chain_grains(question: str) -> tuple[str, ...]:
-    """Grains the ask names. Word matches only; warehouse/shipment stay climb L0s."""
+    """Grains the ask names. Word matches only; warehouse/shipment stay climb L0s.
+
+    ``DMS_ONTO_FROM_DATA`` and ``DMS_GRAIN_AI`` return no names from here.
+    The grain-ai reader does not call this function.
+    """
+    if onto_from_data_enabled() or _grain_ai_on():
+        return ()
     q = question or ""
     return tuple(name for name, pat in _GRAIN_RES if pat.search(q))
 
@@ -366,6 +403,10 @@ def resolve_grain_object(onto: Ontology, grain: str) -> str | None:
     alias = onto.grain_aliases.get(grain)
     if alias and alias in onto.objects:
         return alias
+    if _grain_ai_on():
+        if grain in onto.objects:
+            return grain
+        return None
     for name in GRAIN_OBJECTS.get(grain, (grain,)):
         if name in onto.objects:
             return name
@@ -440,8 +481,14 @@ def missing_join_for_ungranted(why: str, grains: Sequence[str]) -> str | None:
     }
     if head != "ungranted" and not named_table:
         return None
-    named = [g for g in grains if g in SUPPLY_CHAIN_GRAINS]
-    focus = [g for g in named if g != "sku"] or list(named)
+    if onto_from_data_enabled() or _grain_ai_on():
+        named = [g for g in grains if str(g).strip()]
+    else:
+        named = [g for g in grains if g in SUPPLY_CHAIN_GRAINS]
+    if _grain_ai_on():
+        focus = list(named)
+    else:
+        focus = [g for g in named if g != "sku"] or list(named)
     label = ", ".join(focus) if focus else "join"
     # The grant code is bare ``ungranted``. A legacy ``ungranted:<table>``
     # still names the table. The customer sentence does not have to.
@@ -552,6 +599,31 @@ class Ontology:
             )
         self.measures[name] = Measure(name, grain, expression, additive, description)
 
+    @classmethod
+    def from_store(cls, items: Sequence[Mapping[str, Any]] | None = None) -> Ontology:
+        """Ontology of approved items only. Proposed and revoked are absent.
+
+        Does not call ``demo_ontology`` and does not read ``SUPPLY_CHAIN_GRAINS``.
+        """
+        if items is None:
+            from dms_core.control_plane.onto_data import ontology_data_store
+
+            items = ontology_data_store().approved_items()
+        onto = cls()
+        served: list[str] = []
+        approved = [row for row in items if str(row.get("status") or "") == "approved"]
+        for kind in ("object", "grain", "link", "measure", "pii"):
+            for row in approved:
+                if str(row.get("kind") or "") != kind:
+                    continue
+                if _apply_stored_item(onto, row):
+                    item_id = row.get("id")
+                    if isinstance(item_id, str):
+                        served.append(item_id)
+                    _remember_approved(onto, row)
+        onto.__dict__["_served_ids"] = tuple(served)
+        return onto
+
     def resolve_object(self, name: str) -> str | Refusal:
         """Canonical object for a named grain, or a refusal naming the gap.
 
@@ -563,6 +635,19 @@ class Ontology:
         alias = self.grain_aliases.get(name)
         if alias and alias in self.objects:
             return alias
+        if onto_from_data_enabled() or _grain_ai_on():
+            known = name in self.missing_grains or name in self.grain_aliases
+            if _grain_ai_on():
+                from dms_executor.grain_ai import approved_grain_names
+
+                known = known or name in approved_grain_names()
+            if known:
+                detail = self.missing_grains.get(name) or (
+                    f"missing join: {name} grain is not an approved object. "
+                    "No silent pad."
+                )
+                return Refusal("missing_join", detail)
+            return Refusal("unknown_object", f"unknown object {name!r}")
         if name in SUPPLY_CHAIN_GRAINS:
             detail = self.missing_grains.get(name) or (
                 f"missing join: {name} grain is not declared on this warehouse. "
@@ -574,7 +659,7 @@ class Ontology:
     def supply_chain_catalog(self) -> dict[str, Any]:
         """SKU / supplier / plant / lane / day: present object or missing join."""
         out: dict[str, Any] = {}
-        for name in SUPPLY_CHAIN_GRAINS:
+        for name in _catalog_grains(self):
             resolved = self.resolve_object(name)
             if isinstance(resolved, Refusal):
                 out[name] = {
@@ -617,7 +702,7 @@ class Ontology:
                 "grains": {},
             }
         grains: dict[str, Any] = {}
-        for name in SUPPLY_CHAIN_GRAINS:
+        for name in _catalog_grains(self):
             resolved = self.resolve_object(name)
             if isinstance(resolved, Refusal):
                 grains[name] = {
@@ -1642,8 +1727,23 @@ class Ontology:
         that cites an ungranted table is ``missing_join`` naming the grain --
         not SQL that later dies as ``validate:ungranted:...``.
         """
-        named = tuple(g for g in grains if g in SUPPLY_CHAIN_GRAINS)
+        if _grain_ai_on():
+            from dms_executor.grain_ai import approved_grain_names
+
+            allowed_names = set(approved_grain_names())
+            named = tuple(g for g in grains if g in allowed_names)
+        elif onto_from_data_enabled():
+            allowed_names = set(self.grain_aliases) | set(self.objects)
+            named = tuple(g for g in grains if g in allowed_names)
+        else:
+            named = tuple(g for g in grains if g in SUPPLY_CHAIN_GRAINS)
         if len(named) < 2:
+            if _grain_ai_on():
+                return Refusal(
+                    "missing_join",
+                    "multi-join compile needs at least 2 approved grains; "
+                    f"got {list(named) or 'none'}",
+                )
             return Refusal(
                 "missing_join",
                 "multi-join compile needs ≥2 supply-chain grains "
@@ -1798,13 +1898,28 @@ def try_compile_multi_grain(
     via: dict[str, str] | None = None,
     grantable: set[str] | None = None,
     dialect: str | None = None,
-) -> CompiledQuery | Refusal | None:
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> CompiledQuery | Refusal | dict[str, Any] | None:
     """≥2 named supply-chain grains → compile_grains. Else None (not bind_plan).
 
     When ``grantable`` is set, a path that cites an ungranted table is
     ``missing_join`` naming the grain -- not a later ``validate:ungranted``.
+
+    ``DMS_GRAIN_AI`` takes grains from approved items. A split or a low
+    confidence reading returns the reconfirm envelope instead of a refusal.
     """
-    grains = detect_supply_chain_grains(question)
+    if _grain_ai_on():
+        from dms_executor.grain_ai import map_question_to_grains
+
+        mapped = map_question_to_grains(
+            question, space_id=space_id, session_id=session_id
+        )
+        if "reconfirm" in mapped:
+            return mapped
+        grains = tuple(mapped.get("grains") or ())
+    else:
+        grains = detect_supply_chain_grains(question)
     if onto is None or not onto.verified or len(grains) < 2:
         return None
     return onto.compile_grains(
@@ -1903,6 +2018,151 @@ def _table_columns(warehouse: Path) -> dict[str, set[str]]:
     for table_name, column_name in rows:
         out.setdefault(str(table_name), set()).add(str(column_name))
     return out
+
+
+def _bare_relation(relation: str) -> str:
+    text = str(relation or "").strip().strip('"')
+    if not text or text.startswith("("):
+        return ""
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    return text.casefold()
+
+
+def _payload_columns(payload: Mapping[str, Any]) -> set[str]:
+    cols: set[str] = set()
+    for key in ("key", "business_key"):
+        raw = payload.get(key)
+        if isinstance(raw, list):
+            cols.update(str(c).strip().casefold() for c in raw if str(c).strip())
+    raw_attrs = payload.get("attributes")
+    if isinstance(raw_attrs, list):
+        for attr in raw_attrs:
+            if isinstance(attr, str) and attr.strip():
+                cols.add(attr.strip().casefold())
+            elif isinstance(attr, dict):
+                for field in ("source_column", "column", "name"):
+                    val = attr.get(field)
+                    if isinstance(val, str) and val.strip():
+                        cols.add(val.strip().casefold())
+                        break
+    return cols
+
+
+def _remember_approved(onto: Ontology, row: Mapping[str, Any]) -> None:
+    """Keep item ids, versions, and declared columns for DEF-VALIDATE-01.
+
+    ``from_store`` still serves approved items only. Revoked rows are absent.
+    """
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return
+    item_id = row.get("id")
+    if isinstance(item_id, str) and item_id:
+        onto.__dict__.setdefault("_item_meta", []).append(
+            {
+                "id": item_id,
+                "version_id": str(row.get("version_id") or ""),
+                "kind": str(row.get("kind") or ""),
+                "payload": dict(payload),
+            }
+        )
+    kind = str(row.get("kind") or "")
+    rel_cols: dict[str, set[str]] = onto.__dict__.setdefault("_relation_columns", {})
+    if kind == "object":
+        rel = _bare_relation(str(payload.get("relation") or ""))
+        if rel:
+            rel_cols.setdefault(rel, set()).update(_payload_columns(payload))
+        return
+    if kind != "link":
+        return
+    for side, cols_key in (("from_object", "from_columns"), ("to_object", "to_columns")):
+        obj = onto.objects.get(str(payload.get(side) or ""))
+        raw_cols = payload.get(cols_key)
+        if obj is None or not isinstance(raw_cols, list):
+            continue
+        rel = _bare_relation(obj.relation)
+        if not rel:
+            continue
+        rel_cols.setdefault(rel, set()).update(
+            str(c).strip().casefold() for c in raw_cols if str(c).strip()
+        )
+
+
+def _apply_stored_item(onto: Ontology, row: Mapping[str, Any]) -> bool:
+    """Apply one approved item. False when the payload cannot be an ontology part."""
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    kind = str(row.get("kind") or "")
+    if kind == "object":
+        name = str(payload.get("name") or "")
+        relation = str(payload.get("relation") or "")
+        key = payload.get("key")
+        if not name or not relation or not isinstance(key, list) or not key:
+            return False
+        business = payload.get("business_key")
+        onto.add_object(
+            name,
+            relation,
+            [str(c) for c in key],
+            business_key=[str(c) for c in business] if isinstance(business, list) else None,
+        )
+        return True
+    if kind == "grain":
+        name = str(payload.get("name") or "")
+        target = str(payload.get("object") or "")
+        if not name:
+            return False
+        if target and target in onto.objects:
+            onto.grain_aliases[name] = target
+        else:
+            onto.missing_grains[name] = (
+                f"missing join: {name} grain is not an approved object. No silent pad."
+            )
+        return True
+    if kind == "link":
+        name = str(payload.get("name") or "")
+        from_cols = payload.get("from_columns")
+        to_cols = payload.get("to_columns")
+        if not name or not isinstance(from_cols, list) or not isinstance(to_cols, list):
+            return False
+        try:
+            onto.add_link(
+                name,
+                str(payload.get("from_object") or ""),
+                [str(c) for c in from_cols],
+                str(payload.get("to_object") or ""),
+                [str(c) for c in to_cols],
+                one_to_one=bool(payload.get("one_to_one")),
+            )
+        except (KeyError, ValueError):
+            return False
+        return True
+    if kind == "measure":
+        name = str(payload.get("name") or "")
+        grain = str(payload.get("grain") or "")
+        expression = str(payload.get("expression") or "")
+        if not name or not grain or not expression:
+            return False
+        try:
+            onto.add_measure(
+                name,
+                grain,
+                expression,
+                additive=bool(payload.get("additive", True)),
+                description=str(payload.get("description") or ""),
+            )
+        except KeyError:
+            return False
+        return True
+    if kind == "pii":
+        name = str(payload.get("name") or "")
+        if not name:
+            return False
+        onto.__dict__.setdefault("_pii", []).append(dict(payload))
+        return True
+    return False
 
 
 def demo_ontology(warehouse: Path) -> Ontology:
@@ -2123,10 +2383,13 @@ def _connect(warehouse: Path) -> Any:
 
 def run_demo(warehouse: Path) -> int:
     print(f"=== ONTOLOGY over {warehouse} ===")
-    if not warehouse.is_file():
-        print(f"FAIL warehouse not found: {warehouse}")
-        return 2
-    onto = demo_ontology(warehouse)
+    if onto_from_data_enabled():
+        onto = Ontology.from_store()
+    else:
+        if not warehouse.is_file():
+            print(f"FAIL warehouse not found: {warehouse}")
+            return 2
+        onto = demo_ontology(warehouse)
     con = _connect(warehouse)
     try:
         violations = onto.verify(con)
@@ -2196,7 +2459,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     if args.describe:
-        print(json.dumps(demo_ontology(args.warehouse).describe(), indent=2))
+        onto = Ontology.from_store() if onto_from_data_enabled() else demo_ontology(args.warehouse)
+        print(json.dumps(onto.describe(), indent=2))
         return 0
     if args.adventureworks:
         return run_adventureworks(args.database)
