@@ -73,10 +73,16 @@ closed code and a fixed customer sentence:
    `assumptions`.
 7. **Refusals.** `non_additive`, `volatile_measure`, `signed_measure`, `empty_fact`,
    `pii_dimension` (never executed; a pii item matches every table an object's relation
-   reads, subqueries included, aliases of a marked column carry the mark, a subquery
-   that renames by position or expansion (a table or CTE alias column list, a star, a set
-   operation, PIVOT, VALUES, UNNEST, LATERAL, an unaliased computed projection of a marked
-   column) is all-PII, and an object whose tables cannot be resolved is all-PII), `result_out_of_order`, `ungranted` (zero submits), `measure_revoked`, `not_conserved`,
+   reads, resolved by the FROM/JOIN regex and sqlglot's scope walk united, so subqueries,
+   comma joins and spaced dots are included; aliases of a marked column carry the mark;
+   the subquery walk is an allowlist: every projection must be a column or an alias over
+   columns, literals and a fixed list of pass-through operators and functions, and no
+   column may name a table or alias. Anything else (a positional `#n`, `COLUMNS()`, a
+   bracket or `struct_extract`, a whole-row reference, a window, a scalar subquery, a
+   table or CTE alias column list, a star, a set operation, PIVOT, VALUES, UNNEST,
+   LATERAL, an unaliased computed projection) is all-PII, and an object whose tables
+   cannot be resolved is all-PII), `result_out_of_order`, `ungranted` (zero submits; the
+   same united table set is checked before any submit), `measure_revoked`, `not_conserved`,
    `result_changed_between_runs`, `source_refreshed_during_proof`, `headline_unbacked`,
    `too_few_groups`, `too_many_groups`, `cortex_unavailable`, `cortex_submit_failed`,
    `envelope_invalid`, `insights_budget`, `ontology_unverified`, `no_approved_measure`.
