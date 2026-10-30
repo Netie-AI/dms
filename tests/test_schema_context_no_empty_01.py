@@ -5,13 +5,20 @@ With ``DMS_SCHEMA_CONTEXT=1`` a prompt that lists no table went out as
 on that without calling the model; an armed all-flags run hit it on 20 of 41
 Insights posts.
 
-Why the table set was empty for a granted Space: ``read_catalog`` opened the
-lake on the ingest (exclusive) lease. That lease waits for every serving cursor
-to come back and gives up after ``DMS_LAKE_INGEST_WAIT_S``; the error was
-swallowed and the catalog came back with no dataset. Any serving read in
-flight (another ask, a Space's index build) was enough. The catalog read now
-takes the read-only serving lease, still filtered by the grant. A prompt that
-still names no table (zero granted tables) is not sent at all.
+Why the table set was empty for a granted Space - two causes, both fixed:
+
+1. ``read_catalog`` opened the lake on the ingest (exclusive) lease. That lease
+   waits for every serving cursor to come back and gives up after
+   ``DMS_LAKE_INGEST_WAIT_S``; the error was swallowed and the catalog came back
+   with no dataset. Any serving read in flight (another ask, a Space's index
+   build) was enough. The catalog read now takes the read-only serving lease,
+   still filtered by the grant.
+2. Once a Space's value index is ready, each column line carries
+   ``distinct=``. Measures are reserved before columns, the demo ontology's
+   measures fill the 480-token budget, and no granted column fit. Measures now
+   give room back until one granted column fits.
+
+A prompt that still names no table (zero granted tables) is not sent at all.
 
 Loopback fakes only: the Insights HTTP client is replaced, submit runs the SQL
 on a temporary demo warehouse.
@@ -21,6 +28,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +45,8 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.ontology import demo_ontology
 from dms_executor.schema_context import (
     SCHEMA_CONTEXT_FIELD,
+    _forget_index,
+    build_space_index,
     prepare_generate_context,
     read_catalog,
 )
@@ -93,7 +103,7 @@ def _gold(db: Path) -> dict[str, int]:
 
 
 @pytest.fixture()
-def warehouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def warehouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     for name in (
         "DMS_CLOOP_B",
         "DMS_LANE_ONTOLOGY_RANKED",
@@ -110,7 +120,11 @@ def warehouse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     db = tmp_path / "no_empty.duckdb"
     dw._SEEDED.discard(str(db.resolve()))
     ensure_demo_warehouse(db)
-    return db
+    # The Space value index is process state keyed by space id. Start and end
+    # without one, so a ready index is only there when a test builds it.
+    _forget_index(FINANCE)
+    yield db
+    _forget_index(FINANCE)
 
 
 def test_zero_granted_tables_sends_no_schema_context_key(warehouse: Path) -> None:
@@ -184,7 +198,7 @@ class _ServingSubmit(_Executing):
 
 
 def _ask_over_http(
-    db: Path, monkeypatch: pytest.MonkeyPatch, space_id: str | None
+    db: Path, monkeypatch: pytest.MonkeyPatch, space_id: str | None, *, hold_lease: bool
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from dms_api.app import create_app
     from dms_api.settings import Settings, get_settings
@@ -226,24 +240,22 @@ def _ask_over_http(
         payload["space_id"] = space_id
     # A serving read in flight for the whole ask (a concurrent ask, or this
     # Space's index build). Before the fix the catalog read timed out behind it.
-    held = connect_serving(db)
+    held = connect_serving(db) if hold_lease else None
     try:
         res = TestClient(app).post("/v1/chat/ask", json=payload)
     finally:
-        held.close()
+        if held is not None:
+            held.close()
     assert res.status_code == 200, res.text
     return res.json(), posts
 
 
-@pytest.mark.parametrize("space_id", [None, FINANCE], ids=["company", "finance"])
-def test_chat_ask_sends_no_empty_schema_and_serves_gold(
-    warehouse: Path, monkeypatch: pytest.MonkeyPatch, space_id: str | None
+def _assert_acceptance(
+    db: Path, env: dict[str, Any], posts: list[dict[str, Any]], space_id: str | None
 ) -> None:
-    """Acceptance 1: POST /v1/chat/ask; every Insights body lists a granted table or no key."""
-    gold = _gold(warehouse)
+    """Every Insights body lists a granted table or has no key; rows and text are gold."""
+    gold = _gold(db)
     assert gold
-    env, posts = _ask_over_http(warehouse, monkeypatch, space_id)
-
     assert posts, "the ask never reached Insights"
     for body in posts:
         for prompt in _schema_prompts(body):
@@ -254,7 +266,7 @@ def test_chat_ask_sends_no_empty_schema_and_serves_gold(
             assert "alerts" not in tables
             if space_id == FINANCE:
                 assert set(tables) <= FINANCE_GRANT, tables
-    # The flag is on and the catalog read now succeeds: the prompt is there.
+    # The flag is on and a granted table fits: the prompt is there.
     assert any(_schema_prompts(body) for body in posts)
 
     assert_envelope_valid(env)
@@ -267,3 +279,21 @@ def test_chat_ask_sends_no_empty_schema_and_serves_gold(
     for category, count in gold.items():
         assert category in text, text
         assert str(count) in text, text
+
+
+@pytest.mark.parametrize("space_id", [None, FINANCE], ids=["company", "finance"])
+def test_chat_ask_sends_no_empty_schema_and_serves_gold(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch, space_id: str | None
+) -> None:
+    """Acceptance 1, cause 1: a serving read is in flight for the whole ask."""
+    env, posts = _ask_over_http(warehouse, monkeypatch, space_id, hold_lease=True)
+    _assert_acceptance(warehouse, env, posts, space_id)
+
+
+def test_ready_space_index_still_lists_a_granted_table(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Acceptance 1, cause 2: the Finance index is ready; measures must not starve SCHEMA."""
+    assert build_space_index(warehouse, FINANCE, set(FINANCE_GRANT), "duckdb") == ""
+    env, posts = _ask_over_http(warehouse, monkeypatch, FINANCE, hold_lease=False)
+    _assert_acceptance(warehouse, env, posts, FINANCE)

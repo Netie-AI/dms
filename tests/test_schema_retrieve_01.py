@@ -932,14 +932,20 @@ def test_measures_are_reserved_before_columns() -> None:
         }
         for i in range(8)
     ]
+    schema = {"dialect": "sqlserver", "datasets": [{"name": "invoice", "columns": columns}]}
     prompt = build_schema_context(
-        "open receivable",
-        {"dialect": "sqlserver", "datasets": [{"name": "invoice", "columns": columns}]},
-        ontology=_finance_model(),
-        max_tokens=90,
+        "open receivable", schema, ontology=_finance_model(), max_tokens=200
     ).prompt
     assert _EXPR in prompt
-    assert sum(1 for i in range(8) if f"wide_{i:02d}" in prompt) < 8
+    assert 1 <= sum(1 for i in range(8) if f"wide_{i:02d}" in prompt) < 8
+    # F118: at 90 tokens the measure left room for no column, and the prompt
+    # went out as MEASURES under an empty SCHEMA (Cortex schema_context_empty).
+    # The measure gives its room back so one granted column is listed.
+    tight = build_schema_context(
+        "open receivable", schema, ontology=_finance_model(), max_tokens=90
+    ).prompt
+    assert "- invoice" in tight
+    assert sum(1 for i in range(8) if f"wide_{i:02d}" in tight) >= 1
 
 
 def test_description_email_is_masked() -> None:

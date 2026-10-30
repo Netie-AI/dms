@@ -1435,6 +1435,34 @@ def _select(
     measures: Sequence[MeasureFact],
     max_tokens: int,
 ) -> tuple[list[ColumnFact], list[JoinFact], list[HintFact], list[MeasureFact]]:
+    """``_select_once``, except measures never leave ``SCHEMA`` without a table.
+
+    Measures are reserved first. Ten demo measures fill the 480-token budget,
+    and once the index is ready a column line carries ``distinct=``, so no
+    granted column fit and the prompt went out as measures under an empty
+    ``SCHEMA`` (Cortex: ``schema_context_empty``). When that happens, measures
+    give their room back, lowest score first, until a column fits. Only
+    columns already passed in are candidates: the grant filter is upstream.
+    """
+    picked = _select_once(dialect, columns, joins, hints, measures, max_tokens)
+    if picked[0] or not columns or not measures:
+        return picked
+    ranked = sorted(measures, key=lambda item: (-item.score, item.name))
+    for keep in range(len(ranked) - 1, -1, -1):
+        trial = _select_once(dialect, columns, joins, hints, ranked[:keep], max_tokens)
+        if trial[0]:
+            return trial
+    return picked
+
+
+def _select_once(
+    dialect: str,
+    columns: Sequence[ColumnFact],
+    joins: Sequence[JoinFact],
+    hints: Sequence[HintFact],
+    measures: Sequence[MeasureFact],
+    max_tokens: int,
+) -> tuple[list[ColumnFact], list[JoinFact], list[HintFact], list[MeasureFact]]:
     """Hints and the columns they cite take budget before measures.
 
     With no hints, measures are still reserved before unrelated columns.
