@@ -1069,6 +1069,89 @@ def test_a_view_over_a_table_function_never_shows_marked_values_in_the_pin_lifec
                    for s in new_submits)
 
 
+# INS-PROOF-01 verify round 9 (MEDIUM): DuckDB renames the second of two equal
+# output names to <name>_1, and the PII walker marked by alias text, so a view
+# with 'x' AS name, name served the marked column as name_1 through the whole
+# pin lifecycle: preview showed it, confirm pinned it, GET /pins listed it, and
+# replay certified it L0 "Unchanged since steward approval".
+_DUP_VIEWS = {
+    "dup_bare": ("SELECT territory_id, 'x' AS name, name FROM Sales.Territory",
+                 "name_1", ("North", "South")),
+    "dup_alias": ("SELECT territory_id, 'x' AS zone, upper(name) AS zone FROM Sales.Territory",
+                  "zone_1", ("NORTH", "SOUTH")),
+}
+
+
+@pytest.mark.parametrize("kind", sorted(_DUP_VIEWS))
+def test_a_duplicate_output_name_never_shows_marked_values_in_the_pin_lifecycle(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    body, attr, labels = _DUP_VIEWS[kind]
+    headline = (f"2 of 4 Territory.{attr} values ({labels[0]}, {labels[1]}) carry 86.4 pct "
+                "of order_amount")
+    wh = _seed_sales(tmp_path / "lake_dup.duckdb")
+    _update(wh, f"CREATE VIEW Sales.TV AS {body}")
+    w = _build(monkeypatch, wh, approved_store=True,
+               grants={**_B_GRANTS, "Sales.TV": "TRUE"})
+    for it in w.onto.approved:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = "Sales.TV"
+            it["payload"]["attributes"] = ["territory_id", attr]
+
+    # Control, before the mark: the renamed column is an ordinary pinnable insight.
+    iid = _insight_id(w, headline)
+    pre = w.preview(iid)
+    assert pre.status_code == 200, pre.text
+    assert pre.json()["envelope"]["text"] == headline
+    got = w.confirm(pre.json()["token"])
+    assert got.status_code == 200, got.text
+    asset_id = str(got.json()["asset_id"])
+    assert w.pins().json()["pins"][0]["headline"] == headline
+    late = w.preview(iid)  # a second token, previewed before the mark, confirmed after
+    assert late.status_code == 200, late.text
+
+    w.onto.approved.append(_pii_item())  # Sales.Territory.name, which the view serves twice
+    before = list(w.cortex.submits)
+    pinned_before = len(w.cortex.events("insight.pinned"))
+
+    ran = w.run()
+    assert ran.status_code == 200, ran.text
+    assert headline not in [i["envelope"]["text"] for i in ran.json()["insights"]]
+    assert not [i for i in ran.json()["insights"] if "Territory" in i["envelope"]["text"]]
+    codes = {r.get("candidate"): r.get("code") for r in ran.json().get("refused", [])}
+    assert codes.get(f"order_amount by Territory.{attr}") == "pii_dimension"
+
+    again = w.preview(iid)
+    assert again.status_code != 200 or again.json()["envelope"]["abstained"] is True
+    assert "token" not in again.json() or not again.json().get("token")
+
+    late_confirm = w.confirm(late.json()["token"])
+    assert late_confirm.status_code != 200, late_confirm.text
+    assert len(w.cortex.events("insight.pinned")) == pinned_before
+
+    res = w.replay(asset_id)
+    assert res.status_code == 200, res.text
+    env = res.json()["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["text"] == _PII_TEXT
+    assert env["values"] == [] and env["rows"] == [] and env["sql_used"] is None
+    assert_envelope_valid(env)
+    assert res.json()["verdict"] == "definition_changed"
+    assert res.json()["proof"]["code"] == "definition_changed:pii_dimension"
+
+    listed = w.pins()
+    pins = listed.json()["pins"]
+    assert len(pins) == 1 and pins[0]["asset_id"] == asset_id
+    assert pins[0]["headline"] is None and pins[0]["headline_withheld"] == "pii_dimension"
+
+    for text in (ran.text, again.text, late_confirm.text, res.text, listed.text):
+        for label in (*labels, "86.4"):
+            assert label not in text
+    new_submits = w.cortex.submits[len(before):]
+    assert not any("territory" in str(s).casefold() or "sales.tv" in str(s).casefold()
+                   for s in new_submits)
+
+
 @pytest.mark.parametrize("how", ["object_and_link", "link_only", "new_version"])
 def test_a_revoked_or_reversioned_dimension_or_link_is_definition_changed(
     world: _World, how: str
