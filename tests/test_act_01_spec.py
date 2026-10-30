@@ -112,7 +112,33 @@ def test_spec_refusals() -> None:
     assert _code(_raw(reason="x" * 501)) == "reason_too_long"
     assert _code("not a mapping") == "field_unknown"
     # 500 characters is the limit, not past it.
-    assert validate_spec(_raw(reason="x" * 500)).reason == "x" * 500
+    words = ("lead time doubled " * 28)[:500]
+    assert validate_spec(_raw(reason=words)).reason == words.strip()
+
+
+def test_reason_is_masked_before_it_is_pinned() -> None:
+    """The reason lands in an append-only diff and receipt: PII and secrets never do."""
+    spec = validate_spec(
+        _raw(reason="asked by 900101-14-5678 (jian@example.com), password=hunter2xyz")
+    )
+    assert "900101-14-5678" not in spec.reason
+    assert "jian@example.com" not in spec.reason
+    assert "hunter2xyz" not in spec.reason
+    assert spec.reason == "asked by DMSMASK_nric_01 (DMSMASK_email_01), password=[redacted]"
+    # Masking is idempotent, so the stored reason re-validates to the same digest.
+    again = validate_spec({**spec.as_dict()})
+    assert again.reason == spec.reason
+    assert spec_sha(again) == spec_sha(spec)
+
+
+def test_values_are_ascii_and_bounded() -> None:
+    """Fullwidth and Arabic-Indic digits are not numbers; a value has at most 40 digits."""
+    assert _code(_raw(value="\uff14\uff15\uff10")) == "value_not_number"
+    assert _code(_raw(value="\u0664\u0665\u0660")) == "value_not_number"
+    assert _code(_raw(value="1" + "0" * 100_000)) == "value_out_of_range"
+    assert _code(_raw(value="4." + "1" * 45)) == "value_out_of_range"
+    assert _code(_raw(value=Decimal("4." + "1" * 45))) == "value_out_of_range"
+    assert validate_spec(_raw(value="4." + "1" * 39)).value == "4." + "1" * 39
 
 
 def test_key_values_are_stripped_never_case_folded() -> None:

@@ -3,8 +3,10 @@
 Three tables for one typed, steward-confirmed action:
 
 * ``dms.action_proposals`` marks a ``dms.proposals`` row as an action and pins
-  the sha256 of its validated spec. ``confirm_proposal_version`` refuses any
-  proposal listed here unless the caller is the action apply path.
+  the sha256 of its validated spec, the one version it may have and the sha256
+  of that version's whole diff. ``confirm_proposal_version`` refuses any
+  proposal listed here unless the caller is the action apply path, and
+  ``create_proposal_version`` refuses to add a second version to one.
 * ``dms.action_writeback`` is the only place an action writes. It is owned by
   DMS. A customer source system and an Excel file are never written. ``value``
   is a canonical Decimal string, and NULL means "no override, the source value
@@ -12,7 +14,9 @@ Three tables for one typed, steward-confirmed action:
   precondition ABA-safe. There is no DELETE grant: a clear is an UPDATE to NULL.
 * ``dms.action_decisions`` is append-only (the ``0005_ask_audit`` precedent):
   SELECT and INSERT, and no UPDATE or DELETE for any app role. An applied row
-  must have verified the re-read. ``ledger_seq`` points at ``dms.ledger_ref``;
+  must have verified the re-read. It records the actor, and its approval_ref
+  needs three visible characters (zero-width ones do not count). One
+  ``ledger_seq`` backs one decision. ``ledger_seq`` points at ``dms.ledger_ref``;
   the one hash chain is in Cortex (hard rule 3). ``before_hash`` and
   ``after_hash`` are state digests, not a chain.
 
@@ -41,6 +45,10 @@ depends_on: str | Sequence[str] | None = None
 _ROLES = ("dms_viewer", "dms_steward", "dms_admin")
 _WRITERS = ("dms_steward", "dms_admin")
 _TENANT = "tenant_id::text = current_setting('dms.tenant_id', true)"
+#: What does not count toward an approval_ref's 3 characters: whitespace, control
+#: characters and the zero-width / invisible format characters (a Postgres ARE
+#: bracket). The Python check in ``actions._require_ref`` is the first line.
+_INVISIBLE = r"[[:space:][:cntrl:]\u00ad\u180e\u200b-\u200f\u2028-\u202f\u205f-\u206f\u3000\ufeff]"
 
 
 def _rls(table: str, *, update: bool) -> None:
@@ -88,6 +96,8 @@ def upgrade() -> None:
           source_kind TEXT NOT NULL,
           spec_sha TEXT NOT NULL,
           evidence_audit_id TEXT,
+          version_id UUID NOT NULL UNIQUE REFERENCES dms.proposal_versions(id),
+          diff_sha TEXT NOT NULL,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
 
@@ -124,10 +134,13 @@ def upgrade() -> None:
           after_hash TEXT,
           rows_changed INT NOT NULL CHECK (rows_changed IN (0, 1)),
           verified BOOLEAN NOT NULL,
-          approval_ref TEXT NOT NULL CHECK (length(btrim(approval_ref)) >= 3),
+          approval_ref TEXT NOT NULL CHECK (
+            length(regexp_replace(approval_ref, '@INVISIBLE@', '', 'g')) >= 3
+          ),
+          actor_id TEXT NOT NULL CHECK (length(btrim(actor_id)) > 0),
           evidence JSONB NOT NULL DEFAULT '{}'::jsonb,
           cortex_entry_id TEXT NOT NULL,
-          ledger_seq BIGINT NOT NULL REFERENCES dms.ledger_ref(seq),
+          ledger_seq BIGINT NOT NULL UNIQUE REFERENCES dms.ledger_ref(seq),
           decided_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           CHECK (
             decision = 'declined'
@@ -137,7 +150,7 @@ def upgrade() -> None:
 
         CREATE INDEX action_decisions_by_time
           ON dms.action_decisions (tenant_id, decided_at);
-        """
+        """.replace("@INVISIBLE@", _INVISIBLE)
     )
     _rls("action_proposals", update=False)
     _rls("action_writeback", update=True)

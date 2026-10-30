@@ -5,8 +5,9 @@ Run from a worktree ``$W`` with Postgres up::
     cd $W && PYTHONPATH="$W/packages/core;$W/apps/api;$W/packages/cortex_client;\
 $W/packages/ledger;$W/packages/executor" python scripts/verify/act_01_writeback_demo.py
 
-The database is ``dms_act_demo`` on the server named by ``ACT01_DEMO_URL``
-(default ``postgresql://dms:dms@127.0.0.1:5432/dms_act_demo``). A database named
+The database is ``dms_act_demo`` on the server named by ``ACT01_DEMO_URL``, which
+must be set: there is no default, because the usual 127.0.0.1:5432 server is
+shared and the demo creates, migrates and drops a database. A database named
 ``dms`` is refused: the demo never touches the live control plane. The script
 creates the database when it is missing and runs ``alembic upgrade head``.
 
@@ -19,8 +20,8 @@ The demo database is dropped at the end unless ``--keep`` is passed. Migration
 roles in every database it runs in, and ``tests/control_plane/conftest.py``
 drops those roles before each session. A leftover demo database holding grants
 makes that DROP ROLE fail, which errors every control-plane test on the same
-server. Point ``ACT01_DEMO_URL`` at a scratch server when other sessions share
-the default one.
+server. Point ``ACT01_DEMO_URL`` at a scratch server, for example
+``postgresql://dms:dms@127.0.0.1:55480/dms_act_demo``.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_URL = "postgresql://dms:dms@127.0.0.1:5432/dms_act_demo"
 
 _failures: list[str] = []
 
@@ -92,7 +92,10 @@ def drop_database(url: str) -> None:
 
 
 def main() -> int:
-    url = os.environ.get("ACT01_DEMO_URL", DEFAULT_URL).strip()
+    url = os.environ.get("ACT01_DEMO_URL", "").strip()
+    if not url:
+        print("REFUSED: set ACT01_DEMO_URL to a scratch server's dms_act_demo database.")
+        return 2
     keep = "--keep" in sys.argv[1:]
     name = _db_name(url)
     if name == "dms":
@@ -311,6 +314,7 @@ def _run(url: str) -> int:
             tenant_id=tid,
             idempotency_token=prop_d["idempotency_token"],
             approval_ref="DEMO-2",
+            actor_id=str(uid),
         )
         record_decision(
             conn, declined, decision="declined", cortex_entry_id="led_demo_2", space_id=None
