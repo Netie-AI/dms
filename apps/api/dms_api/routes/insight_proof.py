@@ -328,24 +328,15 @@ def _pin_refusal(res: dict[str, Any], key: str | None) -> JSONResponse:
     return JSONResponse(_redacted(jsonable_encoder(body), key), status_code=status)
 
 
-def _gate(action: str, settings: Any, space_id: str | None, cortex: Any) -> Any:
-    """``compliance_gate`` as ``/run`` calls it (INS-PROOF-02 round 2).
+def _f5_metadata(action: str, space_id: str | None) -> dict[str, Any]:
+    """The metadata every pin route sends with ``compliance_gate``, as ``/run`` does.
 
-    The gate names the one configured actor (DR-0004 Option A), the identity the
+    Each route names the one configured actor (DR-0004 Option A), the identity the
     ledger append, ``approved_by`` and the audit row carry. ``compliance_gate``
     puts only ``filled_template`` and ``actor`` on the wire, so the Space goes in
     ``filled_template``, where F5 can scope the task by it.
     """
-    return compliance_gate(
-        action=action,
-        actor=settings.dms_actor_user_id,
-        metadata={
-            "task_id": action,
-            "space_id": space_id,
-            "filled_template": {"space_id": space_id},
-        },
-        client=cortex,
-    )
+    return {"task_id": action, "space_id": space_id, "filled_template": {"space_id": space_id}}
 
 
 def _known_space(store: Any, space_id: str | None) -> None:
@@ -365,7 +356,12 @@ def insight_proof_pin_preview(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
-    decision = _gate("insight_proof.pin.preview", settings, body.space_id, cortex)
+    decision = compliance_gate(
+        action="insight_proof.pin.preview",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.pin.preview", body.space_id),
+        client=cortex,
+    )
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     take_executed(ask)
@@ -397,7 +393,12 @@ def insight_proof_pin_confirm(
             status_code=403,
         )
     space_id = wiring.pin_owner_space(ask, token=body.token)
-    decision = _gate("insight_proof.pin.confirm", settings, space_id, cortex)
+    decision = compliance_gate(
+        action="insight_proof.pin.confirm",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.pin.confirm", space_id),
+        client=cortex,
+    )
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     take_executed(ask)
@@ -438,7 +439,12 @@ def insight_proof_pin_replay(
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
     space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
-    decision = _gate("insight_proof.replay", settings, space_id, cortex)
+    decision = compliance_gate(
+        action="insight_proof.replay",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.replay", space_id),
+        client=cortex,
+    )
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     take_executed(ask)
@@ -475,7 +481,12 @@ def insight_proof_pin_revoke(
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
     space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
-    decision = _gate("insight_proof.revoke", settings, space_id, cortex)
+    decision = compliance_gate(
+        action="insight_proof.revoke",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.revoke", space_id),
+        client=cortex,
+    )
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     res = wiring.revoke_pin(ask, cortex, asset_id, actor=settings.dms_actor_user_id)
@@ -497,7 +508,12 @@ def insight_proof_pins(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
-    decision = _gate("insight_proof.pins.read", settings, space_id, cortex)
+    decision = compliance_gate(
+        action="insight_proof.pins.read",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.pins.read", space_id),
+        client=cortex,
+    )
     if (stop := _undecided(decision, cortex)) is not None:
         return stop
     pins = wiring.list_pinned(ask, space_id=space_id)

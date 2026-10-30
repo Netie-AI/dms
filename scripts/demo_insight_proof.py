@@ -429,6 +429,9 @@ def _approved_items(expression: str) -> list[dict[str, Any]]:
     ]
 
 
+_DEMO_STEWARD = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+
+
 def _table_counts(db: Path) -> dict[str, int]:
     from dms_executor.demo_warehouse import connect_serving
 
@@ -473,6 +476,16 @@ def _pin_and_replay(args: argparse.Namespace) -> int:  # noqa: PLR0915 - one lin
     store.approved_items = lambda: _approved_items(expression[0])  # type: ignore[method-assign]
     store.revoked_items = lambda: []  # type: ignore[method-assign]
     cortex = _StubCortex(db, ledger_down=False)
+    # Confirm refuses the shipped default actor (steward_identity_unset): this
+    # in-process demo configures one steward for itself (DR-0004 Option A).
+    if os.environ.get("DMS_ACTOR_USER_ID", route.DEFAULT_ACTOR).strip().lower() in (
+        "", route.DEFAULT_ACTOR
+    ):
+        os.environ["DMS_ACTOR_USER_ID"] = _DEMO_STEWARD
+        from dms_api.settings import get_settings
+
+        get_settings.cache_clear()
+    print(f"steward (DMS_ACTOR_USER_ID): {os.environ['DMS_ACTOR_USER_ID']}")
     route.compliance_gate = lambda **kw: ComplianceDecision(  # type: ignore[assignment]
         allowed=True, reason="ok", action=str(kw.get("action"))
     )
@@ -595,7 +608,8 @@ def _pin_and_replay(args: argparse.Namespace) -> int:  # noqa: PLR0915 - one lin
                      if counts_before.get(t) != after.get(t))
     print(f"\n(8) tables changed: [{', '.join(changed)}]  (the UPDATE in (5) changes values, "
           f"not row counts)")
-    check(changed == ["_proven_insights"], "only the register changed row count")
+    check(changed == ["_proven_insight_receipts", "_proven_insights"],
+          "only the register and its receipts changed row count")
 
     for e in envelopes:
         try:
