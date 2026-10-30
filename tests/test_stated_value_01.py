@@ -488,3 +488,19 @@ def test_list_columns_do_not_break_the_probe(tmp_path: Path) -> None:
     con.close()
     sql = "SELECT SUM(CAST(budget AS DOUBLE)) FROM bronze.tagged WHERE region = 'North'"
     assert dropped_stated_value_reason(IN_NORTH, sql, db) is None
+
+
+def test_a_number_is_a_condition_on_the_column_the_question_names(tmp_path: Path) -> None:
+    """ "district 2" is district_id; school_id = 2 also holds "2" but is not what was asked."""
+    db = _lake(tmp_path)
+    con = duckdb.connect(str(db))
+    con.execute(
+        "CREATE TABLE bronze.units (school_id BIGINT, district_id BIGINT, budget DOUBLE);"
+        "INSERT INTO bronze.units VALUES (1, 2, 10), (2, 1, 20), (3, 2, 30)"
+    )
+    con.close()
+    q = "What is the total budget of units in district 2?"
+    sql = "SELECT SUM(budget) FROM bronze.units"
+    assert dropped_stated_value_reason(q, sql, db) == "unhonored_qualifier:named_filter=2"
+    assert dropped_stated_value_reason(q, sql + " WHERE district_id = 2", db) is None
+    assert dropped_stated_value_reason(q, sql + " WHERE school_id = 2", db) is not None

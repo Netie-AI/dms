@@ -19,8 +19,8 @@ from __future__ import annotations
 import copy
 import json
 import re
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,7 +51,7 @@ from cortex_client.qualifiers import (
     rank_window_shape_reason,
     unhonored_qualifier_reason,
 )
-from dms_core.pii import mask_unknown_keys
+from dms_core.pii import is_mask_token, mask_payload, mask_unknown_keys
 from sqlglot import exp
 
 from dms_executor.abstain import build_abstain
@@ -75,7 +75,9 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.gen_path_refuse import (
+    SUGGESTING_GAPS,
     customer_abstain_text,
+    gap_reason_name,
     ranking_missing_metric_gap,
 )
 from dms_executor.grant_struct import (
@@ -86,10 +88,29 @@ from dms_executor.grant_struct import (
     structural_grant_stop,
 )
 from dms_executor.manifest import OpenVaultTokenError
+from dms_executor.measure_basis import CONFIRMED_MEASURE_BADGE
+from dms_executor.measure_use import (
+    CONFIRMED_ROW_CAP,
+    REASON_EMPTY_AGGREGATE,
+    REASON_MASKED_FIGURE,
+    REASON_TOO_MANY_GROUPS,
+    FitVerdict,
+    confirmed_basis,
+    confirmed_measure_suggestions,
+    count_rows,
+    filter_values_present,
+    measure_exclusions,
+    measure_fit,
+    prune_unusable_measures,
+    read_source_pulls,
+    route_choice_reason,
+)
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
     LinkType,
+    Measure,
+    MeasureProvenance,
     Ontology,
     Refusal,
     Violation,
@@ -123,9 +144,11 @@ from dms_executor.semantic_retrieve import (
     slots_for_measure,
 )
 from dms_executor.space_ontology import (
+    REASON_NO_DECLARED_LINK,
     REASON_NO_DECLARED_MEASURE,
     REASON_UNVERIFIED_JOIN,
     budget_space_block,
+    relabel_join_gap,
     relation_columns,
     space_catalog,
     unverified_join_reason,
@@ -176,6 +199,8 @@ NOTE_INSIGHTS_RANKING = "insights_ranking:ontology_plan"
 NOTE_FALLBACK_GENERATE_EMPTY = "fallback:generate_empty"
 NOTE_FALLBACK_VALIDATE_PREFIX = "fallback:validate:"
 NOTE_RANK_WINDOW = "rank_window:deterministic_compile (no generate call)"
+NOTE_PREFER_CONFIRMED = "prefer:confirmed_measure"
+NOTE_NOT_PREFERRED_PREFIX = "confirmed_measure_not_preferred:"
 _ENTITY_NOUN = {"sku": "SKUs", "supplier": "suppliers", "category": "categories",
                 "warehouse": "warehouses", "plant": "plants"}
 # Cortex#269 ROUTER-1 Insights fingerprint. Copy as received; never infer.
@@ -720,6 +745,20 @@ def plan_from_payload(payload: dict[str, Any]) -> QueryPlan | None:
     )
 
 
+def _fit_tables(plan: QueryPlan, onto: Ontology, lake: Path | None) -> dict[str, str]:
+    """Relation -> its table's name at the source, for every relation the plan names and the
+    measure's grain: what ``measure_fit`` may read as vocabulary instead of the landed relation
+    name, which carries the source schema (``bronze.public_schools``). One ingest-registry read.
+    A relation the registry cannot name is left out, and contributes no word."""
+    relations = {obj for obj, _column in plan.group_by}
+    relations.update(str(f[0]) for f in plan.filters if f)
+    held = onto.measures.get(plan.measure)
+    if held is not None:
+        relations.add(held.grain)
+    pulls = read_source_pulls(lake, relations) or {}
+    return {relation: pull.table for relation, pull in pulls.items() if pull.table}
+
+
 def _pairs(raw: Any) -> tuple[tuple[str, str], ...] | None:
     if raw is None:
         return ()
@@ -938,8 +977,17 @@ def _abstain(
     sql: str | None = None,
     retries: int = 0,
     stage: str = "generative",
+    suggest_from: Ontology | None = None,
     ticket_reason: str | None = None,
 ) -> dict[str, Any]:
+    # A Space's ``no_declared_measure`` / ``no_declared_link`` offers what it CAN answer: the
+    # steward-confirmed measures that were checked against the lake this ask (name and the
+    # steward's description, never anything the model chose). Nothing else suggests.
+    suggestions = (
+        confirmed_measure_suggestions(suggest_from)
+        if suggest_from is not None and gap_reason_name(reason) in SUGGESTING_GAPS
+        else []
+    )
     env = build_abstain(
         reason=reason,
         ticket_reason=ticket_reason,
@@ -957,10 +1005,14 @@ def _abstain(
         session_id=session_id,
         ask_mode="live",
         route="generated",
+        suggestions=suggestions,
     )
     assert_envelope_valid(env)
     # build_abstain already wrote abstain:<stage>. Successes stamp their own.
     return with_plan_source(env, plan_source)
+
+
+_NULL_KEY = "(null)"
 
 
 def _l2_envelope(
@@ -977,28 +1029,49 @@ def _l2_envelope(
     where_paths: Sequence[WherePath] = (),
     plan_origin: str = "",
     lead: str = "",
+    measure_ref: MeasureProvenance | None = None,
     served_route: str = "",
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
     text += f"Found {len(out_rows)} row(s)."
     if out_rows:
+        # A group whose KEY is NULL is a real group (its figure is right); the sentence calls it
+        # "(null)" rather than print the Python word under the confirmed badge. Only the
+        # confirmed lane is reworded: every other generated answer reads as it always did.
+        confirmed = measure_ref is not None
         text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
+            "  - "
+            + ", ".join(
+                f"{k}={_NULL_KEY if (v is None and confirmed) else v}" for k, v in row.items()
+            )
+            for row in out_rows[:12]
         )
     # Same row-based builder as the Cortex contract path when Cortex omits chart.
     chart = chart_from_rows(out_rows)
+    # A steward-confirmed measure (compiled from its stored definition, checked against the
+    # lake this ask) wears the confirmed rung and says so; every other generated answer is
+    # unchanged. One helper builds the sentence and the structured basis together.
+    badge = "L2_VALIDATED"
+    basis: dict[str, Any] | None = None
+    basis_lines: list[str] = []
+    if measure_ref is not None:
+        basis, basis_line = confirmed_basis(measure_ref)
+        basis_lines = [basis_line]
+        badge = CONFIRMED_MEASURE_BADGE
     env = build_answer_envelope(
         answer_id="ans_gen01",
         text=text,
-        badge="L2_VALIDATED",
+        badge=badge,
         abstained=False,
         rows=out_rows,
         sql_used=sql,
         chart=chart,
+        measure_basis=basis,
         assumptions=[
             "GEN-01 ontology compile",
             "executed via Cortex submit after validate",
+            *basis_lines,
             *notes,
         ],
         as_of=_as_of(),
@@ -1016,6 +1089,18 @@ def _l2_envelope(
         if served_route:
             stamp_route(env, served_route)
         return env
+    if measure_ref is not None and any(
+        is_mask_token(row.get(measure_ref.name)) for row in env.get("rows") or [] if row
+    ):
+        # Backstop of the pre-ledger check in ``_submit_validated``: never a token as a figure.
+        return _abstain(
+            question,
+            f"{REASON_MASKED_FIGURE}: {measure_ref.name} is a figure the privacy layer "
+            "would hide, so it is not stated",
+            space_id=space_id,
+            session_id=session_id,
+            plan_source=plan_source,
+        )
     if not coverage_valid(coverage) or coverage is None:
         return _abstain(
             question,
@@ -1056,6 +1141,17 @@ def _l2_envelope(
     return env
 
 
+def _without_row_cut(coverage: Coverage | None) -> Coverage | None:
+    """``coverage`` without its ``rows beyond LIMIT n not returned`` exclusion. Only for an answer
+    that has just been shown whole (no row beyond the lane's cap exists)."""
+    if coverage is None:
+        return None
+    return replace(
+        coverage,
+        exclude=tuple(x for x in coverage.exclude if not x.startswith("rows beyond LIMIT ")),
+    )
+
+
 def _submit_validated(
     sql: str,
     *,
@@ -1073,9 +1169,15 @@ def _submit_validated(
     warehouse: Path | None = None,
     plan_origin: str = "",
     lead: str = "",
+    measure_ref: MeasureProvenance | None = None,
     served_route: str = "",
     grantable: set[str] | None = None,
 ) -> dict[str, Any]:
+    """Validate, submit, ledger, envelope.
+
+    ``measure_ref`` is the provenance of the steward-confirmed measure this SQL was compiled
+    from (checked against the lake this ask), or None for every other generated answer.
+    """
     if not coverage_valid(coverage):
         return _abstain(
             question,
@@ -1085,9 +1187,13 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
-    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
-        question, sql, warehouse, grantable=grantable
-    )
+    gap = unhonored_qualifier_reason(question, sql=sql)
+    if gap is None and measure_ref is None:
+        # A confirmed measure's answer was already accounted for value by value (account_for_
+        # question, measure_fit, each filter bound to the column the question names), and its
+        # plan resolves a stated name to the key it filters on (district_id IN (1, 2)), which
+        # this SQL-only check cannot see through. measure_ref is set only by that lane.
+        gap = dropped_stated_value_reason(question, sql, warehouse, grantable=grantable)
     if gap:
         return _abstain(
             question,
@@ -1158,6 +1264,49 @@ def _submit_validated(
             question, "submit_had_no_rows",
             space_id=space_id, session_id=session_id, plan_source=plan_source,
         )
+    if measure_ref is not None:
+        # A confirmed measure that computes nothing is "no value", not a figure: no rows, or an
+        # aggregate that is NULL in ANY row (SUM over an all-NULL column, or over one group's
+        # NULLs). A NULL cell dropped from a grouped answer would be a group the customer
+        # cannot see, and one printed would read "=None" under the confirmed badge: neither is
+        # a figure, so the answer abstains. A NULL group KEY is different: that group is real
+        # and its figure is right (the sentence reads the key as "(null)").
+        held = rows_from_submit_result(result)
+        if len(held) > CONFIRMED_ROW_CAP:
+            # The compile asked for one row more than the lane states, and it exists: a list
+            # cut at the cap would read as every group. Abstain rather than state part of it.
+            return _abstain(
+                question,
+                f"{REASON_TOO_MANY_GROUPS}: {measure_ref.name} has more than "
+                f"{CONFIRMED_ROW_CAP} groups for this question; a partial list is not stated",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
+        # Nothing was cut, so the lane's own cap is not an exclusion the customer should read.
+        coverage = _without_row_cut(coverage)
+        if _figure_masked(held, measure_ref.name):
+            # A mask token under the confirmed badge is not a figure: the customer would read
+            # a placeholder as the total. Stating nothing is the honest answer.
+            return _abstain(
+                question,
+                f"{REASON_MASKED_FIGURE}: {measure_ref.name} is a figure the privacy layer "
+                "would hide, so it is not stated",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
+        if not held or any(r.get(measure_ref.name) is None for r in held):
+            return _abstain(
+                question,
+                f"{REASON_EMPTY_AGGREGATE}: {measure_ref.name} has no value for this question",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
     if keep_gt is not None:
         kept = _rows_gt(rows_from_submit_result(result), str(measure or ""), keep_gt)
         if not kept:
@@ -1204,6 +1353,7 @@ def _submit_validated(
         where_paths=where_paths,
         plan_origin=plan_origin,
         lead=lead,
+        measure_ref=measure_ref,
         served_route=served_route,
     )
 
@@ -1214,8 +1364,13 @@ def ontology_plan_from_ranking(
     *,
     onto: Ontology | None,
     ctx: dict[str, Any],
+    demo: bool = True,
 ) -> dict[str, Any] | None:
-    """Cortex ranked metric + retrieve slots. ontology_plan, not bind_plan."""
+    """Cortex ranked metric + retrieve slots. ontology_plan, not bind_plan.
+
+    ``demo=False`` (a Space with its own ontology) passes no aliases: the demo pack's
+    metric ids and aliases must never resolve onto a customer Space's measure names.
+    """
     if not isinstance(payload, dict) or onto is None or not onto.measures:
         return None
     prefer = intent_slots(question, onto).get("measure")
@@ -1223,7 +1378,7 @@ def ontology_plan_from_ranking(
     ranked = query_plan_from_insights_ranking(
         payload,
         set(onto.measures),
-        aliases=load_measure_aliases(),
+        aliases=load_measure_aliases() if demo else {},
         specs={name: (m.description or "") for name, m in onto.measures.items()},
         prefer=prefer_s or None,
         question=question,
@@ -1251,6 +1406,7 @@ def path_miss_envelope(
     *,
     space_id: str | None,
     session_id: str | None,
+    suggest_from: Ontology | None = None,
 ) -> dict[str, Any]:
     """Isolated A/B miss: ABSTAIN, do not mix Cortex/pack into the other lane."""
     return _abstain(
@@ -1259,6 +1415,7 @@ def path_miss_envelope(
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_OTHER,
+        suggest_from=suggest_from,
     )
 
 
@@ -1468,6 +1625,71 @@ def rank_window_ask(
     )
 
 
+#: The name of the throwaway measure that counts the grain rows a plan's filters keep.
+_GRAIN_ROWS = "dms_grain_rows"
+
+
+def _empty_filter_reason(
+    onto: Ontology, plan: QueryPlan, measure: MeasureProvenance, lake: Path | None
+) -> str | None:
+    """``empty_aggregate: <why>`` when a confirmed answer would be computed under filters that
+    keep NO row of the measure's grain, else None.
+
+    The plan ANDs its filters. When a question states two values the plan cannot both hold
+    ("schools in North South": a district and a region no school shares), the conjunction is
+    empty and a COUNT prints 0 under the confirmed badge: a plausible figure that is the
+    answer to a question nobody asked. No wording of the question is read here. The same
+    plan is compiled over a ``COUNT(*)`` of the same grain, so the join and filter semantics
+    are exactly the answer's, and run on the lake before anything is stated. An unfiltered
+    plan is never asked (a count of an empty table is a real zero); a count that cannot be
+    made fails closed.
+    """
+    if not plan.filters:
+        return None
+    probe = copy.copy(onto)
+    probe.verified = True
+    probe.measures = {
+        **onto.measures,
+        _GRAIN_ROWS: Measure(_GRAIN_ROWS, measure.grain, "COUNT(*)"),
+    }
+    compiled = probe.compile(_GRAIN_ROWS, filters=plan.filters, via=plan.via, limit=1)
+    if isinstance(compiled, Refusal) or not isinstance(compiled, CompiledQuery):
+        return (
+            f"{REASON_EMPTY_AGGREGATE}: {measure.name} could not be counted under the plan's "
+            "filters, so an empty answer cannot be ruled out"
+        )
+    kept = count_rows(compiled.sql, lake)
+    if kept is None:
+        return (
+            f"{REASON_EMPTY_AGGREGATE}: {measure.name} could not be counted under the plan's "
+            "filters, so an empty answer cannot be ruled out"
+        )
+    if kept == 0:
+        return (
+            f"{REASON_EMPTY_AGGREGATE}: no {measure.grain} row satisfies all of the plan's "
+            f"filters, so {measure.name} has no value for this question"
+        )
+    return None
+
+
+def _figure_masked(rows: Sequence[Mapping[str, Any]], name: str) -> bool:
+    """Whether the privacy layer would rewrite the figure ``name`` of any row (a 16-digit total
+    reads as an account number) in the rows or in the sentence that states it. A masker that
+    fails masks. Only the figure is asked: a masked group key is the layer doing its job."""
+    for row in rows:
+        value = row.get(name)
+        if value is None:
+            continue
+        sentence = f"{name}={value}"
+        try:
+            got = mask_payload(text=sentence, rows=[{name: value}])
+        except Exception:  # noqa: BLE001 - fail closed
+            return True
+        if got["text"] != sentence or got["rows"][0].get(name) != value:
+            return True
+    return False
+
+
 def _ungrounded_measure(question: str, measure: str | None, onto: Ontology | None) -> str | None:
     """Gap when a compile would serve a measure the question does not name.
 
@@ -1502,6 +1724,59 @@ def _compile_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery 
         limit=plan.limit,
         offset=plan.offset,
     )
+
+
+def compile_plan_maybe_unverified(onto: Ontology, plan: QueryPlan) -> CompiledQuery | Refusal:
+    """Public name for ``_compile_maybe_unverified``: the one compile the ask path uses.
+
+    ``measure_confirm`` calls this to dry-compile a candidate measure, so the SQL a
+    steward sees at confirm time is the SQL the ask later runs. It must stay a plain
+    delegate (no behaviour of its own), and ``generative_ask`` must never import
+    ``measure_confirm`` (that would close a cycle).
+    """
+    return _compile_maybe_unverified(onto, plan)
+
+
+def _exclusion_reason(measure: str, *ontologies: Ontology | None) -> str | None:
+    """Why a CONFIRMED measure of this name did not reach (or left) this ask, or None.
+
+    The load and the prune record on the ontology object they touch; the verified copy the
+    ask compiles against can be another object than the loaded one, so every one in use is
+    asked. A name nobody confirmed has no entry.
+    """
+    for onto in ontologies:
+        why = measure_exclusions(onto).get(measure)
+        if why:
+            return why
+    return None
+
+
+def _typed_refusal_reason(
+    refusal: Refusal, plan: QueryPlan, onto: Ontology, space_onto: Ontology | None
+) -> str:
+    """``<reason>: <detail>`` for a typed-plan compile refusal.
+
+    On a Space ontology only, a ``no_path`` whose destination has NO declared link chain from
+    the measure's grain is ``no_declared_link``: the source never declared the relationship,
+    which is a different thing to say to a customer than "no path". A destination with a
+    declared chain that compile still refused (many-to-many, ambiguous, unverified) keeps the
+    compile's own reason, as does the demo ontology (``space_onto`` is None there). A chain
+    declared only the OTHER way (the plan groups a parent by its child) is declared too: the
+    sentence "the data does not declare a link" would be false, so ``no_path`` stays.
+    """
+    reason = refusal.reason
+    if reason == "no_path" and space_onto is not None:
+        measure = onto.measures.get(plan.measure)
+        if measure is not None:
+            for dest in sorted(_plan_dests(plan, onto)):
+                if (
+                    dest != measure.grain
+                    and not _declared_paths(onto, measure.grain, dest)
+                    and not _declared_paths(onto, dest, measure.grain)
+                ):
+                    reason = REASON_NO_DECLARED_LINK
+                    break
+    return f"{reason}: {refusal.detail}"
 
 
 _SPACE_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -2050,6 +2325,15 @@ def maybe_generative_ask(
                 declared = onto
                 onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
+    if not demo_ontology_allowed and ontology is not None:
+        # dms#284: a Space's confirmed measures are used only as they check out against the
+        # lake AS IT IS NOW (grain still verified and granted this turn, column still there
+        # with the type it was confirmed with). Everything below -- the rank window, the
+        # retrieve context, the wire, ranking, plan binding and the no_declared_measure
+        # test -- then sees only usable measures. A pruned measure can only degrade an
+        # answer to a named abstain or the existing generated-SQL path, never upgrade one.
+        # No measures, no work: this is a no-op until a steward has confirmed one.
+        prune_unusable_measures((ontology, onto, declared), declared_violations, lake, allowed)
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
@@ -2246,6 +2530,57 @@ def maybe_generative_ask(
                 stage="insights_budget",
             )
         )
+    # dms#284 router precedence. A Space that holds a usable confirmed measure decides, BEFORE
+    # the extract loop and before any generated SQL, whether the measure answers: Cortex ranked
+    # it AND DMS independently reads the question the same way (two keys, ``measure_fit``).
+    # The decision is made once here so DMS_CLOOP_B cannot route around it: the loop only ever
+    # runs model SQL, so without this a valid ranked measure would lose to the loop's number.
+    ranked_slots: dict[str, Any] | None = None
+    ranked_early = False
+    confirmed_fit: FitVerdict | None = None
+    if (
+        kind in {"miss", "sql"}
+        and not demo_ontology_allowed
+        and space_onto is not None
+        and space_onto.measures
+    ):
+        ranked_early = True
+        ranked_slots = ontology_plan_from_ranking(
+            q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
+        )
+        if ranked_slots is not None:
+            # The plan's own filters are part of the reading: a question that states a
+            # condition the ranked plan does not carry ("in the US", "over 100") is not
+            # answered by the plan's unfiltered total, and one that the plan adds to is not
+            # answered either. The plan is read exactly as the typed branch will read it; one
+            # that cannot be read fails closed.
+            ranked_plan = plan_from_payload(ranked_slots)
+            confirmed_fit = (
+                FitVerdict(False, None, "unbound_constraint")
+                if ranked_plan is None
+                else measure_fit(
+                    q,
+                    space_onto.measures,
+                    candidate=ranked_plan.measure,
+                    grouped_by=ranked_plan.group_by,
+                    filters=ranked_plan.filters,
+                    keep_gt=ranked_plan.keep_gt,
+                    offset=ranked_plan.offset,
+                    tables=_fit_tables(ranked_plan, space_onto, lake),
+                )
+            )
+    if kind == "sql" and confirmed_fit is not None:
+        if confirmed_fit.ok:
+            # Fit passes: the measure's compiled number answers; the model's SQL is not used.
+            assert ranked_slots is not None
+            payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
+            kind = parse_compute_plan(payload)
+            source = PLAN_SOURCE_ONTOLOGY
+            origin = PLAN_ORIGIN_ONTOLOGY_RANKING
+            trail_notes = [NOTE_INSIGHTS_RANKING, NOTE_PREFER_CONFIRMED]
+        else:
+            # Fit fails and SQL is present: the SQL stays on today's generated-SQL path.
+            trail_notes = [*trail_notes, f"{NOTE_NOT_PREFERRED_PREFIX}{confirmed_fit.reason}"]
     if (
         cloop_b_enabled()
         and not ontology_ranked_lane_enabled()
@@ -2253,10 +2588,18 @@ def maybe_generative_ask(
     ):
         # Ranking compile stays off this path. Model SQL runs on the extract.
         sql_in = query_sql_from_payload(payload)
-        would_rank = kind == "miss" and ontology_plan_from_ranking(
-            q, payload, onto=onto, ctx=ctx
-        ) is not None
-        if kind == "sql" or would_rank:
+        would_rank = kind == "miss" and (
+            ranked_slots is not None
+            if ranked_early
+            else ontology_plan_from_ranking(
+                q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
+            )
+            is not None
+        )
+        # A ranked confirmed measure that fits is not the loop's to answer (see above): on a
+        # ``miss`` the ranking becomes the typed plan below; on ``sql`` it already did.
+        confirmed_wins = kind == "miss" and confirmed_fit is not None and confirmed_fit.ok
+        if (kind == "sql" or would_rank) and not confirmed_wins:
             if sql_in and sql_has_reserved_as_of(sql_in):
                 return _stamp(
                     reserved_as_of_abstain(
@@ -2291,9 +2634,10 @@ def maybe_generative_ask(
                     budget=vote_budget,
                 )
             )
-    ranked_slots: dict[str, Any] | None = None
-    if kind in {"miss", "sql"}:
-        ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)
+    if kind in {"miss", "sql"} and not ranked_early:
+        ranked_slots = ontology_plan_from_ranking(
+            q, payload, onto=onto, ctx=ctx, demo=demo_ontology_allowed
+        )
     if kind == "miss" and ranked_slots is not None:
         payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
         kind = parse_compute_plan(payload)
@@ -2303,7 +2647,7 @@ def maybe_generative_ask(
     if kind == "miss" and ranked_slots is None:
         # GEN-PATH-REFUSE-01: Cortex ranked the intended metric, DMS cannot
         # compile it. Named ABSTAIN — do not bind_plan or Cortex.ask a guess.
-        gap = ranking_missing_metric_gap(q, payload, onto=onto)
+        gap = ranking_missing_metric_gap(q, payload, onto=onto, demo=demo_ontology_allowed)
         if gap:
             return _stamp(
                 _abstain(
@@ -2446,8 +2790,10 @@ def maybe_generative_ask(
             except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
                 join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
             else:
-                join_why = unverified_join_reason(
-                    sql, space_onto, declared_violations, columns_of=cols
+                # A join over two relations the source never linked is named for what it
+                # is (``no_declared_link``); every other refusal keeps ``unverified_join``.
+                join_why = relabel_join_gap(
+                    unverified_join_reason(sql, space_onto, declared_violations, columns_of=cols)
                 )
         if join_why:
             # No guessed joins: on a Space with a derived ontology, generated
@@ -2461,6 +2807,7 @@ def maybe_generative_ask(
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
+                    suggest_from=space_onto,
                 )
             )
         if why:
@@ -2518,7 +2865,7 @@ def maybe_generative_ask(
                     session_id=session_id,
                     submit=submit,
                     ledger_append=ledger_append,
-                    notes=("GEN-01 Cortex ontology_plan SQL",),
+                    notes=("GEN-01 Cortex ontology_plan SQL", *trail_notes),
                     plan_source=source,
                     coverage=coverage_from_sql_path(sql=sql),
                     warehouse=lake,
@@ -2619,18 +2966,109 @@ def maybe_generative_ask(
         and plan.measure not in space_onto.measures
     ):
         # Measures are never derived for a SQL-source Space (NEEDS_FOUNDER):
-        # a plan that needs one the Space has not declared is a named gap.
+        # a plan that needs one the Space has not declared is a named gap. When a
+        # steward DID confirm that name but it cannot be used now, the tail says why
+        # (the customer still reads the head only).
+        unusable = _exclusion_reason(plan.measure, ontology, onto, declared, space_onto)
+        tail = (
+            f"is not usable now: {unusable}"
+            if unusable
+            else "is not a measure this Space declares"
+        )
         return _stamp(
             _abstain(
                 q,
-                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not a measure this "
-                "Space declares",
+                f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} {tail}",
                 space_id=space_id,
                 session_id=session_id,
                 plan_source=source,
                 notes=trail_notes,
+                suggest_from=space_onto,
             )
         )
+    measure_ref: MeasureProvenance | None = None
+    if space_onto is not None:
+        # The second key. A typed plan names a measure; Cortex ranked it by name tokens, and
+        # that is not authority to answer THIS question with it. DMS reads the question
+        # itself (aggregate and quantity words, content tokens) and must land on the same
+        # measure. This also covers a plan Cortex typed on its own.
+        verdict = measure_fit(
+            q,
+            space_onto.measures,
+            candidate=plan.measure,
+            grouped_by=plan.group_by,
+            filters=plan.filters,
+            keep_gt=plan.keep_gt,
+            offset=plan.offset,
+            tables=_fit_tables(plan, space_onto, lake),
+        )
+        if not verdict.ok:
+            why = f"fit_disagrees:{verdict.reason}" + (
+                f" ({verdict.detail})" if verdict.detail else ""
+            )
+            return _stamp(
+                _abstain(
+                    q,
+                    f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} {why}",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                    suggest_from=space_onto,
+                )
+            )
+        # A route among several is somebody's pick, and no word of the question made it. A
+        # ``via`` that names one of several declared links is Cortex's (the compiler refuses the
+        # same plan without it); a second, longer route to a dimension is the shortest-path
+        # default's. The lane states one figure, so it answers only over exactly one route.
+        grained = space_onto.measures.get(plan.measure or "")
+        picked = (
+            route_choice_reason(
+                space_onto,
+                grain=grained.grain,
+                via=plan.via,
+                group_by=plan.group_by,
+                filters=plan.filters,
+            )
+            if grained is not None
+            else None
+        )
+        if picked:
+            return _stamp(
+                _abstain(
+                    q,
+                    picked,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                )
+            )
+        # The question cannot state a row limit, so neither can the plan: Cortex's own
+        # ``limit``, or the default 50, would cut a grouped answer and still read complete. A
+        # grouped plan asks for one row more than the lane will state, and ``_submit_validated``
+        # abstains when that row exists. An ungrouped plan is one row whatever its limit says,
+        # and keeps the SQL the steward saw at confirm.
+        if plan.group_by:
+            plan = replace(plan, limit=CONFIRMED_ROW_CAP + 1)
+        # Only a measure the lake confirmed THIS ask (grain still verified and granted,
+        # column still there with the type it was confirmed with) may answer. The prune
+        # marks the ones that pass; anything unmarked cannot vouch for itself.
+        held = space_onto.measures.get(plan.measure)
+        measure_ref = held.provenance if held is not None else None
+        if measure_ref is None or not measure_ref.columns_checked:
+            return _stamp(
+                _abstain(
+                    q,
+                    f"{REASON_NO_DECLARED_MEASURE}: {plan.measure} is not usable now: "
+                    "not_checked_against_data",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                    suggest_from=space_onto,
+                )
+            )
     if onto is None and not demo_ontology_allowed and declared is None:
         return _stamp(
             _abstain(
@@ -2678,12 +3116,29 @@ def maybe_generative_ask(
                 notes=trail_notes,
             )
         )
+    if space_onto is not None:
+        # Rule 12 at ask time: a filter literal that is not in its column exactly as landed
+        # ('north' for 'North') would compile, execute and return a plausible empty or zero.
+        unmatched = filter_values_present(plan, onto, lake, question=q)
+        if unmatched:
+            return _stamp(
+                _abstain(
+                    q,
+                    unmatched,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                )
+            )
+
     compiled = _compile_maybe_unverified(onto, plan)
     if isinstance(compiled, Refusal):
         return _stamp(
             _abstain(
-                q, f"{compiled.reason}: {compiled.detail}",
+                q, _typed_refusal_reason(compiled, plan, onto, space_onto),
                 space_id=space_id, session_id=session_id, plan_source=source,
+                suggest_from=space_onto,
             )
         )
     if not isinstance(compiled, CompiledQuery):
@@ -2736,6 +3191,19 @@ def maybe_generative_ask(
                 ticket_reason=(f"validate:{cited}" if cited and cited != shown else None),
             )
         )
+    if measure_ref is not None:
+        emptied = _empty_filter_reason(onto, plan, measure_ref, lake)
+        if emptied:
+            return _stamp(
+                _abstain(
+                    q,
+                    emptied,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    notes=trail_notes,
+                )
+            )
     if not origin and source != PLAN_SOURCE_BIND:
         origin = (
             PLAN_ORIGIN_ONTOLOGY_RANKING
@@ -2759,6 +3227,7 @@ def maybe_generative_ask(
             warehouse=lake,
             grantable=allowed,
             plan_origin=origin,
+            measure_ref=measure_ref,
             served_route=ROUTE_COMPILE,
         )
     )

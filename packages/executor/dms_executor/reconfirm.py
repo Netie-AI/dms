@@ -14,6 +14,7 @@ not get a reconfirm.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import tempfile
@@ -101,15 +102,43 @@ def question_is_destructive(text: str) -> bool:
     raw = str(text or "").strip().rstrip(";")
     if not raw:
         return False
-    if _one_mutating(raw):
-        return True
-    # ponytail: word tails, only a tail sqlglot types as one write. Ceiling:
-    # a long question. Upgrade: tokenize and parse from the write token.
+    # ponytail: the whole text, then word tails; only a tail sqlglot types as
+    # one write. A tail is parsed only from a word that holds a statement
+    # keyword: sqlglot picks the statement from its first token, so any other
+    # tail is never a write, and a 100k-word question is no longer one parse
+    # per word. Ceiling: a long question made of keywords. Upgrade: tokenize
+    # once, parse from the token.
     parts = raw.split()
-    for index in range(1, len(parts)):
-        if _one_mutating(" ".join(parts[index:]).strip().rstrip(";")):
+    openers = _statement_openers()
+    for index, word in enumerate(parts):
+        if not any(run.casefold() in openers for run in _letter_runs(word)):
+            continue
+        tail = raw if index == 0 else " ".join(parts[index:]).strip().rstrip(";")
+        if _one_mutating(tail):
             return True
     return False
+
+
+def _letter_runs(word: str) -> list[str]:
+    """The ASCII letter/underscore runs of a word: ``(DELETE`` and ``/*x*/DROP`` hold one."""
+    return "".join(c if c.isascii() and (c.isalpha() or c == "_") else " " for c in word).split()
+
+
+@functools.lru_cache(maxsize=1)
+def _statement_openers() -> frozenset[str]:
+    """First words of the serving dialect's keywords that open a statement."""
+    from sqlglot.dialects.dialect import Dialect
+    from sqlglot.tokens import TokenType
+
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    dialect = Dialect.get_or_raise(SERVING_DIALECT)
+    starts = dialect.parser_class.STATEMENT_PARSERS
+    return frozenset(
+        keyword.split()[0].casefold()
+        for keyword, token in dialect.tokenizer_class.KEYWORDS.items()
+        if token in starts or token == TokenType.WITH
+    )
 
 
 def question_requests_pii(question: str) -> bool:

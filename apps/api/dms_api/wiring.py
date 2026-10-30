@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
+from uuid import UUID
 
 import dms_executor
 from cortex_client import CortexClient
@@ -392,8 +395,173 @@ def _store_unavailable(exc: Exception) -> HTTPException:
         detail={
             "code": "ontology_store_unavailable",
             "message": "the Space ontology store could not be read or written just now",
+            # the measure routes' refusal shape; additive for the ontology routes
+            "failed": [],
         },
     )
+
+
+# --- ONTO-CONFIRM-01 (dms#283): the steward workflow for measures ---------------
+#
+# The routes decide who may call (role, compliance gate). Everything below decides what
+# the call does, and what it looks like when it is refused: one detail shape for every
+# refusal, ``{code, message, failed: [{code, message, field?}]}``, with the message in
+# plain English from the executor's single copy table. The routes never see a store, a
+# lake or a ledger.
+
+
+def measure_detail(code: str, failed: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """The refusal shape for a code the executor has words for."""
+    return {
+        "code": code,
+        "message": dms_executor.MEASURE_REFUSAL_COPY[code],
+        "failed": list(failed or []),
+    }
+
+
+#: Postgres SQLSTATE foreign_key_violation. The actor columns are the only foreign keys
+#: a steward write can trip that the service has not already checked.
+_FK_VIOLATION = "23503"
+_ACTOR_FK_MARKERS = ("decided_by", "actor_user_id")
+
+
+def _is_actor_fk(exc: BaseException) -> bool:
+    """True for a database refusal because the configured actor has no ``dms.users`` row.
+
+    ``dms_actor_user_id`` is configuration; on a deployment that never seeded that user
+    every decision would hit this. It is named rather than reported as a broken store.
+    """
+    if getattr(exc, "sqlstate", None) != _FK_VIOLATION:
+        return False
+    diag = getattr(exc, "diag", None)
+    name = str(getattr(diag, "constraint_name", "") or "")
+    return any(marker in name for marker in _ACTOR_FK_MARKERS)
+
+
+@contextmanager
+def _measure_errors() -> Iterator[None]:
+    """Map what the measure service can raise to the one named HTTP shape.
+
+    A refusal keeps its own status and failed[] list. A foreign-key failure on the actor
+    is ``actor_not_provisioned``. Anything else is the store (or lake) failing, which is a
+    named 503, never a bare 500 and never a silent success.
+    """
+    try:
+        yield
+    except HTTPException:
+        raise
+    except dms_executor.MeasureRefusal as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail()) from None
+    except Exception as exc:  # noqa: BLE001 - classified below, never swallowed
+        if _is_actor_fk(exc):
+            logger.warning("measure write refused: the configured actor has no user row")
+            raise HTTPException(
+                status_code=503, detail=measure_detail("actor_not_provisioned")
+            ) from None
+        raise _store_unavailable(exc) from None
+
+
+def _actor_uuid(actor: str) -> UUID:
+    """The configured actor as a UUID. A value that is not one cannot be a ``dms.users`` row."""
+    try:
+        return UUID(str(actor))
+    except ValueError:
+        raise HTTPException(
+            status_code=503, detail=measure_detail("actor_not_provisioned")
+        ) from None
+
+
+def _measure_uuid(measure_id: str) -> UUID:
+    """A malformed id is the same answer as an unknown one: there is no such measure."""
+    try:
+        return UUID(str(measure_id))
+    except ValueError:
+        raise HTTPException(status_code=404, detail=measure_detail("measure_not_found")) from None
+
+
+def measures_list(space_id: str, *, role: str, can_decide: bool) -> dict[str, Any]:
+    """GET view. Row values (probe SQL and value) are removed unless ``can_decide``."""
+    with _measure_errors():
+        return dms_executor.measures_view(
+            dms_executor.canonical_space_id(space_id), role=role, can_decide=can_decide
+        )
+
+
+def measures_propose(space_id: str, *, actor: str) -> dict[str, Any]:
+    who = _actor_uuid(actor)
+    with _measure_errors():
+        return dms_executor.propose_measures(dms_executor.canonical_space_id(space_id), actor=who)
+
+
+def measures_create(
+    space_id: str,
+    *,
+    name: str,
+    grain: str,
+    aggregate: str,
+    column: str,
+    description: str,
+    actor: str,
+) -> dict[str, Any]:
+    who = _actor_uuid(actor)
+    with _measure_errors():
+        return dms_executor.create_measure(
+            dms_executor.canonical_space_id(space_id),
+            name=name,
+            grain=grain,
+            aggregate=aggregate,
+            column=column,
+            description=description,
+            actor=who,
+        )
+
+
+def measures_confirm(
+    space_id: str,
+    measure_id: str,
+    *,
+    definition_hash: str,
+    name: str | None,
+    description: str | None,
+    actor: str,
+    cortex: CortexClient | None,
+) -> dict[str, Any]:
+    """Confirm. The ledger append and its chain read-back run inside the store's single
+    write path, so a ledger fault leaves the measure exactly as it was."""
+    who = _actor_uuid(actor)
+    mid = _measure_uuid(measure_id)
+    with _measure_errors():
+        return dms_executor.confirm_measure(
+            dms_executor.canonical_space_id(space_id),
+            mid,
+            definition_hash=definition_hash,
+            name=name,
+            description=description,
+            actor=who,
+            ledger_append=_ledger_append(cortex) if cortex is not None else None,
+            ledger_verify=_ledger_verify(cortex) if cortex is not None else None,
+        )
+
+
+def measures_reject(
+    space_id: str,
+    measure_id: str,
+    *,
+    reason: str,
+    actor: str,
+    cortex: CortexClient | None,
+) -> dict[str, Any]:
+    who = _actor_uuid(actor)
+    mid = _measure_uuid(measure_id)
+    with _measure_errors():
+        return dms_executor.reject_measure(
+            dms_executor.canonical_space_id(space_id),
+            mid,
+            reason=reason,
+            actor=who,
+            ledger_append=_ledger_append(cortex) if cortex is not None else None,
+            ledger_verify=_ledger_verify(cortex) if cortex is not None else None,
+        )
 
 
 def _rederive(

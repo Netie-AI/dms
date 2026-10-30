@@ -486,6 +486,21 @@ class _Check:
         return True
 
 
+def _named_columns(hits: list[_Hit], value: str, q: _Question) -> list[_Hit]:
+    """For a number, the hits whose column the question names: "district 2" -> ``district_id``.
+
+    A bare number is stored in many id columns; the word before it says which one is meant.
+    Without such a match every column that stores it still has to be restricted.
+    """
+    if not value.isdigit():
+        return hits
+    words = {
+        q.words[s - 1].removesuffix("s") for s, _e in q.spans[value] if s > 0 and q.words[s - 1]
+    }
+    named = [h for h in hits if words & {t.removesuffix("s") for t in h.col.lower().split("_")}]
+    return named or hits
+
+
 def _every_row_holds(con: Any, hit: _Hit) -> bool:
     """The column holds the stated value on every row (no NULLs): a filter changes nothing."""
     row = con.execute(
@@ -581,8 +596,7 @@ def dropped_stated_value_reason(
                 if all(
                     (pol == "pos" and h.col.lower() not in filtered and _every_row_holds(con, h))
                     or check.honoured(h, pol)
-                    for h in at
-                    if h.rel in read_rels
+                    for h in _named_columns([h for h in at if h.rel in read_rels], value, q)
                 ):
                     continue
             elif " " not in value and (

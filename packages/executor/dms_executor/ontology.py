@@ -199,6 +199,55 @@ class LinkType:
     one_to_one: bool = False
 
 
+#: Aggregate enum for steward-confirmed (structured) measures. The SQL text of
+#: such a measure is built by exactly one function, ``measure_expression``.
+MEASURE_AGGREGATES: dict[str, str] = {
+    "sum": "SUM",
+    "avg": "AVG",
+    "min": "MIN",
+    "max": "MAX",
+    "count": "COUNT",
+    "count_distinct": "COUNT(DISTINCT",
+}
+
+
+def measure_expression(aggregate: str, column: str) -> str:
+    """The one construction site for a structured measure's SQL text.
+
+    ``f`` is the fact alias ``Ontology.compile`` uses. ``_ident`` quotes and
+    escapes, so a hostile column string is one quoted identifier that fails to
+    bind, never SQL. No ROUND, cast, division or alias.
+    """
+    agg = MEASURE_AGGREGATES.get(aggregate) if isinstance(aggregate, str) else None
+    if agg is None or not isinstance(column, str) or column == "":
+        raise ValueError(f"unsupported measure aggregate/column: {aggregate!r}, {column!r}")
+    if column == "*":
+        if aggregate != "count":
+            raise ValueError("'*' is only valid with count")
+        return "COUNT(*)"
+    if aggregate == "count_distinct":
+        return f"COUNT(DISTINCT f.{_ident(column)})"
+    return f"{agg}(f.{_ident(column)})"
+
+
+@dataclass(frozen=True)
+class MeasureProvenance:
+    """Where a structured measure came from: the confirmed row, not the SQL text."""
+
+    measure_id: str
+    name: str
+    grain: str
+    aggregate: str
+    column: str
+    column_type: str
+    definition_hash: str
+    version_id: str
+    decided_at: str
+    ledger_entry_id: str
+    persisted: bool
+    columns_checked: bool = False
+
+
 @dataclass(frozen=True)
 class Measure:
     """An aggregate and the grain it is defined at.
@@ -220,6 +269,7 @@ class Measure:
     # not a guarantee today.
     additive: bool = True
     description: str = ""
+    provenance: MeasureProvenance | None = None
 
 
 @dataclass
@@ -585,6 +635,7 @@ class Ontology:
         *,
         additive: bool = True,
         description: str = "",
+        provenance: MeasureProvenance | None = None,
     ) -> None:
         """Reject a measure at authoring time if its grain is not an object.
 
@@ -597,7 +648,7 @@ class Ontology:
                 f"measure {name!r} declares grain {grain!r}, which is not an object type. "
                 "A measure with no grain cannot be protected from fan-out."
             )
-        self.measures[name] = Measure(name, grain, expression, additive, description)
+        self.measures[name] = Measure(name, grain, expression, additive, description, provenance)
 
     @classmethod
     def from_store(cls, items: Sequence[Mapping[str, Any]] | None = None) -> Ontology:
@@ -1317,6 +1368,71 @@ class Ontology:
                         stack.append((to_obj, nxt, seen | {to_obj}))
         return found
 
+    def routes_between(
+        self,
+        start: str,
+        target: str,
+        *,
+        for_filter: bool = False,
+        limit: int = 2,
+        budget: int = 20_000,
+    ) -> list[list[LinkType]] | None:
+        """Up to ``limit`` passable acyclic routes from ``start`` to ``target``: the routes
+        ``_all_paths`` lists (no ``via``), found without listing the rest. A caller that asks
+        "is there more than one reading?" needs two, not every one of an exponential set.
+
+        Only objects that can still reach ``target`` are walked, so a dead branch costs nothing.
+        None when the walk spent ``budget`` link inspections without finishing (a graph too
+        tangled to count): a caller that needs a clean answer treats that as ambiguous.
+        """
+        if start == target:
+            return [[]]
+
+        def passable(link: LinkType) -> bool:
+            if link.cardinality == "unverified":
+                return False
+            return for_filter or link.cardinality == "many_to_one"
+
+        inbound: dict[str, list[str]] = {}
+        for link in self.links.values():
+            if passable(link):
+                inbound.setdefault(link.to_object, []).append(link.from_object)
+        reach = {target}
+        frontier = [target]
+        while frontier:
+            nxt_frontier: list[str] = []
+            for obj in frontier:
+                for parent in inbound.get(obj, ()):
+                    if parent not in reach:
+                        reach.add(parent)
+                        nxt_frontier.append(parent)
+            frontier = nxt_frontier
+        if start not in reach:
+            return []
+        found: list[list[LinkType]] = []
+        spent = 0
+        stack: list[tuple[str, list[LinkType], frozenset[str]]] = [
+            (start, [], frozenset({start}))
+        ]
+        while stack:
+            obj, path, seen = stack.pop()
+            for link in self.links.values():
+                if link.from_object != obj:
+                    continue
+                spent += 1
+                if spent > budget:
+                    return None
+                if link.to_object in seen or link.to_object not in reach or not passable(link):
+                    continue
+                route = [*path, link]
+                if link.to_object == target:
+                    found.append(route)
+                    if len(found) >= limit:
+                        return found
+                else:
+                    stack.append((link.to_object, route, seen | {link.to_object}))
+        return found
+
     def _column_for_grain(self, obj: str, grain: str) -> str | None:
         preferred = GRAIN_COLUMNS.get(grain, ())
         cols = self.__dict__.get("_column_cache", {}).get(obj)
@@ -1497,6 +1613,25 @@ class Ontology:
         m = self.measures.get(measure)
         if m is None:
             return Refusal("unknown_measure", f"no measure named {measure!r}")
+        prov = m.provenance
+        if prov is not None:
+            # A structured measure's SQL text is a pure function of its spec.
+            # Anything else in the slot is tampering: emit no SQL.
+            try:
+                rebuilt = measure_expression(prov.aggregate, prov.column)
+            except ValueError:
+                rebuilt = None
+            if (
+                rebuilt is None
+                or rebuilt != m.expression
+                or prov.grain != m.grain
+                or prov.name != m.name
+            ):
+                return Refusal(
+                    "measure_expression_invalid",
+                    f"measure {measure!r} expression is not the canonical rebuild of its "
+                    "confirmed definition",
+                )
         fact = self.objects[m.grain]
 
         selects: list[str] = []
