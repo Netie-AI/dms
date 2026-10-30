@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-02: carries the ACT-01 receipt fix to the routes
+
+- **Refusals.** `actor_required` (403), `receipt_mismatch` (409, with `field`) and `ledger_entry_reused` (409) are mapped. A receipt refused after the Cortex append appends an `action.apply.void` / `action.decline.void` and rolls the write back.
+- **PII.** The decline's ledger payload carries the masked `approval_ref` and reason, as the receipt does.
+
 ## 2026-10-30 - ACT-01 fix: the receipt is rebuilt from the database, not trusted
 
 - **Receipt.** `record_decision` rebuilds every receipt field from the stored version, its pins and the writeback row the version last wrote, and refuses a caller record that differs (`ReceiptMismatch`). A forged `applied` for a pending version, and a real apply recorded as `declined`, are refused; the real receipt can still be written. The Space is the proposal's own (`space_id`, if passed, must match). One Cortex entry id backs one pointer (`LedgerEntryReused`).

@@ -52,6 +52,7 @@ from dms_core.control_plane.action_types import (
     ActionSpecError,
     ActionType,
     actions_enabled,
+    mask_text,
     spec_sha,
     state_hash,
     validate_spec,
@@ -59,8 +60,11 @@ from dms_core.control_plane.action_types import (
 from dms_core.control_plane.actions import (
     APPROVAL_REF_MIN,
     ActionsDisabled,
+    ActorRequired,
     ApprovalRefRequired,
+    LedgerEntryReused,
     PreconditionFailed,
+    ReceiptMismatch,
     TokenDiffMismatch,
     VerifyFailed,
     apply_action_version,
@@ -204,6 +208,12 @@ def _action_error(exc: Exception) -> HTTPException:
         return _refuse(409, "stale_token")
     if isinstance(exc, ActionRequiresApply):
         return _refuse(409, "action_requires_apply")
+    if isinstance(exc, ActorRequired):
+        return _refuse(403, "actor_required")
+    if isinstance(exc, ReceiptMismatch):
+        return _refuse(409, "receipt_mismatch", field=exc.field)
+    if isinstance(exc, LedgerEntryReused):
+        return _refuse(409, "ledger_entry_reused")
     if isinstance(exc, ConflictError):
         return _refuse(409, "conflict")
     if isinstance(exc, ActionsDisabled):
@@ -221,6 +231,9 @@ _CORE_REFUSALS = (
     StaleTokenError,
     ConflictError,
     ActionsDisabled,
+    ActorRequired,
+    ReceiptMismatch,
+    LedgerEntryReused,
 )
 
 
@@ -579,13 +592,20 @@ def apply_action_route(
             )
         except Exception as exc:  # noqa: BLE001 - no receipt, no apply
             raise _refuse(503, "ledger_append_failed") from exc
-        recorded = record_decision(
-            conn,
-            result,
-            decision="applied",
-            cortex_entry_id=appended.entry_id,
-            space_id=target["space_id"],
-        )
+        try:
+            recorded = record_decision(
+                conn,
+                result,
+                decision="applied",
+                cortex_entry_id=appended.entry_id,
+                space_id=target["space_id"],
+            )
+        except _CORE_REFUSALS as exc:
+            # The entry exists but no receipt backs it: say so on the ledger.
+            _void_append(
+                cortex, actor, "action.apply.void", appended.entry_id, result["version_id"]
+            )
+            raise _action_error(exc) from exc
         try:
             _commit(conn)
         except Exception as exc:  # noqa: BLE001 - the entry exists; the write does not
@@ -650,7 +670,8 @@ def decline_action_route(
         raise _refuse(503, "ledger_unavailable")
 
     actor = settings.dms_actor_user_id
-    reason = (body.reason or "").strip()[:500]
+    # Masked like the receipt: the Cortex ledger is append-only too.
+    reason = mask_text((body.reason or "").strip()[:500])
     with _tenant_conn(settings, role="steward") as (conn, tenant):
         try:
             result: dict[str, Any] = dict(
@@ -677,7 +698,7 @@ def decline_action_route(
                 "field": result["field"],
                 "op": result["op"],
                 "before_hash": result["before_hash"],
-                "approval_ref": approval_ref,
+                "approval_ref": result["approval_ref"],
                 "reason": reason,
                 "verified": False,
             }
@@ -688,13 +709,19 @@ def decline_action_route(
             )
         except Exception as exc:  # noqa: BLE001 - no receipt, no decline
             raise _refuse(503, "ledger_append_failed") from exc
-        recorded = record_decision(
-            conn,
-            result,
-            decision="declined",
-            cortex_entry_id=appended.entry_id,
-            space_id=target["space_id"],
-        )
+        try:
+            recorded = record_decision(
+                conn,
+                result,
+                decision="declined",
+                cortex_entry_id=appended.entry_id,
+                space_id=target["space_id"],
+            )
+        except _CORE_REFUSALS as exc:
+            _void_append(
+                cortex, actor, "action.decline.void", appended.entry_id, result["version_id"]
+            )
+            raise _action_error(exc) from exc
         try:
             _commit(conn)
         except Exception as exc:  # noqa: BLE001

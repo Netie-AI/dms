@@ -714,3 +714,65 @@ def test_decline_and_revert(h: Harness) -> None:
     assert h.count("proposals") == before
     no = h.client.post(f"{A}/decisions/{out['decision_id']}/revert", json={})
     assert no.status_code == 409 and _code(no) == "decision_not_applied"
+
+
+# --- ACT-01 fix carried to the routes -------------------------------------------------------
+
+
+def test_reused_ledger_entry_refused_and_voided(h: Harness) -> None:
+    """A Cortex that hands back an entry id already used gets no second receipt."""
+    first = _ok(h.apply(_ok(h.propose("450"))))
+    assert first["ledger_entry_id"] == "e1"
+    prop = _ok(h.propose("500"))
+    real = h.cortex.ledger_append
+
+    def reuse_e1(req: Any) -> LedgerAppendResponse:
+        out = real(req)
+        if req.event_type == "action.apply":
+            return LedgerAppendResponse(entry_id="e1", hash=out.hash, seq=out.seq)
+        return out
+
+    h.monkeypatch.setattr(h.cortex, "ledger_append", reuse_e1)
+    resp = h.apply(prop, "CAB-2")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == {"code": "ledger_entry_reused"}
+    assert [e.event_type for e in h.cortex.events] == [
+        "action.apply",
+        "action.apply",
+        "action.apply.void",
+    ]
+    assert h.cortex.events[2].payload["entry_id"] == "e1"
+    assert h.writeback() == [("450", 1)], "the refused receipt rolled the write back"
+    assert h.status(prop) == "pending_confirm"
+    assert h.count("action_decisions") == 1
+
+    h.monkeypatch.setattr(h.cortex, "ledger_append", real)
+    receipt = _ok(h.apply(prop, "CAB-2"))
+    assert receipt["after"]["value"] == "500" and receipt["ledger_entry_id"] == "e4"
+    assert h.writeback() == [("500", 2)]
+
+
+def test_decline_ledger_payload_and_receipt_are_masked(h: Harness) -> None:
+    """approval_ref and reason reach Cortex and the append-only row masked."""
+    prop = _ok(h.propose("300"))
+    out = _ok(
+        h.client.post(
+            f"{A}/proposals/{prop['proposal_id']}/decline",
+            json={
+                "idempotency_token": prop["idempotency_token"],
+                "approval_ref": "CAB jian@example.com",
+                "reason": "owner 900101-14-5678 said no",
+            },
+        )
+    )
+    assert out["status"] == "rejected"
+    payload = h.cortex.events[0].payload
+    assert payload["approval_ref"] == "CAB DMSMASK_email_01"
+    assert payload["reason"] == "owner DMSMASK_nric_01 said no"
+    h.conn.rollback()
+    row = h.conn.execute(
+        "SELECT approval_ref, evidence->>'decline_reason', actor_id "
+        "FROM dms.action_decisions WHERE id = %s",
+        (out["decision_id"],),
+    ).fetchone()
+    assert row == ("CAB DMSMASK_email_01", "owner DMSMASK_nric_01 said no", str(h.user))
