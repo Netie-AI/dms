@@ -230,6 +230,7 @@ def _miss() -> dict[str, Any]:
 def exact_match_env(question: str, space_id: str) -> dict[str, Any]:
     """Demo pack / VQ-04 refuse only. Empty grants: BIRD is not Finance."""
     from dms_executor.demo_pack import maybe_pack_ask, maybe_uncertified_refuse_ask
+    from dms_executor.demo_warehouse import SERVING_DIALECT
 
     env = maybe_uncertified_refuse_ask(question, space_id=space_id)
     if env is not None:
@@ -247,6 +248,7 @@ def exact_match_env(question: str, space_id: str) -> dict[str, Any]:
         grantable=set(),
         submit=_dead_submit,
         ledger_append=_dead_ledger,
+        dialect=SERVING_DIALECT,
     )
     return env if env is not None else _miss()
 

@@ -207,7 +207,10 @@ def test_ungranted_table_abstains(records) -> None:
     assert r["stub_trace"]["submit_sql"] == []
     assert env(r)["abstained"] is True
     assert r["mechanical"]["verdict"] == "CORRECT"
-    assert r["mechanical"]["abstain_reason"] == "validate:ungranted:alerts"
+    # Bare code from serve_gap (explicit dialect, no cited tail). The name
+    # stays off the reason the customer reads.
+    assert r["mechanical"]["abstain_reason"] == "validate:ungranted"
+    assert "alerts" not in r["mechanical"]["abstain_reason"]
 
 
 # ------------------------------------------------------------------ (v) extension rows survive
@@ -302,12 +305,14 @@ def test_space_scope_facts_stated_in_the_contract(h) -> None:
     fin_ship = ask("A-050", "finance", "shipments")
     assert (
         env(fin_ship)["abstained"]
-        and fin_ship["mechanical"]["abstain_reason"] == "validate:ungranted:shipments"
+        and fin_ship["mechanical"]["abstain_reason"] == "validate:ungranted"
+        and "shipments" not in fin_ship["mechanical"]["abstain_reason"]
     )
     ops_txn = ask("A-051", "ops", "transactions")
     assert (
         env(ops_txn)["abstained"]
-        and ops_txn["mechanical"]["abstain_reason"] == "validate:ungranted:transactions"
+        and ops_txn["mechanical"]["abstain_reason"] == "validate:ungranted"
+        and "transactions" not in ops_txn["mechanical"]["abstain_reason"]
     )
     ops_ship = ask("A-052", "ops", "shipments")
     assert env(ops_ship)["badge"] == "L2_VALIDATED"
@@ -493,7 +498,10 @@ def test_judge_packets_are_blind(records) -> None:
     assert served_sql not in blob
 
 
-def test_results_file_round_trips_through_the_cli(tmp_path) -> None:
+def test_results_file_round_trips_through_the_cli(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
     sample = Path(__file__).with_name("sample_cases.yaml")
     res = harness.run_cases(sample, out_dir=tmp_path, run_id="cli1", judge_packets=True)
     lines = [json.loads(x) for x in res.results_path.read_text(encoding="utf-8").splitlines()]
