@@ -220,6 +220,10 @@ export const REFUSAL_TEXT: Record<string, string> = {
     "The ledger receipt could not be written, so the change was rolled back.",
   commit_failed_after_append:
     "A ledger entry was written but the change did not commit; a void entry was requested and nothing changed.",
+  receipt_mismatch:
+    "The receipt did not match what the database holds, so it was refused; a void entry was requested and nothing changed.",
+  ledger_entry_reused:
+    "The ledger returned an entry that already backs another receipt; a void entry was requested and nothing changed.",
   // lookups (404 / 422)
   space_id_invalid: "The Space id is not valid.",
   space_not_found: "That Space does not exist in this tenant.",
@@ -238,6 +242,7 @@ export const REFUSAL_TEXT: Record<string, string> = {
   steward_grant_required: "The configured identity does not hold the steward grant.",
   steward_identity_unset:
     "No steward identity is configured: the shipped default actor is refused.",
+  actor_required: "No actor was named for this decision, so nothing was written.",
   // compliance gate (403, reason string)
   denied: "The compliance gate denied this action.",
   gate_denied: "The compliance gate denied this action.",

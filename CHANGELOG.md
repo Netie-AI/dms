@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-30 - ACT-03: sentences for the three new ACT-01/02 refusals
+
+- **UI.** `REFUSAL_TEXT` gains `actor_required`, `receipt_mismatch` and `ledger_entry_reused`; `tests/fixtures/actions/act02_refusal_codes.json` lists them, so the server scan and the UI pin still agree. None says "Applied".
+
 ## 2026-10-30 - ACT-02: carries the ACT-01 receipt fix to the routes
 
 - **Refusals.** `actor_required` (403), `receipt_mismatch` (409, with `field`) and `ledger_entry_reused` (409) are mapped. A receipt refused after the Cortex append appends an `action.apply.void` / `action.decline.void` and rolls the write back.
