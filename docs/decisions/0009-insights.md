@@ -91,7 +91,12 @@ closed code and a fixed customer sentence:
    marked on its table, or holds anything outside the same allowlist, carries the mark,
    and the check runs to a fixpoint so a generated column that reads another marked
    generated column (`g2 AS (lower(g1))` over `g1 AS (upper(name))`) carries it too,
-   and a catalog that cannot list generated columns is all-PII; a column that shares
+   and a catalog that cannot list generated columns is all-PII; a relation or view
+   body that reads a table function anywhere (a table macro `tm()`, `query_table()`,
+   `query()`, `read_csv()`, `range()`) or a name that is neither a table in
+   `duckdb_tables()` nor a view in `duckdb_views()` (CTE names aside) is all-PII,
+   because no pii item can be traced through it, and a catalog that cannot list its
+   tables is all-PII; a column that shares
    a JOIN, WHERE, HAVING or QUALIFY conjunct with a marked column carries the mark; the
    name-only pii form `Schema.Table.column` splits at its last dot),
    `result_out_of_order`, `ungranted` (zero submits; the

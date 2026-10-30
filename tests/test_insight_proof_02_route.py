@@ -462,6 +462,26 @@ def test_a_receipt_whose_hash_is_its_entry_id_is_refused(
     assert all(r.badge == "abstain" for r in w.records())
 
 
+@pytest.mark.parametrize("seq", [-1, "7", 7.0, True])
+def test_a_receipt_with_a_malformed_seq_is_refused(
+    flag_on: None, demo_wh: Path, monkeypatch: pytest.MonkeyPatch, seq: Any
+) -> None:
+    """Verify round 8 (LOW): a seq of -1 or a non-int seq was nulled and the receipt served."""
+    w = _world(demo_wh, monkeypatch)
+    w.cortex.receipt = LedgerAppendResponse.model_construct(
+        entry_id=_ENTRY, hash="h_" + _ENTRY, seq=seq)
+    res = w.run()
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["insights"] == []
+    assert body["counts"]["proven"] == 0
+    codes = {r["code"] for r in body["refused"]}
+    assert "ledger_receipt_invalid" in codes
+    assert "ledger_append_failed" not in codes
+    assert _ENTRY in body["orphan_ledger_entries"]
+    assert all(r.badge == "abstain" for r in w.records())
+
+
 # --------------------------------------------------------------------------
 # 5b. verify round 2: receipts across a run, the session id, the actor
 # --------------------------------------------------------------------------
@@ -1024,5 +1044,94 @@ def test_run_never_serves_a_chained_generated_column_over_a_marked_column(
         for label in ("north", "south", "86.4"):
             assert label not in res.text.casefold()
         assert not any("territory" in str(s).casefold() for s in w.cortex.submits)
+    finally:
+        onto_data.reset_ontology_data_store()
+
+
+# --------------------------------------------------------------------------
+# 14. verify round 8: a view over a table macro or table function
+# --------------------------------------------------------------------------
+
+
+_OPAQUE_VIEWS = {
+    "macro": ["CREATE MACRO tm() AS TABLE SELECT territory_id, upper(name) AS zone "
+              "FROM Sales.Territory",
+              "CREATE VIEW Sales.TV AS SELECT territory_id, zone FROM tm()"],
+    "query_table": ["CREATE VIEW Sales.TV AS SELECT territory_id, upper(name) AS zone "
+                    "FROM query_table('Sales.Territory')"],
+}
+
+
+def _opaque_view_world(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, pii: bool, kind: str
+) -> _World:
+    """Sales fixture whose Territory object reads a view over a table function."""
+    from dms_core.control_plane import onto_data
+    from dms_executor.manifest import SessionAcl
+
+    from tests.test_insight_proof_01 import _items, _seed_sales
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    wh = _seed_sales(tmp_path / "lake_opaque.duckdb")
+    con = dw.connect_file(wh)
+    try:
+        for sql in _OPAQUE_VIEWS[kind]:
+            con.execute(sql)
+    finally:
+        con.close()
+    items = _items(pii_on_name=pii)
+    for it in items:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = "Sales.TV"
+            it["payload"]["attributes"] = ["territory_id", "zone"]
+    onto_data.reset_ontology_data_store()
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", "1")
+    store = onto_data.ontology_data_store()
+    monkeypatch.setattr(store, "approved_items", lambda: copy.deepcopy(items))
+    monkeypatch.setattr(store, "revoked_items", lambda: [])
+    w = _world(wh, monkeypatch)
+    exe = w.client.app.state.ask_service
+    real = exe.demo_acl
+
+    def _acl(**kw: Any) -> SessionAcl:
+        acl = real(**kw)
+        grants = {"Sales.Orders": "TRUE", "Sales.Territory": "TRUE", "Sales.TV": "TRUE"}
+        return SessionAcl(**{**acl.__dict__, "row_predicates": grants})
+
+    exe.demo_acl = _acl
+    return w
+
+
+_OPAQUE_HEADLINE = "2 of 4 Territory.zone values (NORTH, SOUTH) carry 86.4 pct of order_amount"
+
+
+@pytest.mark.parametrize("kind", sorted(_OPAQUE_VIEWS))
+def test_run_never_serves_a_view_over_a_table_function_on_a_marked_column(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from dms_core.control_plane import onto_data
+
+    try:
+        # Control: unmarked, the view's column is an ordinary proven segment.
+        open_body = _opaque_view_world(
+            tmp_path / "a", monkeypatch, pii=False, kind=kind).run().json()
+        got = _proven_by_text(open_body, _OPAQUE_HEADLINE)
+        assert got["envelope"]["text"] == _OPAQUE_HEADLINE
+        assert got["envelope"]["badge"] == "L1_GOVERNED_METRIC"
+        assert_envelope_valid(got["envelope"])
+
+        w = _opaque_view_world(tmp_path / "b", monkeypatch, pii=True, kind=kind)
+        res = w.run()
+        assert res.status_code == 200, res.text
+        body = res.json()
+        texts = [i["envelope"]["text"] for i in body["insights"]]
+        assert _OPAQUE_HEADLINE not in texts
+        assert not [t for t in texts if "Territory" in t]
+        codes = {r.get("candidate"): r.get("code") for r in body.get("refused", [])}
+        assert codes.get("order_amount by Territory.zone") == "pii_dimension"
+        for label in ("north", "south", "86.4"):
+            assert label not in res.text.casefold()
+        assert not any("territory" in str(s).casefold() or "sales.tv" in str(s).casefold()
+                       for s in w.cortex.submits)
     finally:
         onto_data.reset_ontology_data_store()
