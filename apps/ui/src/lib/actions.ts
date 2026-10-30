@@ -200,6 +200,7 @@ export const REFUSAL_TEXT: Record<string, string> = {
   value_unchanged: "The new value equals the current one, so there is nothing to change.",
   reason_too_long: "The reason is too long.",
   approval_ref_required: "An approval reference of at least 3 characters is required.",
+  approval_ref_too_long: "The approval reference is longer than 200 characters; use the ticket or change id.",
   // state (409)
   object_changed: "The value changed since this was proposed. Propose again from the current value.",
   token_diff_mismatch:
@@ -222,6 +223,8 @@ export const REFUSAL_TEXT: Record<string, string> = {
     "A ledger entry was written but the change did not commit; a void entry was requested and nothing changed.",
   receipt_mismatch:
     "The receipt did not match what the database holds, so it was refused; a void entry was requested and nothing changed.",
+  commit_outcome_unknown:
+    "A ledger entry was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.",
   ledger_entry_reused:
     "The ledger returned an entry that already backs another receipt; a void entry was requested and nothing changed.",
   // lookups (404 / 422)
@@ -236,12 +239,15 @@ export const REFUSAL_TEXT: Record<string, string> = {
   evidence_not_validated:
     "The cited answer is not a validated answer with executed SQL and rows, so it cannot back this change.",
   evidence_wrong_table: "The cited answer did not read the inventory table, so it cannot back this change.",
+  evidence_wrong_space: "The cited answer was asked in another Space, so it cannot back a change in this one.",
   action_kind_reserved: "Action diffs can only be proposed through Governed actions.",
   actions_disabled: "Governed actions are turned off on this server.",
   // identity (403)
   steward_grant_required: "The configured identity does not hold the steward grant.",
   steward_identity_unset:
     "No steward identity is configured: the shipped default actor is refused.",
+  steward_identity_invalid:
+    "The configured steward identity is not a valid user id, so nothing was written.",
   actor_required: "No actor was named for this decision, so nothing was written.",
   // compliance gate (403, reason string)
   denied: "The compliance gate denied this action.",
@@ -289,6 +295,9 @@ export function describeRefusal(code: string, detail?: RefusalDetail | null): st
   }
   if (c === "commit_failed_after_append" && detail?.cortex_entry_id) {
     return `Ledger entry ${detail.cortex_entry_id} was written but the change did not commit; a void entry was requested and nothing changed.`;
+  }
+  if (c === "commit_outcome_unknown" && detail?.cortex_entry_id) {
+    return `Ledger entry ${detail.cortex_entry_id} was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.`;
   }
   return REFUSAL_TEXT[c] ?? `Refused: ${c}`;
 }

@@ -96,6 +96,27 @@ describe("refusals", () => {
     expect(s).toBe('No inventory item SKU "BETA" at WH-B. Did you mean SKU-BETA?');
   });
 
+  it("rule-12 candidates at another location name that location", () => {
+    const s = describeRefusal("object_key_not_found", {
+      code: "object_key_not_found",
+      object_key: { sku: "SKU-BETA", location_id: "WH-Z" },
+      candidates: [{ sku: "SKU-BETA", location_id: "WH-B" }],
+    });
+    expect(s).toBe('No inventory item SKU "SKU-BETA" at WH-Z. Did you mean SKU-BETA at WH-B?');
+  });
+
+  it("commit_outcome_unknown names the entry and never claims either outcome", () => {
+    const s = describeRefusal("commit_outcome_unknown", {
+      code: "commit_outcome_unknown",
+      cortex_entry_id: "e1",
+    });
+    expect(s).toBe(
+      "Ledger entry e1 was written but the database could not confirm whether the change committed. Check Recent decisions before retrying.",
+    );
+    expect(s).not.toContain("nothing changed");
+    expect(s).not.toContain("Applied");
+  });
+
   it("object_changed names the current value", () => {
     const s = describeRefusal("object_changed", {
       code: "object_changed",
