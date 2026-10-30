@@ -1177,6 +1177,157 @@ def test_ungranted_dimension_never_submits(sales_wh: Path) -> None:
     assert stub.calls == []
 
 
+def _seed_secret(wh: Path) -> None:
+    """A second schema whose tables share the granted tables' bare names."""
+    _exec(wh, "CREATE SCHEMA IF NOT EXISTS Secret",
+          "CREATE TABLE Secret.Territory (territory_id INTEGER, name VARCHAR)",
+          "INSERT INTO Secret.Territory VALUES (1,'Alice'),(2,'Bob'),(3,'Carol'),(4,'Dave')",
+          "CREATE TABLE Secret.Orders AS SELECT * FROM Sales.Orders")
+
+
+def _items_on(obj: str, relation: str) -> list[dict[str, Any]]:
+    items = _items()
+    for it in items:
+        if it["kind"] == "object" and it["payload"]["name"] == obj:
+            it["payload"]["relation"] = relation
+    return items
+
+
+_SECRET_SENTENCES = (
+    "2 of 4 Territory.name values (Alice, Bob) carry 86.4 pct of order_amount",
+    "9.1 pct of order_amount lands on rows with no Territory.name value",
+)
+
+
+def test_a_dimension_in_another_schema_with_a_granted_bare_name_never_submits(
+    tmp_path: Path,
+) -> None:
+    """Verify round 5 (HIGH): Secret.Territory passed a grant of Sales.Territory by bare name.
+
+    It was submitted (two wrapper runs reading ``LEFT JOIN Secret.Territory``) and
+    came back as two proven L1 sentences over the ungranted schema's values.
+    """
+    wh = _seed_sales(tmp_path / "xschema_dim.duckdb")
+    _seed_secret(wh)
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_B_GRANTS),
+               onto=Ontology.from_store(items=_items_on("Territory", "Secret.Territory")))
+    texts = [p.envelope["text"] for p in run.proven]
+    for leaked in _SECRET_SENTENCES:
+        assert leaked not in texts
+    assert run.proven == ()
+    assert _codes(run)["order_amount by Territory"] == "ungranted"
+    assert stub.calls == []
+    shown = json.dumps([r["envelope"] for r in run.refused])
+    for token in ("Alice", "Bob", "86.4", "Secret"):
+        assert token not in shown
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+
+
+def test_a_fact_in_another_schema_with_a_granted_bare_name_never_submits(
+    tmp_path: Path,
+) -> None:
+    """Verify round 5 (HIGH): all four submits read Secret.Orders, raw total included."""
+    wh = _seed_sales(tmp_path / "xschema_fact.duckdb")
+    _seed_secret(wh)
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_B_GRANTS),
+               onto=Ontology.from_store(items=_items_on("Orders", "Secret.Orders")))
+    assert [p.envelope["text"] for p in run.proven] == []
+    assert run.proven == ()
+    assert _codes(run)["order_amount"] == "ungranted"
+    assert stub.calls == []
+
+
+def test_a_qualified_grant_of_the_other_schema_still_proves(tmp_path: Path) -> None:
+    """Control: granting Secret.Territory by its own qualified key proves its rows."""
+    wh = _seed_sales(tmp_path / "xschema_ok.duckdb")
+    _seed_secret(wh)
+    run = _run(wh, _Stub(wh), {"Sales.Orders", "Secret.Territory"},
+               onto=Ontology.from_store(items=_items_on("Territory", "Secret.Territory")))
+    got = _by_text(run, _SECRET_SENTENCES[0])
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert _tuples(got.envelope["rows"])[0][:3] == ("Alice", 900.0, 81.8)
+
+
+def test_the_statement_check_matches_main_for_a_same_bare_name() -> None:
+    """The oracle: main's serve_gap refuses what the bare-name lookup grants."""
+    from dms_executor.ontology import table_is_granted
+
+    sql = ("SELECT ROUND(SUM(f.amount), 2) AS raw_total FROM Secret.Orders f")
+    assert table_is_granted("Secret.Orders", set(_B_GRANTS)) is True
+    assert ip._statement_gap(sql, set(_B_GRANTS)) == "sql_relation_not_granted"
+    assert ip._statement_gap(sql.replace("Secret.", "Sales."), set(_B_GRANTS)) is None
+
+
+def test_every_statement_is_checked_before_any_submit(
+    sales_wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The raw total, parts count and wrapper each pass the statement check first:
+    a wrapper the check refuses means nothing of that candidate is submitted."""
+    real = ip._statement_gap
+
+    def gap(sql: str, granted: set[str]) -> str | None:
+        if sql.lstrip().upper().startswith("WITH G AS"):
+            return "sql_relation_not_granted"
+        return real(sql, granted)
+
+    monkeypatch.setattr(ip, "_statement_gap", gap)
+    stub = _Stub(sales_wh)
+    run = _run(sales_wh, stub, set(_B_GRANTS), onto=Ontology.from_store(items=_items()))
+    texts = [p.envelope["text"] for p in run.proven]
+    assert _B_CONCENTRATION not in texts and _B_UNKNOWN not in texts
+    assert run.proven == ()
+    assert _codes(run)["order_amount by Territory.name"] == "ungranted"
+    assert stub.calls == []
+
+
+def test_a_dict_result_that_is_not_ok_proves_nothing(sales_wh: Path) -> None:
+    """Verify round 5 (LOW): {'ok': False, 'output': rows} was read as a success."""
+    real = _Stub(sales_wh)
+
+    def submit(sql: str) -> dict[str, Any]:
+        return {"ok": False, "error": "denied", "output": real(sql).output}
+
+    run = _run(sales_wh, submit, set(_B_GRANTS), onto=Ontology.from_store(items=_items()))
+    texts = [p.envelope["text"] for p in run.proven]
+    assert _B_CONCENTRATION not in texts and _B_UNKNOWN not in texts
+    assert run.proven == ()
+    assert set(_codes(run).values()) == {"cortex_submit_failed:not_ok"}
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    # A dict that is ok still proves.
+    ok = _run(sales_wh, lambda sql: {"ok": True, "output": real(sql).output},
+              set(_B_GRANTS), onto=Ontology.from_store(items=_items()))
+    assert _B_CONCENTRATION in [p.envelope["text"] for p in ok.proven]
+
+
+def test_insight_id_is_bound_to_measure_label_kind_and_sql(
+    run_b: tuple[ip.InsightRun, _Stub],
+) -> None:
+    """Verify round 5 (LOW): the check only tested insight_id's regex."""
+    onto = Ontology.from_store(items=_items())
+    a = _by_text(run_b[0], _B_CONCENTRATION)
+    b = _by_text(run_b[0], _B_UNKNOWN)
+    assert (a.kind, b.kind) == ("concentration", "unknown_bucket")
+    assert a.sql == b.sql and a.insight_id != b.insight_id
+    for p in (a, b):
+        ip.assert_proof_shape(p.proof, onto=onto, sql=p.sql, rows=p.rows, label=p.dimension)
+        assert p.insight_id == ip.insight_id_for(p.measure, p.dimension, p.kind,
+                                                 p.proof["sql_hash"])
+    with pytest.raises(ip.ProofShapeError, match="insight_id is not the hash"):
+        ip.assert_proof_shape({**a.proof, "insight_id": b.insight_id},
+                              onto=onto, sql=a.sql, rows=a.rows, label=a.dimension)
+    with pytest.raises(ip.ProofShapeError, match="insight_id is not the hash"):
+        ip.assert_proof_shape(a.proof, onto=onto, sql=a.sql, rows=a.rows,
+                              label="Territory.region")
+    # Swapping both id and kind yields b's own proof, byte for byte: the two kinds
+    # read one statement, so no other proof field tells them apart.
+    assert {**a.proof, "insight_id": b.insight_id, "kind": b.kind} == b.proof
+
+
 @pytest.mark.parametrize(
     "expression",
     [
