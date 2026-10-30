@@ -1,0 +1,5 @@
+# openapi-python-client config for scripts/sync_contract.py.
+# No post hooks: the committed client is the raw generator output, and the
+# generator's own ruff hook would otherwise read whichever lint config is in
+# scope, so the same spec could generate different bytes.
+post_hooks: []

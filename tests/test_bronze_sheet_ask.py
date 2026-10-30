@@ -5,10 +5,17 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+import pytest
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.bronze_sheet_ask import maybe_bronze_sheet_ask
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.lake_schema import ensure_lake_schemas
+
+
+@pytest.fixture
+def bronze_lane_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BRONZE-OFF-01: these tests assert the sheet lane serves."""
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
 
 
 def _seed(path: Path) -> str:
@@ -36,7 +43,9 @@ def _seed(path: Path) -> str:
     return ident
 
 
-def test_scoped_top3_matches_seeded_bronze(tmp_path: Path) -> None:
+def test_scoped_top3_matches_seeded_bronze(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
     db = tmp_path / "wh.duckdb"
     _seed(db)
     env = maybe_bronze_sheet_ask(
@@ -94,7 +103,9 @@ def _seed_encoding(path: Path) -> str:
     return ident
 
 
-def test_exact_sku_beta_certifies_and_bare_beta_abstains(tmp_path: Path) -> None:
+def test_exact_sku_beta_certifies_and_bare_beta_abstains(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
     db = tmp_path / "enc.duckdb"
     _seed_encoding(db)
     hit = maybe_bronze_sheet_ask(
@@ -122,7 +133,9 @@ def test_exact_sku_beta_certifies_and_bare_beta_abstains(tmp_path: Path) -> None
     assert_envelope_valid(miss)
 
 
-def test_exact_kuala_lumpur_certifies_and_kl_abstains(tmp_path: Path) -> None:
+def test_exact_kuala_lumpur_certifies_and_kl_abstains(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
     db = tmp_path / "enc.duckdb"
     _seed_encoding(db)
     hit = maybe_bronze_sheet_ask(
@@ -146,7 +159,9 @@ def test_exact_kuala_lumpur_certifies_and_kl_abstains(tmp_path: Path) -> None:
     assert_envelope_valid(miss)
 
 
-def test_malay_and_synonym_and_sales_only_scope(tmp_path: Path) -> None:
+def test_malay_and_synonym_and_sales_only_scope(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
     db = tmp_path / "wh.duckdb"
     _seed(db)
     malay = maybe_bronze_sheet_ask(
@@ -169,7 +184,9 @@ def test_malay_and_synonym_and_sales_only_scope(tmp_path: Path) -> None:
         assert [r["category"] for r in env["rows"]] == ["Electronics", "Home", "Sports"]
 
 
-def test_multi_table_first_band_ingest_answers_hostile_sales(tmp_path: Path) -> None:
+def test_multi_table_first_band_ingest_answers_hostile_sales(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
     """Messy Sales is MULTI_TABLE; first header band must still land in bronze."""
     from dms_executor.batch_ingest import ingest_batch
 
@@ -194,7 +211,9 @@ def test_multi_table_first_band_ingest_answers_hostile_sales(tmp_path: Path) -> 
     assert abs(env["rows"][0]["sales_value_myr"] - 1545366.40) < 0.02
 
 
-def test_blank_hanging_sheet_keeps_rows_after_blank_band(tmp_path: Path) -> None:
+def test_blank_hanging_sheet_keeps_rows_after_blank_band(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
     from dms_executor.batch_ingest import ingest_batch
 
     xlsx = (
@@ -242,3 +261,84 @@ def test_stacked_multi_table_csv_does_not_union_second_region(tmp_path: Path) ->
     assert "region" not in cols
     assert "North" not in blob
     assert "South" not in blob
+
+
+def _seed_regions(path: Path) -> str:
+    ident = _seed(path)
+    con = duckdb.connect(str(path))
+    try:
+        con.execute(f'ALTER TABLE bronze."{ident}" ADD COLUMN region VARCHAR')
+        con.execute(
+            f"UPDATE bronze.\"{ident}\" SET region = CASE category "
+            "WHEN 'Electronics' THEN 'Johor' WHEN 'Home' THEN 'Johor' ELSE 'Penang' END"
+        )
+    finally:
+        con.close()
+    return ident
+
+
+def test_top_n_that_states_a_region_the_lane_cannot_filter_abstains(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
+    """STATED-VALUE-01: the lane's grouped SUM has no filter, so "in Johor" would be dropped
+    and the whole-sheet ranking certified L0 as if it were Johor's."""
+    db = tmp_path / "wh.duckdb"
+    _seed_regions(db)
+    env = maybe_bronze_sheet_ask(
+        "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, what are the top 3 "
+        "categories by sales_value_myr in Johor?",
+        warehouse=db,
+    )
+    assert env is not None
+    assert env["abstained"] is True and env["rows"] == []
+    assert "named_filter=Johor" in str(env["text"])
+    assert_envelope_valid(env)
+
+
+def _seed_branches(path: Path) -> None:
+    ident = bronze_table_for_sheet("stated_branches.xlsx", "Sales").split(".", 1)[-1]
+    con = duckdb.connect(str(path))
+    try:
+        ensure_lake_schemas(con)
+        con.execute(
+            f'CREATE TABLE bronze."{ident}" '
+            "(city VARCHAR, branch VARCHAR, sales_value_myr DOUBLE)"
+        )
+        con.execute(
+            f"INSERT INTO bronze.\"{ident}\" VALUES ('KL', 'Cheras', 10.0), "
+            "('KL', 'Bangsar', 20.0), ('Penang', 'Cheras', 40.0)"
+        )
+    finally:
+        con.close()
+
+
+def test_equality_filter_that_also_states_a_second_value_abstains(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
+    """The lane filters the one `for city X` it parsed; "in Cheras" is stored in `branch` and
+    would be dropped, certifying KL's whole total (30.0) as Cheras-in-KL (10.0)."""
+    db = tmp_path / "wh.duckdb"
+    _seed_branches(db)
+    env = maybe_bronze_sheet_ask(
+        "In stated_branches.xlsx sheet Sales, total sales_value_myr in Cheras for city KL?",
+        warehouse=db,
+    )
+    assert env is not None
+    assert env["abstained"] is True and env["rows"] == []
+    assert "named_filter=Cheras" in str(env["text"])
+    assert_envelope_valid(env)
+
+
+def test_equality_filter_that_states_only_its_own_value_still_answers(
+    tmp_path: Path, bronze_lane_on: None
+) -> None:
+    db = tmp_path / "wh.duckdb"
+    _seed_branches(db)
+    env = maybe_bronze_sheet_ask(
+        "In stated_branches.xlsx sheet Sales, total sales_value_myr for city KL?",
+        warehouse=db,
+    )
+    assert env is not None
+    assert env["abstained"] is False
+    assert env["rows"][0]["sales_value_myr"] == 30.0
+    assert_envelope_valid(env)
