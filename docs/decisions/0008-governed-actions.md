@@ -112,9 +112,21 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
 4. **Commit-after-append window.** The ledger append runs inside the transaction, before
    the commit, so a failed append writes nothing (503 `ledger_append_failed`). If the
    commit itself fails after a successful append, the entry exists and the write does
-   not. The route then makes a best-effort `action.apply.void` append naming the entry and
-   answers 503 `commit_failed_after_append` with the entry id. This window is disclosed,
-   not closed.
+   not. A commit can also land and still raise (the connection drops after COMMIT is
+   sent), so the route first reads back, on a fresh connection, whether the decision row
+   naming the entry exists. If it does, the write committed and the receipt is returned
+   (no void). If it does not, the route makes a best-effort `action.apply.void` (or
+   `action.decline.void`) append naming the entry and answers 503
+   `commit_failed_after_append` with the entry id. If the database cannot answer, it
+   appends nothing and answers 503 `commit_outcome_unknown` with the entry id, because a
+   void and silence could each be wrong. An append that returns a blank entry id is
+   refused (503 `ledger_append_failed`, `reason: empty_entry_id`) and rolled back.
+   Remaining, disclosed: an append that Cortex accepted but whose response was lost (a
+   timeout) looks here like a failed append, so it rolls back with no void, and the
+   steward's retry appends a second `action.apply` for the same `version_id`. The first
+   is then an orphan entry that no `dms.ledger_ref` points at; closing that needs an
+   idempotency key on the Cortex append (a Cortex contract change). This window is
+   disclosed, not closed.
 5. **F5 holds no `action.*` policy yet.** The routes call `compliance_gate` with task ids
    `action.list`, `action.propose`, `action.apply`, `action.decline` and `action.revert`
    and fail closed on a refusal (mutations treat `gate_unavailable` and
@@ -126,9 +138,20 @@ OpenAPI schema, so with the flag off every method and body there gets main's 404
    encoded (`BETA` is refused with the candidate `SKU-BETA`). A cited answer
    (`evidence_audit_id`, the envelope `audit_id` = `ask_audit.cortex_entry_id`) must be
    validated, have executed SQL, return rows and have read the source table; apply
-   re-checks it.
+   re-checks it. An answer asked in a Space backs actions in that Space only
+   (`evidence_wrong_space`); one asked with no Space is tenant-wide. The table check
+   compares the last name segment, so `<schema>.inventory` from any source counts as
+   having read `inventory`. That is loose, and is tightened when a second source kind
+   lands. A key that misses gets up to five candidates matching any key field, best
+   match first.
 7. **Revert is a new proposal.** It is made against the reverted decision's after-state,
    refuses if the cell has moved on, and still needs its own apply.
+8. **Free text is masked, not kept out.** `approval_ref` (at most 200 characters) and the
+   reasons (at most 500; a longer decline reason is refused, never truncated) reach the
+   Cortex payload and the append-only rows secret-scrubbed and PII-masked, the way
+   `ask_audit` stores a question. Whether free text should instead stay DMS-side only,
+   or be hashed, is open for the PRD Agent. A configured actor that is not a UUID is
+   refused (`steward_identity_invalid`).
 
 Confirmation for ACT-02: `tests/test_act_02_flag_off.py`,
 `tests/control_plane/test_act_02_routes.py`, `scripts/verify/act_flag_off_parity.py` and
