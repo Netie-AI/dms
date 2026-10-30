@@ -7,6 +7,7 @@ from typing import Annotated
 
 from cortex_client import CortexClient
 from dms_core.ask import AskServicePort
+from dms_core.control_plane.ask_audit import AskAuditStorePort, InMemoryAskAuditStore
 from dms_core.control_plane.spaces import SpaceStorePort
 from fastapi import Depends, Request
 
@@ -34,6 +35,15 @@ def get_store_binding(request: Request) -> StoreBinding:
     return binding
 
 
+def get_ask_audit_store(request: Request) -> AskAuditStorePort:
+    """The per-ask audit store (BANK-02). Memory for app-less test clients."""
+    store = getattr(request.app.state, "ask_audit_store", None)
+    if store is None:
+        store = InMemoryAskAuditStore()
+        request.app.state.ask_audit_store = store
+    return store
+
+
 def get_ask_service(request: Request) -> AskServicePort:
     svc = getattr(request.app.state, "ask_service", None)
     if svc is None:
@@ -49,3 +59,4 @@ CortexDep = Annotated[CortexClient | None, Depends(get_cortex_client)]
 SpaceStoreDep = Annotated[SpaceStorePort, Depends(get_space_store)]
 StoreBindingDep = Annotated[StoreBinding, Depends(get_store_binding)]
 AskServiceDep = Annotated[AskServicePort, Depends(get_ask_service)]
+AskAuditDep = Annotated[AskAuditStorePort, Depends(get_ask_audit_store)]

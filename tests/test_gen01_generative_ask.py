@@ -72,7 +72,7 @@ class _GenCortex:
         return AskResponse(
             answer="Cortex fallback.",
             badge="certified",
-            sql_used="SELECT 1 AS cortex_marker",
+            sql_used="SELECT 1 AS cortex_marker FROM inventory",
             rows=[{"cortex_marker": 1}],
             audit_id="aud_gen01_cortex",
             route="sql",
@@ -163,6 +163,7 @@ def test_abstain_when_question_is_unsure(onto: Ontology, warehouse: Path) -> Non
         submit=submit,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -183,6 +184,7 @@ def test_abstain_when_compute_is_unsure(onto: Ontology, warehouse: Path) -> None
         submit=lambda sql: submits.append(sql) or _submit_ok(sql),
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -201,6 +203,7 @@ def test_abstain_when_compile_refuses(onto: Ontology, warehouse: Path) -> None:
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -220,6 +223,7 @@ def test_validate_skips_execute_on_ungranted_tables(onto: Ontology, warehouse: P
         submit=lambda sql: submits.append(sql) or _submit_ok(sql),
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "ABSTAIN"
@@ -239,6 +243,7 @@ def test_l2_when_plan_compiles_and_validate_passes(onto: Ontology, warehouse: Pa
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -260,6 +265,7 @@ def test_miss_when_compute_returns_no_plan(onto: Ontology, warehouse: Path) -> N
         ledger_append=_ledger_ok,
         ontology=onto,
         bind_on_miss=True,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"
@@ -283,6 +289,7 @@ def test_planted_traps_are_not_confident(onto: Ontology, warehouse: Path) -> Non
             submit=_submit_ok,
             ledger_append=_ledger_ok,
             ontology=onto,
+            dialect="duckdb",
         )
         if env is None:
             continue
@@ -303,6 +310,7 @@ def test_planted_traps_without_a_plan_miss_not_green(
             submit=_submit_ok,
             ledger_append=_ledger_ok,
             ontology=onto,
+            dialect="duckdb",
         )
         assert env is None or env["badge"] == "ABSTAIN", question
         if env is not None:
@@ -346,6 +354,7 @@ def test_retrieve_short_context_is_filtered(onto: Ontology, warehouse: Path) -> 
         submit=_submit_ok,
         ledger_append=_ledger_ok,
         ontology=onto,
+        dialect="duckdb",
     )
     assert env is not None
     assert env["badge"] == "L2_VALIDATED"

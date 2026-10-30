@@ -63,6 +63,13 @@ Read this before any edit. Violations fail CI via `.importlinter` and `tests/inv
 
 DMS treats Cortex as an **HTTP service with typed payloads**, never a Python import of the engine.
 
+Local checkouts: Cortex `D:\Cortex` (engine only), OpenVault `D:\OpenVault` (keys / LLM proxy / leave-machine gate), Pointer `D:\Netie Clicks` (Screen Act - out of DMS demo scope).
+
+```
+DMS UI → DMS API → HTTP → Cortex (cortex-contract 1.x)
+                      → HTTP → OpenVault
+```
+
 ## Hard rules
 
 1. **DMS never imports CortexOS** (the engine). HTTP via `packages/cortex_client` only.
@@ -78,6 +85,10 @@ DMS treats Cortex as an **HTTP service with typed payloads**, never a Python imp
 10a. **Customer envelope (Phase 0).** Every answer-path property — `badge`, `abstained`, `values`, `sources`, `drillthrough_token`, `audit_id` — must be asserted on the DMS envelope from `POST /v1/chat/ask` via `assert_envelope_valid` (E1–E9). Cortex-side checks are necessary and insufficient. A green badge on abstention prose is a P0. E9: no executed query means no authority to state an uncited figure.
 11. **`DMS_DEMO_FALLBACK=1` is a lying affordance** unless the UI shows a permanent, unmissable banner. Prefer `DMS_DEMO_FALLBACK=0` for any customer-facing or demo-ready run. Silent fallback that still returns 200 with demo numbers is forbidden for ship gates.
 12. **Value normalization** — filter values must match the column's actual encoding (`BETA` vs `SKU-BETA`, `KL` vs `Kuala Lumpur`, case/whitespace). A filter that parses, validates, executes, and matches nothing is the most dangerous single failure: plausible number + green badge.
+13. **0 confidently wrong** — abstain over invent.
+14. **Secrets via OpenVault / env** - never commit keys. DMS never holds or routes provider keys. Routing lives in OpenVault.
+15. **AI-first text-to-SQL.** DB-GPT/Genie style. The model writes the SQL from ontology, schema, and verified-example context, then executes, checks, and retries. Escalation ladder: plan-then-solve, error-fed self-correct, stronger model via an OpenVault tier, then reconfirm with the closest answerable question and a Yes button. Direct abstain is only for ungranted tables and destructive SQL. No hand-coded word or phrasing rules.
+16. **A SQL-source Space answers only through its own verified ontology.** Generated SQL, and the contract ask's `sql_used`, that read two or more tables must pass `space_ontology.unverified_join_reason`: one allowlist (verified links only, a child-to-parent tree, safe parent-column positions). Everything else abstains `unverified_join:<why>`. Never widen it with a blocklist or a regex. A new allowed shape needs an adversary round and an envelope test (rule 10a). Measures are never auto-derived or shown as certified: an undeclared measure abstains `no_declared_measure`.
 
 ## Version lines (independent — do not renumber backward)
 
@@ -109,21 +120,39 @@ commit body contains:
 INVARIANT-CHANGE: <reason>
 ```
 
+## Running the checks
+
+Run these from the repo root before any push. CI runs the same without Postgres.
+
+```
+ruff check apps packages tests
+mypy apps/api/dms_api packages/core/dms_core packages/cortex_client/cortex_client packages/executor/dms_executor packages/ledger/dms_ledger
+lint-imports      # PYTHONPATH = apps/api + the four packages
+python -m pytest tests/invariants -q
+DMS_SKIP_CONTROL_PLANE_TESTS=1 python -m pytest tests -q -p no:cacheprovider    # about 9 min
+python scripts/score_answers.py --docs tests/fixtures/hostile_score --oracle-only
+python scripts/score_bird.py --self-check
+```
+
+- One pytest process at a time. They share the default DuckDB file, and `tests/control_plane` drops and recreates schema `dms` in the shared Postgres. Attack tests use their own database.
+- `DMS_SKIP_CONTROL_PLANE_TESTS=1` skips `tests/control_plane` only while Postgres is unreachable. With Postgres up they run, and `tests/test_insights_budget_01.py` then fails if it runs after them in the same process (Alembic's logging config disables the `cortex_client.compute` logger; same on `main`). Run that file on its own.
+- Run `ruff format` only on files you wrote. On an existing file it makes a large unrelated diff.
+
 ## Tool division
 
 | Claude Code | Cursor |
 |-------------|--------|
 | Migrations, RLS, schema | UI components, Studio ingest UX |
 | Cross-file refactors | Chat surface, diff/confirm screens |
-| CI/CD, release pipelines | Prompt / vocabulary tuning |
+| CI/CD, release pipelines | Prompt and context (ontology, schema, verified examples) |
 | Test suites (hostile SQL, invariants) | Exploratory spikes you watch |
 | Terminal + git heavy work | Single-file focused edits |
 
 If acceptance is verifiable from a terminal → Claude Code. If you need to look at it → Cursor.
 
-## T0 scope
+## Archive
 
-Skeleton + agent contract + boundary invariants. **No business logic** until a later slice.
+Retired text: [T0 scope](docs/archive/2026-10-06_CLAUDE_t0-scope.md), [pre-index AGENTS.md](docs/archive/2026-10-06_AGENTS_pre-index.md) (DOCS-01, [#371](https://github.com/Netie-AI/dms/issues/371)).
 
 ---
 
@@ -133,3 +162,6 @@ Global invariants and workflows live in `D:\Netie-KB`, not in this repo.
 Before non-trivial work: `python D:\Netie-KB\scripts\kb.py search "<keywords>"`.
 After: file a finding (`kb.py new finding`). Do not duplicate global rules here —
 this file holds only repo-specific laws (HTTP-only Cortex, envelope, import boundaries).
+
+Product lock originated in Cortex:
+`distill: skill_distill/captures/2026-07-29_dms-spaces_chatgpt-for-excel.md` (Cortex tree).

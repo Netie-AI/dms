@@ -133,20 +133,20 @@ def _answered_l0(env: dict[str, Any], *, which: str) -> None:
 
 
 def _abstained_ungranted(env: dict[str, Any], table: str) -> None:
-    reason = f"ungranted_table:{table}"
     badge = env.get("badge")
     text = str(env.get("text") or "")
     values = env.get("values")
     rows = env.get("rows")
     ok = (
         badge == "ABSTAIN"
-        and reason in text
+        and "ungranted_table" in text
+        and table not in text
         and not values
         and not rows
         and env.get("abstained") is True
     )
     assert ok, (
-        f"serving file: expected ABSTAIN {reason} and no values; "
+        f"serving file: expected ABSTAIN ungranted_table without {table}; "
         f"got badge={badge!r} value={_top_value(env)!r} "
         f"text={text!r} values={values!r}"
     )
@@ -170,6 +170,7 @@ def test_finance_bronze_ask_follows_executor_warehouse(
     kind: str,
 ) -> None:
     """Three rows, one split. Membership is column 2. Outcome is column 3."""
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
     ingest, serving, table = _split(tmp_path)
     assert table == "bronze.granted_Sales"
     _point_split(monkeypatch, ingest, serving)

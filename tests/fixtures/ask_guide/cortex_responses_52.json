@@ -1,0 +1,1777 @@
+{
+  "by_id": {
+    "cq_audit_overdue": {
+      "ask": {
+        "answer": "Recorded answer for cq_audit_overdue.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_audit_overdue",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_audit_overdue",
+        "hash": "hash-cq_audit_overdue"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_audit_overdue",
+        "status": "ok"
+      }
+    },
+    "cq_capacity_above_90": {
+      "ask": {
+        "answer": "Recorded answer for cq_capacity_above_90.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_capacity_above_90",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_capacity_above_90",
+        "hash": "hash-cq_capacity_above_90"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_capacity_above_90",
+        "status": "ok"
+      }
+    },
+    "cq_capacity_utilisation": {
+      "ask": {
+        "answer": "Recorded answer for cq_capacity_utilisation.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_capacity_utilisation",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_capacity_utilisation",
+        "hash": "hash-cq_capacity_utilisation"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_capacity_utilisation",
+        "status": "ok"
+      }
+    },
+    "cq_cctv_wh_a": {
+      "ask": {
+        "answer": "Recorded answer for cq_cctv_wh_a.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_cctv_wh_a",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_cctv_wh_a",
+        "hash": "hash-cq_cctv_wh_a"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_cctv_wh_a",
+        "status": "ok"
+      }
+    },
+    "cq_chemicals_list": {
+      "ask": {
+        "answer": "Recorded answer for cq_chemicals_list.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_chemicals_list",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_chemicals_list",
+        "hash": "hash-cq_chemicals_list"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_chemicals_list",
+        "status": "ok"
+      }
+    },
+    "cq_cold_storage": {
+      "ask": {
+        "answer": "Recorded answer for cq_cold_storage.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_cold_storage",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_cold_storage",
+        "hash": "hash-cq_cold_storage"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_cold_storage",
+        "status": "ok"
+      }
+    },
+    "cq_expired_items": {
+      "ask": {
+        "answer": "Recorded answer for cq_expired_items.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_expired_items",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_expired_items",
+        "hash": "hash-cq_expired_items"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_expired_items",
+        "status": "ok"
+      }
+    },
+    "cq_low_stock_wh_a": {
+      "ask": {
+        "answer": "Recorded answer for cq_low_stock_wh_a.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_low_stock_wh_a",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_low_stock_wh_a",
+        "hash": "hash-cq_low_stock_wh_a"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_low_stock_wh_a",
+        "status": "ok"
+      }
+    },
+    "cq_sales_top3_volume": {
+      "ask": {
+        "answer": "Recorded answer for cq_sales_top3_volume.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sales_top3_volume",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sales_top3_volume",
+        "hash": "hash-cq_sales_top3_volume"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sales_top3_volume",
+        "status": "ok"
+      }
+    },
+    "cq_sales_top5_syn_sales": {
+      "ask": {
+        "answer": "Recorded answer for cq_sales_top5_syn_sales.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sales_top5_syn_sales",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sales_top5_syn_sales",
+        "hash": "hash-cq_sales_top5_syn_sales"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sales_top5_syn_sales",
+        "status": "ok"
+      }
+    },
+    "cq_sales_top5_syn_skus": {
+      "ask": {
+        "answer": "Recorded answer for cq_sales_top5_syn_skus.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sales_top5_syn_skus",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sales_top5_syn_skus",
+        "hash": "hash-cq_sales_top5_syn_skus"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sales_top5_syn_skus",
+        "status": "ok"
+      }
+    },
+    "cq_sales_top5_value": {
+      "ask": {
+        "answer": "Recorded answer for cq_sales_top5_value.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sales_top5_value",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sales_top5_value",
+        "hash": "hash-cq_sales_top5_value"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sales_top5_value",
+        "status": "ok"
+      }
+    },
+    "cq_sku_count": {
+      "ask": {
+        "answer": "Recorded answer for cq_sku_count.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sku_count",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sku_count",
+        "hash": "hash-cq_sku_count"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sku_count",
+        "status": "ok"
+      }
+    },
+    "cq_sku_count_by_category": {
+      "ask": {
+        "answer": "Recorded answer for cq_sku_count_by_category.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sku_count_by_category",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sku_count_by_category",
+        "hash": "hash-cq_sku_count_by_category"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sku_count_by_category",
+        "status": "ok"
+      }
+    },
+    "cq_sku_count_by_category_per": {
+      "ask": {
+        "answer": "Recorded answer for cq_sku_count_by_category_per.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sku_count_by_category_per",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sku_count_by_category_per",
+        "hash": "hash-cq_sku_count_by_category_per"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sku_count_by_category_per",
+        "status": "ok"
+      }
+    },
+    "cq_sku_count_syn_label": {
+      "ask": {
+        "answer": "Recorded answer for cq_sku_count_syn_label.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sku_count_syn_label",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sku_count_syn_label",
+        "hash": "hash-cq_sku_count_syn_label"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sku_count_syn_label",
+        "status": "ok"
+      }
+    },
+    "cq_sku_count_syn_short": {
+      "ask": {
+        "answer": "Recorded answer for cq_sku_count_syn_short.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_sku_count_syn_short",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_sku_count_syn_short",
+        "hash": "hash-cq_sku_count_syn_short"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_sku_count_syn_short",
+        "status": "ok"
+      }
+    },
+    "cq_spend_by_country": {
+      "ask": {
+        "answer": "Recorded answer for cq_spend_by_country.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_spend_by_country",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_spend_by_country",
+        "hash": "hash-cq_spend_by_country"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_spend_by_country",
+        "status": "ok"
+      }
+    },
+    "cq_stock_value_by_category": {
+      "ask": {
+        "answer": "Recorded answer for cq_stock_value_by_category.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_stock_value_by_category",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_stock_value_by_category",
+        "hash": "hash-cq_stock_value_by_category"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_stock_value_by_category",
+        "status": "ok"
+      }
+    },
+    "cq_stock_value_worth": {
+      "ask": {
+        "answer": "Recorded answer for cq_stock_value_worth.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_stock_value_worth",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_stock_value_worth",
+        "hash": "hash-cq_stock_value_worth"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_stock_value_worth",
+        "status": "ok"
+      }
+    },
+    "cq_supplier_ranking": {
+      "ask": {
+        "answer": "Recorded answer for cq_supplier_ranking.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_supplier_ranking",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_supplier_ranking",
+        "hash": "hash-cq_supplier_ranking"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_supplier_ranking",
+        "status": "ok"
+      }
+    },
+    "cq_top3_category_syn_plain": {
+      "ask": {
+        "answer": "Recorded answer for cq_top3_category_syn_plain.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_top3_category_syn_plain",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_top3_category_syn_plain",
+        "hash": "hash-cq_top3_category_syn_plain"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_top3_category_syn_plain",
+        "status": "ok"
+      }
+    },
+    "cq_top3_category_syn_show": {
+      "ask": {
+        "answer": "Recorded answer for cq_top3_category_syn_show.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_top3_category_syn_show",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_top3_category_syn_show",
+        "hash": "hash-cq_top3_category_syn_show"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_top3_category_syn_show",
+        "status": "ok"
+      }
+    },
+    "cq_top3_category_syn_typo": {
+      "ask": {
+        "answer": "Recorded answer for cq_top3_category_syn_typo.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_top3_category_syn_typo",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_top3_category_syn_typo",
+        "hash": "hash-cq_top3_category_syn_typo"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_top3_category_syn_typo",
+        "status": "ok"
+      }
+    },
+    "cq_top3_category_syn_value": {
+      "ask": {
+        "answer": "Recorded answer for cq_top3_category_syn_value.",
+        "assumptions": "recorded",
+        "audit_id": "aud-cq_top3_category_syn_value",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-cq_top3_category_syn_value",
+        "hash": "hash-cq_top3_category_syn_value"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-cq_top3_category_syn_value",
+        "status": "ok"
+      }
+    },
+    "ops_capacity_above_90": {
+      "ask": {
+        "answer": "Recorded answer for ops_capacity_above_90.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_capacity_above_90",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_capacity_above_90",
+        "hash": "hash-ops_capacity_above_90"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_capacity_above_90",
+        "status": "ok"
+      }
+    },
+    "ops_capacity_utilisation": {
+      "ask": {
+        "answer": "Recorded answer for ops_capacity_utilisation.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_capacity_utilisation",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_capacity_utilisation",
+        "hash": "hash-ops_capacity_utilisation"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_capacity_utilisation",
+        "status": "ok"
+      }
+    },
+    "ops_cctv_wh_a": {
+      "ask": {
+        "answer": "Recorded answer for ops_cctv_wh_a.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_cctv_wh_a",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_cctv_wh_a",
+        "hash": "hash-ops_cctv_wh_a"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_cctv_wh_a",
+        "status": "ok"
+      }
+    },
+    "ops_chemicals_list": {
+      "ask": {
+        "answer": "Recorded answer for ops_chemicals_list.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_chemicals_list",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_chemicals_list",
+        "hash": "hash-ops_chemicals_list"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_chemicals_list",
+        "status": "ok"
+      }
+    },
+    "ops_cold_storage": {
+      "ask": {
+        "answer": "Recorded answer for ops_cold_storage.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_cold_storage",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_cold_storage",
+        "hash": "hash-ops_cold_storage"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_cold_storage",
+        "status": "ok"
+      }
+    },
+    "ops_expired_items": {
+      "ask": {
+        "answer": "Recorded answer for ops_expired_items.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_expired_items",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_expired_items",
+        "hash": "hash-ops_expired_items"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_expired_items",
+        "status": "ok"
+      }
+    },
+    "ops_freight_spend_destination": {
+      "ask": {
+        "answer": "Recorded answer for ops_freight_spend_destination.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_freight_spend_destination",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_freight_spend_destination",
+        "hash": "hash-ops_freight_spend_destination"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_freight_spend_destination",
+        "status": "ok"
+      }
+    },
+    "ops_low_stock_wh_a": {
+      "ask": {
+        "answer": "Recorded answer for ops_low_stock_wh_a.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_low_stock_wh_a",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_low_stock_wh_a",
+        "hash": "hash-ops_low_stock_wh_a"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_low_stock_wh_a",
+        "status": "ok"
+      }
+    },
+    "ops_shipment_cost": {
+      "ask": {
+        "answer": "Recorded answer for ops_shipment_cost.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_shipment_cost",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_shipment_cost",
+        "hash": "hash-ops_shipment_cost"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_shipment_cost",
+        "status": "ok"
+      }
+    },
+    "ops_shipment_cost_syn": {
+      "ask": {
+        "answer": "Recorded answer for ops_shipment_cost_syn.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_shipment_cost_syn",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_shipment_cost_syn",
+        "hash": "hash-ops_shipment_cost_syn"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_shipment_cost_syn",
+        "status": "ok"
+      }
+    },
+    "ops_sku_count": {
+      "ask": {
+        "answer": "Recorded answer for ops_sku_count.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_sku_count",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_sku_count",
+        "hash": "hash-ops_sku_count"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_sku_count",
+        "status": "ok"
+      }
+    },
+    "ops_sku_count_by_category": {
+      "ask": {
+        "answer": "Recorded answer for ops_sku_count_by_category.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_sku_count_by_category",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_sku_count_by_category",
+        "hash": "hash-ops_sku_count_by_category"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_sku_count_by_category",
+        "status": "ok"
+      }
+    },
+    "ops_sku_count_by_category_syn": {
+      "ask": {
+        "answer": "Recorded answer for ops_sku_count_by_category_syn.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_sku_count_by_category_syn",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_sku_count_by_category_syn",
+        "hash": "hash-ops_sku_count_by_category_syn"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_sku_count_by_category_syn",
+        "status": "ok"
+      }
+    },
+    "ops_sku_count_syn_label": {
+      "ask": {
+        "answer": "Recorded answer for ops_sku_count_syn_label.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_sku_count_syn_label",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_sku_count_syn_label",
+        "hash": "hash-ops_sku_count_syn_label"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_sku_count_syn_label",
+        "status": "ok"
+      }
+    },
+    "ops_sku_count_syn_short": {
+      "ask": {
+        "answer": "Recorded answer for ops_sku_count_syn_short.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_sku_count_syn_short",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_sku_count_syn_short",
+        "hash": "hash-ops_sku_count_syn_short"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_sku_count_syn_short",
+        "status": "ok"
+      }
+    },
+    "ops_spend_boundary": {
+      "ask": {
+        "answer": "Recorded answer for ops_spend_boundary.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_spend_boundary",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_spend_boundary",
+        "hash": "hash-ops_spend_boundary"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_spend_boundary",
+        "status": "ok"
+      }
+    },
+    "ops_stock_value": {
+      "ask": {
+        "answer": "Recorded answer for ops_stock_value.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_stock_value",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_stock_value",
+        "hash": "hash-ops_stock_value"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_stock_value",
+        "status": "ok"
+      }
+    },
+    "ops_stock_value_syn": {
+      "ask": {
+        "answer": "Recorded answer for ops_stock_value_syn.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_stock_value_syn",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_stock_value_syn",
+        "hash": "hash-ops_stock_value_syn"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_stock_value_syn",
+        "status": "ok"
+      }
+    },
+    "ops_supplier_rank_boundary": {
+      "ask": {
+        "answer": "Recorded answer for ops_supplier_rank_boundary.",
+        "assumptions": "recorded",
+        "audit_id": "aud-ops_supplier_rank_boundary",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-ops_supplier_rank_boundary",
+        "hash": "hash-ops_supplier_rank_boundary"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-ops_supplier_rank_boundary",
+        "status": "ok"
+      }
+    },
+    "trap_alerts_ungranted": {
+      "ask": {
+        "answer": "Recorded answer for trap_alerts_ungranted.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_alerts_ungranted",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_alerts_ungranted",
+        "hash": "hash-trap_alerts_ungranted"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_alerts_ungranted",
+        "status": "ok"
+      }
+    },
+    "trap_categoty": {
+      "ask": {
+        "answer": "Recorded answer for trap_categoty.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_categoty",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_categoty",
+        "hash": "hash-trap_categoty"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_categoty",
+        "status": "ok"
+      }
+    },
+    "trap_delayed_count": {
+      "ask": {
+        "answer": "Recorded answer for trap_delayed_count.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_delayed_count",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_delayed_count",
+        "hash": "hash-trap_delayed_count"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_delayed_count",
+        "status": "ok"
+      }
+    },
+    "trap_high_risk_pending": {
+      "ask": {
+        "answer": "Recorded answer for trap_high_risk_pending.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_high_risk_pending",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_high_risk_pending",
+        "hash": "hash-trap_high_risk_pending"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_high_risk_pending",
+        "status": "ok"
+      }
+    },
+    "trap_how_full_synonym": {
+      "ask": {
+        "answer": "Recorded answer for trap_how_full_synonym.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_how_full_synonym",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_how_full_synonym",
+        "hash": "hash-trap_how_full_synonym"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_how_full_synonym",
+        "status": "ok"
+      }
+    },
+    "trap_last_month": {
+      "ask": {
+        "answer": "Recorded answer for trap_last_month.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_last_month",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_last_month",
+        "hash": "hash-trap_last_month"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_last_month",
+        "status": "ok"
+      }
+    },
+    "trap_short_paraphrase": {
+      "ask": {
+        "answer": "Recorded answer for trap_short_paraphrase.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_short_paraphrase",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_short_paraphrase",
+        "hash": "hash-trap_short_paraphrase"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_short_paraphrase",
+        "status": "ok"
+      }
+    },
+    "trap_stock_by_bin": {
+      "ask": {
+        "answer": "Recorded answer for trap_stock_by_bin.",
+        "assumptions": "recorded",
+        "audit_id": "aud-trap_stock_by_bin",
+        "badge": "certified",
+        "route": "sql",
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "sql_used": "SELECT 1 AS n"
+      },
+      "insights": {
+        "ontology": {
+          "metrics": []
+        }
+      },
+      "ledger": {
+        "entry_id": "ent-trap_stock_by_bin",
+        "hash": "hash-trap_stock_by_bin"
+      },
+      "submit": {
+        "ok": true,
+        "rows": [
+          {
+            "n": 1
+          }
+        ],
+        "run_id": "run-trap_stock_by_bin",
+        "status": "ok"
+      }
+    }
+  },
+  "session_bind": {
+    "ok": true,
+    "run_id": "run-bind",
+    "status": "bound"
+  }
+}
