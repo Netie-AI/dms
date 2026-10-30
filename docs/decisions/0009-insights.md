@@ -67,7 +67,10 @@ closed code and a fixed customer sentence:
    finite numbers, and definition text copied verbatim from the ontology. It is also
    self-consistent (re-execution not dated before the first execution, conserves within tolerance, one result hash across both runs and both
    executions, row counts equal `n_groups`, no negative part), and given the SQL and the
-   rows it checks `sql_hash`, `result_hash` and `order_hash` against them.
+   rows it checks `sql_hash`, `result_hash` and `order_hash` against them. Given the
+   insight it is attached to, its `insight_id` and `kind` must name that insight: two
+   kinds read from one statement share every other field, so a sibling's proof is
+   otherwise self-consistent.
 6. **Badge by provenance.** A steward-approved item (`Ontology.from_store`) is
    `L1_GOVERNED_METRIC`. The built-in demo ontology is `L2_VALIDATED` and says so in
    `assumptions`.
@@ -83,7 +86,10 @@ closed code and a fixed customer sentence:
    LATERAL, an unaliased computed projection) is all-PII, and an object whose tables
    cannot be resolved is all-PII; a view is read through its own SELECT from
    `duckdb_views()`, nested views included, so a view that renames a marked column
-   carries the mark, and an unreadable view or catalog is all-PII; a column that shares
+   carries the mark, and an unreadable view or catalog is all-PII; a generated column
+   (`information_schema.columns.generation_expression`) whose expression reads a column
+   marked on its table, or holds anything outside the same allowlist, carries the mark,
+   and a catalog that cannot list generated columns is all-PII; a column that shares
    a JOIN, WHERE, HAVING or QUALIFY conjunct with a marked column carries the mark; the
    name-only pii form `Schema.Table.column` splits at its last dot),
    `result_out_of_order`, `ungranted` (zero submits; the

@@ -331,6 +331,8 @@ def assert_proof_shape(
     sql: str | None = None,
     rows: Sequence[Mapping[str, Any]] | None = None,
     label: str | None = None,
+    insight_id: str | None = None,
+    kind: str | None = None,
 ) -> None:
     """Raise ``ProofShapeError`` unless ``proof`` is the proof grammar and self-consistent.
 
@@ -338,6 +340,12 @@ def assert_proof_shape(
     measure, label, kind and sql_hash, so an id cannot ride on another kind's or
     another statement's proof. Two kinds read from one statement share every
     other proof field, so the id is what tells their proofs apart.
+
+    With ``insight_id`` and ``kind`` (the insight the proof is attached to) the
+    proof must name that insight. Swapping both fields to a sibling kind of the
+    same statement yields the sibling's proof byte for byte, which is
+    self-consistent; only the carrier's own identity tells it is not this
+    insight's proof (verify round 6, LOW).
 
     Shape: closed keys, hashes, UTC timestamps, identifiers, finite numbers.
     Consistency: conserves within tolerance, both runs and both executions share
@@ -486,6 +494,10 @@ def assert_proof_shape(
         d["measure"], label, proof["kind"], proof["sql_hash"]
     ):
         raise _bad("insight_id is not the hash of measure, label, kind and sql_hash")
+    if insight_id is not None and proof["insight_id"] != insight_id:
+        raise _bad("insight_id is not the insight the proof is attached to")
+    if kind is not None and proof["kind"] != kind:
+        raise _bad("kind is not the insight the proof is attached to")
     if rows is not None:
         from dms_executor.skills_quarantine import item_result_hash
 
@@ -904,11 +916,67 @@ def _view_bodies(con: Any) -> dict[str, list[str | None]] | None:
     return out
 
 
+def _generated_columns(con: Any) -> dict[str, list[tuple[str, str | None]]] | None:
+    """Bare casefolded table -> ``(column, generation expression)`` for its generated columns.
+
+    Read from ``information_schema.columns`` on the serving connection. None when
+    the catalog cannot answer, which callers treat as all-PII.
+    """
+    try:
+        rows = con.execute(
+            "SELECT table_name, column_name, generation_expression "
+            "FROM information_schema.columns "
+            "WHERE is_generated IS NOT NULL AND upper(is_generated) <> 'NEVER'"
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - a catalog that cannot answer fails closed
+        return None
+    out: dict[str, list[tuple[str, str | None]]] = {}
+    for table, column, expression in rows:
+        out.setdefault(str(table).casefold(), []).append(
+            (str(column).casefold(), None if expression is None else str(expression))
+        )
+    return out
+
+
+def _generated_reads_marked(expression: str | None, marked: set[str]) -> bool:
+    """True when a generated column's expression carries a ``marked`` column.
+
+    Over-approximates: any name part of any column the expression reads that is
+    marked carries the mark, and an expression that does not parse, or holds a
+    node outside ``_projection_allowlist`` (a positional ``#n``, ``md5``,
+    ``struct_extract``, any unlisted function), is treated as carrying it. The
+    caller only asks when a pii item applies to the table, so an unmodelled
+    generated column on an unmarked table stays usable.
+    """
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import SqlglotError
+
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    if not expression:
+        return True
+    try:
+        tree = sqlglot.parse_one(expression, read=SERVING_DIALECT)
+    except (SqlglotError, ValueError):
+        return True
+    if tree is None:
+        return True
+    allowed = _projection_allowlist()
+    for node in tree.walk():
+        if not isinstance(node, allowed):
+            return True
+        if isinstance(node, exp.Column) and _column_parts(node) & marked:
+            return True
+    return False
+
+
 def _relation_taint(
     relation: str,
     items: list[tuple[str, str]],
     views: Mapping[str, list[str | None]],
     depth: int = 0,
+    generated: Mapping[str, list[tuple[str, str | None]]] | None = None,
 ) -> Collection[str]:
     """Casefolded output names of ``relation`` that carry a marked column.
 
@@ -917,18 +985,31 @@ def _relation_taint(
     column (``name AS region``) marks ``region`` (verify round 4: a view hid the
     pii item, because sqlglot does not expand views). A view that cannot be
     read, or nests past ``_MAX_VIEW_DEPTH``, makes the relation all-PII.
+
+    A table's generated columns (``region AS (upper(name))``) are marked when
+    their expression carries one of that table's marked columns, or cannot be
+    modelled (verify round 6: a VIRTUAL column served a marked column's values
+    under a new name, because it reads as a plain column of a base table).
     """
+    generated = generated or {}
     tables = _read_tables(relation)
     if not tables:
         return _ALL_PII
     marked = {column for rel, column in items if not rel or rel in tables}
+    for table in sorted(tables & set(generated)):
+        own = {column for rel, column in items if not rel or rel == table}
+        if not own:
+            continue
+        for column, expression in generated[table]:
+            if column not in own and _generated_reads_marked(expression, own):
+                marked.add(column)
     for table in sorted(tables & set(views)):
         if depth >= _MAX_VIEW_DEPTH:
             return _ALL_PII
         for body in views[table]:
             if body is None:
                 return _ALL_PII
-            inner = _relation_taint(body, items, views, depth + 1)
+            inner = _relation_taint(body, items, views, depth + 1, generated)
             if isinstance(inner, _AllColumns):
                 return _ALL_PII
             marked |= set(inner)
@@ -947,18 +1028,21 @@ def _pii_columns(onto: Ontology, obj: str, con: Any = None) -> Collection[str]:
     A pii item applies when the table it names is one the object's relation
     reads (``_read_tables``: subqueries and comma joins included), or when it
     names no table. With ``con``, a relation that reads a view reads what the
-    view reads, and the view's renames carry the mark (``_relation_taint``).
+    view reads, and the view's renames carry the mark (``_relation_taint``),
+    and a generated column whose expression reads a marked column is marked.
     An object whose tables cannot be resolved, whose subquery does not parse,
-    or whose views cannot be listed is all-PII: nothing of it is grouped by.
+    or whose views or generated columns cannot be listed is all-PII: nothing
+    of it is grouped by.
     """
     items = _pii_items(onto)
     if not items:
         return set()
     relation = str(onto.objects[obj].relation or "")
     views = _view_bodies(con) if con is not None else {}
-    if views is None:
+    generated = _generated_columns(con) if con is not None else {}
+    if views is None or generated is None:
         return _ALL_PII
-    return _relation_taint(relation, items, views)
+    return _relation_taint(relation, items, views, generated=generated)
 
 
 def _item_meta(onto: Ontology) -> list[dict[str, Any]]:
@@ -1594,7 +1678,8 @@ def _emit(
         return None
     proof = {**proof_base, "insight_id": insight_id, "kind": kind}
     try:
-        assert_proof_shape(proof, onto=ctx.onto, sql=sql, rows=rows, label=label)
+        assert_proof_shape(proof, onto=ctx.onto, sql=sql, rows=rows, label=label,
+                           insight_id=insight_id, kind=kind)
     except ProofShapeError:
         _refuse(ctx, where, "envelope_invalid:proof_shape")
         return None
