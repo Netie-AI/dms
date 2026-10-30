@@ -80,7 +80,7 @@ def _transport(url: str, headers: dict[str, str], body: dict[str, Any]) -> dict[
 
 def _arm_compile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_AO_COMPILE", "1")
-    monkeypatch.setenv("DMS_OV_SERVICE_TOKEN", "ov-grade-ao")
+    monkeypatch.setenv("OPENVAULT_API_KEY", "ov_gradeao")
     monkeypatch.setenv("OPENVAULT_URL", "http://127.0.0.1:9")
 
 

@@ -8,8 +8,16 @@ Replaces ``auto_ontology.utils.llm_invoke``. DMS does not name a model.
 The request body carries the role alias ``ontology`` plus the messages and
 the structured-output schema name. Provider keys stay in OpenVault.
 
-Token: ``DMS_OV_SERVICE_TOKEN``, else the file at ``DMS_OV_SERVICE_TOKEN_FILE``.
+Credential: an OpenVault API key (``ov_...``) from ``OPENVAULT_API_KEY``, else
+``CORTEX_API_KEY``. This is the same relay ``cortex_client.strict_pin`` uses.
+``POST /v1/chat/completions`` verifies the bearer against the issued-key store
+(``vault/auth.py resolve_caller``). A DMS signing-service token from
+``POST /keys/services`` is not an issued key, so OpenVault answers 401. The
+key is minted by OpenVault's human Grant flow. DMS never mints one.
 Base URL: ``OPENVAULT_URL``. Nothing here is read at import time.
+
+A failed call is a named refusal, never a quiet ``None``. ``compile_catalog``
+turns any recorded failure into :class:`AoCompileRefused` so nothing is stored.
 """
 
 from __future__ import annotations
@@ -19,7 +27,6 @@ import logging
 import os
 from collections.abc import Callable
 from contextvars import ContextVar, Token
-from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -30,9 +37,25 @@ logger = logging.getLogger(__name__)
 
 ROLE_ALIAS = "ontology"
 CHAT_PATH = "/v1/chat/completions"
-TOKEN_ENV = "DMS_OV_SERVICE_TOKEN"
-TOKEN_FILE_ENV = "DMS_OV_SERVICE_TOKEN_FILE"
+API_KEY_ENVS = ("OPENVAULT_API_KEY", "CORTEX_API_KEY")
+API_KEY_PREFIX = "ov_"
 URL_ENV = "OPENVAULT_URL"
+
+REFUSE_KEY_MISSING = "ao_ov_api_key_missing"
+REFUSE_UNAUTHORIZED = "ao_ov_unauthorized"
+REFUSE_UNREACHABLE = "ao_ov_unreachable"
+REFUSE_OUTPUT_INVALID = "ao_model_output_invalid"
+REFUSE_NO_CALLS = "ao_no_model_calls"
+#: A failure that no later call can cure. The client stops sending after one.
+_FATAL = frozenset(
+    {
+        REFUSE_KEY_MISSING,
+        REFUSE_UNAUTHORIZED,
+        REFUSE_UNREACHABLE,
+        "openvault_url_missing",
+        "model_key_refused",
+    }
+)
 
 # Keys that would name or pin a model. The body builder rejects them.
 _MODEL_KEYS = frozenset(
@@ -60,33 +83,65 @@ class AoLlmError(RuntimeError):
         super().__init__(code)
 
 
+class AoCompileRefused(RuntimeError):
+    """The compile cannot be called AI-compiled. Nothing may be stored."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 class OpenVaultOntologyClient:
-    """One FreeRoute caller. ``bodies`` keeps every JSON object that was sent."""
+    """One FreeRoute caller. ``bodies`` keeps every JSON object that was sent.
+
+    ``failures`` holds the code of every call that did not return a valid
+    object, and ``calls_ok`` counts the ones that did. A fatal failure (no key,
+    401/403, unreachable) is sticky: later calls raise it without sending.
+    """
 
     def __init__(self, transport: Transport | None = None) -> None:
         self._transport = transport
         self.bodies: list[dict[str, Any]] = []
+        self.failures: list[str] = []
+        self.calls_ok = 0
+        self._fatal: str | None = None
 
     def complete_structured(
         self,
         messages: list[SystemMessage | HumanMessage],
         schema: type[T],
     ) -> T:
-        body = build_request_body(messages, schema)
-        self.bodies.append(body)
-        url = endpoint_url()
-        token = load_service_token()
-        if not token:
-            raise AoLlmError("ov_service_token_missing")
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
-        transport = self._transport or default_transport
-        payload = transport(url, headers, body)
-        if isinstance(payload, str):
-            payload = json.loads(payload)
-        return schema.model_validate(payload)
+        if self._fatal is not None:
+            raise AoLlmError(self._fatal)
+        try:
+            body = build_request_body(messages, schema)
+            url = endpoint_url()
+            key = load_api_key()
+            if not key:
+                raise AoLlmError(REFUSE_KEY_MISSING)
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            }
+            self.bodies.append(body)
+            transport = self._transport or default_transport
+            payload = transport(url, headers, body)
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            parsed = schema.model_validate(payload)
+        except AoLlmError as exc:
+            self._record(exc.code)
+            raise
+        except (ValidationError, ValueError):
+            self._record(REFUSE_OUTPUT_INVALID)
+            raise
+        self.calls_ok += 1
+        return parsed
+
+    def _record(self, code: str) -> None:
+        self.failures.append(code)
+        if code in _FATAL:
+            self._fatal = code
 
 
 def bind_client(client: OpenVaultOntologyClient) -> Token[OpenVaultOntologyClient | None]:
@@ -114,34 +169,38 @@ def invoke_with_structured_output(
     messages: list[SystemMessage | HumanMessage],
     schema: type[T],
 ) -> T | None:
-    """Return a validated object, or None when the call or the parse fails."""
+    """Return a validated object, or None when the model's output does not parse.
+
+    A call that could not be made or was refused (:class:`AoLlmError`) is
+    raised. The client has already recorded it, so a caller that swallows the
+    error still cannot hide the failure from ``compile_catalog``.
+    """
     schema_name = getattr(schema, "__name__", str(schema))
     try:
         return llm.complete_structured(messages, schema)
-    except (AoLlmError, ValidationError, ValueError) as exc:
+    except AoLlmError as exc:
+        logger.error("invoke_with_structured_output refused for %s: %s", schema_name, exc.code)
+        raise
+    except (ValidationError, ValueError) as exc:
         logger.error(
             "invoke_with_structured_output failed for %s: %s",
             schema_name,
             type(exc).__name__,
         )
         return None
-    except Exception:
-        logger.exception("invoke_with_structured_output failed for %s", schema_name)
-        return None
 
 
-def load_service_token() -> str:
-    """Bearer from the env, else from the token file. Empty when neither is set."""
-    token = os.environ.get(TOKEN_ENV, "").strip()
-    if token:
-        return token
-    raw = os.environ.get(TOKEN_FILE_ENV, "").strip()
-    if not raw:
-        return ""
-    path = Path(raw)
-    if not path.is_file():
-        return ""
-    return path.read_text(encoding="utf-8").strip()
+def load_api_key() -> str:
+    """The ``ov_`` key OpenVault accepts for chat. Empty when none is set.
+
+    A value that is not an ``ov_`` key (the demo viewer key, a Cortex steward
+    key, a signing-service token) is skipped: OpenVault would answer 401.
+    """
+    for name in API_KEY_ENVS:
+        raw = os.environ.get(name, "").strip()
+        if raw.startswith(API_KEY_PREFIX):
+            return raw
+    return ""
 
 
 def endpoint_url() -> str:
@@ -180,8 +239,16 @@ def default_transport(url: str, headers: dict[str, str], body: dict[str, Any]) -
     """POST the body. Chat-completion envelopes are unwrapped to the JSON object."""
     import httpx
 
-    response = httpx.post(url, headers=headers, json=body, timeout=60.0)
-    response.raise_for_status()
+    try:
+        response = httpx.post(url, headers=headers, json=body, timeout=60.0)
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status in (401, 403):
+            raise AoLlmError(REFUSE_UNAUTHORIZED) from None
+        raise AoLlmError(f"ao_ov_http_{status}") from None
+    except httpx.HTTPError:
+        raise AoLlmError(REFUSE_UNREACHABLE) from None
     data = response.json()
     if isinstance(data, dict) and isinstance(data.get("choices"), list) and data["choices"]:
         message = data["choices"][0].get("message") or {}
