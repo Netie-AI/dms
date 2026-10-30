@@ -1201,9 +1201,9 @@ def _assert_macro_refused(run: ip.InsightRun, stub: _Stub) -> None:
 
 
 @pytest.fixture
-def no_function_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+def walker_only(monkeypatch: pytest.MonkeyPatch) -> None:
     """The run-level macro gate off, so the PII walker behind it is tested alone."""
-    monkeypatch.setattr(ip, "function_gate", lambda _wh: None)
+    monkeypatch.setattr(ip, "user_function_refusal", lambda _wh: None)
 
 
 @pytest.mark.parametrize("gate", [True, False], ids=["gate", "walker_only"])
@@ -1215,7 +1215,7 @@ def test_a_view_over_a_table_function_never_executes(
     wh = _seed_sales(tmp_path / "pii_tfn.duckdb")
     _exec(wh, *statements, f"CREATE VIEW Sales.TV AS {body}")
     if not gate:
-        monkeypatch.setattr(ip, "function_gate", lambda _wh: None)
+        monkeypatch.setattr(ip, "user_function_refusal", lambda _wh: None)
     stub = _Stub(wh)
     onto = Ontology.from_store(items=_territory_items("Sales.TV", "area", pii=True))
     run = _run(wh, stub, set(_B_GRANTS) | {"Sales.TV", "Sales.TU"}, onto=onto)
@@ -1231,7 +1231,7 @@ def test_a_view_over_a_table_function_never_executes(
     "ON m.territory_id = t.territory_id)",
 ])
 def test_a_relation_over_a_table_function_never_executes(
-    tmp_path: Path, relation: str, no_function_gate: None
+    tmp_path: Path, relation: str, walker_only: None
 ) -> None:
     """A table function in the object's own relation, granted or not, is all-PII.
 
@@ -1251,7 +1251,7 @@ def test_a_relation_over_a_table_function_never_executes(
 
 
 def test_a_view_over_a_macro_on_an_ungranted_marked_table_never_executes(
-    tmp_path: Path, no_function_gate: None
+    tmp_path: Path, walker_only: None
 ) -> None:
     """Only the view is granted; the macro reads a marked table in another schema.
 
@@ -1406,15 +1406,15 @@ def test_a_macro_created_during_the_run_serves_nothing(
 ) -> None:
     """The gate is read again after the last submit; a macro that appeared mid-run refuses."""
     wh, onto = _v10_world(tmp_path, "midrun", "Sales.TV", _V10_VIEW)
-    real = ip.function_gate
+    real = ip.user_function_refusal
     seen: list[str | None] = []
 
-    def gate(warehouse: Path) -> str | None:
+    def flips(warehouse: Path) -> str | None:
         got = real(warehouse) if not seen else "user_macro_present"
         seen.append(got)
         return got
 
-    monkeypatch.setattr(ip, "function_gate", gate)
+    monkeypatch.setattr(ip, "user_function_refusal", flips)
     stub = _Stub(wh)
     run = _run(wh, stub, set(_V10_GRANTS), onto=onto)
     assert seen == [None, "user_macro_present"]
@@ -1444,15 +1444,15 @@ def test_user_function_count_reads_the_serving_catalog(tmp_path: Path) -> None:
         assert ip.user_function_count(con) == 0
     finally:
         con.close()
-    assert ip.function_gate(wh) is None
+    assert ip.user_function_refusal(wh) is None
     _exec(wh, "CREATE MACRO lower(x) AS x", "CREATE MACRO tm() AS TABLE SELECT 1 AS a")
     con = connect_serving(wh)
     try:
         assert ip.user_function_count(con) == 2
     finally:
         con.close()
-    assert ip.function_gate(wh) == "user_macro_present"
-    assert ip.function_gate(tmp_path / "missing" / "nope.duckdb") == (
+    assert ip.user_function_refusal(wh) == "user_macro_present"
+    assert ip.user_function_refusal(tmp_path / "missing" / "nope.duckdb") == (
         "function_catalog_unreadable")
 
 
