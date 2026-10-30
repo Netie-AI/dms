@@ -94,7 +94,7 @@ def test_a_rejection_reason_with_a_hidden_character_is_refused(
 
 def test_a_row_confirmed_without_evidence_does_not_answer(rigged: _Rigged) -> None:  # noqa: F811
     """A direct INSERT in state 'confirmed' skips propose, evidence and confirm (migration
-    0007's guard is BEFORE UPDATE only). It carries a steward, a time, a ledger pointer and a
+    0010's guard is BEFORE UPDATE only). It carries a steward, a time, a ledger pointer and a
     valid hash, but no evidence snapshot, so the ask path must not trust it."""
     st = rigged.env.store
     i = next(k for k, m in enumerate(st._measures) if m.name == COUNT)

@@ -186,7 +186,7 @@ def _row_exclusion(row: OntoMeasure, onto: Ontology) -> str | None:
     ):
         return EXCL_INTEGRITY
     # A row that was never through evidence has no snapshot to point at: an INSERT that skipped
-    # propose and confirm (the 0007 guard is BEFORE UPDATE only) must not answer.
+    # propose and confirm (the 0010 guard is BEFORE UPDATE only) must not answer.
     evidence = row.evidence if isinstance(row.evidence, Mapping) else {}
     if not str(evidence.get("snapshot_id") or "").strip():
         return EXCL_INTEGRITY

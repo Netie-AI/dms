@@ -1,7 +1,7 @@
 """KNOWN GAP (P-DMS-57, carve-out of P-DMS-48 / spec step 9): the contract ask's own badge.
 
 A SQL-source Space answers a certified-tier badge only through a steward-confirmed measure
-(DR-0006). The contract-ask tail of ``Executor._live_ask`` does not enforce that: it maps the
+(DR-0007). The contract-ask tail of ``Executor._live_ask`` does not enforce that: it maps the
 engine's badge straight onto the envelope, so a stubbed engine that says ``governed_metric`` or
 ``certified`` reaches the customer as ``L1_GOVERNED_METRIC`` or ``L0_CERTIFIED`` over a Space with
 no confirmed measure and no ``measure_basis``. The fix is the egress finalizer of spec step 5.7,

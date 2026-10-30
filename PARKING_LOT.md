@@ -77,7 +77,7 @@ T14 signed receipts, U5–U6, Runs durability, C10.
 
 ## P-DMS-4 — F5 gate catalog tasks
 
-CORRECTED (DR-0006 step 0). `gate_task_unknown` is **fail-closed for mutations**:
+CORRECTED (DR-0007 step 0). `gate_task_unknown` is **fail-closed for mutations**:
 `apps/api/dms_api/gatekeeping.py` `enforce(..., mutation=True)` raises 403 for both
 `gate_unavailable` and `gate_task_unknown`; only a caller that passes `mutation=False`
 (a read path) proceeds on them. The earlier "soft-allow" text was wrong.
@@ -90,7 +90,7 @@ a real catalog would turn every uncatalogued DMS mutation id into a 403 while CI
 green (tests monkeypatch `routes.spaces.compliance_gate`).
 **Condition:** Cortex introduces a task catalog or per-task policy; then request the DMS
 mutation ids (including `spaces.ontology.measures.propose|create|confirm|reject`,
-`spaces.ontology.derive`, `amend.confirm`) as data entries, and re-run the probe in DR-0006.
+`spaces.ontology.derive`, `amend.confirm`) as data entries, and re-run the probe in DR-0007.
 
 ## P-DMS-5 — Sellable hardening
 
@@ -398,7 +398,7 @@ Containment today is `resolve_declared_relations` refusing non-Query roots first
 cheap fix is a read-only connection for EXPLAIN.
 **Unlock:** its own ticket via the prd-agent; do not fold it into the measures slice.
 
-## P-DMS-48 - Founder/Cursor-gated steps of the confirmed-measures build (DR-0006)
+## P-DMS-48 - Founder/Cursor-gated steps of the confirmed-measures build (DR-0007)
 
 Held back: the new badge value `L2_UNCONFIRMED` anywhere in product code
 (`envelope.ALLOWED_BADGES`, `xlsx_export`, executor `_BADGE_MAP`, any emitted envelope),
@@ -418,7 +418,7 @@ section 7.4/7.5 green.
 and a name must also differ from every table, column and demo-pack id.
 **Unlock:** a name is ever interpolated unquoted (a second SQL builder, a Cortex-side
 template), or a steward reports a keyword name confusing a viewer; then add a reserved-word
-list to the name rule and to migration 0007's `onto_measure_name_ck` together.
+list to the name rule and to migration 0010's `onto_measure_name_ck` together.
 
 ## P-DMS-50 - GET /ontology/measures is ungated under the single-actor model
 
@@ -502,7 +502,7 @@ On a non-demo Space, the contract-ask tail of `Executor._live_ask` maps the engi
 onto the envelope. An engine `governed_metric` or `certified` over single-table SQL (so
 `check_sql_against_space` passes it) reaches the customer as `L1_GOVERNED_METRIC` or `L0_CERTIFIED`
 with `abstained=false`, the engine's own text and rows, no `measure_basis`, on a Space with no
-confirmed measure and no verified query. DR-0006 says only a steward-confirmed measure backs a
+confirmed measure and no verified query. DR-0007 says only a steward-confirmed measure backs a
 certified-tier answer on a Space. Not a regression: it reproduces identically on the merged #316
 baseline `1fb6ab0`, and the confirmed lane's own answers stay `L2_VALIDATED` plus `measure_basis`.
 It is the contract-ask half of the egress finalizer held back in P-DMS-48 (spec 5.7), found by the

@@ -5,7 +5,7 @@ decision-makers: founder (decision comment on dms#283 and dms#284), routed via p
 outcome: proposed - confirmed measures back certified answers; unconfirmed simple aggregates answer under a distinct non-certified badge; nothing below is built yet
 ---
 
-# DR-0006 - Confirmed measures, and the unconfirmed lane
+# DR-0007 - Confirmed measures, and the unconfirmed lane
 
 This record is `proposed`. It writes down the design the founder decision on dms#283
 (ONTO-CONFIRM-01) and dms#284 (CONNECT-ASK-02) implies, the order it ships in, what step 0
@@ -70,7 +70,7 @@ question about "total budget" with SQL it invented, and the envelope calls that
 
 ## Staged rollout
 
-1. Backend steps 1-7 (migration `0007_onto_measure_confirm`, core types and store API,
+1. Backend steps 1-7 (migration `0010_onto_measure_confirm`, core types and store API,
    `measure_spec` validator, steward routes, proposer and confirm criteria, load/prune/fit,
    typed branch) are inert for asks and can merge freely.
 2. Cursor lands UI parity: `BadgeKind`, `BADGE_COPY` and `LAYER_COPY` with
@@ -100,8 +100,10 @@ ranked_slots is not None` block is at `generative_ask.py:1321`, the spec says ~1
 the new work: `classify_adhoc_shape`, `_require_steward`, `measure_spec`, `measure_use`,
 `measure_confirm`, `measure_basis`, `MeasureProvenance`, `finalize_space_envelope`,
 `REASON_NO_DECLARED_LINK`, `relabel_join_gap`, and the new test files. `alembic/versions`
-ends at `0006_onto_snapshot` (PR #316, chained after `0005_ask_audit` of PR #342), so `0007_onto_measure_confirm` is free. Note that this
-DR's number (0006) and that migration's number are independent counters.
+ends at `0006_onto_snapshot` (PR #316, chained after `0005_ask_audit` of PR #342), so `0007_onto_measure_confirm` was free when this was written. At merge main had taken
+0007..0009, so the migration is `0010_onto_measure_confirm` on `0009_action_writeback`, and
+this record, first numbered DR-0006, is DR-0007 (DR-0006 is the writer family, #440). The DR
+number and the migration number are independent counters.
 
 **Baseline** (`DMS_SKIP_CONTROL_PLANE_TESTS=1`): `tests/test_onto_derive_01.py`,
 `test_ingest_fixes_277.py`, `test_fanout_guard.py`, `test_sql_source_typed_ingest.py`,

@@ -1,8 +1,8 @@
-"""ONTO-CONFIRM-01 / dms#283: migration 0007, the core measure store (step 2) and the steward
+"""ONTO-CONFIRM-01 / dms#283: migration 0010, the core measure store (step 2) and the steward
 service ``measure_confirm`` (step 4, last section of this file).
 
 No Postgres here (the PG twin is tests/control_plane/test_onto_confirm_01_pg.py).
-Migration 0007 is run against a recording Alembic ``op``; the in-memory store
+Migration 0010 is run against a recording Alembic ``op``; the in-memory store
 is exercised through the same ``decide_measure`` contract the Postgres store
 implements. Nothing here is on the answer path, so there is no envelope
 assertion; the envelope-level tests arrive with the steps that emit.
@@ -51,7 +51,7 @@ from test_onto_derive_01 import make_minter
 
 ROOT = Path(__file__).resolve().parents[1]
 REV_0004 = ROOT / "alembic" / "versions" / "0004_ontology_store.py"
-REV_0007 = ROOT / "alembic" / "versions" / "0007_onto_measure_confirm.py"
+REV_0010 = ROOT / "alembic" / "versions" / "0010_onto_measure_confirm.py"
 STORE_PATH = ROOT / "packages" / "core" / "dms_core" / "control_plane" / "onto_store.py"
 
 ALL_STATES = ("proposed", "confirmed", "rejected")
@@ -78,12 +78,12 @@ def _load(path: Path, name: str) -> ModuleType:
 # ---------------------------------------------------------------- migration
 
 
-def test_migration_0007_chain_constraints_trigger_and_no_grants(
+def test_migration_0010_chain_constraints_trigger_and_no_grants(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mod = _load(REV_0007, "rev0007_onto_measure_confirm")
-    assert mod.revision == "0007_onto_measure_confirm"
-    assert mod.down_revision == "0006_onto_snapshot"
+    mod = _load(REV_0010, "rev0010_onto_measure_confirm")
+    assert mod.revision == "0010_onto_measure_confirm"
+    assert mod.down_revision == "0009_action_writeback"
     rec = _Recorder()
     monkeypatch.setattr(mod, "op", rec)
     mod.upgrade()
@@ -133,8 +133,8 @@ def test_migration_0007_chain_constraints_trigger_and_no_grants(
     assert "DROP COLUMN IF EXISTS definition_hash" in dsql
 
 
-def test_migration_0004_text_untouched_by_0007() -> None:
-    """0004's onto_measure CREATE TABLE is pinned by test_onto_store_01; 0007 never edits it."""
+def test_migration_0004_text_untouched_by_0010() -> None:
+    """0004's onto_measure CREATE TABLE is pinned by test_onto_store_01; 0010 never edits it."""
     text = REV_0004.read_text()
     assert "definition_hash" not in text and "ledger_entry_id" not in text
     assert "CREATE TABLE dms.onto_measure (" in text

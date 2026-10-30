@@ -5,6 +5,10 @@ named CHECKs, one index and a BEFORE UPDATE trigger that freezes a measure's
 definition (aggregate, column, grain, source, fingerprint) and allows only the
 four legal state transitions. No new table, no GRANT, no POLICY: the 0004
 steward/admin UPDATE and viewer SELECT policies under FORCE RLS already cover it.
+
+Chain: ``0010_onto_measure_confirm`` on ``0009_action_writeback``. Written as 0007 on
+``0006_onto_snapshot``; renumbered at merge because main took 0007..0009 for
+``ontology_items`` / ``ontology_versions`` / action tables, none of which this touches.
 """
 
 from __future__ import annotations
@@ -13,8 +17,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0007_onto_measure_confirm"
-down_revision: str | None = "0006_onto_snapshot"
+revision: str = "0010_onto_measure_confirm"
+down_revision: str | None = "0009_action_writeback"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
