@@ -28,7 +28,7 @@ import httpx
 API = "http://127.0.0.1:8090"
 FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 WAREHOUSE_OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
-XLSX = Path("D:/DMS/tests/fixtures/ingest/15_q3_sales_export.xlsx")
+XLSX = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "ingest" / "15_q3_sales_export.xlsx"
 
 REVENUE = "What is our total spend by supplier country?"   # needs suppliers (Finance only)
 WHERE_SKU = "What is total stock value by category?"        # needs inventory (company-wide)

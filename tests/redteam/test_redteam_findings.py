@@ -64,16 +64,6 @@ WRONG: dict[str, tuple[str, str]] = {
         "No customer or revenue data exists; served invents 'revenue' as outbound "
         "qty*unit_cost (a cost basis) grouped",
     ),
-    "B-049": (
-        "WRONG_GRAIN",
-        "Question wants one top SKU per category (4 rows); served groups by "
-        "category, LIMIT 1, returning Electronics to",
-    ),
-    "B-051": (
-        "WRONG_MEASURE",
-        "Asked for share of total (45.12%, 35.00%, 11.12%); served returns "
-        "absolute sums, no percentage computed.",
-    ),
     "B-054": (
         "DROPPED_ROWS",
         "SUM(DISTINCT quantity_kg) collapses duplicate quantities (400 appears in "
@@ -198,16 +188,6 @@ WRONG: dict[str, tuple[str, str]] = {
         "Served COUNT(*) of RAW inventory rows (3); question asks warehouses, "
         "i.e. COUNT(DISTINCT location_id) = 2 (WH-",
     ),
-    "E-067": (
-        "DROPPED_FILTER",
-        "Served top 3 categories including Electronics; the excluding Electronics "
-        "filter was dropped (Sports missing fr",
-    ),
-    "E-069": (
-        "WRONG_FILTER_POLARITY",
-        "Served ORDER BY sum DESC (highest 3) for a question asking the lowest 3; "
-        "Sports is missing from served rows.",
-    ),
     "E-077": (
         "OTHER",
         "Served country <> 'Malaysia' but the column stores ISO codes (MY/SG/TH), "
@@ -216,6 +196,11 @@ WRONG: dict[str, tuple[str, str]] = {
 }
 
 CONTROLS: tuple[str, ...] = ("B-026", "C-033", "D-037", "E-002", "E-017", "E-065", "E-066", "E-081")
+
+# Sheet-lane cases. With DMS_LANE_BRONZE_SHEET unset they abstain (the stub
+# contract ask) instead of serving the old confident wrong rows. Same assert
+# as the xfail list. The marker comes off because the assert now holds.
+LANE_OFF_HOLDS: tuple[str, ...] = ("B-049", "B-051", "E-067", "E-069")
 
 _BY_FAMILY: dict[str, list[str]] = {
     "a": ["A-013", "A-021", "A-025"],
@@ -285,6 +270,20 @@ def test_gate_does_not_serve_confident_wrong_answer(
     assert verdict != "HARNESS_ERROR", rec["mechanical"]["reasons"]
     # badge honesty: a confident badge on a wrong answer is the defect; an abstain or a
     # correct answer is the fix
+    assert verdict != "WRONG", (
+        f"served badge={env.get('badge')} route={env.get('route')}: "
+        f"{rec['mechanical']['reasons'][:2]}"
+    )
+
+
+@pytest.mark.parametrize("cid", LANE_OFF_HOLDS)
+def test_sheet_lane_off_is_not_a_confident_wrong_answer(
+    cid: str, served: dict[str, dict[str, Any]]
+) -> None:
+    rec = served[cid]
+    env = rec.get("envelope") or {}
+    verdict = rec["mechanical"]["verdict"]
+    assert verdict != "HARNESS_ERROR", rec["mechanical"]["reasons"]
     assert verdict != "WRONG", (
         f"served badge={env.get('badge')} route={env.get('route')}: "
         f"{rec['mechanical']['reasons'][:2]}"
