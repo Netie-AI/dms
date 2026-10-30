@@ -48,6 +48,7 @@ from dms_core.control_plane.action_queries import (
 )
 from dms_core.control_plane.action_types import (
     ACTION_TYPES,
+    REASON_MAX,
     ActionSpec,
     ActionSpecError,
     ActionType,
@@ -93,6 +94,9 @@ from dms_api.gatekeeping import enforce
 #: The shipped default actor. Applying as it would sign the ledger as nobody in
 #: particular (the scripts/verify/onto_steward.py precedent), so it is refused.
 DEFAULT_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+#: An approval reference names a ticket or a change record, not a narrative. It is
+#: written to the Cortex ledger and the append-only decision row, so it is bounded.
+APPROVAL_REF_MAX = 200
 IDENTITY = "config_actor (DR-0004 Option A)"
 SEPARATION_OF_DUTIES = {
     "proven": False,
@@ -280,13 +284,30 @@ def _require_steward_identity(settings: Any) -> None:
         raise _refuse(403, "steward_grant_required")
     if str(settings.dms_actor_user_id).strip().lower() == DEFAULT_ACTOR:
         raise _refuse(403, "steward_identity_unset")
+    if _uuid_or_none(settings.dms_actor_user_id) is None:
+        # The proposal row stores the actor as a UUID: refuse here, not with a 500.
+        raise _refuse(403, "steward_identity_invalid")
 
 
 def _require_approval_ref(raw: str) -> str:
     ref = (raw or "").strip()
     if len(ref) < APPROVAL_REF_MIN:
         raise _refuse(400, "approval_ref_required")
+    if len(ref) > APPROVAL_REF_MAX:
+        raise _refuse(400, "approval_ref_too_long", max=APPROVAL_REF_MAX)
     return ref
+
+
+def _entry_id(appended: Any) -> str:
+    """The Cortex entry id, or a 503: an entry DMS cannot name cannot be receipted.
+
+    The append may have landed, but without its id there is nothing to point at or
+    to void, so the transaction rolls back and the caller is told the append failed.
+    """
+    entry = str(getattr(appended, "entry_id", "") or "").strip()
+    if not entry:
+        raise _refuse(503, "ledger_append_failed", reason="empty_entry_id")
+    return entry
 
 
 def _resource(at: ActionType, key: dict[str, Any]) -> str:
@@ -394,6 +415,72 @@ def _void_append(cortex: Any, actor: str, event_type: str, entry_id: str, versio
         pass
 
 
+def _decision_by_entry(settings: Any, entry_id: str) -> tuple[str, dict[str, Any] | None]:
+    """After a commit raised: did the decision that names ``entry_id`` land anyway?
+
+    Read on a fresh connection. ``("committed", {decision_id, ledger_seq})``,
+    ``("absent", None)``, or ``("unknown", None)`` when the database cannot answer.
+    """
+    try:
+        with _tenant_conn(settings, role="viewer") as (conn, tenant):
+            row = conn.execute(
+                """
+                SELECT id, ledger_seq
+                  FROM dms.action_decisions
+                 WHERE tenant_id = %s
+                   AND cortex_entry_id = %s
+                """,
+                (tenant, entry_id),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - no answer is not a "no"
+        return "unknown", None
+    if row is None:
+        return "absent", None
+    return "committed", {"decision_id": row[0], "ledger_seq": int(row[1])}
+
+
+def _commit_or_settle(
+    conn: psycopg.Connection,
+    settings: Any,
+    cortex: Any,
+    *,
+    actor: str,
+    void_event: str,
+    entry_id: str,
+    version_id: Any,
+    recorded: dict[str, Any],
+) -> dict[str, Any]:
+    """Commit the governed write; if the commit raises, find out what happened.
+
+    A commit can land and still raise (the connection drops after COMMIT is sent).
+    Voiding then would leave the ledger saying "void" over a write that exists, so
+    the outcome is read back first, on a fresh connection, once this one is closed:
+
+    - the decision row exists: the write committed and the receipt stands (no void);
+    - it does not: the write did not commit; void the entry and answer 503
+      ``commit_failed_after_append``;
+    - the database cannot say: answer 503 ``commit_outcome_unknown`` with the entry
+      id and append nothing, because a void and silence could each be wrong.
+    """
+    try:
+        _commit(conn)
+        return recorded
+    except Exception as exc:  # noqa: BLE001 - the entry exists; settle the write
+        failure = exc
+    try:
+        # Closed, so the connection's context exit cannot commit what this did not.
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    outcome, landed = _decision_by_entry(settings, entry_id)
+    if outcome == "committed" and landed is not None:
+        return landed
+    if outcome == "absent":
+        _void_append(cortex, actor, void_event, entry_id, version_id)
+        raise _refuse(503, "commit_failed_after_append", cortex_entry_id=entry_id) from failure
+    raise _refuse(503, "commit_outcome_unknown", cortex_entry_id=entry_id) from failure
+
+
 def _propose_response(out: dict[str, Any], **extra: Any) -> dict[str, Any]:
     return _jsonable(
         {
@@ -489,7 +576,10 @@ def propose_action_route(
         if body.evidence_audit_id is not None:
             try:
                 evidence = governed_evidence(
-                    conn, audit_id=body.evidence_audit_id, source_table=at.source_table
+                    conn,
+                    audit_id=body.evidence_audit_id,
+                    source_table=at.source_table,
+                    space_id=space,
                 )
             except EvidenceRefused as exc:
                 raise _refuse(422, exc.code) from exc
@@ -552,7 +642,12 @@ def apply_action_route(
         cited = (current["diff"].get("evidence") or {}).get("audit_id")
         if cited is not None:
             try:
-                governed_evidence(conn, audit_id=cited, source_table=at.source_table)
+                governed_evidence(
+                    conn,
+                    audit_id=cited,
+                    source_table=at.source_table,
+                    space_id=target["space_id"],
+                )
             except EvidenceRefused as exc:
                 raise _refuse(422, "evidence_not_validated", reason=exc.code) from exc
         try:
@@ -592,29 +687,29 @@ def apply_action_route(
             )
         except Exception as exc:  # noqa: BLE001 - no receipt, no apply
             raise _refuse(503, "ledger_append_failed") from exc
+        entry_id = _entry_id(appended)
         try:
             recorded = record_decision(
                 conn,
                 result,
                 decision="applied",
-                cortex_entry_id=appended.entry_id,
+                cortex_entry_id=entry_id,
                 space_id=target["space_id"],
             )
         except _CORE_REFUSALS as exc:
             # The entry exists but no receipt backs it: say so on the ledger.
-            _void_append(
-                cortex, actor, "action.apply.void", appended.entry_id, result["version_id"]
-            )
+            _void_append(cortex, actor, "action.apply.void", entry_id, result["version_id"])
             raise _action_error(exc) from exc
-        try:
-            _commit(conn)
-        except Exception as exc:  # noqa: BLE001 - the entry exists; the write does not
-            _void_append(
-                cortex, actor, "action.apply.void", appended.entry_id, result["version_id"]
-            )
-            raise _refuse(
-                503, "commit_failed_after_append", cortex_entry_id=appended.entry_id
-            ) from exc
+        recorded = _commit_or_settle(
+            conn,
+            settings,
+            cortex,
+            actor=actor,
+            void_event="action.apply.void",
+            entry_id=entry_id,
+            version_id=result["version_id"],
+            recorded=recorded,
+        )
 
     return _jsonable(
         {
@@ -636,7 +731,7 @@ def apply_action_route(
             "evidence": result["evidence"],
             "identity": IDENTITY,
             "separation_of_duties": SEPARATION_OF_DUTIES,
-            "ledger_entry_id": appended.entry_id,
+            "ledger_entry_id": entry_id,
             "ledger_seq": recorded["ledger_seq"],
             "chain": _chain_readback(cortex),
             "source_kind": at.source_kind,
@@ -670,8 +765,12 @@ def decline_action_route(
         raise _refuse(503, "ledger_unavailable")
 
     actor = settings.dms_actor_user_id
+    reason = (body.reason or "").strip()
+    if len(reason) > REASON_MAX:
+        # Refused, not truncated: a cut reason can say something the steward did not.
+        raise _refuse(400, "reason_too_long", max=REASON_MAX)
     # Masked like the receipt: the Cortex ledger is append-only too.
-    reason = mask_text((body.reason or "").strip()[:500])
+    reason = mask_text(reason)
     with _tenant_conn(settings, role="steward") as (conn, tenant):
         try:
             result: dict[str, Any] = dict(
@@ -709,35 +808,35 @@ def decline_action_route(
             )
         except Exception as exc:  # noqa: BLE001 - no receipt, no decline
             raise _refuse(503, "ledger_append_failed") from exc
+        entry_id = _entry_id(appended)
         try:
             recorded = record_decision(
                 conn,
                 result,
                 decision="declined",
-                cortex_entry_id=appended.entry_id,
+                cortex_entry_id=entry_id,
                 space_id=target["space_id"],
             )
         except _CORE_REFUSALS as exc:
-            _void_append(
-                cortex, actor, "action.decline.void", appended.entry_id, result["version_id"]
-            )
+            _void_append(cortex, actor, "action.decline.void", entry_id, result["version_id"])
             raise _action_error(exc) from exc
-        try:
-            _commit(conn)
-        except Exception as exc:  # noqa: BLE001
-            _void_append(
-                cortex, actor, "action.decline.void", appended.entry_id, result["version_id"]
-            )
-            raise _refuse(
-                503, "commit_failed_after_append", cortex_entry_id=appended.entry_id
-            ) from exc
+        recorded = _commit_or_settle(
+            conn,
+            settings,
+            cortex,
+            actor=actor,
+            void_event="action.decline.void",
+            entry_id=entry_id,
+            version_id=result["version_id"],
+            recorded=recorded,
+        )
     return _jsonable(
         {
             "decision_id": recorded["decision_id"],
             "proposal_id": result["proposal_id"],
             "version_num": result["version_num"],
             "status": "rejected",
-            "ledger_entry_id": appended.entry_id,
+            "ledger_entry_id": entry_id,
             "ledger_seq": recorded["ledger_seq"],
             "identity": IDENTITY,
             "mutation": DECLINED,

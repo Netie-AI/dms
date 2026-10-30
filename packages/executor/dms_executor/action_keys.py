@@ -4,7 +4,8 @@ Hard rule 12. A key that parses, validates and matches nothing is the most
 dangerous single failure, so an action proposal is refused unless its object key
 matches exactly one source row, byte for byte after whitespace strip. ``BETA`` is
 not ``SKU-BETA`` and ``wh-b`` is not ``WH-B``: nothing here folds case. A miss
-returns up to five candidate keys matched case-insensitively by substring, so the
+returns up to five candidate keys matched case-insensitively by substring on any key
+field (keys matching more fields first), so the
 steward can see the source encoding and resend it; a candidate is never used in
 place of the key that was sent.
 
@@ -86,14 +87,21 @@ def resolve_key(
     if len(rows) > 1:
         return {"status": "ambiguous", "matches": len(rows)}
 
-    near_where = " AND ".join(
-        f"contains(lower(CAST({c} AS VARCHAR)), lower($k{i}))" for i, c in enumerate(cols)
+    # A candidate matches at least one key field (case-insensitive substring); the
+    # keys that match more fields come first. Requiring every field to match would
+    # hide SKU-ALPHA@WH-B from a steward who sent SKU-ALPHA@WH-A.
+    score = " + ".join(
+        f"(CASE WHEN contains(lower({c}), lower($k{i})) THEN 1 ELSE 0 END)"
+        for i, c in enumerate(cols)
     )
     select_cols = ", ".join(f"CAST({c} AS VARCHAR) AS {c}" for c in cols)
     order = ", ".join(cols)
     near = demo_warehouse.execute_sql(
-        f"SELECT DISTINCT {select_cols} FROM {table} WHERE {near_where} "
-        f"ORDER BY {order} LIMIT {CANDIDATE_LIMIT}",
+        f"SELECT {order} FROM ("
+        f"SELECT {order}, ({score}) AS match_score "
+        f"FROM (SELECT DISTINCT {select_cols} FROM {table}) AS keys"
+        f") AS scored WHERE match_score > 0 "
+        f"ORDER BY match_score DESC, {order} LIMIT {CANDIDATE_LIMIT}",
         path=path,
         params=params,
     )

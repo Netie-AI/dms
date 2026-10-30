@@ -40,6 +40,15 @@ def _text(value: Any) -> Any:
     return None if value is None else str(value)
 
 
+def _space_text(value: Any) -> str:
+    """A Space id as comparable text: a UUID in canonical form, anything else stripped."""
+    raw = "" if value is None else str(value).strip()
+    try:
+        return str(UUID(raw))
+    except ValueError:
+        return raw.lower()
+
+
 def space_in_tenant(conn: psycopg.Connection, *, space_id: UUID) -> bool:
     """True when the Space is visible under the current tenant context."""
     row = conn.execute("SELECT 1 FROM dms.spaces WHERE id = %s", (space_id,)).fetchone()
@@ -83,12 +92,19 @@ def governed_evidence(
     *,
     audit_id: str | None,
     source_table: str,
+    space_id: UUID | str | None = None,
 ) -> dict[str, Any]:
     """Resolve an envelope ``audit_id`` to evidence an action may cite, or refuse.
 
     Refusals: ``evidence_unknown`` (blank, or no such ask in this tenant),
-    ``evidence_not_validated`` (badge is not validated, no executed SQL, or zero
-    rows: E9), ``evidence_wrong_table`` (the answer never read the source table).
+    ``evidence_wrong_space`` (the answer was asked in another Space than the
+    action's), ``evidence_not_validated`` (badge is not validated, no executed
+    SQL, or zero rows: E9), ``evidence_wrong_table`` (the answer never read the
+    source table).
+
+    An answer asked with no Space (``ask_audit.space_id`` is ``''``) is tenant-wide
+    and may back an action in any Space of the tenant; one asked in a Space backs
+    only actions in that Space.
     """
     ref = (audit_id or "").strip()
     if not ref:
@@ -96,7 +112,7 @@ def governed_evidence(
     row = conn.execute(
         """
         SELECT question, badge, executed_sql, row_count, tables_read,
-               cortex_entry_id, ledger_seq
+               cortex_entry_id, ledger_seq, space_id
           FROM dms.ask_audit
          WHERE cortex_entry_id = %s
          ORDER BY asked_at DESC
@@ -107,6 +123,9 @@ def governed_evidence(
     if row is None:
         raise EvidenceRefused("evidence_unknown", "no governed answer with that audit_id")
     question, badge, executed_sql, row_count, tables_read = row[0], row[1], row[2], row[3], row[4]
+    asked_in = _space_text(row[7])
+    if space_id is not None and asked_in and asked_in != _space_text(space_id):
+        raise EvidenceRefused("evidence_wrong_space", "the cited answer was asked in another Space")
     if badge != "validated" or not (executed_sql or "").strip() or int(row_count or 0) <= 0:
         raise EvidenceRefused(
             "evidence_not_validated",
