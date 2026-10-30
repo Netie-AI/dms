@@ -47,6 +47,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 def ask(client: httpx.Client, question: str, **kw) -> tuple[int, dict]:
     r = client.post(f"{API}/v1/chat/ask", json={"question": question, **kw}, timeout=120.0)
+    if r.status_code == 503:
+        r = client.post(f"{API}/v1/chat/ask", json={"question": question, **kw}, timeout=120.0)
     try:
         return r.status_code, r.json()
     except Exception:
@@ -269,6 +271,23 @@ with httpx.Client() as c:
         scalar_ok,
         f"status={st_s} badge={env_s.get('badge')} abstained={env_s.get('abstained')} "
         f"values={env_s.get('values')}",
+    )
+    assumptions = str(env_s.get("assumptions") or "").lower()
+    labels = " ".join(
+        str(v.get("label") or "")
+        for v in (env_s.get("values") or [])
+        if isinstance(v, dict)
+    ).lower()
+    sql_s = str(env_s.get("sql_used") or "").lower()
+    spend_not_revenue = scalar_ok and (
+        "revenue_myr" not in labels
+        and "revenue_total" not in assumptions
+        and "txn_type" not in sql_s
+    )
+    check(
+        "scalar spend is not outbound revenue",
+        spend_not_revenue,
+        f"badge={env_s.get('badge')} labels={labels!r} sql={sql_s[:120]!r}",
     )
     if scalar_ok:
         st_add, env_add = ask(c, "add 2000", space_id=FINANCE, session_id="ses_scalar")

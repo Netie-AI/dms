@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,8 +34,16 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _prefix_digit(ident: str, limit: int) -> str:
+    """A name starting with a digit is not a bare SQL ident. Prefix, do not drop it."""
+    if ident and ident[0].isdigit():
+        return ("t_" + ident)[:limit]
+    return ident
+
+
 def _safe_table_stem(filename: str) -> str:
-    return "".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40]
+    ident = "".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40]
+    return _prefix_digit(ident, 40) or "source_table"
 
 
 def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
@@ -42,7 +52,7 @@ def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
     if sheet:
         stem = f"{stem}_{sheet}"
     ident = "".join(c if c.isalnum() else "_" for c in stem)[:40]
-    return f"bronze.{ident}"
+    return f"bronze.{_prefix_digit(ident, 40) or 'source_table'}"
 
 
 #: Which source file each bronze table was built from. Bronze tables carry
@@ -61,7 +71,9 @@ def mint_extracted_at() -> str:
 def classify_source_kind(filename: str | None) -> str:
     """SQL pulls use SourceConfig.describe() as filename; everything else is a file."""
     if filename and (
-        filename.startswith("sqlserver://") or filename.startswith("mysql://")
+        filename.startswith("sqlserver://")
+        or filename.startswith("mysql://")
+        or filename.startswith("postgres://")
     ):
         return "sql"
     return "file"
@@ -105,10 +117,29 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN extracted_at VARCHAR")
         if "source_kind" not in cols:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_kind VARCHAR")
+        if "untyped_numeric" not in cols:
+            # Comma-separated column names that stayed text. Text MAX of those
+            # lies ($9.50 > $100.25). Asks read this and abstain.
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN untyped_numeric VARCHAR")
+
+
+def _holder_matches(
+    held_name: str | None,
+    held_space: str | None,
+    filename: str,
+    space_id: str | None,
+) -> bool:
+    return held_name == filename and held_space == space_id
 
 
 def _claim_table_name(
-    con: duckdb.DuckDBPyConnection, *, stem: str, filename: str, digest: str
+    con: duckdb.DuckDBPyConnection,
+    *,
+    stem: str,
+    filename: str,
+    digest: str,
+    space_id: str | None = None,
+    held: dict[str, tuple[str, str | None]] | None = None,
 ) -> tuple[str, str | None]:
     """Return (table_name, collision_note) for this file.
 
@@ -124,15 +155,33 @@ def _claim_table_name(
     rather than resolved in silence.
     """
     _ensure_registry(con)
-    row = con.execute(
-        f"SELECT filename FROM {_REGISTRY} WHERE table_name = ?", [stem]
-    ).fetchone()
-    if row is None or row[0] == filename:
+
+    def _occupant(name: str) -> tuple[str, str | None] | None:
+        if held is not None and name in held:
+            return held[name]
+        row = con.execute(
+            f"SELECT filename, space_id FROM {_REGISTRY} WHERE table_name = ?",
+            [name],
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row[0]), (None if row[1] is None else str(row[1]))
+
+    occupant = _occupant(stem)
+    if occupant is None or _holder_matches(occupant[0], occupant[1], filename, space_id):
         return stem, None
-    suffix = hashlib.sha256(filename.encode("utf-8")).hexdigest()[:8]
+    # Space id is part of the suffix. Two Spaces pulling the same source must
+    # not hash to the same bronze name and then DROP each other.
+    suffix = hashlib.sha256(f"{filename}|{space_id or ''}".encode()).hexdigest()[:8]
+    taken = f"{stem[:31]}_{suffix}"
+    if _occupant(taken) is not None and not _holder_matches(
+        *(_occupant(taken) or ("", None)), filename, space_id
+    ):
+        suffix = hashlib.sha256(f"{filename}|{space_id or ''}|2".encode()).hexdigest()[:8]
+        taken = f"{stem[:31]}_{suffix}"
     return (
-        f"{stem[:31]}_{suffix}",
-        f"name {stem!r} already holds {row[0]!r}; stored separately",
+        taken,
+        f"name {stem!r} already holds {occupant[0]!r}; stored separately",
     )
 
 
@@ -148,6 +197,7 @@ def _record_ingest(
     truncated: bool | None = None,
     extracted_at: str | None = None,
     source_kind: str | None = None,
+    untyped_numeric: str | None = None,
 ) -> None:
     con.execute(f"DELETE FROM {_REGISTRY} WHERE table_name = ?", [table_name])
     kind = source_kind or classify_source_kind(filename)
@@ -158,8 +208,8 @@ def _record_ingest(
     con.execute(
         f"INSERT INTO {_REGISTRY} "
         "(table_name, filename, sha256, ingest_id, created_at, space_id, row_count, "
-        "truncated, extracted_at, source_kind) "
-        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?)",
+        "truncated, extracted_at, source_kind, untyped_numeric) "
+        "VALUES (?, ?, ?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?, ?, ?, ?)",
         [
             table_name,
             filename,
@@ -171,12 +221,18 @@ def _record_ingest(
             truncated,
             stamp,
             kind,
+            untyped_numeric,
         ],
     )
 
 
 def claim_source_table_name(
-    *, stem: str, source: str, path: Path | None = None
+    *,
+    stem: str,
+    source: str,
+    path: Path | None = None,
+    space_id: str | None = None,
+    held: dict[str, tuple[str, str | None]] | None = None,
 ) -> tuple[str, str | None]:
     """Reserve a bronze name for a SQL-sourced table without taking another table's.
 
@@ -194,7 +250,17 @@ def claim_source_table_name(
     try:
         ensure_lake_schemas(con)
         _ensure_registry(con)
-        return _claim_table_name(con, stem=stem, filename=source, digest="")
+        name, note = _claim_table_name(
+            con,
+            stem=stem,
+            filename=source,
+            digest="",
+            space_id=space_id,
+            held=held,
+        )
+        if held is not None:
+            held[name] = (source, space_id)
+        return name, note
     finally:
         con.close()
 
@@ -209,6 +275,7 @@ def record_source_pull(
     space_id: str | None = None,
     path: Path | None = None,
     extracted_at: str | None = None,
+    untyped_numeric: str | None = None,
 ) -> str:
     """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
 
@@ -247,6 +314,7 @@ def record_source_pull(
             truncated=truncated,
             extracted_at=stamp,
             source_kind="sql",
+            untyped_numeric=untyped_numeric,
         )
     finally:
         con.close()
@@ -462,16 +530,254 @@ def ingest_csv_bytes(
     )
 
 
+_ZONED_TYPES = frozenset(
+    {"datetimeoffset", "timestamptz", "timestamp with time zone", "time with time zone"}
+)
+_BIGINT_TYPES = frozenset(
+    {"bigint", "int", "integer", "smallint", "tinyint", "mediumint"}
+)
+_DECIMAL_TYPES = frozenset({"decimal", "numeric", "money", "smallmoney"})
+_DOUBLE_TYPES = frozenset({"float", "real", "double", "double precision"})
+_DATE_TYPES = frozenset({"date"})
+_TIMESTAMP_TYPES = frozenset(
+    {"datetime", "datetime2", "smalldatetime", "timestamp", "timestamp without time zone"}
+)
+_EXACT_PATTERN = {
+    "BIGINT": r"^-?[0-9]+$",
+    "DECIMAL(38,10)": r"^-?[0-9]+(\.[0-9]+)?$",
+    "DOUBLE": r"^-?[0-9]+(\.[0-9]+)?$",
+    "DATE": r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+    "TIMESTAMP": (
+        r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?$"
+    ),
+}
+_MONEY_PATTERN = r"^[\$€£¥][ ]*-?[0-9][0-9,]*(\.[0-9]+)?$"
+_AGG_CALL = re.compile(
+    r"\b(?:max|min|sum|avg)\s*\(\s*(?:distinct\s+)?(?:[\w\"]+\.)?\"?([A-Za-z_][\w]*)\"?\s*\)",
+    re.IGNORECASE,
+)
+
+
+def duck_type_for_source(data_type: str | None) -> str | None:
+    """DuckDB type for a source declaration. Zoned timestamps stay untyped on purpose."""
+    if not data_type:
+        return None
+    kind = data_type.strip().lower()
+    if kind in _ZONED_TYPES or "time zone" in kind:
+        return None
+    if kind in _BIGINT_TYPES:
+        return "BIGINT"
+    if kind in _DECIMAL_TYPES:
+        return "DECIMAL(38,10)"
+    if kind in _DOUBLE_TYPES:
+        return "DOUBLE"
+    if kind in _DATE_TYPES:
+        return "DATE"
+    if kind in _TIMESTAMP_TYPES:
+        return "TIMESTAMP"
+    return None
+
+
+def _is_zoned_type(data_type: str | None) -> bool:
+    if not data_type:
+        return False
+    kind = data_type.strip().lower()
+    return kind in _ZONED_TYPES or "time zone" in kind
+
+
+def _is_numeric_type(data_type: str | None) -> bool:
+    if not data_type:
+        return False
+    kind = data_type.strip().lower()
+    return kind in _BIGINT_TYPES or kind in _DECIMAL_TYPES or kind in _DOUBLE_TYPES
+
+
+def _qcol(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _dedupe_columns(columns: list[str]) -> list[str]:
+    """Name and name cannot both be columns. The later one lands as name_2."""
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for column in columns:
+        key = column.lower()
+        seen[key] = seen.get(key, 0) + 1
+        out.append(column if seen[key] == 1 else f"{key}_{seen[key]}")
+    return out
+
+
+def _all_match(con: duckdb.DuckDBPyConnection, qual: str, column: str, pattern: str) -> bool:
+    bad = scalar_int(
+        con.execute(
+            f"""
+            SELECT COUNT(*) FROM {qual}
+            WHERE {_qcol(column)} IS NOT NULL AND TRIM({_qcol(column)}) <> ''
+              AND NOT regexp_full_match(TRIM({_qcol(column)}), ?)
+            """,
+            [pattern],
+        ).fetchone()
+    )
+    return bad == 0
+
+
+def _cast_succeeds(
+    con: duckdb.DuckDBPyConnection, qual: str, column: str, duck_type: str
+) -> bool:
+    bad = scalar_int(
+        con.execute(
+            f"""
+            SELECT COUNT(*) FROM {qual}
+            WHERE {_qcol(column)} IS NOT NULL AND TRIM({_qcol(column)}) <> ''
+              AND TRY_CAST(TRIM({_qcol(column)}) AS {duck_type}) IS NULL
+            """
+        ).fetchone()
+    )
+    return bad == 0
+
+
+def _converts_exactly(
+    con: duckdb.DuckDBPyConnection, qual: str, column: str, duck_type: str
+) -> bool:
+    """True only when every non-empty value is that type and nothing else.
+
+    A zoned timestamp is not exact: casting it moves the day boundary.
+    """
+    zoned = scalar_int(
+        con.execute(
+            f"""
+            SELECT COUNT(*) FROM {qual}
+            WHERE {_qcol(column)} IS NOT NULL
+              AND regexp_matches({_qcol(column)}, '[+-][0-9]{{2}}:?[0-9]{{2}}|Z$')
+            """
+        ).fetchone()
+    )
+    if zoned:
+        return False
+    pattern = _EXACT_PATTERN.get(duck_type)
+    if pattern is None or not _all_match(con, qual, column, pattern):
+        return False
+    return _cast_succeeds(con, qual, column, duck_type)
+
+
+def _money_text(con: duckdb.DuckDBPyConnection, qual: str, column: str) -> bool:
+    present = scalar_int(
+        con.execute(
+            f"""
+            SELECT COUNT(*) FROM {qual}
+            WHERE {_qcol(column)} IS NOT NULL AND TRIM({_qcol(column)}) <> ''
+            """
+        ).fetchone()
+    )
+    if present == 0:
+        return False
+    return _all_match(con, qual, column, _MONEY_PATTERN)
+
+
+def _apply_declared_types(
+    con: duckdb.DuckDBPyConnection,
+    schema: str,
+    name: str,
+    columns: list[str],
+    declared: Mapping[str, str],
+    type_notes: dict[str, list[str]] | None,
+) -> None:
+    """Narrow VARCHAR columns whose every value matches the source type.
+
+    Columns that do not convert stay text and are named on ``type_notes``.
+    """
+    qual = f'"{schema}"."{name}"'
+    exprs: list[str] = []
+    changed = False
+    kept: list[str] = []
+    untyped: list[str] = []
+    for column in columns:
+        source_type = declared.get(column)
+        target = duck_type_for_source(source_type)
+        quoted = _qcol(column)
+        if _is_zoned_type(source_type):
+            kept.append(column)
+            exprs.append(quoted)
+            continue
+        if target and _converts_exactly(con, qual, column, target):
+            exprs.append(f"TRY_CAST(TRIM({quoted}) AS {target}) AS {quoted}")
+            changed = True
+            continue
+        exprs.append(quoted)
+        if target is not None:
+            kept.append(column)
+            if _is_numeric_type(source_type):
+                untyped.append(column)
+        elif _money_text(con, qual, column):
+            kept.append(column)
+            untyped.append(column)
+    if type_notes is not None:
+        type_notes["kept_text"] = kept
+        type_notes["untyped_numeric"] = untyped
+    if not changed:
+        return
+    staged = f"{name}__typed"
+    con.execute(f'DROP TABLE IF EXISTS "{schema}"."{staged}"')
+    con.execute(
+        f'CREATE TABLE "{schema}"."{staged}" AS SELECT '
+        + ", ".join([*exprs, "_src", "_ingest_id"])
+        + f" FROM {qual}"
+    )
+    con.execute(f"DROP TABLE {qual}")
+    con.execute(f'ALTER TABLE "{schema}"."{staged}" RENAME TO "{name}"')
+
+
+def aggregate_on_untyped_numeric(sql: str | None, path: Path | None = None) -> bool:
+    """True when the SQL aggregates a column ingest refused to type.
+
+    Text MAX of ``$9.50`` and ``$100.25`` returns ``$9.50``. That is a wrong
+    number, so the ask abstains instead of showing it.
+    """
+    if not sql or sql.strip().startswith("--"):
+        return False
+    wanted = {match.group(1).lower() for match in _AGG_CALL.finditer(sql)}
+    if not wanted:
+        return False
+    db = path or warehouse_path()
+    if not Path(db).is_file():
+        return False
+    try:
+        con = duckdb.connect(str(db), read_only=True)
+    except Exception:  # noqa: BLE001 - a locked warehouse must not fail the ask map
+        return False
+    try:
+        try:
+            rows = con.execute(
+                f"SELECT untyped_numeric FROM {_REGISTRY} "
+                "WHERE untyped_numeric IS NOT NULL AND untyped_numeric <> ''"
+            ).fetchall()
+        except Exception:  # noqa: BLE001 - old warehouse has no column
+            return False
+    finally:
+        con.close()
+    flagged: set[str] = set()
+    for (raw,) in rows:
+        flagged.update(part.strip().lower() for part in str(raw).split(",") if part.strip())
+    return bool(wanted & flagged)
+
+
 def write_bronze_rows(
     *,
     table: str,
     columns: list[str],
-    rows: list[list[Any]],
+    rows: list[list[Any]] | None = None,
     ref_id: str | None = None,
     ingest_id: str | None = None,
     path: Path | None = None,
+    batches: Iterable[Sequence[Sequence[Any]]] | None = None,
+    declared_types: Mapping[str, str] | None = None,
+    type_notes: dict[str, list[str]] | None = None,
 ) -> str:
-    """Test/helper: write rows into bronze.<table> with provenance."""
+    """Write rows into bronze.<table> with provenance.
+
+    ``batches`` lands one fetchmany chunk at a time so a SQL extract does not
+    hold the whole pull in Python. ``rows`` is the single-batch helper.
+    """
     ingest_id = ingest_id or str(uuid.uuid4())
     ref_id = ref_id or str(uuid.uuid4())
     if "." in table:
@@ -480,28 +786,69 @@ def write_bronze_rows(
         schema, name = "bronze", table
     if not columns:
         raise ValueError("columns required")
+    landed_names = _dedupe_columns(columns)
+    declared_landed = {
+        landed: (declared_types or {})[orig]
+        for orig, landed in zip(columns, landed_names, strict=True)
+        if declared_types and orig in declared_types
+    }
+    stream: Iterable[Sequence[Sequence[Any]]]
+    if batches is not None:
+        stream = batches
+    else:
+        stream = [rows or []]
     db = ensure_demo_warehouse(path or warehouse_path())
     con = duckdb.connect(str(db))
     try:
         ensure_lake_schemas(con)
         con.execute(f'DROP TABLE IF EXISTS "{schema}"."{name}"')
-        col_defs = ", ".join(f'"{c}" VARCHAR' for c in columns)
-        con.execute(f'CREATE TEMP TABLE _bronze_raw ({col_defs})')
-        if rows:
-            con.executemany(
-                f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * len(columns))})",
-                rows,
-            )
-        con.execute(
-            f"""
-            CREATE TABLE "{schema}"."{name}" AS
+        col_defs = ", ".join(f"{_qcol(c)} VARCHAR" for c in landed_names)
+        placeholders = ", ".join(["?"] * len(columns))
+        created = False
+        offset = 0
+        for batch in stream:
+            rows_batch = [list(r) for r in batch]
+            con.execute(f"CREATE TEMP TABLE _bronze_raw ({col_defs})")
+            if rows_batch:
+                con.executemany(
+                    f"INSERT INTO _bronze_raw VALUES ({placeholders})",
+                    rows_batch,
+                )
+            select_sql = f"""
             SELECT
               src.*,
-              [{{'ref_id': '{ref_id}', 'row': row_number() OVER ()::INTEGER}}] AS _src,
+              [{{'ref_id': '{ref_id}', 'row': (row_number() OVER ()::INTEGER + {int(offset)})}}] AS _src,
               '{ingest_id}'::VARCHAR AS _ingest_id
             FROM _bronze_raw AS src
             """
-        )
+            if not created:
+                con.execute(
+                    f'CREATE TABLE "{schema}"."{name}" AS {select_sql}'
+                )
+                created = True
+            elif rows_batch:
+                con.execute(
+                    f'INSERT INTO "{schema}"."{name}" {select_sql}'
+                )
+            offset += len(rows_batch)
+            con.execute("DROP TABLE _bronze_raw")
+        if not created:
+            con.execute(f"CREATE TEMP TABLE _bronze_raw ({col_defs})")
+            con.execute(
+                f"""
+                CREATE TABLE "{schema}"."{name}" AS
+                SELECT
+                  src.*,
+                  [{{'ref_id': '{ref_id}', 'row': row_number() OVER ()::INTEGER}}] AS _src,
+                  '{ingest_id}'::VARCHAR AS _ingest_id
+                FROM _bronze_raw AS src
+                """
+            )
+            con.execute("DROP TABLE _bronze_raw")
+        if declared_types is not None:
+            _apply_declared_types(
+                con, schema, name, landed_names, declared_landed, type_notes
+            )
         return f"{schema}.{name}"
     finally:
         con.close()

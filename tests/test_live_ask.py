@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -91,6 +92,125 @@ def minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
     monkeypatch.setattr(m, "close", lambda: None)
     monkeypatch.setattr(m, "invalidate", lambda *_a, **_k: None)
     return m
+
+
+def test_extra_metric_tools_do_not_block_ungrounded_cortex(
+    tmp_path: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F89: extra _metric_tools must not skip Cortex on ungrounded Finance asks."""
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.metric_tools import register_metric_tool
+
+    db = tmp_path / "extra_tools.duckdb"
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
+    ensure_demo_warehouse(db)
+    space = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    register_metric_tool(
+        name="extra_count",
+        sql="SELECT 1 AS n",
+        description="Extra authored tool.",
+        space_id=space,
+        warehouse=db,
+    )
+    fake = FakeCortex(submits=[], asks=[])
+    exe = Executor(cortex=fake, minter=minter, warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "What is our total spend by supplier country?",
+        space_id=space,
+        session_id="ses_extra_tools",
+    )
+    assert fake.asks, "ungrounded Finance ask must reach Cortex when extra tools exist"
+    assert env["badge"] in {"L0_CERTIFIED", "L1_GOVERNED_METRIC", "L2_VALIDATED", "ABSTAIN"}
+    n = len(fake.asks)
+    obj = exe.live_ask(
+        "What is our total spend by supplier country?",
+        space_id=space,
+        session_id="ses_obj_ground",
+        tables=["objects.sales_sku"],
+    )
+    assert len(fake.asks) == n
+    assert obj["abstained"] is True
+    assert obj["badge"] == "ABSTAIN"
+
+
+def test_live_ask_compiles_a_confirmed_measure(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A joined L2 answer is replaced by compile() after the steward confirms.
+
+    The demo ontology does not verify on a fresh seed, and that must abstain
+    rather than ship the model's join. This test supplies a small ontology
+    that does verify, and checks the grain count, not the model's 9.
+    """
+    import duckdb
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.ontology import Ontology
+    from dms_executor.typed_plan import confirm_measure
+
+    db = tmp_path / "compile.duckdb"
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
+    ensure_demo_warehouse(db)
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE TABLE orders (order_id INTEGER, region_id INTEGER)")
+        con.execute("INSERT INTO orders VALUES (1, 10), (2, 20)")
+        con.execute("CREATE TABLE regions (region_id INTEGER, name VARCHAR)")
+        con.execute("INSERT INTO regions VALUES (10, 'North'), (20, 'South')")
+    finally:
+        con.close()
+
+    def _onto(_path: Path) -> Ontology:
+        onto = Ontology()
+        onto.add_object("order", "orders", ["order_id"])
+        onto.add_object("region", "regions", ["region_id"])
+        onto.add_link(
+            "order_in_region", "order", ["region_id"], "region", ["region_id"]
+        )
+        onto.add_measure("order_count", "order", "COUNT(*)")
+        return onto
+
+    monkeypatch.setattr("dms_executor.typed_plan.demo_ontology", _onto)
+    confirm_measure(db, "order_count", _onto(db))
+    fake = FakeCortex(
+        submits=[],
+        asks=[],
+        ask_response=AskResponse(
+            answer="9 orders.",
+            badge="l2_validated",
+            route="sql",
+            sql_used=(
+                "SELECT r.name, COUNT(*) AS order_count FROM orders o "
+                "JOIN regions r ON o.region_id = r.region_id "
+                "JOIN lines l ON l.order_id = o.order_id GROUP BY r.name"
+            ),
+            rows=[{"name": "North", "order_count": 9}],
+            audit_id="aud_ship",
+            ontology_plan={
+                "measure": "order_count",
+                "group_by": [["region", "name"]],
+            },
+        ),
+    )
+    exe = Executor(cortex=fake, minter=minter, warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask("How many orders by region?", session_id="ses_compile")
+    assert env["abstained"] is False, env.get("text")
+    assert sum(int(row["order_count"]) for row in env["rows"]) == 2
+
+
+def test_live_ask_answers_shipment_count_without_calling_cortex(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+
+    db = tmp_path / "ship.duckdb"
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(db))
+    ensure_demo_warehouse(db)
+    fake = FakeCortex(submits=[], asks=[])
+    exe = Executor(cortex=fake, minter=minter, warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask("How many shipments?", session_id="ses_ship")
+    assert fake.asks == []
+    assert env["abstained"] is False
+    assert int(env["rows"][0]["shipment_count"]) == 5
 
 
 def test_live_ask_binds_once_per_session(minter: ManifestMinter) -> None:

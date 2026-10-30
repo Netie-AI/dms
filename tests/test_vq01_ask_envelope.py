@@ -365,12 +365,44 @@ def _dms_live_reachable() -> bool:
     try:
         import httpx
 
-        r = httpx.get(f"{url}/health", timeout=1.5)
+        r = httpx.get(f"{url}/health", timeout=8.0)
         if r.status_code == 200:
             return True
     except Exception:  # noqa: BLE001 — stack down is skip, not fail
         pass
     return os.environ.get("DMS_VQ01_LIVE") == "1"
+
+
+def assert_vq01_live_conservation_envelope(env: dict[str, Any]) -> None:
+    """Live lake ranks drift; pin grain, not a snapshot.
+
+    Fail closed on abstain, L2 fall-through, lot-JOIN fan-out (~14.8x / 133M),
+    or Wide_Fill sheet class. Do not pin ELECTRONICS/CHEMICALS/FOOD_COLD
+    magnitudes from an older duckdb build.
+    """
+    assert_envelope_valid(env)
+    badge = env.get("badge")
+    assert env.get("abstained") is False, f"VQ-01 abstained under {badge}"
+    assert badge in _L0_L1, f"VQ-01 fell through to {badge}"
+    rows = list(env.get("rows") or [])
+    assert len(rows) == 3, f"expected 3 ranked rows, got {len(rows)}"
+    text = str(env.get("text") or "")
+    assert text.strip()
+    sql = str(env.get("sql_used") or "").lower()
+    compact = " ".join(sql.split())
+    assert "wide_fill" not in sql
+    assert "transactions" in sql and "inventory" in sql
+    assert "distinct" in compact and "sku" in compact
+    assert "join inventory i on t.sku = i.sku" not in compact
+    sheet_cats = {c.lower() for c, _ in _WIDE_FILL_CLASS}
+    for row in rows:
+        cat = str(row.get("category") or "")
+        val = _row_measure(row)
+        assert cat and val is not None, f"row missing category/measure: {row}"
+        assert cat.lower() not in sheet_cats, f"Wide_Fill class shipped: {cat}"
+        # Outbound revenue on this lake is ~80.8M; lot JOIN is 130M+ per category.
+        assert val < 50_000_000, f"{cat} {val} looks like lot-JOIN fan-out"
+        assert cat in text
 
 
 @pytest.mark.skipif(
@@ -382,7 +414,7 @@ def _dms_live_reachable() -> bool:
     ),
 )
 def test_live_chat_ask_categoty_hits_oracle_envelope() -> None:
-    """Live POST /v1/chat/ask — skip unless the stack is up; pin oracle ranks."""
+    """Live POST /v1/chat/ask — skip unless the stack is up; pin grain not snapshot."""
     import httpx
 
     url = os.environ.get("DMS_URL", "http://127.0.0.1:8090").rstrip("/")
@@ -392,4 +424,4 @@ def test_live_chat_ask_categoty_hits_oracle_envelope() -> None:
         timeout=120.0,
     )
     r.raise_for_status()
-    assert_vq01_category_sales_envelope(r.json())
+    assert_vq01_live_conservation_envelope(r.json())

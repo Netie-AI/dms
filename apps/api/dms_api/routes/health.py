@@ -17,6 +17,10 @@ router = APIRouter()
 #: Python 3.12 (PEP 701) and this package targets 3.11.
 _OPENVAULT_DEFAULT_ROOT = "D:\\\\OpenVault"
 
+# Cortex refresh_jwks waits 2s on OpenVault /keys/jwks. A 2s DMS probe
+# equals that budget and reports cortex.ok=false while :8010 /health is 200.
+JWKS_REFRESH_PROBE_TIMEOUT = 8.0
+
 
 def _probe(url: str, path: str = "/health", timeout: float = 1.2) -> dict[str, Any]:
     base = url.rstrip("/")
@@ -115,7 +119,9 @@ def _probe_openvault_trust(base_url: str, timeout: float = 1.5) -> dict[str, Any
         return {"ok": False, "jwks_ok": False, "error": str(exc)[:200], "url": url}
 
 
-def _probe_cortex_jwks_refresh(base_url: str, timeout: float = 2.0) -> dict[str, Any]:
+def _probe_cortex_jwks_refresh(
+    base_url: str, timeout: float = JWKS_REFRESH_PROBE_TIMEOUT
+) -> dict[str, Any]:
     """Cold-path refresh endpoint — required after DMS mints a new int- kid."""
     base = base_url.rstrip("/")
     url = f"{base}/v1/contract/jwks/refresh"

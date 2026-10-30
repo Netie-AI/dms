@@ -3,5 +3,6 @@
 See root `CLAUDE.md`, `.cursorrules`, and `AGENTS.md`.
 
 - DMS consumer app; Cortex is HTTP engine (never import CortexOS).
-- Protected: `tests/invariants/**`, `.importlinter` → need `INVARIANT-CHANGE:`.
-- Terminal-verifiable → Claude Code. Visual → Cursor.
+- Protected: `tests/invariants/**`, `.importlinter` -> need `INVARIANT-CHANGE:`.
+- Terminal-verifiable -> Claude Code. Visual -> Cursor.
+- Industry swap (insurance/banking/finance): `docs/NEXT_COMPANY_ONTOLOGY_SCALE.md`. Do not fork Chat.

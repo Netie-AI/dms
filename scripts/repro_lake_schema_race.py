@@ -92,7 +92,7 @@ def run_schemas(iters: int, threads: int) -> Counter[str]:
             }
         finally:
             con.close()
-        for missing in ("bronze", "silver", "gold", "quarantine", "dim"):
+        for missing in ("bronze", "silver", "gold", "quarantine", "dim", "objects"):
             if missing not in got:
                 kinds[f"POSTCONDITION: schema {missing!r} missing after ensure"] += 1
     return kinds

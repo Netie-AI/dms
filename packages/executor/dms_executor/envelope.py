@@ -484,8 +484,11 @@ def _should_demote_scalar_ask_got_ranking(
 
 # Closed list from FF-02. Not a parser: these are the markers that flip a
 # filter. "without" / "except" / "ignoring" stay out - they are demo SKU
-# exclusion words, not this guard's job.
-_NEGATION_MARK = re.compile(r"\b(?:not|excluding|other\s+than)\b|non-", re.I)
+# exclusion words, not this guard's job. "excluded" is postfix (the noun
+# sits before the marker). "despite" / "even" / "unless" / "regardless"
+# stop a clause; they are not themselves negation markers.
+_NEGATION_MARK = re.compile(r"\b(?:not|excluding|excluded|other\s+than)\b|non-", re.I)
+_POSTFIX_NEGATION = frozenset({"excluded"})
 _WORD = re.compile(r"[A-Za-z0-9]+")
 _FUNCTION_WORDS = frozenset(
     "a an the that those these this are is was were be been being to of in on "
@@ -493,7 +496,43 @@ _FUNCTION_WORDS = frozenset(
     "by as at if which who whom what when where than then so how many much any "
     "all only just".split()
 )
-_CLAUSE_STOP = frozenset("how what give show list tell because since while although".split())
+_CLAUSE_STOP = frozenset(
+    "how what give show list tell because since while although "
+    "despite even unless regardless".split()
+)
+
+# Closed list: the ask needs rows/columns/future that this SQL does not build.
+# "despite" stays a clause-stop, not this class. Bare "ignoring SKU-X" stays
+# out (E11 / demo exclusion). Bare "next 5 SKUs" is a rank, not a forecast.
+_UNOBSERVED_ASK = re.compile(
+    r"(?:"
+    r"\bforecast(?:s|ed|ing)?\b|"
+    r"\bpredict(?:s|ed|ing|ion|ions)?\b|"
+    r"\bwhat\s+if\b|"
+    r"\bhypothetical\w*\b|"
+    r"\bnext\s+(?:fiscal\s+|financial\s+)?(?:month|quarter|qtr|year|week)\b|"
+    r"\b(?:coming|upcoming)\s+(?:month|quarter|year|week)\b|"
+    r"\bas\s+if\b|"
+    r"\bthen\s+assume\b|"
+    r"\bassume\s+(?:we|that|a\s+new)\b|"
+    r"\bignoring\s+(?:(?:missing|empty|null)s?\s+)?(?:rows?|columns?)\b|"
+    r"\bignoring\s+(?:missing|empty|null)s?\b|"
+    r"\bgrow\s+\d+(?:\.\d+)?\s*(?:%|percent)\b|"
+    r"\btwice\s+the\b"
+    r")",
+    re.I,
+)
+
+
+def _unobserved_ask_label(question: str | None) -> str | None:
+    if not question:
+        return None
+    m = _UNOBSERVED_ASK.search(question)
+    if not m:
+        return None
+    return m.group(0).strip()
+
+
 _SQL_KW = frozenset(
     "select from where and or not in as on join left right inner outer cross "
     "full group by order limit offset having union all distinct with asc desc "
@@ -512,27 +551,42 @@ def _norm_concept_tokens(raw: str) -> frozenset[str]:
     return frozenset(parts)
 
 
+def _collect_concept_words(span: str, *, reverse: bool) -> list[str]:
+    """Up to four content words in ``span``, stopping at clause punctuation."""
+    tokens = list(_WORD.finditer(span))
+    if reverse:
+        tokens = list(reversed(tokens))
+    words: list[str] = []
+    prev = len(span) if reverse else 0
+    for tok in tokens:
+        gap = span[tok.end() : prev] if reverse else span[prev : tok.start()]
+        prev = tok.start() if reverse else tok.end()
+        if words and re.search(r"[?!.;]", gap):
+            break
+        low = tok.group(0).lower()
+        if low in _CLAUSE_STOP and words:
+            break
+        if low in _FUNCTION_WORDS:
+            continue
+        words.append(low)
+        if len(words) >= 4:
+            break
+    return words
+
+
 def _negated_concepts(question: str | None) -> list[frozenset[str]]:
-    """Content-word sets the ask negated (not / non- / excluding / other than)."""
+    """Content-word sets the ask negated (not / non- / excluding / excluded / other than)."""
     if not question:
         return []
     out: list[frozenset[str]] = []
     for m in _NEGATION_MARK.finditer(question):
-        tail = question[m.end() :]
-        words: list[str] = []
-        last_end = 0
-        for tok in _WORD.finditer(tail):
-            if words and re.search(r"[?!.;]", tail[last_end : tok.start()]):
-                break
-            low = tok.group(0).lower()
-            last_end = tok.end()
-            if low in _CLAUSE_STOP and words:
-                break
-            if low in _FUNCTION_WORDS:
-                continue
-            words.append(low)
-            if len(words) >= 4:
-                break
+        mark = m.group(0).lower()
+        if mark in _POSTFIX_NEGATION:
+            words = _collect_concept_words(question[: m.start()], reverse=True)
+            if not words:
+                words = _collect_concept_words(question[m.end() :], reverse=False)
+        else:
+            words = _collect_concept_words(question[m.end() :], reverse=False)
         concept = frozenset(words)
         if concept:
             out.append(concept)
@@ -1168,6 +1222,27 @@ def build_answer_envelope(
         )
         assumptions_list.append(
             "xlsx-named ask answered from demo warehouse: scope mismatch"
+        )
+
+    # Unobserved data (F-0021 / #67 live half). Demo_ask already abstains
+    # forecasts. Live Cortex still compiles historical L1 SQL for "predict next
+    # month" / "then assume they grow 20%" / "ignoring empty columns". A green
+    # badge over those rows is a confident wrong number. Do not invent the
+    # missing join members (F41 compile stays off Chat).
+    unobserved = None if abstained else _unobserved_ask_label(question)
+    if unobserved and sql_used:
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            f"You asked for something that needs data this query does not have "
+            f"({unobserved}). The SQL I matched reads history as it landed. "
+            f"Rather than treat that as a forecast, an assumed new row, or "
+            f"filled-in columns, I'm stopping here. Ask for the historical "
+            f"figure, or register a steward query that actually builds the "
+            f"missing data."
+        )
+        assumptions_list.append(
+            f"unobserved ask {unobserved!r} answered from historical SQL: withheld"
         )
 
     # E11 (FF-02) — a negated ask must not be settled by a metric whose filter

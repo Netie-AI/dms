@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import queue
+import threading
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 import dms_executor
@@ -105,13 +109,16 @@ def library_tree(
     space_id: str | None = None,
     space_name: str | None = None,
 ) -> dict[str, Any]:
+    targets = dms_executor.list_promote_targets()
+    if space_id:
+        targets = [t for t in targets if t.get("schema") == "objects"]
     return dms_executor.build_library_tree(
         sources=sources,
         bronze_tables=bronze,
         warehouse_tables=warehouse,
         space_id=space_id,
         space_name=space_name,
-        promote_targets=[] if space_id else dms_executor.list_promote_targets(),
+        promote_targets=targets,
     )
 
 
@@ -192,6 +199,102 @@ def sql_source_describe(
     return cfg.describe()
 
 
+def _serving_sync_fields() -> dict[str, Any]:
+    """Same three answers file ingest already puts on its receipt."""
+    synced = dms_executor.maybe_sync_bronze_to_serving()
+    if synced is None:
+        state, detail = "not_attempted", "no serving warehouse configured"
+    elif synced.ok:
+        state = "not_needed" if synced.status == "same_file" else "ok"
+        detail = synced.status
+    else:
+        state = "failed"
+        detail = (synced.error or f"{synced.status}: serving warehouse was not updated")[:300]
+    return {
+        "serving_sync": state,
+        "serving_sync_detail": detail,
+        "chat_can_see_it": state in {"ok", "not_needed"},
+    }
+
+
+def _sql_source_receipt(extract: Any) -> dict[str, Any]:
+    """Field-by-field receipt. Never asdict (passwords live on SourceConfig)."""
+    links = dms_executor.verify_source_links(extract)
+    return {
+        "source": extract.source,
+        "tables": [
+            {
+                "bronze_table": p.bronze_table,
+                "source": p.source,
+                "row_count": p.row_count,
+                "truncated": p.truncated,
+                "extracted_at": p.extracted_at,
+                "columns": [c for c in p.columns if not str(c).startswith("_")],
+                "kept_text": list(p.kept_text),
+                "untyped_numeric": list(p.untyped_numeric),
+                "note": p.note,
+            }
+            for p in extract.pulls
+        ],
+        "skipped": list(extract.skipped),
+        "declared_primary_keys": len(extract.keys.primary_keys),
+        "declared_foreign_keys": len(extract.keys.foreign_keys),
+        "links": links,
+        **_serving_sync_fields(),
+    }
+
+
+def _sql_source_ingest_ndjson(**kwargs: Any) -> Iterator[bytes]:
+    """ponytail: one worker so chunks can flush while fetchmany writes."""
+    q: queue.SimpleQueue[dict[str, Any] | None] = queue.SimpleQueue()
+
+    def on_progress(ev: Mapping[str, Any]) -> None:
+        q.put(dict(ev))
+
+    def run() -> None:
+        try:
+            receipt = sql_source_ingest(**kwargs, on_progress=on_progress)
+            q.put({"event": "done", "receipt": receipt})
+        except HTTPException as exc:
+            detail = exc.detail
+            if isinstance(detail, dict):
+                q.put(
+                    {
+                        "event": "error",
+                        "code": str(detail.get("code") or "extract_failed"),
+                        "message": str(detail.get("message") or detail),
+                        "status": exc.status_code,
+                    }
+                )
+            else:
+                q.put(
+                    {
+                        "event": "error",
+                        "code": "extract_failed",
+                        "message": str(detail),
+                        "status": exc.status_code,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - stream must close with an event
+            q.put(
+                {
+                    "event": "error",
+                    "code": "extract_failed",
+                    "message": str(exc),
+                    "status": 500,
+                }
+            )
+        finally:
+            q.put(None)
+
+    threading.Thread(target=run, name="sql-extract", daemon=True).start()
+    while True:
+        item = q.get()
+        if item is None:
+            break
+        yield (json.dumps(item, default=str) + "\n").encode("utf-8")
+
+
 def sql_source_ingest(
     *,
     kind: str,
@@ -205,8 +308,24 @@ def sql_source_ingest(
     space_id: str | None = None,
     encrypt: bool = True,
     trust_server_certificate: bool = False,
-) -> dict[str, Any]:
+    stream: bool = False,
+    on_progress: Callable[[Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any] | Iterator[bytes]:
     """Pull a SQL source into bronze. Receipt is built field-by-field, never asdict."""
+    if stream:
+        return _sql_source_ingest_ndjson(
+            kind=kind,
+            host=host,
+            database=database,
+            user=user,
+            password=password,
+            port=port,
+            tables=tables,
+            max_rows=max_rows,
+            space_id=space_id,
+            encrypt=encrypt,
+            trust_server_certificate=trust_server_certificate,
+        )
     ceiling = dms_executor.DEFAULT_MAX_ROWS
     cap = ceiling if max_rows is None else min(int(max_rows), ceiling)
     if cap < 1:
@@ -226,7 +345,11 @@ def sql_source_ingest(
             trust_server_certificate=trust_server_certificate,
         )
         extract = dms_executor.ingest_source_database(
-            cfg, tables=tables, max_rows=cap, space_id=space_id
+            cfg,
+            tables=tables,
+            max_rows=cap,
+            space_id=space_id,
+            on_progress=on_progress,
         )
     except dms_executor.SourceConnectionError as exc:
         raise HTTPException(
@@ -253,24 +376,68 @@ def sql_source_ingest(
     # It never raises: a link that cannot be measured is reported unverified,
     # the same outcome as one measured and found broken. The rows landed and
     # their provenance is real - only the join is in question.
-    links = dms_executor.verify_source_links(extract)
-    return {
-        "source": extract.source,
-        "tables": [
-            {
-                "bronze_table": p.bronze_table,
-                "source": p.source,
-                "row_count": p.row_count,
-                "truncated": p.truncated,
-                "extracted_at": p.extracted_at,
-            }
-            for p in extract.pulls
-        ],
-        "skipped": list(extract.skipped),
-        "declared_primary_keys": len(extract.keys.primary_keys),
-        "declared_foreign_keys": len(extract.keys.foreign_keys),
-        "links": links,
+    return _sql_source_receipt(extract)
+
+
+def publish_objects(
+    *,
+    name: str,
+    relation: str,
+    columns: dict[str, str],
+    space_id: str | None = None,
+    tool_name: str | None = None,
+    tool_sql: str | None = None,
+    tool_description: str | None = None,
+    tool_aliases: list[str] | None = None,
+    arrange_silver: bool = True,
+) -> dict[str, Any]:
+    """Publish ``objects.<name>`` over a landed lake table. Optional authored tool."""
+    spec = dms_executor.ObjectViewSpec(name=name, relation=relation, columns=columns)
+    try:
+        published = dms_executor.publish_objects_at_path([spec])
+        silver = (
+            dms_executor.materialize_silver_from_object(name)
+            if arrange_silver
+            else None
+        )
+    except dms_executor.ObjectViewError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "bad_object", "message": str(exc)},
+        ) from None
+    out: dict[str, Any] = {
+        "objects": published,
+        "relation": relation,
+        "silver": silver,
     }
+    if tool_name or tool_sql:
+        if not tool_name or not tool_sql:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "bad_tool",
+                    "message": "tool_name and tool_sql are required together",
+                },
+            )
+        try:
+            out["tool"] = dms_executor.register_metric_tool(
+                name=tool_name,
+                sql=tool_sql,
+                description=tool_description or tool_name,
+                space_id=space_id,
+                aliases=tool_aliases,
+            )
+        except dms_executor.SecurityEvent as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "hostile_sql", "message": str(exc)},
+            ) from None
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "bad_tool", "message": str(exc)},
+            ) from None
+    return out
 
 
 def xlsx_orch_golden(

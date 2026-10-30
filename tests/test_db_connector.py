@@ -50,6 +50,14 @@ class _FakeCursor:
             ]
             self._result = list(self._owner.fks)
             return
+        if "DATA_TYPE" in sql and "INFORMATION_SCHEMA.COLUMNS" in sql.upper():
+            self.description = [("COLUMN_NAME",), ("DATA_TYPE",)]
+            key = ""
+            if params:
+                key = f"{params[0]}.{params[1]}".lower()
+            rows = self._owner.column_types.get(key, [])
+            self._result = [tuple(r) for r in rows]
+            return
         if "PRIMARY KEY" in sql or "CONSTRAINT_NAME = 'PRIMARY'" in sql:
             self.description = [
                 ("TABLE_SCHEMA",),
@@ -72,6 +80,7 @@ class _FakeCursor:
         return out
 
     def fetchmany(self, size: int) -> list[tuple[Any, ...]]:
+        self._owner.fetchmany_calls.append(size)
         out, self._result = self._result[:size], self._result[size:]
         return out
 
@@ -92,7 +101,9 @@ class _FakeConnection:
         self.table_data = table_data
         self.pks = pks or []
         self.fks = fks or []
+        self.column_types: dict[str, list[tuple[str, str]]] = {}
         self.executed: list[str] = []
+        self.fetchmany_calls: list[int] = []
         self.closed = False
 
     def cursor(self) -> _FakeCursor:
@@ -134,7 +145,9 @@ def test_password_never_appears_in_repr() -> None:
 
 def test_describe_is_credential_free() -> None:
     assert _cfg().describe() == "sqlserver://db.example.net:1433/sales"
-    assert "p;w}d" not in _cfg().describe()
+    assert _cfg("mysql").describe() == "mysql://db.example.net:3306/sales"
+    assert _cfg("postgres").describe() == "postgres://db.example.net:5432/sales"
+    assert "p;w}d" not in _cfg("postgres").describe()
 
 
 def test_odbc_string_braces_values_containing_delimiters() -> None:
@@ -178,6 +191,11 @@ def test_identifier_is_quoted_per_dialect(monkeypatch: pytest.MonkeyPatch) -> No
     dbc.preview_source_table(_cfg("mysql"), "orders")
     assert "SELECT * FROM `sales`.`orders`" in con2.executed[-1]
 
+    con3 = _FakeConnection([("public", "orders")], (["id"], [["1"]]))
+    _install(monkeypatch, con3)
+    dbc.preview_source_table(_cfg("postgres"), "orders")
+    assert 'SELECT * FROM "public"."orders"' in con3.executed[-1]
+
 
 def test_system_schemas_are_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
     con = _FakeConnection([("dbo", "orders"), ("sys", "objects")], (["id"], [["1"]]))
@@ -218,6 +236,37 @@ def test_ingest_lands_source_rows_in_bronze(
     # Appendix A provenance: every row carries _src and _ingest_id.
     assert all(r[-1] == pull.ingest_id for r in landed)
     assert all(r[-2][0]["ref_id"] == pull.ref_id for r in landed)
+
+
+def test_postgres_ingest_lands_in_bronze(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    con = _FakeConnection(
+        [("public", "orders")],
+        (["order_id", "amount"], [["P-1", "9.00"]]),
+    )
+    _install(monkeypatch, con)
+    pull = dbc.ingest_source_table(_cfg("postgres"), "orders", path=wh)
+    assert pull.bronze_table == "bronze.public_orders"
+    assert pull.source == "postgres://db.example.net:5432/sales#public.orders"
+    assert pull.row_count == 1
+    assert [(r[0], r[1]) for r in _bronze_rows(wh, pull.bronze_table)] == [("P-1", "9.00")]
+
+
+
+def test_mysql_ingest_lands_in_bronze(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    con = _FakeConnection(
+        [("sales", "orders")],
+        (["order_id", "amount"], [["M-1", "4.25"]]),
+    )
+    _install(monkeypatch, con)
+    pull = dbc.ingest_source_table(_cfg("mysql"), "orders", path=wh)
+    assert pull.bronze_table == "bronze.sales_orders"
+    assert pull.source == "mysql://db.example.net:3306/sales#sales.orders"
+    assert pull.row_count == 1
+    assert [(r[0], r[1]) for r in _bronze_rows(wh, pull.bronze_table)] == [("M-1", "4.25")]
 
 
 def test_null_values_survive_as_null(wh: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -522,3 +571,59 @@ def test_the_same_source_table_repulled_replaces_itself_not_a_neighbour(
     second = dbc.ingest_source_table(_cfg(), "orders", path=wh)
     assert first.bronze_table == second.bronze_table
     assert second.note is None
+
+def test_streamed_pull_writes_chunks_without_dropping_rows(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [[f"A-{i}", str(i)] for i in range(5)]
+    con = _FakeConnection([("dbo", "orders")], (["order_id", "amount"], rows))
+    _install(monkeypatch, con)
+    pull = dbc.ingest_source_table(_cfg(), "orders", path=wh, chunk_size=2)
+    assert pull.row_count == 5
+    assert pull.truncated is False
+    landed = _bronze_rows(wh, pull.bronze_table)
+    assert [(r[0], r[1]) for r in landed] == [("A-0", "0"), ("A-1", "1"), ("A-2", "2"), ("A-3", "3"), ("A-4", "4")]
+    assert con.fetchmany_calls[0] == 2
+    assert len(con.fetchmany_calls) >= 3
+
+
+def test_streamed_pull_reports_chunk_progress(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [[f"A-{i}", str(i)] for i in range(5)]
+    con = _FakeConnection([("dbo", "orders")], (["order_id", "amount"], rows))
+    _install(monkeypatch, con)
+    seen: list[dict[str, object]] = []
+    pull = dbc.ingest_source_table(
+        _cfg(), "orders", path=wh, chunk_size=2, on_progress=seen.append
+    )
+    chunks = [e for e in seen if e.get("event") == "chunk"]
+    tables = [e for e in seen if e.get("event") == "table"]
+    assert [e["row_count"] for e in chunks] == [2, 4, 5]
+    assert tables and tables[-1]["row_count"] == 5
+    assert tables[-1]["bronze_table"] == pull.bronze_table
+    assert all("password" not in str(e).lower() for e in seen)
+
+
+def test_default_chunk_lands_twenty_five_thousand_rows(
+    wh: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    n = 25_000
+    con = _FakeConnection([("dbo", "orders")], (["order_id"], [[str(i)] for i in range(n)]))
+    _install(monkeypatch, con)
+    pull = dbc.ingest_source_table(_cfg(), "orders", path=wh)
+    assert pull.row_count == n
+    assert pull.truncated is False
+    db = duckdb.connect(str(wh), read_only=True)
+    try:
+        count, lo, hi = db.execute(
+            f"SELECT COUNT(*), MIN(CAST(order_id AS INTEGER)), "
+            f"MAX(CAST(order_id AS INTEGER)) FROM {pull.bronze_table}"
+        ).fetchone()
+    finally:
+        db.close()
+    assert count == n
+    assert (lo, hi) == (0, n - 1)
+    assert con.fetchmany_calls[0] == dbc.FETCH_CHUNK
+    assert len(con.fetchmany_calls) >= 3
+

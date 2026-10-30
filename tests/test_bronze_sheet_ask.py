@@ -94,7 +94,7 @@ def _seed_encoding(path: Path) -> str:
     return ident
 
 
-def test_exact_sku_beta_certifies_and_bare_beta_abstains(tmp_path: Path) -> None:
+def test_exact_sku_beta_and_unique_bare_beta_certify(tmp_path: Path) -> None:
     db = tmp_path / "enc.duckdb"
     _seed_encoding(db)
     hit = maybe_bronze_sheet_ask(
@@ -109,20 +109,21 @@ def test_exact_sku_beta_certifies_and_bare_beta_abstains(tmp_path: Path) -> None
     assert hit["rows"][0]["sales_value_myr"] == 1500.75
     assert_envelope_valid(hit)
 
-    miss = maybe_bronze_sheet_ask(
+    mapped = maybe_bronze_sheet_ask(
         "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr "
         "for sku BETA?",
         warehouse=db,
     )
-    assert miss is not None
-    assert miss["abstained"] is True
-    assert miss["badge"] == "ABSTAIN"
-    assert not miss["rows"]
-    assert "1500.75" not in (miss["text"] or "")
-    assert_envelope_valid(miss)
+    assert mapped is not None
+    assert mapped["abstained"] is False
+    assert mapped["badge"] == "L0_CERTIFIED"
+    assert mapped["rows"][0]["sku"] == "SKU-BETA"
+    assert mapped["rows"][0]["sales_value_myr"] == 1500.75
+    assert any("unique landed encoding" in a for a in mapped["assumptions"])
+    assert_envelope_valid(mapped)
 
 
-def test_exact_kuala_lumpur_certifies_and_kl_abstains(tmp_path: Path) -> None:
+def test_exact_kuala_lumpur_and_unique_kl_certify(tmp_path: Path) -> None:
     db = tmp_path / "enc.duckdb"
     _seed_encoding(db)
     hit = maybe_bronze_sheet_ask(
@@ -136,14 +137,59 @@ def test_exact_kuala_lumpur_certifies_and_kl_abstains(tmp_path: Path) -> None:
     assert hit["rows"][0]["sales_value_myr"] == 1700.75
     assert_envelope_valid(hit)
 
-    miss = maybe_bronze_sheet_ask(
+    mapped = maybe_bronze_sheet_ask(
         "In encoding_value_norm.xlsx sheet Sales, total sales_value_myr for city KL?",
+        warehouse=db,
+    )
+    assert mapped is not None
+    assert mapped["abstained"] is False
+    assert mapped["badge"] == "L0_CERTIFIED"
+    assert mapped["rows"][0]["city"] == "Kuala Lumpur"
+    assert mapped["rows"][0]["sales_value_myr"] == 1700.75
+    assert_envelope_valid(mapped)
+
+
+def test_ambiguous_beta_still_abstains(tmp_path: Path) -> None:
+    ident = bronze_table_for_sheet("encoding_value_norm.xlsx", "Sales").split(".", 1)[-1]
+    db = tmp_path / "amb.duckdb"
+    con = duckdb.connect(str(db))
+    try:
+        ensure_lake_schemas(con)
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+        con.execute(
+            f'CREATE TABLE bronze."{ident}" '
+            "(sku VARCHAR, city VARCHAR, sales_value_myr DOUBLE)"
+        )
+        con.execute(
+            f"""
+            INSERT INTO bronze."{ident}" VALUES
+              ('SKU-BETA', 'Kuala Lumpur', 1500.75),
+              ('BETA-PRO', 'Johor Bahru', 90.00)
+            """
+        )
+    finally:
+        con.close()
+    miss = maybe_bronze_sheet_ask(
+        "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr "
+        "for sku BETA?",
         warehouse=db,
     )
     assert miss is not None
     assert miss["abstained"] is True
     assert miss["badge"] == "ABSTAIN"
+    assert not miss["rows"]
+    assert "1500.75" not in (miss["text"] or "")
     assert_envelope_valid(miss)
+
+
+def test_resolve_unique_encoding_word_and_initials() -> None:
+    from dms_executor.bronze_sheet_ask import resolve_unique_encoding
+
+    assert resolve_unique_encoding("BETA", ["SKU-BETA", "SKU-ALPHA"]) == "SKU-BETA"
+    assert resolve_unique_encoding("KL", ["Kuala Lumpur", "Johor Bahru"]) == "Kuala Lumpur"
+    assert resolve_unique_encoding("BETA", ["SKU-BETA", "BETA-PRO"]) is None
+    assert resolve_unique_encoding("crop", ["Crop Insurance Services"]) is None
+    assert resolve_unique_encoding("BETA", ["SKU-BETA"]) == "SKU-BETA"
 
 
 def test_malay_and_synonym_and_sales_only_scope(tmp_path: Path) -> None:
@@ -242,3 +288,86 @@ def test_stacked_multi_table_csv_does_not_union_second_region(tmp_path: Path) ->
     assert "region" not in cols
     assert "North" not in blob
     assert "South" not in blob
+
+
+def test_hostile_pack_bronze_ceiling_unique_encoding(tmp_path: Path) -> None:
+    """Scoped intercepts stay 0 WRONG. Unique encodings certify. F32/RAG miss."""
+    import sys
+
+    from dms_executor.batch_ingest import ingest_batch
+
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    sys.path.insert(0, str(scripts))
+    from score_answers import QUESTION_PACK, judge, resolve_oracle
+
+    docs = Path(__file__).resolve().parents[1] / "tests" / "fixtures" / "hostile_score"
+    db = tmp_path / "hostile.duckdb"
+    seen: set[str] = set()
+    files: list[tuple[str, bytes]] = []
+    for case in QUESTION_PACK:
+        name = str(case["workbook"])
+        if name in seen:
+            continue
+        seen.add(name)
+        files.append((name, (docs / name).read_bytes()))
+    ingest_batch(files, path=db)
+
+    must_miss = {"rag_sum_invite_no_sql", "f32_ambiguous_categoty_top3"}
+    must_correct = {
+        "empty_filter_beta_vs_sku_beta",
+        "empty_filter_kl_vs_kuala_lumpur",
+    }
+    wrong: list[str] = []
+    answered = 0
+    for case in QUESTION_PACK:
+        cid = str(case["id"])
+        env = maybe_bronze_sheet_ask(str(case["question"]), warehouse=db)
+        if cid in must_miss:
+            assert env is None, cid
+            continue
+        assert env is not None, cid
+        expected = resolve_oracle(case, docs / str(case["workbook"]))
+        outcome, detail = judge(env, expected)
+        if outcome == "WRONG":
+            wrong.append(f"{cid}: {detail}")
+        if outcome == "correct":
+            answered += 1
+        if cid in must_correct:
+            assert outcome == "correct", (cid, detail)
+    assert not wrong
+    assert answered == len(QUESTION_PACK) - len(must_miss)
+
+
+def test_named_sheet_survives_tools_only_space(tmp_path: Path) -> None:
+    from dms_executor import Executor
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from dms_executor.metric_tools import register_metric_tool
+
+    db = tmp_path / "tools_enc.duckdb"
+    ensure_demo_warehouse(db)
+    _seed_encoding(db)
+    space = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    register_metric_tool(
+        name="order_count",
+        sql="SELECT 1 AS row_count",
+        description="Row count.",
+        space_id=space,
+        warehouse=db,
+    )
+
+    class _NoCortex:
+        def ask(self, req: object) -> None:
+            raise AssertionError("named-sheet ask must not reach Cortex")
+
+    exe = Executor(cortex=_NoCortex(), warehouse_path=db)  # type: ignore[arg-type]
+    env = exe.live_ask(
+        "In encoding_value_norm.xlsx sheet Sales, what is total sales_value_myr "
+        "for sku BETA?",
+        space_id=space,
+        session_id="ses_enc_tools",
+    )
+    assert_envelope_valid(env)
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["abstained"] is False
+    assert env["rows"][0]["sku"] == "SKU-BETA"
+    assert env["rows"][0]["sales_value_myr"] == 1500.75

@@ -66,7 +66,7 @@ def list_warehouse_tables(
 
 
 def list_promote_targets(*, path: Path | None = None) -> list[dict[str, Any]]:
-    """Silver/gold tables in the lake. Not demo warehouse; not a row preview.
+    """Silver/gold/object tables in the lake. Not demo warehouse; not a row preview.
 
     Company-default Library only. Named Spaces pass an empty list at the tree
     builder - there is no promote-target grant yet (EPIC-024 LINEAGE-03).
@@ -84,7 +84,7 @@ def list_promote_targets(*, path: Path | None = None) -> list[dict[str, Any]]:
             """
             SELECT table_schema, table_name
               FROM information_schema.tables
-             WHERE table_schema IN ('silver', 'gold')
+             WHERE table_schema IN ('silver', 'gold', 'objects')
              ORDER BY table_schema, table_name
             """
         ).fetchall()
@@ -119,7 +119,10 @@ def preview_warehouse_table(
     offset: int = 0,
     path: Path | None = None,
 ) -> dict[str, Any]:
-    name = (table or "").strip().lower()
+    raw = (table or "").strip()
+    if raw.lower().startswith("objects."):
+        return _preview_object_view(raw, limit=limit, offset=offset, path=path)
+    name = raw.lower()
     if name not in _ALLOWED:
         raise ValueError(f"Unknown or disallowed table: {table!r}")
     lim = max(1, min(int(limit), 500))
@@ -141,6 +144,41 @@ def preview_warehouse_table(
         "limit": lim,
         "offset": off,
         "note": "Read-only demo warehouse preview — Excel remains source-only.",
+    }
+
+
+def _preview_object_view(
+    table: str,
+    *,
+    limit: int,
+    offset: int,
+    path: Path | None,
+) -> dict[str, Any]:
+    _, _, name = table.partition(".")
+    if not _IDENT.match(name):
+        raise ValueError(f"Unknown or disallowed table: {table!r}")
+    lim = max(1, min(int(limit), 500))
+    off = max(0, min(int(offset), 100_000))
+    ensure_demo_warehouse(path)
+    qn = f'"objects"."{name}"'
+    con = connect_readonly(path)
+    try:
+        total = scalar_int(con.execute(f"SELECT COUNT(*) FROM {qn}").fetchone())
+        rel = con.execute(f"SELECT * FROM {qn} LIMIT {lim} OFFSET {off}")
+        cols = [d[0] for d in rel.description]
+        rows = [dict(zip(cols, row, strict=True)) for row in rel.fetchall()]
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Unknown or disallowed table: {table!r}") from exc
+    finally:
+        con.close()
+    return {
+        "table": f"objects.{name}",
+        "columns": cols,
+        "rows": rows,
+        "row_count": total,
+        "limit": lim,
+        "offset": off,
+        "note": "Read-only object view over landed bronze — not a live engine scan.",
     }
 
 

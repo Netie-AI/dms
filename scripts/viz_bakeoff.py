@@ -42,7 +42,7 @@ def score_simplechart(env: dict) -> dict[str, object]:
     chart = env.get("chart") or {}
     y = chart.get("y")
     rows = env.get("rows") or []
-    if chart.get("kind") not in {"hbar", "bar", "line", "bignum"}:
+    if chart.get("kind") not in {"hbar", "bar", "line", "bignum", "pie"}:
         return {"ok": False, "reason": "unknown SimpleChart kind"}
     drawn = [float(r[y]) for r in rows] if y else []
     expected = _nums(env)

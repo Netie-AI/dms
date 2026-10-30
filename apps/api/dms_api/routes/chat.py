@@ -212,6 +212,19 @@ def chat_ask(
         raise HTTPException(status_code=403, detail=decision.reason)
 
     if cortex is None:
+        # Governed local answers (compiled measures, verified queries) do not
+        # need the engine. Anything else still 503s, or uses the demo banner
+        # when that lying fallback is explicitly on.
+        try:
+            return ask.live_ask(
+                body.question,
+                space_id=body.space_id,
+                session_id=body.session_id,
+                tables=body.grounded_tables,
+            )
+        except RuntimeError as exc:
+            if "CortexClient required" not in str(exc):
+                raise
         if settings.dms_demo_fallback:
             env = ask.demo_ask(body.question, space_id=body.space_id)
             return _stamp_demo_fallback(env, "fallback — Cortex client missing")

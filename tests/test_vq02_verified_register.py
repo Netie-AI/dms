@@ -266,3 +266,41 @@ def test_ask_in_space_is_l0_foreign_space_misses(
     monkeypatch.delenv("DMS_ASK_MODE", raising=False)
     monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
     get_settings.cache_clear()
+
+
+def test_ask_hits_stored_synonym(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _gate_allows(monkeypatch)
+    cortex = _MarkerCortex()
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    syn = "capacity of WH-A"
+    reg = client.post(
+        "/v1/studio/verified-queries",
+        json={
+            "space_id": FINANCE,
+            "question": QUESTION,
+            "sql": SQL,
+            "synonyms": [syn],
+        },
+    )
+    assert reg.status_code == 200, reg.text
+    assert "capacity of wh-a" in [s.casefold() for s in (reg.json().get("synonyms") or [])]
+
+    hit = client.post(
+        "/v1/chat/ask",
+        json={"question": syn, "space_id": FINANCE, "session_id": "ses_vq02_syn"},
+    )
+    assert hit.status_code == 200, hit.text
+    env = hit.json()
+    assert_envelope_valid(env)
+    assert env["badge"] == "L0_CERTIFIED"
+    assert env["sql_used"] == SQL
+    assert env["rows"]
+    assert env["rows"][0]["name"] == "Warehouse A"
+    assert cortex.asks == []
+
+    get_settings.cache_clear()
+    monkeypatch.delenv("DMS_ASK_MODE", raising=False)
+    monkeypatch.delenv("DMS_DEMO_FALLBACK", raising=False)
+    get_settings.cache_clear()

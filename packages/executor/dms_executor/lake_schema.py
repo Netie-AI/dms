@@ -1,4 +1,4 @@
-"""Medallion schemas in the serving DuckDB — bronze / silver / gold / quarantine."""
+"""Medallion schemas in the serving DuckDB — bronze / silver / gold / quarantine / objects."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import threading
 
 import duckdb
 
-LAKE_SCHEMAS = ("bronze", "silver", "gold", "quarantine", "dim")
+LAKE_SCHEMAS = ("bronze", "silver", "gold", "quarantine", "dim", "objects")
 
 #: Catalog writes against one DuckDB file are not concurrency-safe, and
 #: ``IF NOT EXISTS`` does not make them so: it only skips a schema that is

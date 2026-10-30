@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-09-07  
+**Last updated:** 2026-09-13  
 **Remote:** https://github.com/Netie-AI/dms
 
 ## Direct interact
@@ -10,6 +10,8 @@ D:\DMS\scripts\windows\Start-DMSStack.ps1 -StartSiblings -EnableL2 -StartUi -Ope
 python D:\DMS\scripts\verify_demo_live.py
 python D:\DMS\scripts\verify_l2_vs_l1.py
 python D:\DMS\scripts\score_answers.py --docs D:\DMS\tests\fixtures\hostile_score --oracle-only
+python D:\DMS\scripts\score_curated.py --self-check
+python D:\DMS\scripts\industry_ontology_bench.py
 pytest D:\DMS\tests\test_answer_oracle.py D:\DMS\tests\invariants -q
 python D:\DMS\scripts\ontology_bench.py      # 896 cases, 494 shapes
 python D:\DMS\scripts\gen_playground_data.py # then playground_ask.py --list
@@ -21,7 +23,7 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 
 | ID | Result |
 |----|--------|
-| Demo | `verify_demo_live.py` **31/31** live on a cold stack. Bounds error at ~3/31, not zero (R-0010) |
+| Demo | `verify_demo_live.py` **32/32** live this tick (spend != revenue). Bounds error at ~3/32, not zero (R-0010) |
 | Envelope | E9 invent-totals, E10 grouped-ask, E11 negation (#57), **E12** scalar-got-ranking (#99), **F32** sheet-shape scope conflict (#104) - all asserted on the customer envelope. E12 does not treat `total ... by <dim>` as one-number (live Finance spend was eating cq_spend_by_country) |
 | **A-0005 CLOSED** (#70) | The ledger actor is resolved server-side. `sign_gold_metric` requires it, with no fallback to caller data, so `/gold/sign` and `/run` both close at the binding (R-0004) |
 | **DR-0004 accepted** (#71) | **Option A** - identity from config, never a request. `x-dms-*` headers are **refused** with 400, not ignored. 7 invariants; 4 go red against a pass-through (R-0007) |
@@ -48,8 +50,8 @@ Demo + AirGPT dual flow: `docs/DEMO_RUNBOOK.md` (**read section 0 first**) - Air
 
 | ID | Work |
 |----|------|
-| **NEEDS-YOU** | **OpenVault is SEALED** (`/api/vault/status` -> `sealed:true` on :5000). Only your passphrase unseals it, and until it is unsealed live `/v1/chat/ask` 503s `live_ask_failed`, so **nobody can run #116's ask block** - not an agent problem. **F36 + F37 DECIDED** (DR-0005): extract-only, F27 stands. Still yours: **F41** EPIC-021a. **F68** monetization. `app.netie.ai/cortex` 404; Cortex :8012 down, :8010 up as pack `ruma` |
-| **This tick** | **#156 + #157 both landed** on `feat/sqlsrc-08-ontology-on-the-route`. The layer moved into `dms_executor`; `POST /v1/studio/sources/sql` measures every declared link on the receipt; `verify()` now counts the child side and a **capped parent refuses by name** while a whole parent discloses (R-0005 - the existing LEFT JOIN tests were right, so only the cap refuses; overrule is one line). Bench unchanged 896 / 494 / 811 / 0. **#116 re-run is the verifying step and is not this session's** (R-0003). |
+| **This tick** | Industry benches **4/4** (0 fail). Curated pack **26** cases with L0 SQL backing. Cortex lake verify PASS, fan-out 16x refused. Support probe **DOWN** (1.48 GB); no recycle. #38 F83. #108 OPEN. |
+| **F107** | Picked Cortex skill/pack. Envelope demote still REFUSE. Glossary/about/OK still ABSTAIN. |
 | **F73** | Accuracy: EPIC-017 #33 + EPIC-018 #35 CLOSED 2026-09-05; EPIC-019 remains. Surface = cream/graphite (queued). Delivery = 016/019/022 gated. |
 | Epics | **EPIC-024 (#109) CLOSED**. **EPIC-020 (#108)** open on **#116** alone once #156 + #157 merge; clause 2 is now derivable AND delivered, so COMPLETE turns on #116's re-run, which needs the vault. **EPIC-CCA (#132)** open, #133-#140 closed, cascade still OFF. **VQ-02 #40 CLOSED**. EPIC-008 #8 OPEN. |
 | Truth to hold | Product served **91 rows**. One DuckDB writer excludes readers. No scale claim (P-DMS-34) |

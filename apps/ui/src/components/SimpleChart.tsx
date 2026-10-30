@@ -76,6 +76,52 @@ export function SimpleChart({ chart, rows }: Props) {
     );
   }
 
+  if (chart.kind === "pie") {
+    const total = vals.reduce((a, b) => a + b, 0) || 1;
+    const cx = 70;
+    const cy = 70;
+    const r = 58;
+    let acc = 0;
+    const slices = rows.map((row, i) => {
+      const y = num(row[chart.y!]);
+      const start = acc;
+      acc += y / total;
+      const a0 = start * 2 * Math.PI - Math.PI / 2;
+      const a1 = acc * 2 * Math.PI - Math.PI / 2;
+      const x0 = cx + r * Math.cos(a0);
+      const y0 = cy + r * Math.sin(a0);
+      const x1 = cx + r * Math.cos(a1);
+      const y1 = cy + r * Math.sin(a1);
+      const large = acc - start > 0.5 ? 1 : 0;
+      const d = `M ${cx} ${cy} L ${x0} ${y0} A ${r} ${r} 0 ${large} 1 ${x1} ${y1} Z`;
+      const fill = `color-mix(in srgb, var(--color-accent) ${100 - i * 18}%, var(--color-paper-2))`;
+      return { d, fill, label: label(row[chart.x!]), y };
+    });
+    return (
+      <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-3">
+        <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+          {title}
+        </p>
+        <div className="flex flex-wrap items-center gap-4">
+          <svg viewBox="0 0 140 140" className="h-36 w-36" role="img" aria-label={title}>
+            {slices.map((s, i) => (
+              <path key={`${s.label}-${i}`} d={s.d} fill={s.fill} />
+            ))}
+          </svg>
+          <ul className="space-y-1 text-sm">
+            {slices.map((s, i) => (
+              <li key={`${s.label}-leg-${i}`} className="flex items-center gap-2">
+                <span className="inline-block h-2 w-2" style={{ background: s.fill }} />
+                <span className="truncate text-[var(--color-ink)]">{s.label}</span>
+                <span className="tabular-nums text-[var(--color-ink-muted)]">{money(s.y)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    );
+  }
+
   // bar or line — same points; line connects tops
   const h = 120;
   const gap = 8;

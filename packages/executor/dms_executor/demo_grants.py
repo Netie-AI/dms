@@ -17,6 +17,7 @@ so nothing below may grow a rule keyed on a specific table name.
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -96,6 +97,25 @@ def space_name(space_id: str) -> str | None:
     return entry[0] if entry else None
 
 
+_GRANTABLE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _grantable_bronze(label: str) -> bool:
+    """A digit-first name is invalid SQL. Leave it out of grants and say so.
+
+    One bad name in the Space's schema makes every generated-SQL ask abstain.
+    New ingests prefix ``t_``. This only drops a table that already landed badly.
+    """
+    name = label.split(".")[-1].strip('"')
+    if _GRANTABLE_IDENT.fullmatch(name):
+        return True
+    logger.warning(
+        "dropping bronze table %s from Space grants: name is not a SQL identifier",
+        label,
+    )
+    return False
+
+
 def ingested_bronze_tables(
     path: Path | None = None,
     *,
@@ -113,8 +133,10 @@ def ingested_bronze_tables(
 
     try:
         if space_id:
-            return tuple(t["table"] for t in list_bronze_tables(path=path, space_id=space_id))
-        return tuple(t["table"] for t in list_bronze_tables(path=path))
+            rows = list_bronze_tables(path=path, space_id=space_id)
+        else:
+            rows = list_bronze_tables(path=path)
+        return tuple(t["table"] for t in rows if _grantable_bronze(str(t["table"])))
     except Exception as exc:  # noqa: BLE001
         # A warehouse that cannot be read must not silently mean "no uploads are
         # grantable" — that would present as your own file being refused.

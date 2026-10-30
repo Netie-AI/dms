@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -90,6 +91,45 @@ def test_422_does_not_echo_the_password(monkeypatch: pytest.MonkeyPatch, caplog)
         assert r.status_code == 422, r.text
         assert SECRET not in r.text
         assert not _secret_leaked(r.text, caplog, None)
+
+
+def test_postgres_kind_is_accepted(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    con = _FakeConnection(
+        [("public", "orders")], (["order_id", "amount"], [["A-1", "10.50"]])
+    )
+    _install(monkeypatch, con)
+    _gate_allows(monkeypatch)
+    r = TestClient(create_app()).post(
+        "/v1/studio/sources/sql", json=_body(kind="postgres", tables=["orders"])
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "postgres://db.example.net:5432/sales"
+    assert body["tables"][0]["bronze_table"] == "bronze.public_orders"
+    assert SECRET not in r.text
+
+
+
+def test_mysql_kind_is_accepted(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    con = _FakeConnection(
+        [("sales", "orders")], (["order_id", "amount"], [["M-1", "4.25"]])
+    )
+    _install(monkeypatch, con)
+    _gate_allows(monkeypatch)
+    r = TestClient(create_app()).post(
+        "/v1/studio/sources/sql", json=_body(kind="mysql", tables=["orders"])
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "mysql://db.example.net:3306/sales"
+    assert body["tables"][0]["bronze_table"] == "bronze.sales_orders"
+    assert SECRET not in r.text
 
 
 def test_sql_source_lands_and_preview_names_it(
@@ -345,3 +385,51 @@ def test_a_capped_parent_refuses_the_link_it_invented_orphans_in(
         "bronze.dbo_orders",
         "bronze.dbo_customers",
     }
+
+
+def test_sql_source_stream_emits_progress_without_password(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    rows = [[f"A-{i}", str(i)] for i in range(5)]
+    con = _FakeConnection([("dbo", "orders")], (["order_id", "amount"], rows))
+    _install(monkeypatch, con)
+    _gate_allows(monkeypatch)
+    r = TestClient(create_app()).post(
+        "/v1/studio/sources/sql/stream", json=_body(tables=["orders"])
+    )
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    assert SECRET not in r.text
+    events = [json.loads(line) for line in r.text.splitlines() if line.strip()]
+    assert events, r.text
+    assert events[-1]["event"] == "done"
+    receipt = events[-1]["receipt"]
+    assert receipt["tables"][0]["row_count"] == 5
+    assert any(e.get("event") in ("chunk", "table") for e in events)
+    assert not _secret_leaked(r.text, caplog, warehouse)
+
+
+def test_stream_gate_refused_opens_nothing(
+    warehouse: Path, monkeypatch: pytest.MonkeyPatch, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    import dms_executor.db_connector as dbc
+    from dms_executor.bronze import list_bronze_tables
+
+    before = list_bronze_tables()
+    opened = {"n": 0}
+
+    def _no_connect(cfg: object):  # noqa: ARG001
+        opened["n"] += 1
+        raise AssertionError("connect must not run when the gate refuses")
+
+    monkeypatch.setattr(dbc, "connect", _no_connect)
+    r = TestClient(create_app()).post(
+        "/v1/studio/sources/sql/stream", json=_body()
+    )
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"] in {"gate_unavailable", "gate_task_unknown"}
+    assert opened["n"] == 0
+    assert list_bronze_tables() == before
+    assert not _secret_leaked(r.text, caplog, warehouse)

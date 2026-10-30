@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
@@ -18,6 +19,7 @@ from dms_api.wiring import (
     register_verified_query,
     sql_source_describe,
     sql_source_ingest,
+    publish_objects,
     xlsx_orch_crosscheck,
     xlsx_orch_extract,
     xlsx_orch_golden,
@@ -254,7 +256,7 @@ def xlsx_orch_golden_route(
 
 
 class SqlSourceIn(BaseModel):
-    kind: Literal["sqlserver", "mysql"]
+    kind: Literal["sqlserver", "mysql", "postgres"]
     host: str
     database: str
     user: str
@@ -273,7 +275,7 @@ def sql_source_ingest_route(
     cortex: CortexDep,
     settings: SettingsDep,
 ) -> dict[str, Any]:
-    """Extract a SQL Server or MySQL source into bronze. Credentials are not stored."""
+    """Extract a SQL Server, MySQL, or Postgres source into bronze. Credentials are not stored."""
     label = sql_source_describe(
         kind=body.kind, host=body.host, database=body.database, port=body.port
     )
@@ -296,6 +298,82 @@ def sql_source_ingest_route(
         space_id=body.space_id,
         encrypt=body.encrypt,
         trust_server_certificate=body.trust_server_certificate,
+    )
+
+
+@router.post("/sources/sql/stream")
+def sql_source_ingest_stream_route(
+    body: SqlSourceIn,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> StreamingResponse:
+    """Same extract as POST /sources/sql, one NDJSON event per chunk."""
+    label = sql_source_describe(
+        kind=body.kind, host=body.host, database=body.database, port=body.port
+    )
+    decision = compliance_gate(
+        action="studio.sql_source",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "studio.sql_source", "source": label, "kind": body.kind},
+        client=cortex,
+    )
+    enforce(decision)
+    gen = sql_source_ingest(
+        kind=body.kind,
+        host=body.host,
+        database=body.database,
+        user=body.user,
+        password=body.password,
+        port=body.port,
+        tables=body.tables,
+        max_rows=body.max_rows,
+        space_id=body.space_id,
+        encrypt=body.encrypt,
+        trust_server_certificate=body.trust_server_certificate,
+        stream=True,
+    )
+    if isinstance(gen, dict):
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "extract_failed", "message": "stream extract returned a receipt"},
+        )
+    return StreamingResponse(gen, media_type="application/x-ndjson")
+
+
+class ObjectPublishIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    relation: str = Field(min_length=1, max_length=128)
+    columns: dict[str, str] = Field(min_length=1)
+    space_id: str | None = None
+    tool_name: str | None = Field(default=None, max_length=64)
+    tool_sql: str | None = Field(default=None, max_length=8000)
+    tool_description: str | None = Field(default=None, max_length=500)
+    tool_aliases: list[str] = Field(default_factory=list, max_length=16)
+
+
+@router.post("/objects")
+def publish_objects_route(
+    body: ObjectPublishIn,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Publish a named object VIEW over landed bronze/silver/gold. Optional tool."""
+    decision = compliance_gate(
+        action="studio.objects",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "studio.objects", "name": body.name},
+        client=cortex,
+    )
+    enforce(decision)
+    return publish_objects(
+        name=body.name,
+        relation=body.relation,
+        columns=body.columns,
+        space_id=body.space_id,
+        tool_name=body.tool_name,
+        tool_sql=body.tool_sql,
+        tool_description=body.tool_description,
+        tool_aliases=body.tool_aliases or None,
     )
 
 

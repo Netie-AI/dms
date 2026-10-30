@@ -14,11 +14,15 @@ INVARIANT-CHANGE: E12 (ANS-02) — a one-number ask must not keep a confident
 badge when executed SQL is GROUP BY and 2+ rows come back.
 INVARIANT-CHANGE: E11 (FF-02) — a negated ask must not keep L1_GOVERNED_METRIC
 when the matched metric's filter asserts the positive of that negation.
+INVARIANT-CHANGE: E11 (F90) — postfix "excluded" and concessive clause-stops
+(despite / even / unless / regardless) must not green-badge the inverse.
 INVARIANT-CHANGE: E12 (ANS-02) — a one-number ask must not keep a confident
 badge when the matched query returns a grouped ranking.
 INVARIANT-CHANGE: E9-03 — a confident badge with no executed rows and no SQL
 must demote to ABSTAIN (governed_metric empty-result shrug).
 INVARIANT-CHANGE: xlsx-named ask answered from demo warehouse SQL demotes.
+INVARIANT-CHANGE: unobserved-data ask (forecast / as-if / then-assume /
+ignoring-empty) must not keep a confident historical SQL badge.
 """
 
 from __future__ import annotations
@@ -789,10 +793,16 @@ def test_e11_negated_ask_answered_by_positive_filter_demotes():
         "kilograms delivered to warehouses excluding cold storage",
         "FOOD_COLD goods delivered to sites other than cold storage",
         "FOOD_COLD delivered to non-cold-storage warehouses",
+        "FOOD_COLD delivered to warehouses where cold storage is excluded",
+        "kilograms delivered to warehouses excluding cold storage despite weak Electronics",
     ],
 )
 def test_e11_closed_list_negation_markers_demote(question: str):
-    """The minimum subset: not / excluding / other than / non- all flip polarity."""
+    """not / excluding / excluded / other than / non- flip polarity.
+
+    "despite" is a clause stop, not a marker: it must not swallow the
+    negated phrase so an inverse cold-storage filter stays green.
+    """
     env = build_answer_envelope(
         answer_id="ans_ff02_mark",
         text="Result: cold_count = 4",
@@ -945,7 +955,203 @@ def test_e11_excluded_literal_does_not_hide_behind_its_own_table_name():
     assert env["abstained"] is True
 
 
-def test_e11_single_shared_word_does_not_launder_an_unrelated_column():
+_SKU_BETA_SQL = "SELECT SUM(revenue) AS revenue FROM sales WHERE sku = 'SKU-BETA'"
+_SKU_BETA_EXCLUDED_ASK = "If SKU-BETA is excluded, what is top 5 revenue?"
+
+
+def test_e11_postfix_excluded_ask_path_demotes_inverse_sku_filter():
+    """F90 — 'is excluded' sits after the noun. Tail-only E11 missed it."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Result: revenue = 1500.75",
+            "audit_id": "aud_f90_excl",
+            "route": "governed_metric",
+            "provenance": {"badge": "governed_metric", "layer": "L1"},
+            "sql_used": _SKU_BETA_SQL,
+            "rows": [{"revenue": 1500.75}],
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="sp_finance",
+        session_id="ses_f90_excl",
+        question=_SKU_BETA_EXCLUDED_ASK,
+    )
+    assert env["badge"] == "ABSTAIN", (
+        f"SKU-BETA is excluded answered from sku = 'SKU-BETA' certified as {env['badge']!r}"
+    )
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert not env["rows"]
+    assert "1500.75" not in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_e11_despite_concessive_without_inverse_filter_still_certifies():
+    """F90 — 'despite' is not a filter. Honest total revenue stays certified."""
+    env = build_answer_envelope(
+        answer_id="ans_f90_despite_ok",
+        text="Result: revenue = 11305.2",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v0", "value": 11305.2, "label": "revenue"}],
+        sql_used="SELECT SUM(revenue) AS revenue FROM sales",
+        rows=[{"revenue": 11305.2}],
+        question="Despite weak Electronics, what was total revenue?",
+    )
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["abstained"] is False
+    assert env["values"][0]["value"] == 11305.2
+    assert_envelope_valid(env)
+
+
+_HIST_REVENUE_SQL = "SELECT SUM(revenue) AS revenue FROM sales"
+_HIST_REVENUE_ROWS = [{"revenue": 80787598.3}]
+_HIST_RANK_SQL = (
+    "SELECT sku, sales_value_myr FROM sales ORDER BY sales_value_myr DESC LIMIT 5"
+)
+_HIST_RANK_ROWS = [
+    {"sku": "SKU-00173", "sales_value_myr": 700638.47},
+    {"sku": "SKU-00241", "sales_value_myr": 594317.77},
+    {"sku": "SKU-00028", "sales_value_myr": 585415.2},
+    {"sku": "SKU-00071", "sales_value_myr": 400000.0},
+    {"sku": "SKU-00002", "sales_value_myr": 300000.0},
+]
+_HIST_CAT_SQL = "SELECT category, total_value_myr FROM inventory GROUP BY category"
+_HIST_CAT_ROWS = [
+    {"category": "ELECTRONICS", "total_value_myr": 69729521.94},
+    {"category": "PACKAGING", "total_value_myr": 61997848.3},
+]
+
+
+@pytest.mark.parametrize(
+    "question,sql,rows,badge",
+    [
+        ("predict next month sales", _HIST_REVENUE_SQL, _HIST_REVENUE_ROWS, "L1_GOVERNED_METRIC"),
+        ("forecast revenue for next month", _HIST_REVENUE_SQL, _HIST_REVENUE_ROWS, "L1_GOVERNED_METRIC"),
+        (
+            "Scale last month revenue as if we had twice the SKUs",
+            _HIST_REVENUE_SQL,
+            _HIST_REVENUE_ROWS,
+            "L1_GOVERNED_METRIC",
+        ),
+        (
+            "Assume we add a new warehouse, then what is capacity utilisation?",
+            _HIST_REVENUE_SQL,
+            _HIST_REVENUE_ROWS,
+            "L1_GOVERNED_METRIC",
+        ),
+        (
+            "Top 5 SKUs by revenue, then assume they all grow 20 percent",
+            _HIST_RANK_SQL,
+            _HIST_RANK_ROWS,
+            "L1_GOVERNED_METRIC",
+        ),
+        (
+            "What is total stock value by category, ignoring empty columns",
+            _HIST_CAT_SQL,
+            _HIST_CAT_ROWS,
+            "L2_VALIDATED",
+        ),
+        (
+            "What is total stock value by category, ignoring rows and columns",
+            _HIST_CAT_SQL,
+            _HIST_CAT_ROWS,
+            "L2_VALIDATED",
+        ),
+    ],
+)
+def test_unobserved_ask_does_not_keep_historical_sql_green(
+    question: str, sql: str, rows: list, badge: str
+):
+    """Live Cortex was answering these with L1/L2 history. Envelope demotes."""
+    env = build_answer_envelope(
+        answer_id="ans_unobserved",
+        text="Found 2 row(s).",
+        badge=badge,
+        abstained=False,
+        values=[{"id": "v0", "value": 80787598.3, "label": "revenue"}],
+        sql_used=sql,
+        rows=list(rows),
+        question=question,
+    )
+    assert env["badge"] == "ABSTAIN", question
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert not env["rows"]
+    assert "unobserved" in " ".join(env.get("assumptions") or []).lower()
+    assert_envelope_valid(env)
+
+
+def test_unobserved_guard_does_not_swallow_historical_or_despite_asks():
+    """R-0005 — despite and last-month history stay certified."""
+    scalar_ok = (
+        "Despite weak Electronics, what was total revenue?",
+        "What was total revenue last month?",
+    )
+    for question in scalar_ok:
+        env = build_answer_envelope(
+            answer_id="ans_observed_ok",
+            text="Result: revenue = 11305.2",
+            badge="L1_GOVERNED_METRIC",
+            abstained=False,
+            values=[{"id": "v0", "value": 11305.2, "label": "revenue"}],
+            sql_used=_HIST_REVENUE_SQL,
+            rows=[{"revenue": 11305.2}],
+            question=question,
+        )
+        assert env["badge"] == "L1_GOVERNED_METRIC", question
+        assert env["abstained"] is False, question
+        assert env["values"][0]["value"] == 11305.2
+        assert_envelope_valid(env)
+
+    for question in (
+        "Top 5 selling SKUs by revenue",
+        "show the next 5 SKUs by revenue",
+        "Top 5 selling SKUs ignoring SKU-BETA",
+    ):
+        env = build_answer_envelope(
+            answer_id="ans_rank_ok",
+            text="Top 5 sales.",
+            badge="L1_GOVERNED_METRIC",
+            abstained=False,
+            values=[{"id": "v0", "value": 700638.47, "label": "sales_value_myr"}],
+            sql_used=_HIST_RANK_SQL,
+            rows=list(_HIST_RANK_ROWS),
+            question=question,
+        )
+        assert env["badge"] == "L1_GOVERNED_METRIC", question
+        assert env["abstained"] is False, question
+        assert_envelope_valid(env)
+
+
+def test_unobserved_ask_maps_from_cortex_response():
+    """Customer path: Cortex L1 history for a forecast must not stay green."""
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Result: revenue = 80787598.3",
+            "audit_id": "aud_unobs",
+            "route": "governed_metric",
+            "provenance": {"badge": "governed_metric", "layer": "L1"},
+            "sql_used": _HIST_REVENUE_SQL,
+            "rows": list(_HIST_REVENUE_ROWS),
+        }
+    )
+    env = map_ask_response_to_envelope(
+        resp,
+        space_id="sp_finance",
+        session_id="ses_unobs",
+        question="predict next month sales",
+    )
+    assert env["badge"] == "ABSTAIN"
+    assert env["abstained"] is True
+    assert not env["values"]
+    assert not env["rows"]
+    assert "unobserved" in " ".join(env.get("assumptions") or []).lower()
+    assert_envelope_valid(env)
+
+
+def test_e11_coincidental_subject_noun_does_not_demote():
     """R-0005 guard on the fix above: the relaxed rule must stay narrow.
 
     A column that happens to share a word with the negated phrase's subject

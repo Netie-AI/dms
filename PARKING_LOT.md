@@ -161,6 +161,7 @@ extract-only confirmed.
 (same unlock as P-DMS-17) - and still not Cassandra; pick an analytics lake
 engine. MCP-into-customer-DB write path stays forbidden unless a PRD amendment
 explicitly reopens live federation + Cortex ownership of ontology.
+**F101 (2026-09-10):** does not unpark. Live CQL/federation stays declined. Dump-to-CSV then ingest remains KEEP.
 
 ## P-DMS-29 - Accuracy / orchestration research paper backlog (F28)
 
@@ -272,6 +273,18 @@ FRTR 00027-class workbook, then POSTs the resulting xlsx to
 `POST /v1/studio/xlsx-orch/extract` with `producer=pointer_copilot`. Then #32
 live golden can run on that artifact (avg ~300.27, ~184005/200000, Export row
 count agrees). Until then: `awaiting_pointer_receipt` is the honest status.
+
+## P-DMS-37 - PDF/vision as DMS bronze source (F99)
+
+Founder 2026-09-10: delay OCR; preprocess elsewhere; source-in Excel/SQL is already suitable; maybe Baidu OCR then a Constructor flow posts tables into DMS.
+
+Do **not** add OCR as a DMS ingest writer. Section 3 sources stay local file, Postgres, MSSQL/MySQL extract. F97 OCR REFUSE stands for the bronze writer. Baidu is third-party leave-machine vision: OpenVault leave-machine gate, **no sixth port**, do not vendor a Baidu SDK. Constructor OCR-then-ingest is the same analog as `scripts/constructor_source.py` (source/skin, Cortex compiles, DMS is the ask sink). Constructor must not become the engine or a second `dag_runner`.
+
+**Unlock:** founder names a paying customer with scanned-only BoL and no Excel/SQL extract. Until then: they extract elsewhere, then DMS ingest.
+
+Not video DAM: F100 does not expand this unlock to caption-search video (Twelve Labs / Moments Lab / S3 Vectors / Rekognition). Default stays scanned-only BoL.
+
+BoL is the OCR gate example, not a file-type cap on the lake (F106). Binary blobs stay PARKING_LOT ~100 GB; Chat numbers stay tables.
 
 ## Move out of parking lot
 

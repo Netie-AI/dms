@@ -38,6 +38,8 @@ class AskResponse(BaseModel):
     drillthrough_token: str | None = None
     #: Cortex INS-02 presentation — mapped to envelope.chart in live_ask.
     chart_spec: dict[str, Any] | None = None
+    #: Measure, group, and filters. DMS compiles the join. Free SQL does not.
+    ontology_plan: dict[str, Any] | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> AskResponse:  # type: ignore[override]

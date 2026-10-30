@@ -246,3 +246,47 @@ def test_forecast_never_answers_with_historical_total(
         assert env["abstained"] is True
         assert env["values"] == []
         assert env.get("sql_used") in (None, "")
+
+def test_exact_starters_answer_or_abstain(warehouse: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Single-table starters answer. Missing columns abstain. categoty is not swallowed."""
+    import duckdb
+    from dms_executor import Executor
+    from dms_executor.demo_ask import maybe_exact_demo_ask
+
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(warehouse))
+    cap = maybe_exact_demo_ask("Show warehouse capacity utilisation", warehouse=warehouse)
+    assert cap is not None and cap["abstained"] is False
+    assert cap["rows"][0]["location"] == "Warehouse E"
+    assert float(cap["rows"][0]["util_pct"]) == 97.8
+    skus = maybe_exact_demo_ask("How many SKUs do we have in inventory?", warehouse=warehouse)
+    assert skus is not None and int(skus["rows"][0]["sku_count"]) == 7
+    top = maybe_exact_demo_ask("Top 5 selling SKUs by revenue", warehouse=warehouse)
+    assert top is not None and len(top["rows"]) == 5
+    assert top["rows"][0]["sku"] == "SKU-BETA"
+    for question in (
+        "What is our total spend by supplier country?",
+        "What is total stock value by category?",
+    ):
+        env = maybe_exact_demo_ask(question, warehouse=warehouse)
+        assert env is not None and env["abstained"] is True, question
+        assert env["values"] == [] and env["rows"] == []
+    assert maybe_exact_demo_ask("Show top 3 categoty sales", warehouse=warehouse) is None
+    con = duckdb.connect(str(warehouse))
+    try:
+        con.execute("ALTER TABLE inventory ADD COLUMN category VARCHAR")
+    finally:
+        con.close()
+    assert (
+        maybe_exact_demo_ask("What is total stock value by category?", warehouse=warehouse)
+        is None
+    )
+    exe = Executor(cortex=None, warehouse_path=warehouse)
+    live = exe.live_ask("Show warehouse capacity utilisation", session_id="ses_cap")
+    assert live["abstained"] is False
+    assert live["rows"][0]["location"] == "Warehouse E"
+    try:
+        exe.live_ask("Show top 3 categoty sales", session_id="ses_typo")
+    except RuntimeError as exc:
+        assert "CortexClient required" in str(exc)
+    else:
+        raise AssertionError("categoty must not be answered without a verified query")

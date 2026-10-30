@@ -191,7 +191,7 @@ def test_ensure_lake_schemas_concurrent_first_create(tmp_path: Path) -> None:
     # expectation out of the code it is checking agrees with that code by
     # construction. It also keeps this test runnable against the pre-fix module,
     # which is how the guard was shown to fail before it was trusted green.
-    expected = {"bronze", "silver", "gold", "quarantine", "dim"}
+    expected = {"bronze", "silver", "gold", "quarantine", "dim", "objects"}
 
     db = tmp_path / "race.duckdb"
     duckdb.connect(str(db)).close()  # file exists, no schemas in it

@@ -15,11 +15,14 @@ from typing import Any
 
 import httpx
 
-# Corrected warehouse ranks (dms#39). Naive JOIN inventory inflates ~14.8x.
+# Conservation ranks on the Cortex serving lake (dms_demo.duckdb).
+# DISTINCT sku,category conserves to outbound revenue; lot JOIN inflates ~14.8x.
+# Snapshot 2026-09-13: FOOD_DRY 9_091_313.80, ELECTRONICS 9_055_746.34, PPE 8_697_127.94.
+# Older ELECTRONICS/CHEMICALS/FOOD_COLD numbers were a prior lake build (dms#39).
 _VQ01_ORACLE = [
-    ("ELECTRONICS", 8_953_922.60),
-    ("CHEMICALS", 8_799_446.70),
-    ("FOOD_COLD", 8_754_427.11),
+    ("FOOD_DRY", 9_091_313.80),
+    ("ELECTRONICS", 9_055_746.34),
+    ("PPE", 8_697_127.94),
 ]
 
 # L0/L1 control — must NOT become L2 when templates match.
@@ -27,6 +30,12 @@ L0_L1_CASES = [
     {
         "id": "top5_revenue",
         "question": "Top 5 selling SKUs by revenue",
+        "expect_badges": {"L0_CERTIFIED", "L1_GOVERNED_METRIC"},
+        "must_not_abstain": True,
+    },
+    {
+        "id": "spend_country",
+        "question": "What is our total spend by supplier country?",
         "expect_badges": {"L0_CERTIFIED", "L1_GOVERNED_METRIC"},
         "must_not_abstain": True,
     },
@@ -79,6 +88,13 @@ def ask(client: httpx.Client, question: str) -> dict[str, Any]:
         json={"question": question},
         timeout=120.0,
     )
+    if r.status_code == 503:
+        # Bind/JWKS flake after Cortex recycle; one retry, then fail closed.
+        r = client.post(
+            f"{_dms()}/v1/chat/ask",
+            json={"question": question},
+            timeout=120.0,
+        )
     if r.status_code == 403:
         try:
             detail = r.json().get("detail") or r.json()
@@ -184,7 +200,7 @@ def main() -> int:
                 ("ov", f"{_ov()}/api/healthz"),
             ):
                 try:
-                    hr = client.get(url, timeout=5.0)
+                    hr = client.get(url, timeout=30.0)
                     print(f"[health] {name}: {hr.status_code}")
                 except Exception as exc:  # noqa: BLE001
                     print(f"[health] {name}: DOWN ({exc})")

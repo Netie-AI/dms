@@ -26,6 +26,7 @@ from dms_executor.acl import (
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import (
     IngestReceipt,
+    aggregate_on_untyped_numeric,
     ingest_csv_bytes,
     list_bronze_tables,
     write_bronze_rows,
@@ -41,6 +42,7 @@ from dms_executor.db_connector import (
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
+    maybe_exact_demo_ask,
     normalize_ask_question,
     with_grounded_scope,
 )
@@ -54,11 +56,20 @@ from dms_executor.envelope import (
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
     ManifestMinter,
+    SecurityEvent,
     SessionAcl,
     SubmitError,
     classify_submit_error,
     reject_hostile_chat_sql,
     should_rement,
+)
+from dms_executor.metric_tools import maybe_metric_ask, register_metric_tool
+from dms_executor.object_views import (
+    ObjectViewError,
+    ObjectViewSpec,
+    list_object_names,
+    materialize_silver_from_object,
+    publish_objects_at_path,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.source_links import verify_source_links
@@ -102,6 +113,7 @@ from dms_executor.warehouse_identity import (
     bronze_missing_from_serving,
     identity_check,
     ingest_warehouse_path,
+    maybe_sync_bronze_to_serving,
     serving_warehouse_path,
     sync_bronze_to_serving,
 )
@@ -347,9 +359,11 @@ class Executor:
         ``tables`` narrows the manifest to the files the user grounded the
         question in, so the scope is enforced by the engine rather than
         suggested to the model.
+
+        A verified query, an authored metric, or a compiled demo measure
+        answers from the local warehouse. Those paths do not need a client.
+        The client is required only once the question has to cross to Cortex.
         """
-        if self._cortex is None:
-            raise RuntimeError("CortexClient required for live_ask")
         question = normalize_ask_question(question)
 
         # CCA-05 - settle the ambiguous filters before anything executes.
@@ -389,6 +403,62 @@ class Executor:
         if verified_env is not None:
             return verified_env
 
+        # Authored metric tools are the same class as verified queries: a human
+        # wrote the SELECT and the ask names the tool. Match is name/alias only.
+        metric_env = maybe_metric_ask(
+            question,
+            space_id=space_id,
+            session_id=session_id,
+            warehouse=self._warehouse,
+            grantable=set(self.grantable_tables(space_id=space_id)),
+            tables=tables,
+        )
+        if metric_env is not None:
+            return metric_env
+
+        from dms_executor.typed_plan import maybe_compiled_measure_ask
+
+        compiled_env = maybe_compiled_measure_ask(
+            question,
+            warehouse=self._warehouse,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if compiled_env is not None:
+            return compiled_env
+
+        exact_env = maybe_exact_demo_ask(
+            question,
+            warehouse=self._warehouse,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if exact_env is not None:
+            return exact_env
+
+        # Named workbook+sheet is the same class as a verified query: the
+        # operator already scoped the grain. Tools-only must not swallow it.
+        bronze_env = maybe_bronze_sheet_ask(
+            question,
+            space_id=space_id,
+            session_id=session_id,
+            warehouse=self._warehouse,
+        )
+        if bronze_env is not None:
+            return bronze_env
+
+        from dms_executor.metric_tools import tools_only_abstain
+
+        object_ground = bool(tables and any(str(t).startswith("objects.") for t in tables))
+        if object_ground:
+            return tools_only_abstain(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                warehouse=self._warehouse,
+                tables=tables,
+            )
+
         # The grant decides what the cascade may open, never the request.
         #
         # This read ``tables or grantable_tables(...)`` and ``tables`` is the
@@ -423,12 +493,9 @@ class Executor:
                 grounded_tables=requested,
             )
 
+        if self._cortex is None:
+            raise RuntimeError("CortexClient required for live_ask")
         question = with_grounded_scope(question, tables)
-        bronze_env = maybe_bronze_sheet_ask(
-            question, space_id=space_id, session_id=session_id
-        )
-        if bronze_env is not None:
-            return attach_cascade(bronze_env, cascade)
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
@@ -454,15 +521,19 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        from dms_executor.typed_plan import resolve_cortex_join
+
+        resolved = resolve_cortex_join(resp, warehouse=self._warehouse)
         return attach_cascade(
             map_ask_response_to_envelope(
-                resp,
+                resolved.response,
                 space_id=space_id,
                 session_id=acl.session_id,
                 # The manifest that was actually minted, so the count the viewer
                 # reads comes from the grant and not from the request.
                 grounded_tables=sorted(acl.row_predicates),
                 question=question,
+                compiled_join=resolved.compiled,
             ),
             cascade,
         )
@@ -534,8 +605,12 @@ def _chart_from_cortex_spec(spec: dict[str, Any] | None) -> dict[str, Any] | Non
         }
     x = spec.get("x_label")
     y = spec.get("y_label")
-    if ctype in ("bar", "line", "hbar") and x and y:
-        kind = "line" if ctype == "line" else ("hbar" if ctype == "hbar" else "bar")
+    if ctype in ("bar", "line", "hbar", "pie") and x and y:
+        kind = (
+            "line"
+            if ctype == "line"
+            else ("hbar" if ctype == "hbar" else ("pie" if ctype == "pie" else "bar"))
+        )
         return {"kind": kind, "x": str(x), "y": str(y), "title": title}
     return None
 
@@ -567,6 +642,7 @@ def map_ask_response_to_envelope(
     grounded_tables: list[str] | None = None,
     question: str | None = None,
     competing_scopes: list[str] | None = None,
+    compiled_join: bool = False,
 ) -> dict[str, Any]:
     """Map contract Answer-shaped AskResponse into UI envelope."""
     from dms_executor.envelope import (
@@ -672,6 +748,35 @@ def map_ask_response_to_envelope(
         sources = []
     route = (resp.route or "").lower()
     sql_out = resp.sql_used
+    if not abstained and aggregate_on_untyped_numeric(
+        None if not (sql_out and str(sql_out).strip()) else str(sql_out)
+    ):
+        abstained = True
+        badge = "ABSTAIN"
+        text = (
+            "Abstained: untyped_numeric. This column stayed text, so "
+            "MAX, MIN, SUM or AVG would order the characters and return "
+            "the wrong number."
+        )
+        values = []
+        rows = []
+        chart = None
+        assumptions.append("untyped_numeric")
+    if not abstained and not compiled_join:
+        from dms_executor.typed_plan import joined_sql, route_allows_free_join
+
+        if joined_sql(sql_out) and not route_allows_free_join(resp.route):
+            abstained = True
+            badge = "ABSTAIN"
+            text = (
+                "Abstained: join_needs_compile. A join is built from verified "
+                "links, not from free SQL. Name a confirmed measure, or ask "
+                "a single-table question."
+            )
+            values = []
+            rows = []
+            chart = None
+            assumptions.append("join_needs_compile")
     if not abstained and not (sql_out and str(sql_out).strip()):
         if route in _DOC_ROUTE_KINDS or any(s.get("kind") != "sql" for s in sources):
             sql_out = "-- document retrieval (no SQL)"
@@ -722,6 +827,7 @@ __all__ = [
     "IngestReceipt",
     "ManifestMinter",
     "SessionAcl",
+    "SecurityEvent",
     "SessionContext",
     "SourceGrant",
     "answer_demo_question",
@@ -739,6 +845,12 @@ __all__ = [
     "ingest_csv_bytes",
     "ingest_source_database",
     "verify_source_links",
+    "ObjectViewError",
+    "ObjectViewSpec",
+    "publish_objects_at_path",
+    "list_object_names",
+    "materialize_silver_from_object",
+    "register_metric_tool",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
@@ -772,5 +884,6 @@ __all__ = [
     "identity_check",
     "ingest_warehouse_path",
     "serving_warehouse_path",
+    "maybe_sync_bronze_to_serving",
     "sync_bronze_to_serving",
 ]

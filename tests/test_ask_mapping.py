@@ -124,6 +124,33 @@ def test_chart_spec_bignum_and_line_shapes():
     assert_envelope_valid(env_l)
 
 
+def test_chart_spec_pie_maps_to_envelope_chart():
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Share of spend.",
+            "audit_id": "aud_pie",
+            "route": "query_skill",
+            "provenance": {"badge": "query_skill"},
+            "sql_used": "SELECT category, qty FROM t",
+            "rows": [
+                {"category": "Electronics", "qty": 12},
+                {"category": "Food", "qty": 5},
+            ],
+            "chart_spec": {
+                "type": "pie",
+                "x_label": "category",
+                "y_label": "qty",
+                "title": "share",
+            },
+        }
+    )
+    env = map_ask_response_to_envelope(resp)
+    assert env["chart"]["kind"] == "pie"
+    assert env["chart"]["x"] == "category"
+    assert env["chart"]["y"] == "qty"
+    assert_envelope_valid(env)
+
+
 def test_null_chart_spec_falls_back_to_row_hbar():
     """INS-03: null chart_spec uses row inference; Cortex bar spec wins when present."""
     resp = AskResponse.model_validate(

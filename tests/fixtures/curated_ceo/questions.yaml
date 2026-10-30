@@ -79,6 +79,12 @@ questions:
     min_rows: 3
     question: Show top 3 categoty sales
 
+  - id: cq_spend_total
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: What is our total spend?
+
   - id: trap_last_month
     space: finance
     expect: abstain
@@ -88,3 +94,69 @@ questions:
     space: finance
     expect: abstain
     question: Are we short on anything the warehouse should worry about?
+
+  - id: cq_cold_storage
+    space: finance
+    expect: l0
+    min_rows: 0
+    question: Which locations are cold storage?
+
+  - id: cq_capacity_above_90
+    space: finance
+    expect: l0
+    min_rows: 0
+    question: Which locations are above 90 percent capacity?
+
+  - id: cq_expired_items
+    space: finance
+    expect: l0
+    min_rows: 0
+    question: Which items are expired?
+
+  - id: cq_chemicals_list
+    space: finance
+    expect: l0
+    min_rows: 0
+    question: List chemicals in inventory
+
+  - id: cq_active_alerts
+    space: finance
+    expect: l0
+    min_rows: 0
+    question: List active alerts across the warehouse network
+
+  - id: cq_supplier_ranking
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: Rank suppliers by combined risk and lead time score
+
+  - id: cq_high_risk_pending
+    space: finance
+    expect: l0
+    min_rows: 0
+    question: Which high-risk suppliers have pending shipments?
+
+  - id: cq_audit_overdue
+    space: finance
+    expect: l0
+    min_rows: 0
+    question: Which suppliers have an audit overdue?
+
+  - id: cq_cctv_wh_a
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: Show the CCTV camera for warehouse A
+
+  - id: cq_capacity_how_full
+    space: finance
+    expect: l0
+    min_rows: 1
+    question: how full are the warehouses
+
+  - id: ops_delayed_count
+    space: ops
+    expect: l0
+    min_rows: 1
+    question: How many delayed shipments are there?

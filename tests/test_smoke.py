@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from dms_api.app import create_app
+from dms_api.routes.health import JWKS_REFRESH_PROBE_TIMEOUT
 from dms_api.settings import get_settings
 from fastapi.testclient import TestClient
 
@@ -27,6 +28,7 @@ def test_health_route():
     assert body["backend"] == "memory"
     assert "contract_routes" in body["dependencies"]["cortex"]
     assert "jwks_refresh" in body["dependencies"]["cortex"]
+    assert JWKS_REFRESH_PROBE_TIMEOUT >= 6.0
     assert "database_configured" in body
     assert "trust" in body["dependencies"]["openvault"]
 

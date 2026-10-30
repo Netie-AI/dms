@@ -118,8 +118,9 @@ def build_library_tree(
             "children": wh_children,
         },
     ]
-    # Named Spaces hide promote targets (no grant model yet). Company default
-    # gets Silver/Gold folders even when empty so the surface exists.
+    # Silver/gold stay company-default only (LINEAGE-03: no promote grant).
+    # Objects are the manager layer: a named Space that just published one
+    # must see it on the tree to ground Chat. Silver/gold still hidden.
     if not space_id:
         nodes.extend(
             [
@@ -137,6 +138,14 @@ def build_library_tree(
                 },
             ]
         )
+    nodes.append(
+        {
+            "id": "folder:objects",
+            "kind": "folder",
+            "label": "Objects",
+            "children": _promote_children("objects"),
+        }
+    )
     return {
         "space_id": space_id,
         "space_name": space_name,

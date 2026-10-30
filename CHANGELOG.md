@@ -2,6 +2,85 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-09-13 - Industry ontology benches + curated pack 26
+
+- Fixture benches for warehouse / banking / insurance / storage: compiler vs independent oracle, 4/4 families 0 disagreements (warehouse 19, banking 10, insurance 7 including 3-hop, storage 10). Not production packs (F96/F93). CLI `scripts/industry_ontology_bench.py`.
+- Curated CEO pack 15 -> 26. Every L0 case has Cortex certified SQL or a lake VQ. New Cortex L0: delayed shipment count, stock by storage bin, capacity synonym `how full are the warehouses`.
+- Cortex serving lake `ontology.py --demo` PASS: lot join fan-out 16x refused; category ranks FOOD_DRY / ELECTRONICS / PPE. Live stack was DOWN this tick (1.61 GB free); did not start peers.
+
+## 2026-09-13 - Host full rerun: 32/32 + curated 12/15 0 WRONG
+
+- Live host pack: `verify_demo_live` **32/32** (new check: scalar spend is not outbound revenue). `score_curated --live` **12/15 L0**, precision-on-answered 100.00 pct, 0 WRONG. `trap_categoty` and `cq_spend_total` are L0. `verify_l2_vs_l1` still exit 2 (hazmat honest L2 NO_CANDIDATE). Oracle-only exit 0.
+- Live VQ-01 pytest now pins DISTINCT grain + fan-out ceiling, not a stale ELECTRONICS/CHEMICALS snapshot. `DMS_VQ01_LIVE=1` 1 passed. Full skip-CP pack not run (0.55 GB free RAM).
+
+## 2026-09-13 - L1 categoty + scalar spend, L2 flag on
+
+- Live `:8010` now matches certified synonyms before unknown-noun, so `show top 3 categoty sales` is `L0_CERTIFIED` (DISTINCT sku/category; FOOD_DRY / ELECTRONICS / PPE on this lake). `verify_l2_vs_l1.py` exit 2: L0/L1 green, hazmat honest L2 abstain.
+- Scalar `What is our total spend?` is certified inventory JOIN suppliers (`total_spend_myr=642969499.25`), not outbound `revenue_total`. Query-skill capture/find refuse spend bound to revenue (F107 option 1). Extra metric tools no longer skip Cortex on ungrounded Finance asks (test in `test_live_ask.py`).
+- Did not close #38 (F83 lake VQ still local). Did not kill `:8090`/`:5000`. L2 generated SQL for hazmat still NO_CANDIDATE.
+
+## 2026-09-10 - Industry-swap playbook (insurance as example, not a SKU)
+
+- Agents retarget insurance / banking / finance by YAML + bronze, not a Chat fork.
+  SoT: `docs/NEXT_COMPANY_ONTOLOGY_SCALE.md` plus `AGENTS.md` pointer. Cortex O7
+  `new_pack.py` + `packs/crm/` stay the scaffold. No `packs/insurance/` mill (F96).
+- OCR, telematics, photo-cost, SIEM, and hosted PaaS stay refused. Buyer path is
+  still `POST /v1/chat/ask`.
+
+## 2026-09-10 - Why #116 was incomplete, and what actually unblocked it
+
+- **MySQL 8.4.11 ERROR 6125.** `mysql:8` now defaults `restrict_fk_on_non_standard_key=ON`, so the ticket's lying FK (`orders.cust_ref -> customers.cust_ref` against a non-unique `INDEX(cust_ref)`) cannot be created. Seed dropped it; extract reported `declared_foreign_keys: 0`. Ops: `SET SESSION restrict_fk_on_non_standard_key=OFF` then `ALTER ADD CONSTRAINT`. Product already reads `INFORMATION_SCHEMA`. Receipt now names `FK_Orders_Customers` as `many_to_many` `max_fanout=2`. Independent sums: 60 vs JOIN 90.
+- **31/31.** Live `GET /health` `cortex.ok` is true this tick (`verify_demo_live.py` **31/31**). The earlier 30/31 was a 2s nested JWKS race, not a down Cortex. Disk: `JWKS_REFRESH_PROBE_TIMEOUT=8s` in `health.py` so the next DMS start does not flake the same way. Live `:8090` still runs the old 2s probe until a recycle.
+- **Not L2.** `categoty` ABSTAIN and hazmat ABSTAIN stay Cortex-process remainders. Do not recycle `:8010` unless the founder says so.
+
+## 2026-09-10 - Unobserved asks (predict / as-if / then-assume) abstain on the envelope
+
+- Live Cortex was answering `predict next month`, `as if twice the SKUs`, `then assume they grow 20 percent`, and `ignoring empty columns` with historical L1/L2 SQL. The customer envelope now demotes those to ABSTAIN and withholds the rows. Same class as #67 / F-0021; demo_ask already had the demo half.
+- `despite` total revenue stays certified (F90). `next 5 SKUs` stays a rank. Bare `ignoring SKU-X` stays demo exclusion, not this guard. Chat does not mint assumed warehouses or compile ontology joins (F41 stays off Chat).
+- Constructor tests: `tests/invariants/test_envelope.py` plus ontology compile-refuse. Live `:8090` will not show this until a DMS recycle (do not kill unless the founder says so).
+
+## 2026-09-10 - L1/L2 scale: lake VQ paraphrases, not Cortex recycle
+
+- **Studio VQs now catch paraphrases the live engine misses.** `running low in warehouse A`, `how full are the warehouses`, `best 5 selling SKUs by revenue` are L0 on Finance. Ops `How many delayed shipments are there?` is L0 (`delayed_count=2` on the demo lake). Finance delayed still PathNotAllowed (shipments not granted) -- isolation held.
+- **Do not seed `categoty` on the 15-row lake.** That SQL needs Cortex `inventory.category`; a demo VQ would be the wrong grain. origin/main already matches the typo (`cq_top3_category_sales`) *before* unknown-noun abstain. Live `:8010` does not. Do not recycle unless the founder says so.
+- **Curated live: 10/14 L0, 0 WRONG, precision-on-answered 100.00 pct.** `top 11` stays `L1_GOVERNED_METRIC` via Cortex. L2 hazmat honest-abstains (`DMS_L2_ENABLED` off on that process). `verify_l2_vs_l1` health wait is 30s.
+
+## 2026-09-10 - L1/L2 live gate health timeout
+
+- **`verify_l2_vs_l1.py` health wait is 20s.** Nested `/health` (JWKS) often exceeded 5s and the script printed `dms: DOWN` while curl 200. Not a product route change.
+
+## 2026-09-09 - SQLSRC-06 way A extracts, epic still incomplete
+
+- **Docker SQL Server + MySQL extracts hit the live route.** Credential-free receipts, `skipped: ["secrets"]`, `items` truncated at 1000. SQL Server `verify()` names 80 orphans the parent `max_rows` cap invented. MySQL 8.4.11 still declares **no FK**, so the lying-FK refusal by link name did not run.
+- **Ask after warmup abstained honestly** on the extracted order tables (`assert_envelope_valid` pass, no demo fallback). First tries 504'd. Later `:8090` `/health` timed out; `verify_demo_live.py` last measured **30/31** (jwks probe). EPIC-020 stays INCOMPLETE. No product code in the verify run.
+
+## 2026-09-09 - Chat Insights name the join risk
+
+- **Direct insights already exist.** Chat bullets restate this query's rows. A caption now says they do not prove a join is safe, and that rows and SQL are the evidence. The grain compiler stays off the ask path until a green-badge fan-out is proven (F41 if-needed).
+- **F41 is accepted only if needed.** EPIC-021a stays queued on #116. `insights.py` is not Chat L0.
+
+## 2026-09-09 - confusing NL cannot green-badge the inverse question
+
+- **"Is excluded" is now E11.** Tail-only polarity missed "If SKU-BETA is excluded" when SQL still filtered `sku = 'SKU-BETA'`. The noun before `excluded` is the negated phrase. `despite` / `even` / `unless` / `regardless` stop a clause; they are not filters. Honest "despite weak Electronics, total revenue" stays certified.
+- **Not a parser, not L2-via-ontology.** Cortex L1/L2 and VQ/semantic stay on existing tickets. Wiring `compile()` into Chat is still F41.
+
+## 2026-09-09 - Cortex answers ungrounded Finance asks again
+
+- **Extra published tools no longer wall off the engine.** `live_ask` only stays tools-only when Chat is grounded on `objects.*`. A Space with Studio metrics can still reach Cortex L0/L1 for free-text. Object-ground invent-joins still abstain and name the tool.
+- **Live:** spend by country is Cortex certified query `cq_spend_by_country` (L0, 4 countries, Chat assumption "live Cortex ask"). `top 11 selling SKUs by revenue` is `L1_GOVERNED_METRIC`. Steward VQ Top 5 on Finance still L0 on the demo lake. Did not restart :8010; L2 hazmat still honest-abstains until that process has `DMS_L2_ENABLED`.
+
+## 2026-09-09 - verified questions use this lake's columns, not Cortex pack YAML
+
+- **Studio POSTs synonyms.** The API already stored them; the form dropped them, so `categoty` could not hit a Space asset. Register now sends the list. Ask matches stored synonyms before Cortex.
+- **Seeded VQ SQL is DESCRIBE-gated.** Cortex pack text (`txn_type='OUT'`, `suppliers.country`, `location_code`) 503s on the 15-row demo lake. `scripts/seed_curated_vqs.py` skips missing columns and uses `outbound` / `name` / `location_id`.
+- **Live curated after unseal: 7/14 L0, 0 WRONG, precision 100.00 pct.** Category/country asks abstain (no column). Vault was unsealed by the founder; agents did not. #116 still has no SQL Server or MySQL listener.
+
+## 2026-09-08 - unique landed encodings certify on bronze, not by guessing
+
+- **A unique DISTINCT value is now the encoding.** `sku BETA` binds `SKU-BETA` and `city KL` binds `Kuala Lumpur` when that column has one landed match. Two hits, a wide column, or a substring inside a word still refuse, so hard rule 12 still demotes empty SQL. Ambiguous `BETA` vs `SKU-BETA`+`BETA-PRO` stays ABSTAIN.
+- **Named workbook+sheet is not tools-only.** `live_ask` runs the bronze intercept before extra-tool abstain, and it opens `self._warehouse`. A Space with authored metric tools can still certify a scoped sheet ask; free-text invent-joins still abstain and still do not call Cortex.
+- **Hostile intercept ceiling is 12/14, 0 WRONG.** F32 (no sheet named) and the RAG no-SQL invite are still misses. That is coverage, not a precision claim, and it is not world-task 100%.
+
 ## 2026-09-07 - a capped parent refuses the join it invented orphans in (SQLSRC-07, #157)
 
 - **`verify()` counts the child side.** It measured three claims and referential

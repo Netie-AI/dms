@@ -13,7 +13,13 @@ from pathlib import Path
 
 import duckdb
 import pytest
-from dms_executor.cca.binder import TermPack, certify_pack, norm_value, scan_landed_columns
+from dms_executor.cca.binder import (
+    UNMATCHED_SAMPLE,
+    TermPack,
+    certify_pack,
+    norm_value,
+    scan_landed_columns,
+)
 
 SEA = TermPack(
     name="geo_region_members.sea",
@@ -96,6 +102,29 @@ def test_unmatched_landed_values_are_reported(lake: Path) -> None:
     )
     assert "Japan" in res.unmatched_sample
     assert "Japan" not in res.values
+
+
+def test_unmatched_sample_is_capped_at_twelve(tmp_path: Path) -> None:
+    """CCA evidence is a 12-value pack, never the whole column (or a sheet)."""
+    assert UNMATCHED_SAMPLE == 12
+    db = tmp_path / "cap.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("CREATE TABLE sales (country VARCHAR)")
+    extras = [f"C{i:02d}" for i in range(20)]
+    con.execute(
+        "INSERT INTO sales VALUES ('MY'), " + ", ".join(f"('{e}')" for e in extras)
+    )
+    con.close()
+    res = certify_pack(
+        stage="geo",
+        constraint_id="c1",
+        candidate="SEA",
+        pack=SEA,
+        warehouse=db,
+        tables=["sales"],
+    )
+    assert len(res.unmatched_sample) == UNMATCHED_SAMPLE
+    assert "MY" not in res.unmatched_sample
 
 
 def test_abstains_when_no_column_carries_the_encoding(lake: Path) -> None:

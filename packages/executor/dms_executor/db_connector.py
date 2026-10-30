@@ -17,7 +17,7 @@ asserts that on this file's source text.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,15 +30,18 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 
-SourceKind = Literal["sqlserver", "mysql"]
+SourceKind = Literal["sqlserver", "mysql", "postgres"]
 
-#: Ceiling on a single pull. ``write_bronze_rows`` materialises every row in
-#: memory before the INSERT, so an unbounded pull against a production table is
-#: an OOM, not a slow query.
+#: Ceiling on a single pull. Chunks go to bronze as they arrive; this cap is
+#: still the hard stop so a production table cannot run forever.
 DEFAULT_MAX_ROWS = 500_000
+FETCH_CHUNK = 10_000
 
 DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
-_DEFAULT_PORTS: dict[str, int] = {"sqlserver": 1433, "mysql": 3306}
+_DEFAULT_PORTS: dict[str, int] = {"sqlserver": 1433, "mysql": 3306, "postgres": 5432}
+
+#: Fired after each fetchmany chunk and once when the table is fully landed.
+ProgressHook = Callable[[Mapping[str, Any]], None]
 
 
 class SourceConnectionError(RuntimeError):
@@ -110,6 +113,11 @@ class SourcePull:
     #: Set when the bronze name was suffixed because another source already held the
     #: sanitised stem. Reported, never silent.
     note: str | None = None
+    #: Declared types that did not convert exactly, plus zoned timestamps. Named,
+    #: never silently left as text.
+    kept_text: list[str] = field(default_factory=list)
+    #: Text columns an aggregate must not touch. Text MAX lies.
+    untyped_numeric: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -209,6 +217,43 @@ def _sqlserver_connection_string(cfg: SourceConfig) -> str:
     return ";".join(parts) + ";"
 
 
+def _open_postgres(cfg: SourceConfig) -> Any:
+    """psycopg 3, then psycopg2. Neither is a hard package dep."""
+    try:
+        import psycopg
+    except ImportError:
+        psycopg = None  # type: ignore[assignment]
+    if psycopg is not None:
+        try:
+            return psycopg.connect(
+                host=cfg.host,
+                port=cfg.resolved_port,
+                user=cfg.user,
+                password=cfg.password,
+                dbname=cfg.database,
+                connect_timeout=cfg.connect_timeout,
+            )
+        except Exception as exc:
+            raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+    try:
+        import psycopg2
+    except ImportError as exc:  # pragma: no cover - env-dependent
+        raise SourceConnectionError(
+            "psycopg is not installed; Postgres sources are unavailable"
+        ) from exc
+    try:
+        return psycopg2.connect(
+            host=cfg.host,
+            port=cfg.resolved_port,
+            user=cfg.user,
+            password=cfg.password,
+            dbname=cfg.database,
+            connect_timeout=cfg.connect_timeout,
+        )
+    except Exception as exc:
+        raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+
+
 @contextmanager
 def connect(cfg: SourceConfig) -> Iterator[Any]:
     """Open a read connection to the source, closing it on the way out."""
@@ -224,6 +269,8 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
             con = pyodbc.connect(_sqlserver_connection_string(cfg), readonly=True)
         except Exception as exc:
             raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+    elif cfg.kind == "postgres":
+        con = _open_postgres(cfg)
     else:
         try:
             import pymysql
@@ -254,6 +301,7 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
 _SYSTEM_SCHEMAS: dict[str, set[str]] = {
     "sqlserver": {"sys", "INFORMATION_SCHEMA", "guest", "db_owner", "db_accessadmin"},
     "mysql": {"mysql", "information_schema", "performance_schema", "sys"},
+    "postgres": {"pg_catalog", "information_schema", "pg_toast"},
 }
 
 
@@ -277,6 +325,14 @@ def list_source_tables(cfg: SourceConfig, *, con: Any | None = None) -> list[Sou
             "WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
         )
         params: tuple[Any, ...] = ()
+    elif cfg.kind == "postgres":
+        sql = (
+            "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+            "WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA NOT IN "
+            "('pg_catalog', 'information_schema') "
+            "ORDER BY TABLE_SCHEMA, TABLE_NAME"
+        )
+        params = ()
     else:
         sql = (
             "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
@@ -354,10 +410,13 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
     what. These are handed to the ontology compiler as claims to be measured.
     """
     params: tuple[Any, ...]
-    if cfg.kind == "sqlserver":
-        pk_sql, fk_sql, params = _PK_SQLSERVER, _FK_SQLSERVER, ()
-    else:
+    if cfg.kind == "mysql":
         pk_sql, fk_sql, params = _PK_MYSQL, _FK_MYSQL, (cfg.database,)
+    else:
+        # SQL Server and Postgres both expose PK/FK through ANSI
+        # REFERENTIAL_CONSTRAINTS + KEY_COLUMN_USAGE, not MySQL's
+        # REFERENCED_TABLE_NAME column.
+        pk_sql, fk_sql, params = _PK_SQLSERVER, _FK_SQLSERVER, ()
     skip = _SYSTEM_SCHEMAS[cfg.kind]
 
     def _run(active: Any) -> SourceKeys:
@@ -395,6 +454,8 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
 def _quote_ident(cfg: SourceConfig, part: str) -> str:
     if cfg.kind == "sqlserver":
         return "[" + part.replace("]", "]]") + "]"
+    if cfg.kind == "postgres":
+        return '"' + part.replace('"', '""') + '"'
     return "`" + part.replace("`", "``") + "`"
 
 
@@ -456,7 +517,28 @@ def preview_source_table(
 
 def _bronze_name(target: SourceTable) -> str:
     stem = "".join(c if c.isalnum() else "_" for c in target.qualified)
-    return stem.strip("_").lower()[:60] or "source_table"
+    stem = stem.strip("_").lower()[:60] or "source_table"
+    if stem[0].isdigit():
+        stem = ("t_" + stem)[:60]
+    return stem
+
+
+def _declared_types(cfg: SourceConfig, con: Any, target: SourceTable) -> dict[str, str]:
+    """Source DATA_TYPE by column. Empty when the catalog cannot be read."""
+    placeholder = "?" if cfg.kind == "sqlserver" else "%s"
+    sql = (
+        "SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
+        f"WHERE TABLE_SCHEMA = {placeholder} AND TABLE_NAME = {placeholder}"
+    )
+    try:
+        rows = _run_query(con, sql, (target.schema, target.name))
+    except Exception:  # noqa: BLE001 - a missing catalog must not fail the pull
+        return {}
+    return {str(name): str(kind) for name, kind in rows}
+
+
+def _stringify_rows(raw: list[Any]) -> list[list[Any]]:
+    return [[None if v is None else str(v) for v in row] for row in raw]
 
 
 def _pull_one(
@@ -468,6 +550,9 @@ def _pull_one(
     path: Path | None,
     space_id: str | None,
     bronze_table: str | None = None,
+    chunk_size: int = FETCH_CHUNK,
+    on_progress: ProgressHook | None = None,
+    name_note: str | None = None,
 ) -> SourcePull:
     """Land one table in bronze with both halves of its provenance.
 
@@ -475,52 +560,109 @@ def _pull_one(
     gets a registry row naming the source from ``record_source_pull``. The parked
     connector did only the first, which is row provenance with no source provenance -
     half an answer (DR-0005 part 4).
+
+    Rows are fetched in ``chunk_size`` batches and written before the next
+    fetchmany, so the Python heap holds one chunk, not the whole table.
     """
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be >= 1")
     ingest_id = str(uuid.uuid4())
     ref_id = str(uuid.uuid4())
     extracted_at = mint_extracted_at()
-    columns, rows, truncated = _fetch(cfg, con, target, max_rows=max_rows)
-    if not columns:
-        raise ValueError(f"{target.qualified} exposed no columns")
-    source = f"{cfg.describe()}#{target.qualified}"
-    # A caller-named bronze_table is taken as given. A derived one goes through the
-    # registry's claim so two source tables one alnum-stem apart cannot overwrite each
-    # other - the second gets a suffix and the receipt carries a note.
-    note: str | None = None
-    name = bronze_table
-    if name is None:
-        name, note = claim_source_table_name(
-            stem=_bronze_name(target), source=source, path=path
+    ident = f"{_quote_ident(cfg, target.schema)}.{_quote_ident(cfg, target.name)}"
+    cur = con.cursor()
+    try:
+        cur.execute(f"SELECT * FROM {ident}")
+        columns = [str(d[0]) for d in cur.description]
+        if not columns:
+            raise ValueError(f"{target.qualified} exposed no columns")
+        source = f"{cfg.describe()}#{target.qualified}"
+        declared = _declared_types(cfg, con, target)
+        note: str | None = name_note
+        name = bronze_table
+        if name is None:
+            name, note = claim_source_table_name(
+                stem=_bronze_name(target),
+                source=source,
+                path=path,
+                space_id=space_id,
+            )
+        type_notes: dict[str, list[str]] = {}
+        got = 0
+        truncated = False
+
+        def _batches() -> Iterator[list[list[Any]]]:
+            nonlocal got, truncated
+            while got < max_rows:
+                raw = list(cur.fetchmany(min(chunk_size, max_rows - got)))
+                if not raw:
+                    return
+                rows = _stringify_rows(raw)
+                got += len(rows)
+                if on_progress is not None:
+                    on_progress(
+                        {
+                            "event": "chunk",
+                            "table": target.qualified,
+                            "bronze_table": name,
+                            "row_count": got,
+                        }
+                    )
+                yield rows
+            truncated = bool(cur.fetchmany(1))
+
+        landed = write_bronze_rows(
+            table=name,
+            columns=columns,
+            batches=_batches(),
+            ref_id=ref_id,
+            ingest_id=ingest_id,
+            path=path,
+            declared_types=declared,
+            type_notes=type_notes,
         )
-    landed = write_bronze_rows(
-        table=name,
-        columns=columns,
-        rows=rows,
-        ref_id=ref_id,
-        ingest_id=ingest_id,
-        path=path,
-    )
-    record_source_pull(
-        table_name=landed.split(".", 1)[-1],
-        source=source,
-        ingest_id=ingest_id,
-        row_count=len(rows),
-        truncated=truncated,
-        space_id=space_id,
-        path=path,
-        extracted_at=extracted_at,
-    )
-    return SourcePull(
-        bronze_table=landed,
-        source=source,
-        columns=columns,
-        row_count=len(rows),
-        truncated=truncated,
-        ingest_id=ingest_id,
-        ref_id=ref_id,
-        extracted_at=extracted_at,
-        note=note,
-    )
+        kept_text = list(type_notes.get("kept_text") or [])
+        untyped = list(type_notes.get("untyped_numeric") or [])
+        if kept_text:
+            named = "kept as text: " + ", ".join(kept_text)
+            note = f"{note}; {named}" if note else named
+        record_source_pull(
+            table_name=landed.split(".", 1)[-1],
+            source=source,
+            ingest_id=ingest_id,
+            row_count=got,
+            truncated=truncated,
+            space_id=space_id,
+            path=path,
+            extracted_at=extracted_at,
+            untyped_numeric=",".join(untyped) or None,
+        )
+        if on_progress is not None:
+            on_progress(
+                {
+                    "event": "table",
+                    "table": target.qualified,
+                    "bronze_table": landed,
+                    "row_count": got,
+                    "truncated": truncated,
+                }
+            )
+        return SourcePull(
+            bronze_table=landed,
+            source=source,
+            columns=columns,
+            row_count=got,
+            truncated=truncated,
+            ingest_id=ingest_id,
+            ref_id=ref_id,
+            extracted_at=extracted_at,
+            note=note,
+            kept_text=kept_text,
+            untyped_numeric=untyped,
+        )
+    finally:
+        cur.close()
+
 
 
 def ingest_source_table(
@@ -532,6 +674,8 @@ def ingest_source_table(
     max_rows: int = DEFAULT_MAX_ROWS,
     path: Path | None = None,
     space_id: str | None = None,
+    chunk_size: int = FETCH_CHUNK,
+    on_progress: ProgressHook | None = None,
 ) -> SourcePull:
     """Pull one source table and land it in bronze with provenance."""
     if max_rows < 1:
@@ -541,6 +685,7 @@ def ingest_source_table(
         return _pull_one(
             cfg, con, target,
             max_rows=max_rows, path=path, space_id=space_id, bronze_table=bronze_table,
+            chunk_size=chunk_size, on_progress=on_progress,
         )
 
 
@@ -551,6 +696,8 @@ def ingest_source_database(
     max_rows: int = DEFAULT_MAX_ROWS,
     path: Path | None = None,
     space_id: str | None = None,
+    chunk_size: int = FETCH_CHUNK,
+    on_progress: ProgressHook | None = None,
 ) -> SourceExtract:
     """Collect and understand: every base table to bronze, plus the keys to compile.
 
@@ -585,9 +732,30 @@ def ingest_source_database(
                 else:
                     skipped.append(req)
         keys = list_source_keys(cfg, con=con)
+        # Claim every name before any row is written. A later pull must not
+        # DROP a table whose name was not reserved yet.
+        held: dict[str, tuple[str, str | None]] = {}
+        claimed: list[tuple[str, str | None]] = []
+        for target in wanted:
+            source = f"{cfg.describe()}#{target.qualified}"
+            claimed.append(
+                claim_source_table_name(
+                    stem=_bronze_name(target),
+                    source=source,
+                    path=path,
+                    space_id=space_id,
+                    held=held,
+                )
+            )
         pulls = [
-            _pull_one(cfg, con, t, max_rows=max_rows, path=path, space_id=space_id)
-            for t in wanted
+            _pull_one(
+                cfg, con, target,
+                max_rows=max_rows, path=path, space_id=space_id,
+                bronze_table=bronze_name,
+                name_note=note,
+                chunk_size=chunk_size, on_progress=on_progress,
+            )
+            for target, (bronze_name, note) in zip(wanted, claimed, strict=True)
         ]
     source = cfg.describe()
     return SourceExtract(

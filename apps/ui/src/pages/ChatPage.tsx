@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
 import { ScopeChip } from "@/components/ScopeChip";
+import { consumeObjectAskHandoff, takeAskTool } from "@/lib/objectAskHandoff";
 import { useApp } from "@/context/AppContext";
 
 export function ChatPage() {
@@ -32,6 +33,8 @@ export function ChatPage() {
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const askRef = useRef(ask);
+  askRef.current = ask;
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -39,15 +42,15 @@ export function ChatPage() {
 
   // Studio hands the selection over through router state. Consume it once and
   // clear it, so a later back-navigation does not silently re-apply a scope the
-  // user has since cleared.
+  // user has since cleared. ask lives on a ref so starting the request does not
+  // re-fire this effect (ask identity changes with `asking`).
   useEffect(() => {
-    const s = location.state as
-      | { groundedTables?: string[]; groundedLabels?: string[] }
-      | null;
-    if (s?.groundedTables?.length) {
-      setGrounded(s.groundedTables, s.groundedLabels ?? []);
-      navigate(location.pathname, { replace: true, state: null });
-    }
+    const handoff = consumeObjectAskHandoff(location.state);
+    if (!handoff) return;
+    setGrounded(handoff.groundedTables, handoff.groundedLabels);
+    navigate(location.pathname, { replace: true, state: null });
+    const tool = takeAskTool(handoff);
+    if (tool) void askRef.current(tool);
   }, [location, navigate, setGrounded]);
 
   const submit = (q: string) => {

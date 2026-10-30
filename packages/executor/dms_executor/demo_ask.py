@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from dms_executor.demo_warehouse import (
@@ -416,6 +417,9 @@ def _top_skus(
     offset: int = 0,
     exclude: list[str] | None = None,
     space_id: str | None,
+    path: Path | None = None,
+    ask_mode: str = "demo",
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     exclude = [s.upper() for s in (exclude or []) if s]
     where_extra = ""
@@ -431,9 +435,9 @@ def _top_skus(
         ORDER BY revenue_myr DESC, sku ASC
         LIMIT {int(n)} OFFSET {int(max(0, offset))}
     """
-    rows = execute_sql(sql)
+    rows = execute_sql(sql, path=path)
     if not rows:
-        return _abstain(space_id=space_id)
+        return _abstain(space_id=space_id, session_id=session_id, ask_mode=ask_mode)
     top = rows[0]
     rank_start = int(max(0, offset)) + 1
     text = (
@@ -460,6 +464,8 @@ def _top_skus(
         sql_used=" ".join(sql.split()),
         assumptions=assumptions,
         space_id=space_id,
+        session_id=session_id,
+        ask_mode=ask_mode,
         contributing_sources=_SOURCES,
         rows=[
             {"sku": r["sku"], "revenue_myr": round(float(r["revenue_myr"]), 2)} for r in rows
@@ -473,14 +479,20 @@ def _top_skus(
     )
 
 
-def _capacity(*, space_id: str | None) -> dict[str, Any]:
+def _capacity(
+    *,
+    space_id: str | None,
+    path: Path | None = None,
+    ask_mode: str = "demo",
+    session_id: str | None = None,
+) -> dict[str, Any]:
     sql = """
         SELECT name AS location,
                ROUND(100.0 * current_load_kg / NULLIF(capacity_kg, 0), 1)::DOUBLE AS util_pct
         FROM locations
         ORDER BY util_pct DESC
     """
-    rows = execute_sql(sql)
+    rows = execute_sql(sql, path=path)
     peak = rows[0] if rows else {"location": "?", "util_pct": 0.0}
     raw_util = peak.get("util_pct", 0.0)
     util_pct = float(raw_util) if isinstance(raw_util, (int, float, str)) else 0.0
@@ -502,6 +514,8 @@ def _capacity(*, space_id: str | None) -> dict[str, Any]:
         sql_used=" ".join(sql.split()),
         assumptions=["demo warehouse locations table"],
         space_id=space_id,
+        session_id=session_id,
+        ask_mode=ask_mode,
         contributing_sources=[
             {
                 "ref_id": "ref_loc",
@@ -633,6 +647,8 @@ def _abstain(
     answer_id: str = "ans_demo_abstain",
     text: str | None = None,
     assumptions: list[str] | None = None,
+    ask_mode: str = "demo",
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     return _pack(
         answer_id=answer_id,
@@ -646,6 +662,8 @@ def _abstain(
         abstained=True,
         assumptions=assumptions or ["demo router abstained — 0 confidently wrong"],
         space_id=space_id,
+        session_id=session_id,
+        ask_mode=ask_mode,
         contributing_sources=[],
         rows=[],
     )
@@ -666,6 +684,116 @@ def _abstain_predictive(*, space_id: str | None) -> dict[str, Any]:
             "predictive intent detected — demo router abstained",
             "demo warehouse is historical only — no forecast model",
         ],
+    )
+
+
+
+_EXACT_DEMO: dict[str, str] = {
+    "show warehouse capacity utilisation": "capacity",
+    "show warehouse capacity utilization": "capacity",
+    "how many skus do we have in inventory": "sku_count",
+    "top 5 selling skus by revenue": "top5",
+}
+_EXACT_NEEDS_COLUMN: dict[str, tuple[str, str]] = {
+    "what is our total spend by supplier country": ("suppliers", "country"),
+    "what is total stock value by category": ("inventory", "category"),
+}
+_PUNCT = re.compile(r"[?!.]+$")
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _fold_exact(question: str) -> str:
+    folded = " ".join((question or "").lower().split())
+    return _PUNCT.sub("", folded).strip()
+
+
+def _column_names(table: str, path: Path | None) -> set[str]:
+    if not _IDENT.fullmatch(table):
+        return set()
+    try:
+        rows = execute_sql(f"DESCRIBE {table}", path=path)
+    except Exception:  # noqa: BLE001 - a missing table is a missing column
+        return set()
+    return {str(row.get("column_name") or "") for row in rows}
+
+
+def _sku_count(
+    *,
+    space_id: str | None,
+    path: Path | None,
+    ask_mode: str,
+    session_id: str | None,
+) -> dict[str, Any]:
+    sql = "SELECT COUNT(DISTINCT sku)::INTEGER AS sku_count FROM inventory"
+    rows = execute_sql(sql, path=path)
+    count = int(rows[0]["sku_count"]) if rows else 0
+    return _pack(
+        answer_id="ans_demo_sku_count",
+        text=f"Inventory has {count} distinct SKUs.",
+        values=[{"id": "v_sku", "value": count, "unit": "SKU", "label": "Distinct SKUs"}],
+        badge="L2_VALIDATED",
+        sql_used=sql,
+        assumptions=["demo inventory", "distinct sku"],
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode=ask_mode,
+        contributing_sources=[
+            {
+                "ref_id": "ref_inv",
+                "container": "inventory",
+                "kind": "sql",
+                "row_count": count,
+                "contribution": 1.0,
+                "origin_uri": "duckdb://dms_demo/inventory",
+            }
+        ],
+        rows=[{"sku_count": count}],
+    )
+
+
+def maybe_exact_demo_ask(
+    question: str,
+    *,
+    warehouse: Path | None = None,
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Answer a starter phrase from fixed single-table SQL, or abstain.
+
+    A miss returns None so a verified query, a compiled measure, or Cortex
+    still runs. categoty is not in this map, so a registered synonym can
+    certify it and a guess cannot.
+    """
+    folded = _fold_exact(question)
+    kind = _EXACT_DEMO.get(folded)
+    if kind == "capacity":
+        return _capacity(
+            space_id=space_id, path=warehouse, ask_mode="demo", session_id=session_id
+        )
+    if kind == "sku_count":
+        return _sku_count(
+            space_id=space_id, path=warehouse, ask_mode="demo", session_id=session_id
+        )
+    if kind == "top5":
+        return _top_skus(
+            5, space_id=space_id, path=warehouse, ask_mode="demo", session_id=session_id
+        )
+    needed = _EXACT_NEEDS_COLUMN.get(folded)
+    if needed is None:
+        return None
+    table, column = needed
+    if column in _column_names(table, warehouse):
+        return None
+    return _abstain(
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="demo",
+        answer_id=f"ans_demo_missing_{column}",
+        text=(
+            f"Abstained: {table}.{column} is not in this warehouse, "
+            "so that breakdown will not be invented."
+        ),
+        assumptions=["column_missing"],
     )
 
 

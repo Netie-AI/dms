@@ -80,8 +80,10 @@ def test_company_default_lists_empty_silver_gold_folders_before_promote(
     ids = {n["id"] for n in tree["nodes"]}
     assert "folder:silver" in ids
     assert "folder:gold" in ids
+    assert "folder:objects" in ids
     assert _leaves(tree, "folder:silver") == []
     assert _leaves(tree, "folder:gold") == []
+    assert _leaves(tree, "folder:objects") == []
 
 
 def test_preview_warehouse_table_refuses_silver_sales(warehouse: Path) -> None:
@@ -103,6 +105,8 @@ def test_named_space_hides_promote_targets(
     ids = {n["id"] for n in tree["nodes"]}
     assert "folder:silver" not in ids
     assert "folder:gold" not in ids
+    assert "folder:objects" in ids
+    assert _leaves(tree, "folder:objects") == []
     assert "folder:warehouse" in ids
     warehouse_labels = {n["label"] for n in _leaves(tree, "folder:warehouse")}
     assert warehouse_labels == {

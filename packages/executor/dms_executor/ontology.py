@@ -970,8 +970,8 @@ def _render(op: str, value: Any) -> str:
 # --------------------------------------------------------------------------
 
 
-def demo_ontology(warehouse: Path) -> Ontology:
-    """The demo warehouse as an ontology, including the trap it is famous for.
+def _rich_demo_ontology() -> Ontology:
+    """The rich lake as an ontology, including the trap it is famous for.
 
     ``inventory`` is one row per stock LOT. Declaring it as an object keyed on
     ``sku`` would be a lie the verifier catches immediately, so it is keyed on
@@ -1038,6 +1038,87 @@ def demo_ontology(warehouse: Path) -> Ontology:
         description="one contribution per shipment",
     )
     return o
+
+
+def _thin_demo_ontology() -> Ontology:
+    """The seeded six-table demo. Only columns ``ensure_demo_warehouse`` creates.
+
+    The rich ontology names ``storage_bin`` and ``category``. Those columns are
+    not in the seed, so verify() refused every join on a fresh demo. This
+    declaration matches the seed, including ``txn_type = 'outbound'``.
+    """
+    o = Ontology()
+    o.add_object("transaction", "transactions", ["txn_id"])
+    o.add_object("shipment", "shipments", ["shipment_id"])
+    o.add_object("supplier", "suppliers", ["supplier_id"])
+    o.add_object("location", "locations", ["location_id"])
+    o.add_object("alert", "alerts", ["alert_id"])
+    o.add_object("lot", "inventory", ["sku", "location_id"])
+    o.add_link(
+        "txn_at_location", "transaction", ["location_id"], "location", ["location_id"]
+    )
+    o.add_link(
+        "txn_of_lot", "transaction", ["sku", "location_id"], "lot", ["sku", "location_id"]
+    )
+    o.add_link(
+        "ship_to_location",
+        "shipment",
+        ["destination_location_id"],
+        "location",
+        ["location_id"],
+    )
+    o.add_link("ship_of_lot", "shipment", ["sku"], "lot", ["sku"])
+    o.add_link("lot_at_location", "lot", ["location_id"], "location", ["location_id"])
+    o.add_link("lot_from_supplier", "lot", ["supplier_id"], "supplier", ["supplier_id"])
+    o.add_measure(
+        "outbound_value_myr",
+        "transaction",
+        "ROUND(SUM(CASE WHEN f.txn_type = 'outbound' THEN f.quantity_kg * f.unit_cost_myr "
+        "ELSE 0 END), 2)",
+        description="value at cost of outbound rows, one contribution per transaction",
+    )
+    o.add_measure(
+        "stock_value_myr",
+        "lot",
+        "ROUND(SUM(f.quantity_kg * f.unit_cost_myr), 2)",
+        description="carrying value, one contribution per inventory row",
+    )
+    o.add_measure(
+        "shipping_cost_myr",
+        "shipment",
+        "ROUND(SUM(f.cost_myr), 2)",
+        description="freight billed, one contribution per shipment",
+    )
+    o.add_measure(
+        "shipment_count",
+        "shipment",
+        "COUNT(*)",
+        description="one contribution per shipment",
+    )
+    return o
+
+
+def _inventory_columns(warehouse: Path) -> set[str]:
+    if not warehouse.is_file():
+        return set()
+    import duckdb
+
+    con = duckdb.connect(str(warehouse), read_only=True)
+    try:
+        rows = con.execute("DESCRIBE inventory").fetchall()
+    except Exception:  # noqa: BLE001
+        return set()
+    finally:
+        con.close()
+    return {str(row[0]) for row in rows}
+
+
+def demo_ontology(warehouse: Path) -> Ontology:
+    """Rich lake when those columns exist, otherwise the seeded demo."""
+    cols = _inventory_columns(warehouse)
+    if "storage_bin" in cols and "category" in cols:
+        return _rich_demo_ontology()
+    return _thin_demo_ontology()
 
 
 def _connect(warehouse: Path) -> Any:

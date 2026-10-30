@@ -40,3 +40,7 @@ plus `components/ConstraintTracePanel.tsx` on AuditPage.
 RSF-02 typed artifacts: `packages/core/dms_core/rsf.py` (beside CCA, not inside
 it; dms_core may not import dms_executor). Regression:
 `tests/test_rsf_artifact.py`.
+
+Industry swap (insurance as worked example, not a SKU):
+`docs/NEXT_COMPANY_ONTOLOGY_SCALE.md`. Cortex O7: `D:\Cortex\scripts\new_pack.py`
++ demo `packs/crm/`. Do not mint a vertical pack until EPIC-021 bronze exists.

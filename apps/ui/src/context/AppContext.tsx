@@ -138,6 +138,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   sessionIdRef.current = sessionId;
 
   const setGrounded = useCallback((tables: string[], labels: string[] = []) => {
+    groundedTablesRef.current = tables;
     setGroundedTables(tables);
     setGroundedLabels(labels.length ? labels : tables);
   }, []);
@@ -263,10 +264,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return null;
   }, [messages]);
 
-  const suggestions = useMemo(
-    () => (latestAnswer?.suggestions?.length ? latestAnswer.suggestions : SUGGESTED_QUESTIONS),
-    [latestAnswer],
-  );
+  const suggestions = useMemo(() => {
+    if (latestAnswer?.suggestions?.length) return latestAnswer.suggestions;
+    if (groundedTables.some((t) => t.startsWith("objects."))) return [];
+    return SUGGESTED_QUESTIONS;
+  }, [latestAnswer, groundedTables]);
 
   const selectValue = useCallback(
     (id: string | null) => {

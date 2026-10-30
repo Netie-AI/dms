@@ -106,6 +106,10 @@ describe("previewForNode", () => {
   it("does not map silver/gold ids to a warehouse preview", () => {
     expect(previewForNode("silver:silver.sales")).toBeNull();
     expect(previewForNode("gold:gold.sales_total")).toBeNull();
+    expect(previewForNode("objects:objects.customer")).toEqual({
+      kind: "warehouse",
+      table: "objects.customer",
+    });
     expect(previewForNode("warehouse:transactions")).toEqual({
       kind: "warehouse",
       table: "transactions",

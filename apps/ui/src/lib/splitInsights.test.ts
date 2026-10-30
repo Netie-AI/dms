@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitInsights } from "./splitInsights";
+import { INSIGHTS_RISK_LINE, splitInsights } from "./splitInsights";
 
 describe("splitInsights", () => {
   it("splits Cortex INS-01 block into prose + bullets", () => {
@@ -34,5 +34,10 @@ describe("splitInsights", () => {
       "Highest qty: 12 (Electronics).",
       "Lowest qty: 5 (Food).",
     ]);
+  });
+
+  it("F91 risk line names the join gap and the evidence", () => {
+    expect(INSIGHTS_RISK_LINE).toMatch(/do not prove a join is safe/i);
+    expect(INSIGHTS_RISK_LINE).toMatch(/Rows and SQL/);
   });
 });

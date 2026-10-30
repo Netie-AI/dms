@@ -34,7 +34,7 @@ export type ContributingSource = {
 };
 
 export type ChartSpec = {
-  kind: "bar" | "hbar" | "line" | "bignum";
+  kind: "bar" | "hbar" | "line" | "bignum" | "pie";
   x?: string;
   y?: string;
   title?: string;
@@ -51,6 +51,10 @@ export type AnswerEnvelope = {
   /** Phase 0 — must lockstep with badge===ABSTAIN */
   abstained?: boolean;
   sql_used?: string;
+  /** Ask path that built this envelope (verified_query, metric_tool, sql, ...). */
+  route?: string;
+  /** Authored metric tool name when route is metric_tool. */
+  metric_tool?: string;
   assumptions: string[];
   as_of: string;
   contributing_sources: ContributingSource[];

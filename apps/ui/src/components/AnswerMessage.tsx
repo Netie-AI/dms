@@ -11,7 +11,7 @@ import {
 import { ceoSafeHref } from "@/lib/productMode";
 import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
 import { csvDownloadName, isSummaryExport, rowsToCsv } from "@/lib/rowsToCsv";
-import { splitInsights } from "@/lib/splitInsights";
+import { INSIGHTS_RISK_LINE, splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
 
 const EXCLUSION_YES_RE = /^Yes — exclude\b/i;
@@ -310,6 +310,21 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           </a>
         )}
       </div>
+      {(envelope.route || envelope.sql_used) && envelope.badge !== "ABSTAIN" && (
+        <p className="mb-3 text-[11px] text-[var(--color-ink-muted)]">
+          {envelope.route === "metric_tool"
+            ? `Certified tool${envelope.metric_tool ? ` ${envelope.metric_tool}` : ""}`
+            : envelope.route === "verified_query"
+              ? "Certified question"
+              : envelope.route
+                ? `Route ${envelope.route}`
+                : "Executed SQL"}
+          {rows.length > 0
+            ? ` · ${rows.length} row${rows.length === 1 ? "" : "s"}`
+            : ""}
+          {envelope.sql_used ? " · SQL retrievable via ⟨sql⟩" : ""}
+        </p>
+      )}
       {showLayer && (
         <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
           <p className="text-sm font-medium text-[var(--color-ink)]">
@@ -360,6 +375,9 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         <div className="mt-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
             Insights
+          </p>
+          <p className="mt-1 text-[11px] leading-snug text-[var(--color-ink-muted)]">
+            {INSIGHTS_RISK_LINE}
           </p>
           <ul className="mt-1 list-inside list-disc text-sm text-[var(--color-ink)]">
             {insights.map((b) => (

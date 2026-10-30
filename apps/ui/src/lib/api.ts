@@ -18,6 +18,7 @@ import type {
   TrustRunDetailItem,
   TrustSummary,
 } from "./types";
+import type { SqlLinkReport } from "./sqlSourceLinks";
 
 /** CCA-07: the stage trace shape the answer envelope carries (CCA-01 schema).
  *  Re-exported here so envelope consumers get it from the API surface. */
@@ -387,6 +388,9 @@ export function previewForNode(
   if (id.startsWith("silver:") || id.startsWith("gold:")) {
     return null;
   }
+  if (id.startsWith("objects:")) {
+    return { kind: "warehouse", table: id.slice("objects:".length) };
+  }
   if (id.startsWith("bronze:")) {
     return { kind: "bronze", table: id.slice("bronze:".length) };
   }
@@ -483,7 +487,12 @@ export async function fetchVerifiedQueries(
 }
 
 export async function registerVerifiedQuery(
-  body: { spaceId?: string | null; question: string; sql: string },
+  body: {
+    spaceId?: string | null;
+    question: string;
+    sql: string;
+    synonyms?: string[];
+  },
   signal?: AbortSignal,
 ): Promise<VerifiedQueryAsset> {
   const res = await fetch("/api/v1/studio/verified-queries", {
@@ -493,11 +502,136 @@ export async function registerVerifiedQuery(
       space_id: body.spaceId || "company-default",
       question: body.question,
       sql: body.sql,
+      synonyms: body.synonyms ?? [],
     }),
     signal,
   });
   if (!res.ok) throw new Error(describeApiError(await res.text()));
   return (await res.json()) as VerifiedQueryAsset;
+}
+
+export type SqlSourceKind = "sqlserver" | "mysql" | "postgres";
+
+export type SqlSourceReceipt = {
+  source: string;
+  tables: {
+    bronze_table: string;
+    source: string;
+    row_count: number;
+    truncated: boolean;
+    extracted_at: string;
+    columns?: string[];
+  }[];
+  skipped: string[];
+  declared_primary_keys: number;
+  declared_foreign_keys: number;
+  links?: SqlLinkReport;
+};
+
+export async function ingestSqlSource(body: {
+  kind: SqlSourceKind;
+  host: string;
+  database: string;
+  user: string;
+  password: string;
+  port?: number | null;
+  tables?: string;
+  spaceId?: string | null;
+  maxRows?: number | null;
+  onProgress?: (msg: string) => void;
+}): Promise<SqlSourceReceipt> {
+  const tables = body.tables
+    ?.split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  const res = await fetch("/api/v1/studio/sources/sql/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/x-ndjson",
+    },
+    body: JSON.stringify({
+      kind: body.kind,
+      host: body.host,
+      database: body.database,
+      user: body.user,
+      password: body.password,
+      port: body.port || undefined,
+      tables: tables?.length ? tables : undefined,
+      max_rows: body.maxRows ?? undefined,
+      space_id: body.spaceId || undefined,
+    }),
+  });
+  if (!res.ok) throw new Error(describeApiError(await res.text()));
+  if (!res.body) throw new Error("extract stream had no body");
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  let receipt: SqlSourceReceipt | null = null;
+  const take = (line: string) => {
+    const ev = JSON.parse(line) as {
+      event?: string;
+      message?: string;
+      receipt?: SqlSourceReceipt;
+      table?: string;
+      bronze_table?: string;
+      row_count?: number;
+    };
+    if (ev.event === "error") throw new Error(ev.message || "extract failed");
+    if (ev.event === "chunk" || ev.event === "table") {
+      const name = ev.table || ev.bronze_table || "table";
+      const n = ev.row_count ?? 0;
+      body.onProgress?.(`${name}: ${n} row${n === 1 ? "" : "s"}`);
+    }
+    if (ev.event === "done" && ev.receipt) receipt = ev.receipt;
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      take(line);
+    }
+  }
+  if (buf.trim()) take(buf.trim());
+  if (!receipt) throw new Error("extract ended without a receipt");
+  return receipt;
+}
+
+export type ObjectPublishReceipt = {
+  objects: string[];
+  relation: string;
+  silver?: string | null;
+  tool?: { name: string; sql: string; description: string; tables: string[] };
+};
+
+export async function publishObject(body: {
+  name: string;
+  relation: string;
+  columns: Record<string, string>;
+  spaceId?: string | null;
+  toolName?: string;
+  toolSql?: string;
+  toolDescription?: string;
+}): Promise<ObjectPublishReceipt> {
+  const res = await fetch("/api/v1/studio/objects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: body.name,
+      relation: body.relation,
+      columns: body.columns,
+      space_id: body.spaceId || undefined,
+      tool_name: body.toolName || undefined,
+      tool_sql: body.toolSql || undefined,
+      tool_description: body.toolDescription || undefined,
+    }),
+  });
+  if (!res.ok) throw new Error(describeApiError(await res.text()));
+  return (await res.json()) as ObjectPublishReceipt;
 }
 
 export async function createSpace(

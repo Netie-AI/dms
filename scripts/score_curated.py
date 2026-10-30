@@ -95,8 +95,8 @@ def self_check() -> int:
     if len(ids) != len(set(ids)):
         print("FAIL: duplicate ids")
         return 1
-    if len(ids) < 13:
-        print(f"FAIL: Genie walkthrough needs >= 13 cases, got {len(ids)}")
+    if len(ids) < 20:
+        print(f"FAIL: Genie walkthrough needs >= 20 cases, got {len(ids)}")
         return 1
     expects = {c["expect"] for c in pack["questions"]}
     if "l0" not in expects or "abstain" not in expects:

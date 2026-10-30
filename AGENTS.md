@@ -88,3 +88,10 @@ Terminal-verifiable acceptance → Claude Code. Visual acceptance → Cursor.
 
 Product lock originated in Cortex:
 `distill: skill_distill/captures/2026-07-29_dms-spaces_chatgpt-for-excel.md` (Cortex tree).
+
+## Industry swap (not a new app)
+
+Warehouse SKUs are the demo pack, not the product. To retarget insurance / banking /
+finance / retail: `docs/NEXT_COMPANY_ONTOLOGY_SCALE.md`. Do not fork Chat. Do not
+mint `packs/insurance/` until EPIC-021 has landed bronze. Cortex scaffold:
+`python -m scripts.new_pack --demo crm` (O7, not a production CRM).
