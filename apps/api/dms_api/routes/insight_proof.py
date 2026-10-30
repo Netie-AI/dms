@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -292,6 +293,21 @@ PIN_STATUS: dict[str, int] = {
 DEFAULT_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 
 
+def _is_shipped_default(actor: object) -> bool:
+    """Is ``actor`` the shipped default, in any spelling ``uuid.UUID`` accepts?
+
+    A string compare lets hyphenless, braced and ``urn:uuid:`` spellings of the
+    default through (the ACT-02 MEDIUM); compare the parsed UUIDs instead.
+    """
+    text = str(actor or "").strip()
+    if not text:
+        return True
+    try:
+        return uuid.UUID(text) == uuid.UUID(DEFAULT_ACTOR)
+    except ValueError:
+        return False
+
+
 class PinPreviewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -384,7 +400,7 @@ def insight_proof_pin_confirm(
     if cortex is None:
         return _unavailable("Cortex client not configured", None)
     key = getattr(cortex, "api_key", None)
-    if str(settings.dms_actor_user_id).strip().lower() == DEFAULT_ACTOR:
+    if _is_shipped_default(settings.dms_actor_user_id):
         # Before the gate and the token: nothing is spent, submitted or appended.
         return JSONResponse(
             {"ok": False, "code": "steward_identity_unset",

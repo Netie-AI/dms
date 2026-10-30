@@ -1045,6 +1045,33 @@ def test_a_replay_racing_a_revoke_is_never_served(
 
 
 @pytest.mark.parametrize(
+    "spelling",
+    [
+        "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB",
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "{bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb}",
+        "urn:uuid:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+        "  bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb  ",
+        "",
+    ],
+)
+def test_no_spelling_of_the_shipped_default_can_confirm_a_pin(
+    world: _World, monkeypatch: pytest.MonkeyPatch, spelling: str
+) -> None:
+    """The ACT-02 MEDIUM class: a string compare let other UUID spellings through."""
+    iid = _insight_id(world)
+    pre = world.preview(iid).json()
+    monkeypatch.setenv("DMS_ACTOR_USER_ID", spelling)
+    _clear_settings()
+    got = world.confirm(pre["token"])
+    assert got.status_code == 403, got.text
+    assert got.json()["code"] == "steward_identity_unset"
+    assert "approved_by" not in got.json()
+    assert world.cortex.events("insight.pinned") == [] and world.register_rows() == 0
+    assert world.pins().json()["pins"] == []
+
+
+@pytest.mark.parametrize(
     ("error", "code"),
     [
         (lambda: httpx.ConnectError("connection refused"), "cortex_unavailable"),

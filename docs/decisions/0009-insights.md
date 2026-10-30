@@ -166,7 +166,9 @@ confirmed it": nothing is auto-pinned, auto-replayed or auto-applied.
     Space (from the request, the token or the pin), exactly as `/run` does. F5 is told who
     is confirming; it is still F5's decision.
   - Confirm refuses the shipped default actor (`bbbbbbbb-...`) as `steward_identity_unset`
-    (403) before the gate, the token or any append: with no steward configured, no pin may
+    (403) before the gate, the token or any append. The check parses the UUID, so upper-case,
+    hyphenless, braced and `urn:uuid:` spellings of the default (and an empty value) are
+    refused too. With no steward configured, no pin may
     say a steward approved it (ACT-02 refuses the same case). One configured steward, no
     dual control.
   - Receipts are deduplicated across the pin lifecycle. `main._proven_insight_receipts`
