@@ -35,14 +35,17 @@ import psycopg
 from dms_core.control_plane.action_types import (
     ACTION_TYPES,
     ALLOWED_KEYS,
+    APPROVAL_REF_MAX,
+    APPROVAL_REF_MIN,
     REASON_MAX,
     ActionSpec,
     ActionSpecError,
     ActionType,
     actions_enabled,
+    approval_ref_problem,
     canonical_decimal,
     diff_sha,
-    mask_json,
+    mask_evidence,
     mask_text,
     object_key_hash,
     spec_sha,
@@ -62,7 +65,6 @@ _T = TypeVar("_T")
 _SAVEPOINT = "dms_action_core"
 #: Evidence key a decline adds; reserved, so a proposal cannot pin it.
 DECLINE_REASON_KEY = "decline_reason"
-APPROVAL_REF_MIN = 3
 #: Actor values that name nobody: the shipped default user and stringified blanks.
 _NO_ACTOR = frozenset({"", "none", "null", str(SEED_USER_ID)})
 
@@ -79,6 +81,18 @@ class ApprovalRefRequired(ValueError):
 
     status_code = 422
     code = "approval_ref_required"
+
+
+class ApprovalRefInvalid(ApprovalRefRequired):
+    """An approval reference that is not one ticket-reference token.
+
+    ``code`` is ``approval_ref_invalid`` (shape, a secret, no letter) or
+    ``approval_ref_too_long``. The ref is kept verbatim, so it is refused, not masked.
+    """
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(f"{code}: {message}" if message else code)
+        self.code = code
 
 
 class TokenDiffMismatch(Exception):
@@ -170,13 +184,21 @@ def _visible(text: str) -> int:
 
 
 def _require_ref(approval_ref: str | None) -> str:
-    """The approval reference as stored: stripped, secrets scrubbed, PII masked."""
+    """The approval reference as stored: stripped and verbatim, validated by shape.
+
+    A ref is a change-ticket identifier, so it is never PII-masked (that collapsed
+    ``CHG-2026-1030-4417`` and ``CHG-2026-1031-9999`` to one token on the ledger);
+    one that is not a ticket-shaped token is refused instead (``approval_ref_problem``).
+    """
     ref = approval_ref.strip() if isinstance(approval_ref, str) else ""
     if _visible(ref) < APPROVAL_REF_MIN:
         raise ApprovalRefRequired(
             f"approval_ref must have at least {APPROVAL_REF_MIN} visible characters"
         )
-    return mask_text(ref)
+    problem = approval_ref_problem(ref)
+    if problem is not None:
+        raise ApprovalRefInvalid(problem, f"at most {APPROVAL_REF_MAX} ticket-reference characters")
+    return ref
 
 
 def _is_uuid(text: str) -> bool:
@@ -191,9 +213,14 @@ def _require_actor(actor_id: Any) -> str:
     """DR-0004 Option A: the one configured steward identity, never blank or the default.
 
     The actor lands verbatim in append-only rows, so an actor that is not a user id
-    and reads as PII (an email) is refused rather than stored or masked away.
+    and reads as PII (an email) is refused rather than stored or masked away. A
+    UUID actor is compared and returned in canonical form, so another spelling of
+    the shipped default (hyphenless, braced, ``urn:uuid:``, uppercase) is refused
+    and one actor is written the same way in every row.
     """
     actor = "" if actor_id is None else str(actor_id).strip()
+    if _is_uuid(actor):
+        actor = str(UUID(actor))
     if actor.lower() in _NO_ACTOR or _visible(actor) == 0:
         raise ActorRequired("an apply or decline needs the configured steward identity")
     if not _is_uuid(actor) and mask_text(actor) != actor:
@@ -406,7 +433,8 @@ def propose_action(
     at = ACTION_TYPES[spec.action_type]
     source = None if source_value is None else canonical_decimal(source_value)
     # Evidence is copied into an append-only receipt: no secret, no PII (0005 precedent).
-    ev = mask_json(_json_safe(dict(evidence or {})))
+    # Identifiers (audit_id) are kept verbatim and shape-checked, never masked.
+    ev = mask_evidence(_json_safe(dict(evidence or {})))
     if DECLINE_REASON_KEY in ev:
         raise ActionSpecError("field_unknown", f"evidence key {DECLINE_REASON_KEY!r} is reserved")
 
@@ -970,7 +998,7 @@ def _record_decision(
         pinned = dict(stored["diff"].get("evidence") or {})
         if decision == "declined":
             pinned[DECLINE_REASON_KEY] = bound_reason or ""
-        evidence = mask_json(_json_safe(dict(result.get("evidence") or {})))
+        evidence = mask_evidence(_json_safe(dict(result.get("evidence") or {})))
         added = sorted(set(evidence) - set(pinned))
         if added:
             raise ReceiptMismatch("evidence", f"evidence {added[0]!r} was not pinned at propose")

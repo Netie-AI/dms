@@ -18,6 +18,7 @@ from dms_core.control_plane.action_types import ActionSpecError, state_hash, val
 from dms_core.control_plane.actions import (
     ActionsDisabled,
     ActorRequired,
+    ApprovalRefInvalid,
     ApprovalRefRequired,
     LedgerEntryReused,
     PreconditionFailed,
@@ -582,8 +583,7 @@ def test_clear_restores_source(conn: psycopg.Connection, two_tenants: dict[str, 
     conn.commit()
     clear = _propose(conn, two_tenants, op="clear", value=None)
     assert clear["diff"]["summary"] == (
-        "Clear reorder_level_kg for inventory_item SKU-BETA @ WH-B: "
-        "450 (override) -> 400 (source)"
+        "Clear reorder_level_kg for inventory_item SKU-BETA @ WH-B: 450 (override) -> 400 (source)"
     )
     out = _apply(conn, tid, clear["idempotency_token"])
     conn.commit()
@@ -842,8 +842,14 @@ def test_receipt_holds_no_pii_or_secret(
         },
     )
     conn.commit()
-    result = _apply(conn, tid, prop["idempotency_token"], ref="CAB jian@example.com")
-    assert result["approval_ref"] == "CAB DMSMASK_email_01"
+    # An approval_ref is a ticket identifier kept verbatim, so one carrying an
+    # email is refused, not masked (ACT-02 MEDIUM 2), and the version stays pending.
+    with pytest.raises(ApprovalRefInvalid) as refused:
+        _apply(conn, tid, prop["idempotency_token"], ref="CAB jian@example.com")
+    assert refused.value.code == "approval_ref_invalid"
+    conn.rollback()
+    result = _apply(conn, tid, prop["idempotency_token"], ref="CHG-2026-1030-4417")
+    assert result["approval_ref"] == "CHG-2026-1030-4417"
     assert result["evidence"]["question"] == (
         "reorder for DMSMASK_nric_01, mail DMSMASK_email_01, password=[redacted]"
     )
@@ -863,7 +869,7 @@ def test_receipt_holds_no_pii_or_secret(
     conn.rollback()
     assert stored is not None
     assert stored[:3] == (
-        "CAB DMSMASK_email_01",
+        "CHG-2026-1030-4417",
         "reorder for DMSMASK_nric_01, mail DMSMASK_email_01, password=[redacted]",
         "per DMSMASK_nric_01",
     )
