@@ -894,6 +894,218 @@ def test_comma_join_without_pii_still_proves(tmp_path: Path) -> None:
     assert set(got.proof["watermarks"]) == {"orders", "territory", "dummy"}
 
 
+# --------------------------------------------------------------------------
+# verify round 4: views, implicit flow through predicates, the three-part pii
+# name, proof figures bound to rows, top=0
+# --------------------------------------------------------------------------
+
+
+def _exec(wh: Path, *statements: str) -> None:
+    con = connect_file(wh, write=True)
+    try:
+        for sql in statements:
+            con.execute(sql)
+    finally:
+        con.close()
+
+
+_LEAK_TOKENS = ("North", "South", "East", "West", "86.4", "9.1")
+
+
+def _assert_nothing_leaked(run: ip.InsightRun, stub: _Stub, attr: str) -> None:
+    """No sentence, no row, no refusal text and no submit carries the marked values."""
+    assert [p.envelope["text"] for p in run.proven] == []
+    assert run.proven == ()
+    assert _codes(run)[f"order_amount by Territory.{attr}"] == "pii_dimension"
+    for entry in run.refused:
+        _assert_refused_envelope(entry)
+    shown = json.dumps([r["envelope"] for r in run.refused])
+    for token in _LEAK_TOKENS:
+        assert token not in shown
+    assert not any("WITH g AS" in c for c in stub.calls)
+    assert not any("territory" in c.casefold() for c in stub.calls)
+
+
+_VIEWS = [
+    # (statements, view the object reads, attribute)
+    (["CREATE VIEW Sales.TerritoryV AS SELECT territory_id, name AS region "
+      "FROM Sales.Territory"], "Sales.TerritoryV", "region"),
+    (["CREATE VIEW Sales.TerritoryV AS SELECT territory_id, name FROM Sales.Territory"],
+     "Sales.TerritoryV", "name"),
+    # A view over a view, renamed at each level.
+    (["CREATE VIEW Sales.TerritoryV AS SELECT territory_id, name AS region "
+      "FROM Sales.Territory",
+      "CREATE VIEW Sales.TerritoryW AS SELECT territory_id, UPPER(region) AS area "
+      "FROM Sales.TerritoryV"], "Sales.TerritoryW", "area"),
+    # A view column list renames by position: fails closed.
+    (["CREATE VIEW Sales.TerritoryV (territory_id, region) AS "
+      "SELECT territory_id, name FROM Sales.Territory"], "Sales.TerritoryV", "region"),
+]
+
+
+@pytest.mark.parametrize(("statements", "view", "attr"), _VIEWS)
+def test_a_view_over_a_marked_table_never_executes(
+    tmp_path: Path, statements: list[str], view: str, attr: str
+) -> None:
+    """Verify round 4 (MEDIUM): a view hid the pii item; its values reached an L1 headline."""
+    wh = _seed_sales(tmp_path / "pii_view.duckdb")
+    _exec(wh, *statements)
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items(view, attr, pii=True))
+    granted = set(_B_GRANTS) | {"Sales.TerritoryV", "Sales.TerritoryW"}
+    run = _run(wh, stub, granted, onto=onto)
+    for leaked in (f"2 of 4 Territory.{attr} values (North, South) carry 86.4 pct of "
+                   "order_amount", f"9.1 pct of order_amount lands on rows with no "
+                   f"Territory.{attr} value"):
+        assert leaked not in [p.envelope["text"] for p in run.proven]
+    _assert_nothing_leaked(run, stub, attr)
+
+
+def test_a_view_without_pii_still_proves(tmp_path: Path) -> None:
+    """Control: a view over an unmarked table proves as before."""
+    wh = _seed_sales(tmp_path / "view_ok.duckdb")
+    _exec(wh, "CREATE VIEW Sales.TerritoryV AS SELECT territory_id, name AS region "
+              "FROM Sales.Territory")
+    onto = Ontology.from_store(items=_territory_items("Sales.TerritoryV", "region", pii=False))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS) | {"Sales.TerritoryV"}, onto=onto)
+    got = _by_text(
+        run, "2 of 4 Territory.region values (North, South) carry 86.4 pct of order_amount")
+    assert got.envelope["badge"] == "L1_GOVERNED_METRIC"
+    assert_envelope_valid(got.envelope)
+    assert _tuples(got.envelope["rows"])[0][:3] == ("North", 900.0, 81.8)
+
+
+def test_a_view_marked_on_its_own_column_never_executes(tmp_path: Path) -> None:
+    """A pii item that names the view's own column binds the object that reads it."""
+    wh = _seed_sales(tmp_path / "view_own.duckdb")
+    _exec(wh, "CREATE VIEW Sales.TerritoryV AS SELECT territory_id, name AS region "
+              "FROM Sales.Territory")
+    items = _territory_items("Sales.TerritoryV", "region", pii=False)
+    items.append({"id": "item_pii_view", "version_id": _B_VERSION, "kind": "pii",
+                  "status": "approved",
+                  "payload": {"name": "territory_region", "relation": "Sales.TerritoryV",
+                              "column": "region"}})
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_B_GRANTS) | {"Sales.TerritoryV"},
+               onto=Ontology.from_store(items=items))
+    _assert_nothing_leaked(run, stub, "region")
+
+
+def _seed_codes(wh: Path) -> None:
+    _exec(wh, "CREATE TABLE Sales.Codes (code VARCHAR)",
+          "INSERT INTO Sales.Codes VALUES ('North'),('South'),('East'),('West')")
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        "(SELECT t.territory_id, c.code AS region FROM Sales.Territory t "
+        "JOIN Sales.Codes c ON c.code = t.name)",
+        "(SELECT t.territory_id, c.code AS region FROM Sales.Territory t, Sales.Codes c "
+        "WHERE t.territory_id > 0 AND c.code = t.name)",
+        "(SELECT t.territory_id, c.code AS region FROM Sales.Territory t "
+        "JOIN Sales.Codes c ON c.code LIKE t.name || '%')",
+    ],
+)
+def test_a_join_predicate_on_a_marked_column_never_executes(
+    tmp_path: Path, relation: str
+) -> None:
+    """Verify round 4 (LOW): c.code = t.name served the marked values as c.code."""
+    wh = _seed_sales(tmp_path / "pii_join_eq.duckdb")
+    _seed_codes(wh)
+    stub = _Stub(wh)
+    onto = Ontology.from_store(items=_territory_items(relation, "region", pii=True))
+    run = _run(wh, stub, set(_B_GRANTS) | {"Sales.Codes"}, onto=onto)
+    _assert_nothing_leaked(run, stub, "region")
+
+
+def test_predicate_taint_keeps_unrelated_columns_clean() -> None:
+    """A join on the key does not mark the key; a filter on the marked column marks itself."""
+    got = ip._subquery_taint(
+        "(SELECT t.territory_id, c.code AS region FROM Sales.Territory t "
+        "JOIN Sales.Codes c ON c.territory_id = t.territory_id WHERE t.name <> 'x')",
+        {"name"})
+    assert got is not None
+    assert "region" not in got and "territory_id" not in got
+
+
+def test_a_join_without_pii_still_proves(tmp_path: Path) -> None:
+    """Control: the same join with no pii item proves as before."""
+    wh = _seed_sales(tmp_path / "join_ok.duckdb")
+    _seed_codes(wh)
+    relation = ("(SELECT t.territory_id, c.code AS region FROM Sales.Territory t "
+                "JOIN Sales.Codes c ON c.code = t.name)")
+    onto = Ontology.from_store(items=_territory_items(relation, "region", pii=False))
+    run = _run(wh, _Stub(wh), set(_B_GRANTS) | {"Sales.Codes"}, onto=onto)
+    got = _by_text(
+        run, "2 of 4 Territory.region values (North, South) carry 86.4 pct of order_amount")
+    assert_envelope_valid(got.envelope)
+    assert _tuples(got.envelope["rows"])[0][:3] == ("North", 900.0, 81.8)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "Sales.Territory.name"},
+        {"name": "Territory.name"},
+        {"name": "territory_name", "table": "Sales.Territory", "column": "NAME "},
+    ],
+)
+def test_every_pii_payload_form_binds(tmp_path: Path, payload: dict[str, str]) -> None:
+    """Verify round 4 (LOW): the name-only three-part form parsed as table 'sales'."""
+    wh = _seed_sales(tmp_path / "pii_forms.duckdb")
+    items = _items()
+    items.append({"id": "item_pii_form", "version_id": _B_VERSION, "kind": "pii",
+                  "status": "approved", "payload": payload})
+    stub = _Stub(wh)
+    run = _run(wh, stub, set(_B_GRANTS), onto=Ontology.from_store(items=items))
+    assert _B_CONCENTRATION not in [p.envelope["text"] for p in run.proven]
+    _assert_nothing_leaked(run, stub, "name")
+
+
+def test_proof_figures_are_bound_to_the_rows(run_b: tuple[ip.InsightRun, _Stub]) -> None:
+    """Verify round 4 (LOW): totals and tolerance were not checked against the rows."""
+    onto = Ontology.from_store(items=_items())
+    got = _by_text(run_b[0], _B_CONCENTRATION)
+    assert _tuples(got.rows)[0] == ("North", 900.0, 81.8, 81.8, 1100.0)
+    assert got.proof["grouped_total"] == got.proof["raw_total"] == 1100.0
+    assert got.proof["tolerance"] == ip.conservation_tolerance(5) == 0.03
+    ip.assert_proof_shape(got.proof, onto=onto, sql=got.sql, rows=got.rows)
+    for bad, why in (
+        ({**got.proof, "raw_total": 5.0, "grouped_total": 5.0}, "grouped_total cell"),
+        ({**got.proof, "raw_total": 1.0, "tolerance": 1e9}, "conservation tolerance"),
+        ({**got.proof, "tolerance": 0.5}, "conservation tolerance"),
+    ):
+        with pytest.raises(ip.ProofShapeError, match=why):
+            ip.assert_proof_shape(bad, onto=onto, sql=got.sql, rows=got.rows)
+    # Rows whose values no longer add back to raw_total, with honest hashes over them.
+    forged_rows = [dict(r) for r in got.rows]
+    forged_rows[0]["value"] = 1.0
+    forged = {**got.proof,
+              "result_hash": item_result_hash(forged_rows),
+              "reexec_result_hash": item_result_hash(forged_rows),
+              "order_hash": ip.order_hash(forged_rows),
+              "executions": [{**e, "result_hash": item_result_hash(forged_rows)}
+                             for e in got.proof["executions"]]}
+    with pytest.raises(ip.ProofShapeError, match="add back to raw_total"):
+        ip.assert_proof_shape(forged, onto=onto, sql=got.sql, rows=forged_rows)
+
+
+def test_top_zero_states_nothing(sales_wh: Path) -> None:
+    """Verify round 4 (LOW): top=0 returned one proven insight."""
+    stub = _Stub(sales_wh)
+    run = _run(sales_wh, stub, set(_B_GRANTS), onto=Ontology.from_store(items=_items()),
+               top=0)
+    assert run.status == "ok"
+    assert run.proven == ()
+    assert [p.envelope["text"] for p in run.proven] == []
+    assert stub.calls == []
+    one = _run(sales_wh, _Stub(sales_wh), set(_B_GRANTS),
+               onto=Ontology.from_store(items=_items()), top=1)
+    assert len(one.proven) == 1
+    assert_envelope_valid(one.proven[0].envelope)
+
+
 class _Reorder(_Stub):
     """Honest cells, but rows 1 and 2 of the wrapper come back out of ORDER BY order."""
 
