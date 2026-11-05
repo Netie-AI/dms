@@ -140,6 +140,15 @@ from dms_executor.manifest import (
     classify_submit_error,
     should_rement,
 )
+from dms_executor.measure_confirm import (
+    MEASURE_REFUSAL_COPY,
+    MeasureRefusal,
+    confirm_measure,
+    create_measure,
+    measures_view,
+    propose_measures,
+    reject_measure,
+)
 from dms_executor.name_echo import (
     begin_grant_turn,
     end_grant_turn,
@@ -1457,7 +1466,11 @@ class Executor:
             )
             if join_why:
                 env = path_miss_envelope(
-                    question, join_why, space_id=space_id, session_id=session_id
+                    question,
+                    join_why,
+                    space_id=space_id,
+                    session_id=session_id,
+                    suggest_from=space_onto,
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
@@ -2095,6 +2108,13 @@ __all__ = [
     "verify_source_links",
     "bronze_catalog",
     "derive_and_store",
+    "MEASURE_REFUSAL_COPY",
+    "MeasureRefusal",
+    "confirm_measure",
+    "create_measure",
+    "measures_view",
+    "propose_measures",
+    "reject_measure",
     "load_space_ontology",
     "ontology_store",
     "set_ontology_store",

@@ -212,7 +212,7 @@ def test_single_alembic_head() -> None:
     root = Path(__file__).resolve().parents[1]
     cfg = Config(str(root / "alembic.ini"))
     cfg.set_main_option("script_location", str(root / "alembic"))
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["0009_action_writeback"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["0010_onto_measure_confirm"]
 
 
 def test_key_values_that_read_as_pii_or_run_long_are_refused() -> None:

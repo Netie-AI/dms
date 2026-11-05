@@ -32,16 +32,18 @@ from __future__ import annotations
 import json
 import re
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
 import sqlglot
 from dms_core.control_plane.onto_store import (
+    MeasureDraft,
     OntologySnapshot,
     OntologyStore,
     OntologyVersion,
+    OntoMeasure,
     SchemaColumn,
     SchemaForeignKey,
     SchemaTable,
@@ -52,6 +54,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from dms_executor.demo_warehouse import SERVING_DIALECT, connect_file
+from dms_executor.measure_use import attach_confirmed_measures
 from dms_executor.ontology import Ontology, Violation, from_manifest
 
 #: Provenance columns every bronze row carries; not attributes of the object.
@@ -62,6 +65,7 @@ _DIALECT = SERVING_DIALECT
 
 REASON_UNVERIFIED_JOIN = "unverified_join"
 REASON_NO_DECLARED_MEASURE = "no_declared_measure"
+REASON_NO_DECLARED_LINK = "no_declared_link"
 REASON_STORE_UNAVAILABLE = "ontology_store_unavailable"
 
 
@@ -93,6 +97,55 @@ class OntologyStorePort(Protocol):
     ) -> OntologySnapshot: ...
 
     def latest_snapshot(self, version_id: UUID) -> OntologySnapshot | None: ...
+
+    # ---- measures (ONTO-CONFIRM-01) ----
+
+    @property
+    def persistent(self) -> bool: ...
+
+    def measures_for_space(
+        self,
+        space_id: UUID,
+        *,
+        states: Sequence[str] | None = None,
+        active_only: bool = False,
+    ) -> list[OntoMeasure]: ...
+
+    def get_measure(self, space_id: UUID, measure_id: UUID) -> OntoMeasure | None: ...
+
+    def add_measures(
+        self,
+        version_id: UUID,
+        drafts: Sequence[MeasureDraft],
+        evidences: Sequence[Mapping[str, Any]],
+        *,
+        actor: UUID | None,
+        snapshot_id: UUID | str | None,
+        action: str,
+    ) -> tuple[list[OntoMeasure], list[MeasureDraft]]: ...
+
+    def decide_measure(
+        self,
+        measure_id: UUID,
+        *,
+        to_state: str,
+        expected_hash: str,
+        name: str | None = None,
+        description: str | None = None,
+        reason: str | None = None,
+        evidence: Mapping[str, Any] | None = None,
+        actor: UUID,
+        ledger: Callable[[dict[str, Any]], str],
+    ) -> tuple[OntoMeasure, bool]: ...
+
+    def record_refusal(
+        self,
+        measure_id: UUID,
+        *,
+        failed: Sequence[str],
+        actor: UUID | None,
+        from_state: str,
+    ) -> None: ...
 
 
 _STORE_LOCK = threading.Lock()
@@ -346,8 +399,15 @@ def derive_and_store(
 # --------------------------------------------------------------------------
 
 
-def ontology_view(version: OntologyVersion, snap: OntologySnapshot) -> dict[str, Any]:
+def ontology_view(
+    version: OntologyVersion,
+    snap: OntologySnapshot,
+    measures: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
     """Objects and links with verified/unverified status and the violation that failed.
+
+    ``measures`` is the compact list for this version (id, name, state, answers_certified);
+    the full rows, evidence and refusal reasons are ``GET .../ontology/measures``.
 
     A subject is ``verified`` only when the latest measurement found nothing
     against it AND (for a link) a cardinality was measured. ``status`` of a
@@ -442,9 +502,13 @@ def ontology_view(version: OntologyVersion, snap: OntologySnapshot) -> dict[str,
         "verified": snap.verified,
         "objects": objects,
         "links": links,
-        "measures": [],
-        "measures_note": "no measures are derived; a question needing one abstains "
-        "no_declared_measure until a steward declares it",
+        "measures": [dict(m) for m in measures],
+        # True now and after the answer path reads confirmed measures: nothing a
+        # steward has not confirmed can back an answer, and a question that needs a
+        # measure the Space has not confirmed abstains.
+        "measures_note": "only a measure a steward has confirmed can back an answer; a "
+        "proposed or rejected measure never does, and a question that needs a measure "
+        "this Space has not confirmed abstains no_declared_measure",
     }
 
 
@@ -456,6 +520,10 @@ def space_ontology_views(
     if sid is None:
         return []
     target = store or ontology_store()
+    # measure_confirm imports this module, so it is imported where it is used.
+    from dms_executor.measure_confirm import compact_measures
+
+    compact = compact_measures(space_id, target)
     out: list[dict[str, Any]] = []
     seen: set[UUID] = set()
     for active in target.active_for_space(sid):
@@ -465,7 +533,7 @@ def space_ontology_views(
             seen.add(version.id)
             snap = target.latest_snapshot(version.id)
             if snap is not None:
-                out.append(ontology_view(version, snap))
+                out.append(ontology_view(version, snap, compact.get(version.id, ())))
     return out
 
 
@@ -529,15 +597,26 @@ def load_space_ontology(
     ``maybe_generative_ask`` then runs ``verify()`` against the bronze rows as
     they are now, so a link that broke after the last derive is refused today,
     not trusted from yesterday's snapshot. None when the Space has none.
-    Raises when the store cannot be read; the caller names that abstain.
+
+    The Space's CONFIRMED measures (active versions only) are attached with provenance
+    (``measure_use.attach_confirmed_measures``). A row that cannot be trusted is skipped
+    and its reason kept on the ontology; it never raises. Proposed and rejected rows are
+    never read, so they cannot reach compile, ranking or the wire.
+
+    Raises when the store cannot be read (the catalogs or the measures); the caller names
+    that abstain, so a failed measures read never silently drops measures.
     """
-    if space_uuid(space_id) is None:
+    sid = space_uuid(space_id)
+    if sid is None:
         return None
     catalogs = stored_catalogs(str(space_id), store)
     if not catalogs:
         return None
     onto = ontology_from_catalog(merge_catalogs(catalogs))
-    return onto if onto.objects else None
+    if not onto.objects:
+        return None
+    attach_confirmed_measures(onto, sid, store or ontology_store())
+    return onto
 
 
 # --------------------------------------------------------------------------
@@ -548,21 +627,40 @@ def load_space_ontology(
 #: Cortex ``caller_ontology`` limits (MAX_ONTOLOGY_BYTES, MAX_LINKS), with headroom.
 WIRE_MAX_BYTES = 60 * 1024
 WIRE_MAX_LINKS = 256
+#: What the confirmed measures may take of that. At most 80 are confirmed (name <= 48,
+#: description <= 200), which fits with room to spare; the cap is what keeps a bad row or a
+#: wide-character description from squeezing the objects and links out.
+WIRE_MAX_MEASURE_BYTES = 32 * 1024
 
 
 def budget_space_block(space: Mapping[str, Any], *, used: int) -> dict[str, Any]:
-    """Objects, then links, while the whole body stays inside Cortex's limits.
+    """Measures first, then objects and links, while the whole body stays inside Cortex's limits.
 
-    The DMS join rule still reads the full ontology; only what Cortex is told
-    shrinks, and ``space_truncated`` says so.
+    A steward confirmed each measure, so those are budgeted first (name order, at most
+    ``WIRE_MAX_MEASURE_BYTES``); ``measures_truncated`` says one was left out. Objects and links
+    share what remains. The DMS join rule still reads the full ontology; only what Cortex is
+    told shrinks, and ``space_truncated`` says so.
     """
     out: dict[str, Any] = {
         "objects": {},
         "links": {},
-        "measures": dict(space.get("measures") or {}),
+        "measures": {},
         "verified": bool(space.get("verified")),
     }
     size = used + len(json.dumps(out)) + 64
+    measures = space.get("measures") or {}
+    measure_bytes = 0
+    measures_cut = False
+    for name in sorted(measures):
+        cost = len(json.dumps({name: measures[name]})) + 2
+        if measure_bytes + cost > WIRE_MAX_MEASURE_BYTES or size + cost > WIRE_MAX_BYTES:
+            measures_cut = True
+            continue
+        out["measures"][name] = measures[name]
+        measure_bytes += cost
+        size += cost
+    if measures_cut:
+        out["measures_truncated"] = True
     cut = False
     for key, limit in (("objects", None), ("links", WIRE_MAX_LINKS)):
         for name, spec in (space.get(key) or {}).items():
@@ -1274,6 +1372,33 @@ def unverified_join_reason(
     return None
 
 
+#: The one tail of ``unverified_join_reason`` that means "the source declares no link between
+#: these relations" (``_JoinRule.link_for``), as opposed to a link that exists but is
+#: unverified, a join on columns it does not name, a fan trap, a cross product, or a
+#: predicate that is not a link. Only this tail is relabelled.
+_NO_LINK_TAIL = " has no declared link"
+
+
+def relabel_join_gap(why: str | None) -> str | None:
+    """Name a join refusal for what it is. Pure; the join rule itself is not touched.
+
+    ``unverified_join:<a> x <b> has no declared link`` becomes
+    ``no_declared_link: unverified_join:<a> x <b> has no declared link``: the head the customer
+    reads is the missing declaration, and the original string stays whole behind it (in the
+    assumptions) so nothing is lost. Every other ``unverified_join`` reason (``link X is not
+    verified``, ``joined on columns no declared link names``, ``fan_trap``, ``cross_product``,
+    ``non_link_predicate``, the analysis failures) and every non-join reason is returned as it
+    came.
+    """
+    if (
+        why
+        and why.startswith(f"{REASON_UNVERIFIED_JOIN}:")
+        and why.endswith(_NO_LINK_TAIL)
+    ):
+        return f"{REASON_NO_DECLARED_LINK}: {why}"
+    return why
+
+
 def check_sql_against_space(
     sql: str, onto: Ontology, warehouse: Path | None, extra: Sequence[str] = ()
 ) -> str | None:
@@ -1289,4 +1414,4 @@ def check_sql_against_space(
         cols = relation_columns(onto, warehouse, extra)
     except Exception:  # noqa: BLE001
         return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
-    return unverified_join_reason(sql, onto, violations, columns_of=cols)
+    return relabel_join_gap(unverified_join_reason(sql, onto, violations, columns_of=cols))

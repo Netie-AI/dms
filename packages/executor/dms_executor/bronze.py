@@ -761,7 +761,7 @@ def type_bronze_columns(
     untyped: dict[str, str] = {}
     untyped_numeric: list[str] = []
     schema, _, name = table.partition(".")
-    rel = f'"{schema}"."{name}"'
+    rel = f"{quote_ident(schema)}.{quote_ident(name)}"
     db = ensure_demo_warehouse(path or warehouse_path())
     con = connect_file(db)
     try:
@@ -781,7 +781,7 @@ def type_bronze_columns(
                 continue
             kind = " ".join(str(spec[0]).lower().split())
             numeric = kind in _NUMERIC_TYPES
-            q = '"' + col.replace('"', '""') + '"'
+            q = quote_ident(col)
             if kind in _ZONED_TYPES:
                 untyped[col] = (
                     f"declared {spec[0]!r} kept as source text: a zoned timestamp "

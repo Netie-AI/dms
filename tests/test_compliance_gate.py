@@ -143,3 +143,102 @@ def test_studio_ingest_without_cortex_is_403_gate_unavailable(monkeypatch) -> No
     assert r.status_code == 403
     assert r.json()["detail"] == "gate_unavailable"
     get_settings.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Adversary round 0 (workflow-api, P1): every answer the gate cannot read is a refusal.
+# The gate is shared by every FastAPI mutation route; any of these escaping as an exception
+# was a bare 500 on each of them instead of a 403 gate_unavailable.
+
+
+class _Client:
+    base_url = "http://cortex.test"
+    api_key = None
+
+
+def test_gate_200_with_a_json_list_is_gate_unavailable_not_an_exception(monkeypatch) -> None:
+    class _ListClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def __enter__(self) -> _ListClient:
+            return self
+
+        def __exit__(self, *args: Any) -> bool:
+            return False
+
+        def post(self, path: str, json: Any = None, headers: Any = None) -> Any:
+            return _ListResp()
+
+    class _ListResp:
+        status_code = 200
+        content = b"[1, 2]"
+
+        def json(self) -> Any:
+            return [1, 2]
+
+    monkeypatch.setattr("cortex_client.gate.httpx.Client", _ListClient)
+    decision = compliance_gate(action="studio.ingest", client=_Client())
+    assert decision.allowed is False
+    assert decision.reason == "gate_unavailable"
+
+
+def test_gate_200_that_is_not_json_is_gate_unavailable_not_an_exception(monkeypatch) -> None:
+    class _TextClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def __enter__(self) -> _TextClient:
+            return self
+
+        def __exit__(self, *args: Any) -> bool:
+            return False
+
+        def post(self, path: str, json: Any = None, headers: Any = None) -> Any:
+            return _TextResp()
+
+    class _TextResp:
+        status_code = 200
+        content = b"<html>proxy</html>"
+
+        def json(self) -> Any:
+            raise ValueError("not json")
+
+    monkeypatch.setattr("cortex_client.gate.httpx.Client", _TextClient)
+    decision = compliance_gate(action="studio.ingest", client=_Client())
+    assert decision.allowed is False
+    assert decision.reason == "gate_unavailable"
+
+
+def test_gate_base_url_httpx_rejects_is_gate_unavailable_not_an_exception() -> None:
+    """``http://[::1`` is an unparseable host: httpx raises InvalidURL, which is not an
+    httpx.HTTPError, so an ``except httpx.HTTPError`` lets it out as a bare 500."""
+
+    class _BadUrlClient:
+        base_url = "http://[::1"
+        api_key = None
+
+    decision = compliance_gate(action="studio.ingest", client=_BadUrlClient())
+    assert decision.allowed is False
+    assert decision.reason == "gate_unavailable"
+
+
+def test_gate_object_answer_still_decides(monkeypatch) -> None:
+    """Control: a JSON object still gets its decision (the new checks only refuse non-answers)."""
+
+    class _OkClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+        def __enter__(self) -> _OkClient:
+            return self
+
+        def __exit__(self, *args: Any) -> bool:
+            return False
+
+        def post(self, path: str, json: Any = None, headers: Any = None) -> _FakeResp:
+            return _FakeResp(200, {"status": "ok", "executable": True})
+
+    monkeypatch.setattr("cortex_client.gate.httpx.Client", _OkClient)
+    decision = compliance_gate(action="studio.ingest", client=_Client())
+    assert decision.allowed is True

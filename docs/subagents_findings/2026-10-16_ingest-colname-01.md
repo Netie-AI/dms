@@ -25,4 +25,4 @@ Fix the root-cause class, not the symptom in front of you. Assert the artifact t
 
 ## Ceiling
 
-Control characters and empty names are refused (empty, NUL) or land under their own quoted name; a legal-name rename on the receipt exists only on the measure-lane branch. A column named `_src` still displaces the row provenance column (parked as P-DMS-54 on that branch). Threat model is a compromised or hostile source database; not verified whether any install connects a source whose column names an outsider controls.
+Control characters and empty names are refused (empty, NUL) or land under their own quoted name; a legal-name rename on the receipt exists only on the measure-lane branch. A column named `_src` still displaces the row provenance column (parked as P-DMS-56 on that branch). Threat model is a compromised or hostile source database; not verified whether any install connects a source whose column names an outsider controls.

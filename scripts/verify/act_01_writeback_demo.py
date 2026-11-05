@@ -128,7 +128,7 @@ def _run(url: str) -> int:
     ensure_database(url)
     head = upgrade_head(url)
     print(f"database      {_db_name(url)} @ alembic head {head}")
-    check("alembic head", head, "0009_action_writeback")
+    check("alembic head", head, "0010_onto_measure_confirm")
 
     os.environ["DMS_ACTIONS"] = "1"
 
