@@ -56,8 +56,12 @@ def load_responses() -> dict[str, Any]:
     return data
 
 
-def replay_pack() -> list[dict[str, Any]]:
-    """POST every pack question. Flag stays unset. Same stub on every call."""
+def replay_pack(*, execute_sql: bool = False) -> list[dict[str, Any]]:
+    """POST every pack question. Flag stays unset. Same stub on every call.
+
+    ``execute_sql`` runs each submit body on the warehouse instead of the
+    canned row. Row order is DuckDB's. The canned replay stays the default.
+    """
     os.environ.pop("DMS_ASK_CLARIFY", None)
     import yaml
     from cortex_client.models import (
@@ -104,6 +108,27 @@ def replay_pack() -> list[dict[str, Any]]:
                     status=str(bind["status"]),
                     run_id=str(bind["run_id"]),
                 )
+            if execute_sql:
+                body_in = getattr(req, "body", None)
+                sql = str(body_in.get("sql") or "") if isinstance(body_in, dict) else ""
+                if sql.strip():
+                    from dms_executor.demo_warehouse import connect_file, warehouse_path
+
+                    con = connect_file(warehouse_path())
+                    try:
+                        cur = con.execute(sql)
+                        cols = [str(c[0]) for c in (cur.description or [])]
+                        executed = [
+                            dict(zip(cols, row, strict=True)) for row in cur.fetchall()
+                        ]
+                    finally:
+                        con.close()
+                    return QueryResult(
+                        ok=True,
+                        status="ok",
+                        run_id=f"run_exec_{self.current}",
+                        output={"rows": executed},
+                    )
             body = self._row()["submit"]
             return QueryResult(
                 ok=bool(body["ok"]),
@@ -193,10 +218,15 @@ def main() -> None:
     _prefer_capture_root()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="run submit SQL on the warehouse instead of the canned rows",
+    )
     args = parser.parse_args()
     import dms_executor
 
-    rows = replay_pack()
+    rows = replay_pack(execute_sql=args.execute)
     args.out.write_bytes(dump_rows(rows))
     print(f"wrote {len(rows)} envelopes from {dms_executor.__file__} -> {args.out}")
 

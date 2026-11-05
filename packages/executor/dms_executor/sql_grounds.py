@@ -15,7 +15,9 @@ from typing import Any
 
 from sqlglot import exp, parse_one
 
-_DIALECT = "duckdb"
+from dms_executor.demo_warehouse import SERVING_DIALECT
+
+_DIALECT = SERVING_DIALECT
 CHECKER_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 

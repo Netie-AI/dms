@@ -78,7 +78,7 @@ def _grants(space: str) -> set[str]:
 
 def test_cq_sku_count_exact_match_on_finance_grants() -> None:
     case = next(row for row in _pack() if row["id"] == "cq_sku_count")
-    hit = lookup_pack_metric(str(case["question"]), grantable=_grants("finance"))
+    hit = lookup_pack_metric(str(case["question"]), grantable=_grants("finance"), dialect="duckdb")
     assert hit is not None
     assert hit.metric_id == "cq_sku_count"
     assert hit.tables == ("inventory",)
@@ -98,12 +98,14 @@ def test_allowlist_hits_and_rise_ids_miss() -> None:
     by_id = {str(row["id"]): row for row in _pack()}
     for qid in SCORE_PACK_EXACT_IDS:
         case = by_id[qid]
-        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])))
+        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])),
+            dialect="duckdb")
         assert hit is not None, qid
         assert hit.metric_id == qid
     for qid in _NOT_EXACT:
         case = by_id[qid]
-        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])))
+        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])),
+            dialect="duckdb")
         assert hit is None, qid
 
 
@@ -113,7 +115,8 @@ def test_refuse_and_abstain_stay_misses() -> None:
         expect = str(case.get("expect") or "").lower()
         if expect not in {"refuse", "abstain"}:
             continue
-        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])))
+        hit = lookup_pack_metric(str(case["question"]), grantable=_grants(str(case["space"])),
+            dialect="duckdb")
         if hit is not None:
             hits.append(str(case["id"]))
     assert hits == []

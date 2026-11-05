@@ -425,6 +425,7 @@ def test_missing_pack_is_empty_and_ask_is_not_503(
         maybe_pack_ask(
             "How many SKUs do we have in inventory?",
             grantable={"inventory"},
+            dialect="duckdb",
         )
         is None
     )
@@ -462,5 +463,33 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
     ids = [row["id"] for row in _cases()]
     assert set(golden["cases"]) == set(ids)
     assert list(got["cases"]) == ids
+    # Route stamps, the reconfirm offer, and the grant-miss code are later
+    # fields. Every existing field is compared. The two boundary asks must
+    # stay a direct abstain (the code, and no offer).
+    _direct = {"ops_spend_boundary", "ops_supplier_rank_boundary"}
+
+    def _drop(body: Any) -> Any:
+        if isinstance(body, dict):
+            return {
+                key: _drop(val)
+                for key, val in body.items()
+                if key not in {"served_route", "ladder_rung"}
+            }
+        if isinstance(body, list):
+            return [_drop(val) for val in body]
+        return body
+
     for qid in ids:
-        assert got["cases"][qid] == golden["cases"][qid], qid
+        live = _drop(got["cases"][qid])
+        if isinstance(live.get("body"), dict):
+            body = dict(live["body"])
+            if qid in _direct:
+                assert "reconfirm" not in body, qid
+                assert body.get("abstain_reason") in {
+                    "ungranted",
+                    "sql_relation_not_granted",
+                }, qid
+            body.pop("reconfirm", None)
+            body.pop("abstain_reason", None)
+            live = {**live, "body": body}
+        assert live == golden["cases"][qid], qid

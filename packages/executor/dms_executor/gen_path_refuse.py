@@ -44,12 +44,23 @@ GAP_REASONS = frozenset(
         "insights_bearer_missing",
         "insights_bearer_insecure_transport",
         "unhonored_qualifier",
+        "ungrounded_measure",
+        # ONTO-DERIVE-01 (dms#277): a SQL-source Space's own ontology.
+        "unverified_join",
+        "no_declared_measure",
+        "ontology_store_unavailable",
+        "untyped_numeric",
         "ambiguous_measure",
         "rank_window_unhandled_terms",
         "ungrounded_qualifier",
         "rank_window_entity_mismatch",
         "rank_window_open_ended",
         "unrequested_offset",
+        "loop_exhausted",
+        "empty_result_unverified",
+        "no_sql",
+        "multi_statement",
+        "warehouse_missing",
     }
 )
 
@@ -57,6 +68,9 @@ _GENERIC_ABSTAIN = (
     "I cannot certify an ontology-grounded query for that question, "
     "so I am not executing one."
 )
+
+#: The customer sentence shows the head only. The measure name stays in assumptions.
+_HEAD_ONLY_GAPS = frozenset({"no_declared_measure"})
 
 
 def gap_reason_name(reason: str) -> str | None:
@@ -71,11 +85,13 @@ def customer_abstain_text(reason: str) -> str:
     if gap.startswith("currency_mismatch:"):
         body = gap.split(":", 1)[1].strip()
         return body if body else _GENERIC_ABSTAIN
-    if not gap or gap_reason_name(gap) is None:
+    head = gap_reason_name(gap)
+    if head is None:
         return _GENERIC_ABSTAIN
+    shown = head if head in _HEAD_ONLY_GAPS else gap
     return (
         "I cannot certify an ontology-grounded query for that question "
-        f"(gap: {gap}), so I am not executing one."
+        f"(gap: {shown}), so I am not executing one."
     )
 
 

@@ -66,6 +66,9 @@ from cortex_client.models import (
 )
 
 CONTRACT_MAJOR = 1
+#: Reconfirm suggestion only. Smaller than freeroute complete()'s default 600
+#: so a forward of this field does not reserve the answer's token budget.
+SUGGESTION_MAX_TOKENS = 64
 
 
 def _to_gen_manifest(m: ContractManifest) -> GenManifest:
@@ -112,7 +115,13 @@ class CortexClient:
         self.close()
 
     def ask(self, req: AskRequest) -> AskResponse:
-        body = GenAskRequest.from_dict(req.model_dump(mode="json"))
+        data = req.model_dump(mode="json")
+        # 1.5.0 keys go on the wire only when set, so an ask without them is
+        # the same body a 1.2.0 client sent.
+        for key in ("dms_payload", "plan_sql_confirm"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        body = GenAskRequest.from_dict(data)
         parsed = ask_api.sync(client=self._client, body=body)
         if parsed is None:
             raise RuntimeError("ask: empty response")
@@ -135,10 +144,13 @@ class CortexClient:
         if parsed is None:
             raise RuntimeError("ledger_append: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {}
+        raw_seq = data.get("seq")
+        seq = raw_seq if isinstance(raw_seq, int) and not isinstance(raw_seq, bool) else None
         return LedgerAppendResponse.model_validate(
             {
                 "entry_id": data.get("id") or data.get("entry_id") or "",
                 "hash": data.get("hash") or data.get("entry_hash") or "",
+                "seq": seq,
             }
         )
 
@@ -148,11 +160,26 @@ class CortexClient:
         if parsed is None:
             raise RuntimeError("verify_ledger: empty response")
         data = parsed.to_dict() if hasattr(parsed, "to_dict") else {}
+        # Contract 1.2.0 ChainVerification is {ok, broken_at}: no entry count. A count
+        # is read only when Cortex sends one, and its absence stays None ("unknown"),
+        # never 0: an engine that reports nothing has not said it checked nothing.
+        broken = data.get("first_break")
+        if broken is None:
+            broken = data.get("broken_at", data.get("break_at"))
+        count = data.get("checked", data.get("entries_checked"))
+        if not isinstance(count, int) or isinstance(count, bool):
+            count = None
+        # ``ok`` must be a real boolean. A 422 body, an error object or {"ok": "yes"} is
+        # not a verification result: it must not read as a break (it is not one) or as a
+        # pass. The caller reports "unavailable" for a raise.
+        ok = data.get("ok", data.get("valid"))
+        if not isinstance(ok, bool):
+            raise RuntimeError("verify_ledger: not a ChainVerification result")
         return LedgerVerifyResponse.model_validate(
             {
-                "ok": bool(data.get("ok", data.get("valid", False))),
-                "first_break": data.get("first_break") or data.get("break_at"),
-                "checked": data.get("checked") or data.get("entries_checked"),
+                "ok": ok,
+                "first_break": None if broken is None else str(broken),
+                "checked": count,
             }
         )
 
@@ -200,23 +227,68 @@ class CortexClient:
         session_id: str | None = None,
         space_id: str | None = None,
         ontology: dict[str, Any] | None = None,
+        sql_feedback: dict[str, Any] | None = None,
+        schema_context: str | None = None,
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
         Timeout is min(insights_timeout_s(), this client's timeout) so the
         product lane cannot stall on a 45s leftover /dms/query or the 120s
         contract timeout. OpenVault keys stay in Cortex.
+
+        ``schema_context`` is the granted-schema prompt. It is sent only when
+        ``DMS_SCHEMA_CONTEXT`` is on (Cortex pin 279cbd85 does not read it).
         """
+        from cortex_client.insights import SCHEMA_CONTEXT_FIELD
+
+        onto = ontology
+        if schema_context:
+            onto = dict(ontology or {})
+            onto[SCHEMA_CONTEXT_FIELD] = schema_context
         bound = min(insights_timeout_s(), float(self.timeout))
         return post_compute_insights(
             self.base_url,
             question=question,
             session_id=session_id,
             space_id=space_id,
-            ontology=ontology,
+            ontology=onto,
             api_key=self.api_key,
             timeout=bound,
+            sql_feedback=sql_feedback,
         )
+
+    def complete(self, prompt: str, *, max_tokens: int = SUGGESTION_MAX_TOKENS) -> str:
+        """One generate completion for a suggested question. Not the answer ladder.
+
+        A dead engine or a refused generate returns ``""``. Nothing is filled in.
+        Skipped when this ask already used ``insights_call_cap`` generate posts,
+        so the suggestion cannot take a call the answer still needs.
+        ``max_tokens`` is sent on this POST only.
+        """
+        from cortex_client.compute import insights_call_cap, note_model_call, recorded_model_calls
+
+        if recorded_model_calls() >= insights_call_cap():
+            return ""
+        note_model_call()
+        try:
+            payload = insights_post(
+                self.base_url,
+                question=prompt,
+                ask=False,
+                generate=True,
+                api_key=self.api_key,
+                timeout=min(2.0, float(self.timeout)),
+                max_tokens=max_tokens,
+            )
+        except Exception:
+            return ""
+        if not isinstance(payload, dict):
+            return ""
+        for key in ("suggested_question", "answer", "text"):
+            val = payload.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip().splitlines()[0].strip()
+        return ""
 
     def insights_law(self) -> dict[str, Any]:
         return insights_get(self.base_url, api_key=self.api_key, timeout=min(8.0, self.timeout))
@@ -250,8 +322,12 @@ class CortexClient:
         session_id: str = "demo",
         space_id: str | None = None,
         consumer: str = "dms",
+        schema_context: str | None = None,
     ) -> dict[str, Any]:
-        """Off-contract POST /v1/insights. Fail closed — no invented values."""
+        """Off-contract POST /v1/insights. Fail closed — no invented values.
+
+        ``schema_context`` is attached only when ``DMS_SCHEMA_CONTEXT`` is on.
+        """
         return insights_post(
             self.base_url,
             intent=intent,
@@ -263,6 +339,7 @@ class CortexClient:
             consumer=consumer,
             api_key=self.api_key,
             timeout=self.timeout,
+            schema_context=schema_context,
         )
 
     def drillthrough(self, req: DrillthroughRequest) -> DrillthroughResponse:
