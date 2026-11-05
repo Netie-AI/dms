@@ -199,6 +199,45 @@ def test_non_personal_values_reach_the_model_and_the_fk_is_still_proposed(
     assert result["counts"]["link"] >= 1
 
 
+def test_route_compile_keeps_nric_and_email_off_the_wire_and_the_diff_lists_proposals(
+    monkeypatch: pytest.MonkeyPatch, ov: FakeOpenVault, warehouse: Path
+) -> None:
+    """AO-MASK-01 through ``POST /v1/ontology/data/compile`` then ``GET .../diff``."""
+    from cortex_client.gate import ComplianceDecision
+    from dms_api.app import create_app
+    from dms_core.control_plane.onto_data import reset_ontology_data_store
+    from fastapi.testclient import TestClient
+
+    def _allow(*, action: str, **_: Any) -> ComplianceDecision:
+        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+
+    _env(monkeypatch, ov)
+    monkeypatch.delenv("DMS_ONTO_PG", raising=False)
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", "1")
+    monkeypatch.setattr("dms_api.routes.ontology.compliance_gate", _allow)
+    monkeypatch.setattr("dms_executor.warehouse_path", lambda: warehouse)
+    reset_ontology_data_store()
+    try:
+        client = TestClient(create_app())
+        compiled = client.post("/v1/ontology/data/compile")
+        assert compiled.status_code == 200, compiled.text
+        assert compiled.json()["status"] == "proposed"
+        bodies = _wire(ov)
+        assert bodies
+        for column in ("ic_number", "email"):
+            for value in PERSONAL[column]:
+                for body in bodies:
+                    assert value not in body, value
+        assert _leaked(bodies) == []
+        diff = client.get("/v1/ontology/data/diff")
+        assert diff.status_code == 200, diff.text
+        proposed = diff.json()["proposed_only"]
+        assert proposed
+        assert _leaked([json.dumps(diff.json(), ensure_ascii=False)]) == []
+    finally:
+        reset_ontology_data_store()
+
+
 def test_must_fail_witness_without_the_guard_the_raw_values_are_on_the_wire(
     monkeypatch: pytest.MonkeyPatch, ov: FakeOpenVault, warehouse: Path
 ) -> None:
