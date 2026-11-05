@@ -13,12 +13,19 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.hostdb.yml up -d postgres
 #
+# The base file ships no database password (BANK-04, #271), so this refuses to
+# start until DMS_DB_PASSWORD is set in the shell or in deploy/compose/.env
+# (gitignored). It is applied when the dms_pg volume is first created: a volume
+# made earlier keeps the password it was created with, and DMS_DB_PASSWORD must
+# match that, or the volume must be recreated.
+#
 # Start-DMSStack.ps1 then runs `alembic upgrade head` against this bind so
 # tests/control_plane see dms.spaces without a manual migrate. already-at-head
 # is success. Appliance `docker compose up` migrates via the API entrypoint
 # (and again in lifespan).
 #
-# Then DATABASE_URL=postgresql://dms:dms@127.0.0.1:5432/dms for a host-run API.
+# Then DATABASE_URL=postgresql://dms:<DMS_DB_PASSWORD>@127.0.0.1:5432/dms for a
+# host-run API.
 # Deploying the appliance? Use docker-compose.yml alone.
 #
 # Warning: tests/control_plane/conftest.py does DROP SCHEMA dms CASCADE at
