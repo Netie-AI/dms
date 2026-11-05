@@ -22,6 +22,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dms_core.control_plane.connect_grants import (
+    connected_table_names,
+    granted_tables,
+    is_connected_space,
+)
+
 from dms_executor.acl import SourceGrant
 
 logger = logging.getLogger(__name__)
@@ -161,15 +167,20 @@ class DemoSessionStore:
         return tuple(self.uploads())
 
     def _tables_for(self, space_id: str) -> tuple[str, ...]:
-        entry = DEMO_SPACE_GRANTS.get(canonical_space_id(space_id))
-        return entry[1] if entry else ()
+        sid = canonical_space_id(space_id)
+        entry = DEMO_SPACE_GRANTS.get(sid)
+        seeded = entry[1] if entry else ()
+        # Connected grants live in the parked in-memory book, not in this seed.
+        return tuple(dict.fromkeys((*seeded, *granted_tables(sid))))
 
     def is_space_member(self, space_id: str, user_id: str) -> bool:
         # The demo has one steward who belongs to every seeded Space. A Space
         # that has bronze ingested into it is theirs too, so its own tables can
-        # be granted. An id with no seed and nothing ingested grants nothing.
+        # be granted. A Space registered by the connect API is a member too. An
+        # id with no seed, no connect registration and nothing ingested grants
+        # nothing.
         sid = canonical_space_id(space_id)
-        if sid in DEMO_SPACE_GRANTS:
+        if sid in DEMO_SPACE_GRANTS or is_connected_space(sid):
             return True
         if not str(sid or "").strip():
             return False
@@ -183,7 +194,7 @@ class DemoSessionStore:
 
     def list_user_source_grants(self, tenant_id: str, user_id: str) -> list[SourceGrant]:
         seeded = {t for _, tables in DEMO_SPACE_GRANTS.values() for t in tables}
-        every = seeded | set(self.extra_grants) | set(self._uploaded())
+        every = seeded | set(self.extra_grants) | set(self._uploaded()) | connected_table_names()
         return [
             SourceGrant(
                 source_id=source_id_for(t),

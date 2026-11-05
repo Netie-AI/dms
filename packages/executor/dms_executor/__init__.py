@@ -46,6 +46,7 @@ from dms_executor.bronze_sheet_ask import (
     bronze_sheet_lane_enabled,
     maybe_bronze_sheet_ask,
 )
+from dms_executor.connectors import connector_tables
 from dms_executor.contract_infer import infer_contract
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
@@ -138,6 +139,7 @@ from dms_executor.manifest import (
     SessionAcl,
     SubmitError,
     classify_submit_error,
+    match_service_bearer,
     should_rement,
 )
 from dms_executor.name_echo import (
@@ -529,12 +531,19 @@ class Executor:
             # The demo set plus anything uploaded. An upload has no data_sources
             # row, so it is grantable only through the store — without this,
             # grounding on your own file outside a Space had nothing to grant.
+            # A table granted to a connected Space is not part of that personal
+            # context: no Space must not inherit another Space's grant.
+            from dms_core.control_plane.connect_grants import connected_table_names
+
+            connected = connected_table_names()
             uploaded = {
                 g.table_name
                 for g in self._session_store.list_user_source_grants(
                     DEMO_TENANT_ID, DEMO_USER_ID
                 )
-                if g.table_name and g.table_name not in DEMO_TABLES
+                if g.table_name
+                and g.table_name not in DEMO_TABLES
+                and g.table_name not in connected
             }
             granted = sorted({*DEMO_TABLES, *uploaded})
             # NAME-ECHO-01: the scrub reads this set; it never derives its own.
@@ -2085,6 +2094,7 @@ __all__ = [
     "build_library_tree",
     "classify_bytes",
     "classify_grid",
+    "connector_tables",
     "ingest_batch",
     "DEFAULT_MAX_ROWS",
     "SourceConfig",
@@ -2123,6 +2133,7 @@ __all__ = [
     "load_pipeline_by_name",
     "load_pipeline_yaml",
     "map_ask_response_to_envelope",
+    "match_service_bearer",
     "preview_bronze_table",
     "preview_warehouse_table",
     "register_verified_query",
