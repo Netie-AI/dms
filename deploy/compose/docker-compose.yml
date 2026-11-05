@@ -31,6 +31,8 @@ services:
       DATABASE_URL: postgresql://dms:dms@postgres:5432/dms
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
+      # KEY-01 (dms#273): no default key. Empty = unset = keyed Cortex calls refuse by name.
+      CORTEX_API_KEY: ${CORTEX_API_KEY:-}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
       DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-0}
       CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1,http://localhost
@@ -63,6 +65,8 @@ services:
       DATABASE_URL: postgresql://dms:dms@postgres:5432/dms
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
+      # KEY-01 (dms#273): no default key. Empty = unset = keyed Cortex calls refuse by name.
+      CORTEX_API_KEY: ${CORTEX_API_KEY:-}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
       DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-0}
       CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000

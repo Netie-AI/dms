@@ -8,6 +8,7 @@ invented values.
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import os
 import re
@@ -17,6 +18,12 @@ from urllib.parse import urlparse
 import httpx
 
 INSIGHTS_PATH = "/v1/insights"
+#: sha256 of Cortex's published demo viewer key. The key is not a secret, but
+#: KEY-01 (dms#273) keeps its text out of apps/ and packages/ entirely: DMS has
+#: no default and no fallback for it, and a refusal needs only to recognise it.
+#: Compared on the stripped key, exactly as before. tests/test_key_01_fail_closed.py
+#: pins this digest to the real value, so it cannot drift silently.
+_DEMO_VIEWER_KEY_SHA256 = "76ecf0a7405d1368942588172e70fab3c396c269ae48e90bab33851e226eef08"
 #: Top-level Insights POST field for the granted-schema prompt.
 #: Cortex pin 279cbd85 InsightsAskIn does not declare it. DMS sends it only
 #: when DMS_SCHEMA_CONTEXT is on, so a pin that 422s unknown fields stays quiet.
@@ -25,9 +32,6 @@ SCHEMA_CONTEXT_ENV = "DMS_SCHEMA_CONTEXT"
 #: Catalog key for verified-example rows. Lifted before the Insights POST.
 #: Pin 279cbd85 does not declare it, so it must never be a body field.
 VERIFIED_EXAMPLES_FIELD = "verified_examples"
-#: Cortex's published demo viewer key (also the DMS settings default). Not a
-#: secret. Generate=true must not send it; KEY-01 (dms#273) removes the default.
-DEMO_VIEWER_KEY = "dms-demo-viewer-key"
 INSIGHTS_FAIL_BEARER_MISSING = "insights_bearer_missing"
 INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT = "insights_bearer_insecure_transport"
 
@@ -91,26 +95,28 @@ def generate_transport_is_safe(base_url: str) -> bool:
     return bool(ip.is_loopback)
 
 
-def generate_bearer_refuse(
-    api_key: str | None,
-    base_url: str,
-    *,
-    missing_none: bool = True,
-) -> str | None:
-    """Named generate=true refuse, or None if the call may go out.
+def is_published_demo_key(api_key: str | None) -> bool:
+    """True when ``api_key`` is Cortex's published demo viewer key.
 
-    Empty / demo-viewer keys never generate. Plain http to a non-loopback
-    host never generates. ``api_key is None`` is missing unless
-    ``missing_none=False`` (compute_insights default used by frozen
-    GEN-RESTORE client tests).
+    A recogniser for refusals only. Nothing in DMS may default to, fall back to
+    or send this value.
     """
     if api_key is None:
-        if missing_none:
-            return INSIGHTS_FAIL_BEARER_MISSING
-    else:
-        key = str(api_key).strip()
-        if not key or key == DEMO_VIEWER_KEY:
-            return INSIGHTS_FAIL_BEARER_MISSING
+        return False
+    digest = hashlib.sha256(str(api_key).strip().encode("utf-8")).hexdigest()
+    return digest == _DEMO_VIEWER_KEY_SHA256
+
+
+def generate_bearer_refuse(api_key: str | None, base_url: str) -> str | None:
+    """Named generate=true refuse, or None if the call may go out.
+
+    A missing key (``None``), an empty key and the published demo viewer key
+    never generate. Plain http to a non-loopback host never generates. There is
+    no ``None`` exception: KEY-01 (dms#273) removed ``missing_none=False``, so an
+    unconfigured Python default is a refusal like any other, never a call.
+    """
+    if api_key is None or not str(api_key).strip() or is_published_demo_key(api_key):
+        return INSIGHTS_FAIL_BEARER_MISSING
     if not generate_transport_is_safe(base_url):
         return INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT
     return None
@@ -320,7 +326,6 @@ def insights_post(
 
 
 __all__ = [
-    "DEMO_VIEWER_KEY",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
     "INSIGHTS_FAIL_BEARER_MISSING",
     "INSIGHTS_PATH",
@@ -336,6 +341,7 @@ __all__ = [
     "without_route_fields",
     "insights_get",
     "insights_post",
+    "is_published_demo_key",
     "redact_secrets",
     "schema_context_enabled",
 ]

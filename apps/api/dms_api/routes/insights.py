@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from dms_api.cortex_read import KEY_MISSING
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 
@@ -90,6 +91,16 @@ def _require_cortex(cortex: Any) -> JSONResponse | None:
         return _closed(
             code="cortex_unavailable",
             message="Cortex client not configured",
+        )
+    # KEY-01 (dms#273): no default key and no fallback. A client with no key
+    # makes no Insights call at all (not even the F5 gate that precedes a POST);
+    # the product says so by name instead of reaching Cortex under a demo key.
+    if not str(getattr(cortex, "api_key", None) or "").strip():
+        return _closed(
+            code=KEY_MISSING,
+            message=(
+                "No Cortex key is configured; set CORTEX_API_KEY. Insights did not call Cortex."
+            ),
         )
     return None
 
