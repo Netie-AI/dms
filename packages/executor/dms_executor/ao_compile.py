@@ -137,13 +137,49 @@ class OntologyProposal:
         }
 
 
+#: Non-personal sample values a prompt may carry per column. Upstream sent the
+#: whole 1000-row DISTINCT sample. ponytail: 20 is enough to show an encoding
+#: (``CUST-0001``, ``SME``). The local FK probe still sees the full sample.
+MODEL_SAMPLE_CAP = 20
+#: Placeholders shown for a personal-data column: enough to show the kind.
+MASKED_SAMPLE_CAP = 3
+
+
+def model_samples(table: str, column: str, values: list[Any]) -> tuple[list[Any], bool]:
+    """PII-01 (dms#272) guard for every sample value the AO compile sends to a model.
+
+    Uses the one DMS detector, ``dms_core.pii.classify_column`` (column name,
+    then value pattern over the whole local sample). A personal-data column
+    gets up to ``MASKED_SAMPLE_CAP`` ``DMSMASK_<kind>_<nn>`` placeholders and
+    no raw value. Any other column gets its first ``MODEL_SAMPLE_CAP`` values.
+    A detector error counts as personal.
+    """
+    from dms_core.pii import Masker, classify_column
+
+    try:
+        kind = classify_column(column, values, table=table or None)
+    except Exception:
+        kind = "unknown"
+    if kind is None:
+        return list(values[:MODEL_SAMPLE_CAP]), False
+    masker = Masker()
+    tokens: list[Any] = []
+    for value in values:
+        token = masker.token(kind, value)
+        if token not in tokens:
+            tokens.append(token)
+        if len(tokens) >= MASKED_SAMPLE_CAP:
+            break
+    return tokens, True
+
+
 def compile_source(conn: Any, *, transport: Any = None) -> OntologyProposal:
     """Propose an ontology for ``conn``. Off: return without touching ``conn``."""
     if not ao_compile_enabled():
         return OntologyProposal.off()
     from ao_vendor.compile_run import compile_catalog
 
-    payload: dict[str, Any] = compile_catalog(conn, transport=transport)
+    payload: dict[str, Any] = compile_catalog(conn, transport=transport, sample_guard=model_samples)
     return OntologyProposal.from_payload(payload)
 
 

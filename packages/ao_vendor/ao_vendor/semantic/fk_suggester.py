@@ -17,6 +17,7 @@ from ao_vendor.semantic.models import (
     PotentialFkResult,
     PotentialFkSuggestion,
 )
+from ao_vendor.utils.sample_guard import model_sample_values
 from ao_vendor.utils.sample_values import stringify_sample_values
 
 logger = logging.getLogger(__name__)
@@ -92,18 +93,25 @@ def _candidate_columns(
     ]
 
 
-def _format_sample_values(raw: Any) -> str:
-    """Return a 'samples: ...' string filtered to <=30-char values, or empty."""
-    values = stringify_sample_values(raw, max_len=30)
+def _format_sample_values(raw: Any, *, table: str = "", column: str = "") -> str:
+    """Return a 'samples: ...' string filtered to <=30-char values, or empty.
+
+    Values pass the bound sample guard first (dms#272).
+    """
+    values = stringify_sample_values(model_sample_values(table, column, raw), max_len=30)
     if not values:
         return ""
     return "samples: " + ", ".join(values)
 
 
-def _format_column_line(col: dict[str, Any], is_unique: bool | None = None) -> str:
+def _format_column_line(
+    col: dict[str, Any], is_unique: bool | None = None, *, table: str = ""
+) -> str:
     desc = col.get("description") or ""
     suffix = f" -- {desc}" if desc else ""
-    sample_str = _format_sample_values(col.get("sample_values"))
+    sample_str = _format_sample_values(
+        col.get("sample_values"), table=table, column=str(col.get("name") or "")
+    )
     if sample_str:
         suffix += f" [{sample_str}]"
     if is_unique is not None:
@@ -141,15 +149,18 @@ def suggest_potential_foreign_keys(
     known_fk_block = ", ".join(sorted(known_fk_names)) if known_fk_names else "(none)"
     pk_block = ", ".join(sorted(pk_names)) if pk_names else "(none)"
     profiling = columns_profiling_samples or {}
+    table_name = str(table["name"])
     all_column_lines = "\n".join(
-        _format_column_line(col, (profiling.get(col["name"]) or {}).get("is_unique"))
+        _format_column_line(
+            col, (profiling.get(col["name"]) or {}).get("is_unique"), table=table_name
+        )
         for col in columns
         if col.get("name")
     )
     candidate_lines = (
         "\n".join(
             _format_column_line(
-                col, (profiling.get(col["name"]) or {}).get("is_unique")
+                col, (profiling.get(col["name"]) or {}).get("is_unique"), table=table_name
             )
             for col in candidates
         )
