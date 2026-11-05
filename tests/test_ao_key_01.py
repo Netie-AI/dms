@@ -129,7 +129,7 @@ def test_model_pk_column_names_become_the_term_key(
 
 
 def _arm(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DMS_OV_SERVICE_TOKEN", "ov-key-01")
+    monkeypatch.setenv("OPENVAULT_API_KEY", "ov_key01")
     monkeypatch.setenv("OPENVAULT_URL", "http://127.0.0.1:9")
     monkeypatch.setenv("DMS_AO_COMPILE", "1")
 
