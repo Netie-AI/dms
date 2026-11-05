@@ -18,3 +18,4 @@ Cursor and Claude Code start here. This file is an index only. The law is [CLAUD
 | [docs/archive/](docs/archive/) | retired doc text, incl. the [pre-index AGENTS.md](docs/archive/2026-10-06_AGENTS_pre-index.md) |
 
 Protected: `tests/invariants/**` and `.importlinter` need `INVARIANT-CHANGE:` in the commit body. See CLAUDE.md, Protected paths.
+Merge tiers (`tier:fast` / `tier:full`): see [CLAUDE.md](CLAUDE.md#merge-tiers).

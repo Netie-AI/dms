@@ -50,3 +50,5 @@ Never put binaries in git (not LFS). Manifest lives in `releases/*.json` with sh
 4. Tag = release. No manual builds.
 5. Feature flags for incomplete work on trunk — never long-lived branches.
 6. Protected paths: `tests/invariants/**`, `.importlinter` require `INVARIANT-CHANGE: <reason>`.
+
+Merge tiers (`tier:fast` / `tier:full`): see [CLAUDE.md](../CLAUDE.md#merge-tiers).
