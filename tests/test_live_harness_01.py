@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from cortex_client.client import SUGGESTION_MAX_TOKENS, CortexClient
+from cortex_client.client import CortexClient
 from cortex_client.compute import (
     INSIGHTS_ASK_TIMEOUT_SECONDS,
     INSIGHTS_CALL_CAP_DEFAULT,
@@ -127,13 +127,14 @@ def test_demo_gate_off_does_not_abstain_the_planted_paraphrase() -> None:
     assert "uncertified paraphrase" not in str(opened)
 
 
-def test_suggestion_sends_a_small_max_tokens_and_stops_at_the_cap(
+def test_suggestion_sends_no_max_tokens_and_stops_at_the_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: dict[str, Any] = {}
+    """WIRE-CONFORM-01: contract 1.9.0 InsightsAskIn has no max_tokens (Cortex 422s it)."""
+    seen: list[dict[str, Any]] = []
 
     def fake_post(*_args: Any, **kwargs: Any) -> dict[str, str]:
-        seen["max_tokens"] = kwargs.get("max_tokens")
+        seen.append(dict(kwargs))
         return {"suggested_question": "how many skus are there"}
 
     monkeypatch.setattr("cortex_client.client.insights_post", fake_post)
@@ -143,13 +144,13 @@ def test_suggestion_sends_a_small_max_tokens_and_stops_at_the_cap(
         assert client.complete("closest") == "how many skus are there"
     finally:
         client.close()
-    assert seen["max_tokens"] == SUGGESTION_MAX_TOKENS
-    assert SUGGESTION_MAX_TOKENS < 600
+    assert len(seen) == 1
+    assert "max_tokens" not in seen[0]
     begin_answer_model_calls()
     for _ in range(insights_call_cap()):
         note_model_call()
     assert client.complete("again") == ""
-    assert seen["max_tokens"] == SUGGESTION_MAX_TOKENS
+    assert len(seen) == 1
 
 
 def _offer(env: dict[str, Any], complete: Any) -> dict[str, Any]:
