@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 import dms_executor.openvault_discovery as _ovd
 import httpx
 import pytest
+from cortex_client.compute import begin_answer_model_calls
 from dms_executor.manifest import OV_MINT_FAILED, ManifestMinter, OpenVaultTokenError
 
 # The local live stack: OpenVault, Cortex, and the two sidecars beside them.
@@ -104,3 +105,14 @@ def real_openvault(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _real_handle)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _real_handle_async)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_answer_model_calls() -> None:
+    """F124: every test starts with zero generate calls recorded.
+
+    ``cortex_client.compute._answer_model_calls`` is a ContextVar; pytest runs
+    every sync test in one context, so a count spent by one test (a cap test
+    calling ``note_model_call``) otherwise carries into the next.
+    """
+    begin_answer_model_calls()
