@@ -1993,6 +1993,15 @@ def map_ask_response_to_envelope(
             sql_out = "-- document retrieval (no SQL)"
         else:
             sql_out = "-- live ask (SQL not returned)"
+    # Absent, not null, when Cortex sends no provenance.
+    served_prov = {
+        key: val
+        for key, val in (
+            ("served_provenance_layer", resp.provenance_layer),
+            ("served_metric_id", resp.metric_id),
+        )
+        if val
+    }
     # VQ-04: Cortex L1 on an uncertified planted paraphrase (vocabulary
     # "how full" / delayed+per-warehouse regex) must not keep a green badge.
     # E9: do not render the engine figures under ABSTAIN.
@@ -2001,7 +2010,7 @@ def map_ask_response_to_envelope(
             question or "", space_id=space_id, session_id=session_id
         )
         if refused_env is not None:
-            return refused_env
+            return {**refused_env, **served_prov}
     fields: dict[str, Any] = {
         "answer_id": resp.receipt_id or f"ans_live_{session_id or 'x'}",
         "text": text,
@@ -2043,6 +2052,7 @@ def map_ask_response_to_envelope(
             }
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
+    env.update(served_prov)
     assert_envelope_valid(env)
     from dms_executor.route_stamp import ROUTE_L1, ROUTE_VERIFIED, stamp_route
 

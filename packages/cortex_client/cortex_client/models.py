@@ -56,6 +56,11 @@ class AskResponse(BaseModel):
     served_provider: str | None = None
     served_model: str | None = None
     served_local: bool | None = None
+    #: Contract ``provenance.layer`` (certified, governed_metric, query_skill,
+    #: session, generated, ...). ``route`` is ``sql`` for every SQL layer.
+    provenance_layer: str | None = None
+    #: Contract ``provenance.metric_id``.
+    metric_id: str | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> AskResponse:  # type: ignore[override]
@@ -66,6 +71,8 @@ class AskResponse(BaseModel):
         prov = data.get("provenance")
         if isinstance(prov, dict):
             data.setdefault("badge", prov.get("badge"))
+            data.setdefault("provenance_layer", prov.get("layer"))
+            data.setdefault("metric_id", prov.get("metric_id"))
             assumptions = prov.get("assumptions")
             if assumptions is not None:
                 data.setdefault("assumptions", assumptions)
