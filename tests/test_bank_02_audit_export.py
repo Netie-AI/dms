@@ -144,6 +144,8 @@ class LedgerCortex:
                     "answer": "Done.",
                     "abstained": False,
                     "badge": "certified",
+                    # A table the turn grants: an answer read from one it does not
+                    # abstains (NAME-ECHO-01), and this test is about the masking.
                     "sql_used": "SELECT name FROM suppliers WHERE email = 'alice.tan@example.com'",
                     "rows": [{"orders": 2}],
                     "audit_id": entry,

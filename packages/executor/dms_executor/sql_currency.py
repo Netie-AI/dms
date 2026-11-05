@@ -1128,6 +1128,24 @@ def _table_label(node: exp.Table) -> str:
     return ".".join(p for p in (node.catalog, node.db, node.name) if p)
 
 
+def _cte_alias_keys(tree: exp.Expression) -> set[str]:
+    keys: set[str] = set()
+    for cte in tree.find_all(exp.CTE):
+        alias = cte.alias
+        if isinstance(alias, str) and alias:
+            keys.add(alias.casefold())
+    return keys
+
+
+def _in_cte_body(node: exp.Expression) -> bool:
+    current = node.parent
+    while current is not None:
+        if isinstance(current, exp.CTE):
+            return True
+        current = current.parent
+    return False
+
+
 def tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
     """``(tables, approximate)``: the tables an executed statement reads, sorted.
 
@@ -1156,6 +1174,7 @@ def tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
         trees = [t for t in sqlglot.parse(text, dialect=_DIALECT) if t is not None]
         seen: dict[str, str] = {}
         for tree in trees:
+            cte_keys = _cte_alias_keys(tree)
             for scope in traverse_scope(tree):
                 for node in scope.tables:
                     # Only an unqualified name can be a CTE: ``main.t`` is the base
@@ -1163,6 +1182,18 @@ def tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
                     unqualified = not node.db and not node.catalog
                     if unqualified and isinstance(scope.sources.get(node.alias_or_name), Scope):
                         continue  # a CTE or derived table of an enclosing query
+                    # ``TABLE t`` inside a CTE does not become a scope, so the
+                    # alias is reported as a base table and the inner name is
+                    # lost. The alias is not a relation. A base table of the
+                    # same name inside the CTE body still is.
+                    bare = node.name or node.alias_or_name
+                    if (
+                        unqualified
+                        and isinstance(bare, str)
+                        and bare.casefold() in cte_keys
+                        and not _in_cte_body(node)
+                    ):
+                        continue
                     label = _table_label(node)
                     if label:
                         seen.setdefault(label.casefold(), label)

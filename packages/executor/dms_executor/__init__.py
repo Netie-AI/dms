@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from cortex_client import CortexClient
@@ -19,7 +19,11 @@ from dms_core.ask import AskServiceError, ExecutedTrace, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
 from dms_executor import executed_trace
-from dms_executor.abstain import backstop_missing_ticket, build_abstain
+from dms_executor.abstain import (
+    backstop_missing_ticket,
+    build_abstain,
+    refuse_ungranted_answer,
+)
 from dms_executor.acl import (
     SessionContext,
     SourceGrant,
@@ -27,6 +31,7 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
+from dms_executor.ao_compile import compile_source
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import (
     IngestReceipt,
@@ -74,6 +79,7 @@ from dms_executor.demo_warehouse import (
     DEMO_TABLES,
     SERVING_DIALECT,
     ReservedParamError,
+    connect_serving,
     ensure_demo_warehouse,
     execute_sql,
     read_health_engine_clock,
@@ -122,6 +128,7 @@ from dms_executor.lake_registry import (
     reset_ask_deadline,
     reset_serving_lease_block,
     serving_deadline_missed,
+    serving_deadline_s,
 )
 from dms_executor.library_tree import build_library_tree
 from dms_executor.manifest import (
@@ -132,6 +139,13 @@ from dms_executor.manifest import (
     SubmitError,
     classify_submit_error,
     should_rement,
+)
+from dms_executor.name_echo import (
+    begin_grant_turn,
+    end_grant_turn,
+    hide_echo,
+    note_turn_grants,
+    turn_grants,
 )
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
@@ -172,7 +186,9 @@ from dms_executor.sql_loop import apply_sql_credit, extract_dialect
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
+    maybe_save_checked_sql,
     maybe_verified_ask,
+    openvault_embedder,
     register_verified_query,
 )
 from dms_executor.warehouse_browse import (
@@ -249,12 +265,41 @@ def _insights_compute_seam(
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
-    onto = ontology
+    onto: dict[str, Any] | None = ontology
     feedback = None
-    if isinstance(ontology, dict) and "sql_loop_feedback" in ontology:
-        onto = {k: v for k, v in ontology.items() if k != "sql_loop_feedback"}
-        raw = ontology.get("sql_loop_feedback")
-        feedback = raw if isinstance(raw, dict) else None
+    asked = question
+    examples = ""
+    ai_rows: list[dict[str, Any]] = []
+    # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
+    # stays quiet because the key is removed before the POST.
+    # verified_examples is the same kind of lift: question text, not a body field.
+    from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
+
+    _hidden = {"sql_loop_feedback", "sql_vote_prompt", "sql_vote_kind", "vq_examples"}
+    if isinstance(ontology, dict) and (
+        _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
+    ):
+        from cortex_client.compute import lift_verified_examples
+
+        lifted, ai_rows = lift_verified_examples(ontology)
+        if isinstance(lifted, dict) and _hidden.intersection(lifted):
+            raw = lifted.get("sql_loop_feedback")
+            feedback = raw if isinstance(raw, dict) else None
+            vote_prompt = lifted.get("sql_vote_prompt")
+            if isinstance(vote_prompt, str) and vote_prompt.strip():
+                asked = vote_prompt
+            raw_examples = lifted.get("vq_examples")
+            if isinstance(raw_examples, str) and raw_examples.strip():
+                examples = raw_examples.strip()
+            onto = {k: v for k, v in lifted.items() if k not in _hidden}
+        else:
+            onto = lifted
+    if examples:
+        asked = f"{asked.rstrip()}\nExamples:\n{examples}"
+    if ai_rows:
+        from dms_executor.ai_first import understand_question
+
+        asked = str(understand_question(asked, examples=ai_rows)["question"])
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
@@ -264,10 +309,10 @@ def _insights_compute_seam(
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
         try:
-            return fn(question, **kwargs)
+            return fn(asked, **kwargs)
         except TypeError:
             return fn(
-                question,
+                asked,
                 session_id=session_id,
                 space_id=space_id,
                 ontology=onto,
@@ -491,7 +536,10 @@ class Executor:
                 )
                 if g.table_name and g.table_name not in DEMO_TABLES
             }
-            return sorted({*DEMO_TABLES, *uploaded})
+            granted = sorted({*DEMO_TABLES, *uploaded})
+            # NAME-ECHO-01: the scrub reads this set; it never derives its own.
+            note_turn_grants(self, space_id, granted)
+            return granted
         ctx = intersect_space_grants(
             self._session_store,
             tenant_id=DEMO_TENANT_ID,
@@ -514,7 +562,10 @@ class Executor:
                 space_id,
                 ", ".join(bad),
             )
-        return [t for t in granted if t not in bad]
+        granted = [t for t in granted if t not in bad]
+        # NAME-ECHO-01: the scrub reads this set; it never derives its own.
+        note_turn_grants(self, space_id, granted)
+        return granted
 
     def demo_acl(
         self,
@@ -679,8 +730,12 @@ class Executor:
         session_id: str | None = None,
         tables: list[str] | None = None,
         ask_path: str | None = None,
+        plan_sql_confirm: Literal["yes", "no"] | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
+
+        ``plan_sql_confirm`` rides on the contract ask only: it is the Yes to a
+        Cortex reconfirm (``confirm_reconfirm``).
 
         Every ask envelope carries ``served_attribution``. When the Insights
         generate seam ran, its setup fields reach the envelope on every path,
@@ -689,7 +744,6 @@ class Executor:
         import httpx
         from cortex_client.compute import (
             begin_answer_model_calls,
-            insights_timeout_s,
             recorded_model_calls,
         )
 
@@ -699,7 +753,9 @@ class Executor:
         # take_executed() right after this returns or raises.
         executed_trace.begin()
         seen: list[dict[str, Any] | None] = []
-        deadline = time.monotonic() + insights_timeout_s()
+        # Whole-ask clock. Each Insights leg keeps its own 8s HTTP timeout.
+        ask_budget_s = serving_deadline_s()
+        deadline = time.monotonic() + ask_budget_s
         deadline_tokens = bind_ask_deadline(deadline)
         own_control = current_ask_control() is None
         control_token: Any = None
@@ -709,7 +765,18 @@ class Executor:
             control_token = bind_ask_control(ctrl)
         ctrl.deadline = deadline
         ctrl.start()
+        example_token = None
+        # NAME-ECHO-01: the grant set grantable_tables resolves in this turn is
+        # recorded here, so the scrub and the served-SQL check read it rather
+        # than opening a connection of their own.
+        grant_turn = begin_grant_turn(self, space_id)
+        from dms_executor.route_stamp import freeze_route
+
         try:
+            from dms_executor.ai_first import ai_first_enabled, begin_example_turn
+
+            if ai_first_enabled():
+                example_token = begin_example_turn()
             try:
                 try:
                     env = self._live_ask(
@@ -719,6 +786,7 @@ class Executor:
                         tables=tables,
                         ask_path=ask_path,
                         seen=seen,
+                        plan_sql_confirm=plan_sql_confirm,
                     )
                     if serving_deadline_missed():
                         raise ServingDeadlineExceeded()
@@ -785,6 +853,10 @@ class Executor:
                             f"at the cap ({exc.code}). No figure was returned."
                         )
                         answer_id = "ans_serving_lease_cap"
+                    deadline_hit = exc.code in {
+                        SERVING_DEADLINE_EXCEEDED_REASON,
+                        SERVING_DEADLINE_RESERVE_REASON,
+                    }
                     env = build_abstain(
                         reason=exc.code,
                         question=question,
@@ -799,10 +871,19 @@ class Executor:
                         session_id=session_id,
                         ask_mode="live",
                         route="abstain",
+                        abstain_reason=exc.code if deadline_hit else None,
                     )
+                    if deadline_hit:
+                        env["serving_deadline_s"] = ask_budget_s
                     assert_envelope_valid(env)
                 finally:
                     reset_serving_lease_block(token)
+            # An answer whose served SQL reads outside the turn's grant is a
+            # breach or a misread grant. It abstains; the relation is not hidden.
+            refused = refuse_ungranted_answer(env, question=question, grants=turn_grants())
+            if refused is not env:
+                env = refused
+                self._store_turn(session_id, space_id, env)
             stamp_engine_clock(env)
             payload = next((p for p in reversed(seen) if isinstance(p, dict)), None)
             stamped = with_served_attribution(env, payload)
@@ -825,10 +906,20 @@ class Executor:
                 out["lane"] = mapped
             else:
                 out.pop("lane", None)
+            freeze_route(out)
             masked = mask_unknown_keys(out)
             backstop_missing_ticket(masked, question=question)
+            # Last step of the turn, after every loop re-attach. The grant set is
+            # the one this turn resolved; none resolved grants nothing.
+            if isinstance(masked, dict):
+                hide_echo(masked, "", grants=turn_grants())
             return masked
         finally:
+            if example_token is not None:
+                from dms_executor.ai_first import end_example_turn
+
+                end_example_turn(example_token)
+            end_grant_turn(grant_turn)
             if own_control and control_token is not None:
                 reset_ask_control(control_token)
             reset_ask_deadline(deadline_tokens)
@@ -842,6 +933,7 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
         seen: list[dict[str, Any] | None],
+        plan_sql_confirm: Literal["yes", "no"] | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -870,6 +962,10 @@ class Executor:
         certified_first = ladder != "generative"
         allow_gen = ladder != "exact"
         allow_cortex = ladder == "product"
+        # A real Cortex client is the armed product path. Demo-pack abstains
+        # must not gate it. Test fakes are not a CortexClient, so the planted
+        # refuses stay in front of those asks.
+        armed_product = isinstance(self._cortex, CortexClient)
         allow_follow = ladder == "product"
         allow_bronze = ladder == "product"
 
@@ -909,9 +1005,14 @@ class Executor:
         def space_grants() -> list[str]:
             if not grants_once:
                 try:
-                    grants_once.append(self.grantable_tables(space_id=space_id))
+                    got = self.grantable_tables(space_id=space_id)
                 except Exception as exc:  # noqa: BLE001 -- kept for every caller
                     grants_once.append(exc)
+                else:
+                    # The list the caller received, including a name added
+                    # after the method body noted its own copy.
+                    note_turn_grants(self, space_id, got)
+                    grants_once.append(got)
             found = grants_once[0]
             if isinstance(found, Exception):
                 raise found
@@ -965,35 +1066,68 @@ class Executor:
 
             # Phrase match + a failed later step is a named refusal (not None).
             # None means the phrase missed, so generative / contract ask may run.
+            # DMS_AI_FIRST: a granted phrase is an example, not a submit.
+            # A grant miss or a hostile phrase still goes through maybe_pack_ask.
             raise_if_ask_stopped()
-            pack_env = maybe_pack_ask(
-                question,
-                space_id=space_id,
-                session_id=session_id,
-                grantable=set(space_grants()),
-                tables=tables,
-                submit=lambda sql: self._submit_verified_sql(
-                    sql, space_id=space_id, session_id=session_id, tables=tables
-                ),
-                ledger_append=lambda payload: self._ledger_verified_query(
-                    asset_sql=str(payload.get("sql") or ""),
-                    run_id=str(payload.get("run_id") or ""),
+            from dms_executor.ai_first import (
+                ai_first_enabled,
+                note_example,
+                pack_example,
+            )
+            from dms_executor.demo_pack import lookup_pack_metric, match_pack_phrase
+            from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
+
+            held_pack = False
+            if ai_first_enabled():
+                phrase = match_pack_phrase(question, tables=tables)
+                if phrase is not None:
+                    hit = lookup_pack_metric(
+                        question,
+                        grantable=set(space_grants()),
+                        tables=tables,
+                        dialect=self.dialect,
+                    )
+                    hostile = False
+                    if hit is not None:
+                        try:
+                            reject_hostile_chat_sql(hit.sql)
+                        except SecurityEvent:
+                            hostile = True
+                    if hit is not None and not hostile:
+                        note_example(pack_example(hit, space_id))
+                        held_pack = True
+            if not held_pack:
+                pack_env = maybe_pack_ask(
+                    question,
                     space_id=space_id,
                     session_id=session_id,
-                    event_type="ask.governed_metric",
-                ),
-                dialect=self.dialect,
-            )
-            if pack_env is not None:
-                self._store_turn(session_id, space_id, pack_env)
-                return pack_env
+                    grantable=set(space_grants()),
+                    tables=tables,
+                    submit=lambda sql: self._submit_verified_sql(
+                        sql, space_id=space_id, session_id=session_id, tables=tables
+                    ),
+                    ledger_append=lambda payload: self._ledger_verified_query(
+                        asset_sql=str(payload.get("sql") or ""),
+                        run_id=str(payload.get("run_id") or ""),
+                        space_id=space_id,
+                        session_id=session_id,
+                        event_type="ask.governed_metric",
+                    ),
+                    dialect=self.dialect,
+                )
+                if pack_env is not None and not (
+                    armed_product and pack_env.get("abstained") is True
+                ):
+                    self._store_turn(session_id, space_id, pack_env)
+                    return pack_env
 
-        refuse_env = maybe_uncertified_refuse_ask(
-            question, space_id=space_id, session_id=session_id
-        )
-        if refuse_env is not None:
-            self._store_turn(session_id, space_id, refuse_env)
-            return refuse_env
+        if not armed_product:
+            refuse_env = maybe_uncertified_refuse_ask(
+                question, space_id=space_id, session_id=session_id
+            )
+            if refuse_env is not None:
+                self._store_turn(session_id, space_id, refuse_env)
+                return refuse_env
 
         if ladder == "exact":
             # Curated l0 phrase missing from PACK_METRICS is step 1, not a
@@ -1114,8 +1248,11 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+        from dms_executor.ontology import Ontology, onto_from_data_enabled
+
+        data_onto = Ontology.from_store() if onto_from_data_enabled() else None
         space_onto = None
-        if allow_gen and not is_demo_space(space_id):
+        if data_onto is None and allow_gen and not is_demo_space(space_id):
             # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
             # one and never another Space's. A store that cannot be read is a
             # named ABSTAIN: answering without the join rules it holds would
@@ -1165,11 +1302,13 @@ class Executor:
                     event_type="ask.generated_ontology",
                 ),
                 bind_on_miss=False,
-                ontology=space_onto,
-                demo_ontology_allowed=space_onto is None,
+                ontology=data_onto if data_onto is not None else space_onto,
+                demo_ontology_allowed=data_onto is None and space_onto is None,
                 # Extract and EXPLAIN run on the DuckDB serving copy
                 # (connect_serving), not on the source connector in self.dialect.
                 dialect=SERVING_DIALECT,
+                embedder=openvault_embedder(self._cortex),
+                demo_gate=not armed_product,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
@@ -1212,6 +1351,7 @@ class Executor:
                     question=question,
                     session_id=acl.session_id,
                     space_id=space_id,
+                    plan_sql_confirm=plan_sql_confirm,
                 )
             )
         except (
@@ -1233,6 +1373,7 @@ class Executor:
                         question=question,
                         session_id=acl.session_id,
                         space_id=space_id,
+                        plan_sql_confirm=plan_sql_confirm,
                     )
                 )
             else:
@@ -1246,7 +1387,47 @@ class Executor:
                 dialect=self.dialect,
                 warehouse=self._warehouse,
             )
-            if gap:
+            # A relation miss abstains here, before the envelope mapper can
+            # demote it into a different sentence. The ticket keeps the name.
+            # A granted lake alias or a bare grant falls through and stands.
+            # A file or a script uses the structural code.
+            from dms_executor.name_echo import (
+                served_relation_miss,
+                served_relations_covered,
+            )
+
+            if (
+                gap
+                and served_relation_miss(
+                    gap, sql_used, set(readable), dialect=self.dialect
+                )
+                and served_relations_covered(sql_used, set(readable))
+            ):
+                pass
+            elif gap and served_relation_miss(
+                gap, sql_used, set(readable), dialect=self.dialect
+            ):
+                refused = refuse_ungranted_answer(
+                    {
+                        "abstained": False,
+                        "sql_used": sql_used,
+                        "answer_id": "ans_served_ungranted",
+                        "text": "",
+                        "rows": [],
+                        "values": [],
+                    },
+                    question=question,
+                    grants=set(readable),
+                )
+                refused["space_id"] = space_id
+                refused["session_id"] = session_id
+                route = getattr(resp, "route", None)
+                if isinstance(route, str) and route.strip():
+                    refused["route"] = route
+                env = attach_cascade(refused, cascade)
+                self._store_turn(session_id, space_id, env)
+                return env
+            elif gap:
                 # One code. The relation name is not part of it.
                 refused = sql_refusal_envelope(
                     reason=gap,
@@ -1280,6 +1461,20 @@ class Executor:
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
+        # DMS_AI_FIRST still ran the contract grant check above. An ungranted,
+        # hostile, numeric, or unverified-join SQL stayed a direct abstain.
+        # A SQL that would have been served is not the answer.
+        from dms_executor.ai_first import ai_first_enabled, no_model_envelope
+
+        if ai_first_enabled() and not getattr(resp, "abstained", False):
+            env = attach_cascade(
+                no_model_envelope(
+                    question, space_id=space_id, session_id=session_id
+                ),
+                cascade,
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -1293,6 +1488,278 @@ class Executor:
             cascade,
         )
         self._store_turn(session_id, space_id, env)
+        return env
+
+    def offer_reconfirm(
+        self,
+        env: dict[str, Any],
+        *,
+        question: str,
+        space_id: str | None = None,
+        session_id: str | None = None,
+        tables: list[str] | None = None,
+        ask_path: str | None = None,
+        cortex: Any = None,
+    ) -> dict[str, Any]:
+        """Attach a reconfirm offer when this envelope is not a checked answer."""
+        from dms_executor.reconfirm import (
+            apply_reconfirm,
+            complete_with_model,
+            granted_schema_names,
+            ontology_text,
+            schema_text,
+        )
+
+        return apply_reconfirm(
+            env,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            tables=tables,
+            ask_path=ask_path,
+            ontology=ontology_text(space_id),
+            schema=schema_text(None, granted_schema_names(space_id, tables)),
+            complete=lambda prompt: complete_with_model(cortex, prompt),
+        )
+
+    def reconfirm_ask_path(self, token: str) -> str | None:
+        from dms_executor.reconfirm import peek_pending
+
+        pending = peek_pending(token)
+        if pending is None:
+            return None
+        raw = pending.get("ask_path")
+        return str(raw) if isinstance(raw, str) else None
+
+    def reconfirm_pending(self, token: str) -> dict[str, Any] | None:
+        from dms_executor.reconfirm import peek_pending
+
+        return peek_pending(token)
+
+    def confirm_reconfirm(self, token: str, yes: bool) -> dict[str, Any]:
+        """Yes re-runs the suggested question on the normal ladder. No logs a ticket.
+
+        With ``DMS_RECONFIRM_RUN_HELD`` on, a pending entry that holds validated
+        SQL runs that SQL after a fresh grant check and read-only check.
+        """
+        from dms_executor.reconfirm import (
+            decline_envelope,
+            held_ready,
+            reconfirm_run_held_enabled,
+            take_pending,
+        )
+
+        pending = take_pending(token)
+        if pending is None:
+            raise KeyError(token)
+        # A Cortex reconfirm is answered on the contract (plan_sql_confirm).
+        cortex_origin = pending.get("cortex_confirm") is True
+        if not yes:
+            if cortex_origin:
+                return self._cortex_confirm_no(pending)
+            return decline_envelope(pending)
+        if reconfirm_run_held_enabled() and held_ready(pending):
+            return self._run_held_sql(pending)
+        suggested = str(pending.get("suggested_question") or "").strip()
+        if not suggested:
+            raise ValueError("empty suggestion")
+        env = self.live_ask(
+            suggested,
+            space_id=pending.get("space_id"),
+            session_id=pending.get("session_id"),
+            tables=pending.get("tables"),
+            ask_path=pending.get("ask_path"),
+            plan_sql_confirm="yes" if cortex_origin else None,
+        )
+        offered = self.offer_reconfirm(
+            env,
+            question=suggested,
+            space_id=pending.get("space_id"),
+            session_id=pending.get("session_id"),
+            tables=pending.get("tables"),
+            ask_path=pending.get("ask_path"),
+            cortex=self._cortex,
+        )
+        if not isinstance(offered.get("reconfirm"), dict):
+            offered = dict(offered)
+            offered["reconfirm_accepted"] = True
+            raw_space = pending.get("space_id")
+            route = offered.get("served_route")
+            maybe_save_checked_sql(
+                question=suggested,
+                sql=str(offered.get("sql_used") or ""),
+                space_id=raw_space if isinstance(raw_space, str) else None,
+                warehouse=self._warehouse,
+                grantable=None,
+                dialect=self.dialect,
+                provenance="yes:reconfirm",
+                served_route=route.strip() if isinstance(route, str) else "",
+                abstained=offered.get("abstained") is True
+                or str(offered.get("badge") or "") == "ABSTAIN",
+            )
+        return offered
+
+    def _cortex_confirm_no(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """No on a Cortex reconfirm. Cortex logs the pipeline-failure ticket.
+
+        The original question goes back with ``plan_sql_confirm=no``. Whatever
+        Cortex returns, the customer reads "not found in the database": a No
+        never serves. If Cortex cannot be reached the local decline runs, so
+        the ticket is still written, and the envelope says so.
+        """
+        from dms_executor.envelope import assert_envelope_valid
+        from dms_executor.reconfirm import NOT_FOUND, decline_envelope
+
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        question = str(pending.get("question") or "").strip()
+        raw_tables = pending.get("tables")
+        tables = list(raw_tables) if isinstance(raw_tables, list) else None
+        try:
+            if self._cortex is None:
+                raise RuntimeError("CortexClient required for a reconfirm No")
+            acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
+            if acl.session_id not in self._bound_sessions:
+                self.bind_session(acl)
+            resp = self._cortex.ask(
+                AskRequest(
+                    question=question,
+                    session_id=acl.session_id,
+                    space_id=space_id,
+                    plan_sql_confirm="no",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            env = decline_envelope(pending)
+            code = classify_submit_error(exc).code
+            env["assumptions"] = [
+                *(env.get("assumptions") or []),
+                f"cortex confirm-no not delivered: {code}",
+            ]
+            return env
+        assumptions = ["reconfirm declined", "cortex plan_sql_confirm=no"]
+        if not resp.abstained and str(resp.badge or "").lower() != "abstain":
+            # Cortex answered a No. That is not a No; serve nothing.
+            assumptions.append(f"cortex confirm-no returned badge {resp.badge!r}; withheld")
+        audit = resp.receipt_id or resp.audit_id
+        env = build_abstain(
+            reason="reconfirm_no",
+            question=question,
+            stage="reconfirm_no",
+            answer_id=audit or "ans_reconfirm_no",
+            audit_id=audit,
+            text=NOT_FOUND,
+            abstain_reason="reconfirm_no",
+            values=[],
+            rows=[],
+            sql_used=None,
+            assumptions=assumptions,
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="abstain",
+        )
+        assert_envelope_valid(env)
+        return env
+
+    def _run_held_sql(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """Execute SQL the user confirmed. Grant and read-only checks run again."""
+        from datetime import UTC, datetime
+
+        from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+        from dms_executor.generative_ask import validate_compiled_sql
+        from dms_executor.grant_struct import serve_gap
+        from dms_executor.sql_loop import run_readonly
+
+        sql = str(pending.get("sql") or "").strip()
+        raw_grants = pending.get("grantable")
+        grantable = (
+            {str(name) for name in raw_grants if str(name).strip()}
+            if isinstance(raw_grants, list)
+            else set()
+        )
+        code = str(pending.get("reason_code") or "").strip()
+        question = str(
+            pending.get("suggested_question") or pending.get("question") or ""
+        ).strip()
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        provenance = f"yes:definition:{code}"
+
+        def abstain(reason: str) -> dict[str, Any]:
+            env = build_abstain(
+                reason=reason,
+                question=question,
+                stage="reconfirm_yes",
+                answer_id="ans_reconfirm_yes",
+                text=(
+                    "I cannot run that query against the granted tables, "
+                    "so I am not answering it."
+                ),
+                abstain_reason=reason,
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[reason],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
+            return env
+
+        gap = serve_gap(sql, grantable=grantable, dialect=self.dialect)
+        why = validate_compiled_sql(
+            sql,
+            grantable=grantable,
+            warehouse=self._warehouse,
+            dialect=self.dialect,
+        )
+        if gap or why:
+            return abstain(gap or why or "ungranted")
+        warehouse = self._warehouse
+        if warehouse is None or not Path(warehouse).is_file():
+            return abstain("warehouse_missing")
+        rows, err = run_readonly(sql, Path(warehouse))
+        if err or rows is None:
+            return abstain(err or "execute_failed")
+        env = build_answer_envelope(
+            answer_id="ans_reconfirm_yes",
+            text="The confirmed query ran.",
+            badge="L2_VALIDATED",
+            abstained=False,
+            rows=rows,
+            sql_used=sql,
+            assumptions=[provenance],
+            as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="generated",
+            question=question,
+        )
+        assert_envelope_valid(env)
+        abstained = env.get("abstained") is True or str(env.get("badge") or "") == "ABSTAIN"
+        if not abstained:
+            env["reconfirm_accepted"] = True
+            env["provenance"] = provenance
+        route = env.get("served_route")
+        maybe_save_checked_sql(
+            question=question,
+            sql=sql,
+            space_id=space_id,
+            warehouse=warehouse,
+            grantable=grantable,
+            dialect=self.dialect,
+            provenance=provenance,
+            served_route=route.strip() if isinstance(route, str) else "",
+            abstained=abstained,
+        )
         return env
 
     def take_executed(self) -> ExecutedTrace:
@@ -1408,6 +1875,7 @@ def map_ask_response_to_envelope(
     executed_trace.record(resp.sql_used, len(resp.rows or []))
     from dms_executor.envelope import (
         _DOC_ROUTE_KINDS,
+        DOCUMENT_ROUTE,
         assert_envelope_valid,
         build_answer_envelope,
         normalize_badge,
@@ -1505,7 +1973,17 @@ def map_ask_response_to_envelope(
         resp.contributing_sources, space_id=space_id
     )
     token = resp.drillthrough_token
-    if sources and not token:
+    # Contract 1.7.0 document answer: its cards are the documents it cites
+    # (container "documents", member the file). No SQL ran, so Cortex mints
+    # no drillthrough token and DMS does not invent one.
+    document = str(badge_raw or "").lower() == "document" and not abstained
+    if document and not token:
+        sources = [
+            {**s, "container": s.get("member") or s["container"]}
+            for s in sources
+            if s.get("kind") == "pdf"
+        ]
+    elif sources and not token:
         # E7: never claim sources without a drillthrough token.
         sources = []
     route = (resp.route or "").lower()
@@ -1539,22 +2017,44 @@ def map_ask_response_to_envelope(
         "chart": None if abstained else chart,
         "suggestions": list(resp.suggestions or []),
         "audit_id": resp.receipt_id or resp.audit_id,
-        "route": resp.route,
+        "route": DOCUMENT_ROUTE if document else resp.route,
         "drillthrough_token": None if abstained else token,
         "grounded_tables": grounded_tables,
         "competing_scopes": competing_scopes,
         "exclude_reasons": list(resp.exclude_reasons) if resp.exclude_reasons else None,
     }
+    offer = resp.reconfirm if str(badge_raw or "").lower() == "reconfirm" else None
     if abstained:
         env = build_abstain(
-            reason="abstain",
+            reason="reconfirm" if offer else "abstain",
             question=question or "",
             stage="cortex_ask",
             **fields,
         )
+        why = offer.get("why") if isinstance(offer, dict) else None
+        closest = offer.get("closest_question") if isinstance(offer, dict) else None
+        if isinstance(why, str) and why.strip() and isinstance(closest, str) and closest.strip():
+            # Cortex is asking. The chat route turns this into the Yes/No card
+            # (reconfirm.apply_reconfirm); the answer goes back as plan_sql_confirm.
+            env["reconfirm"] = {
+                "why": why.strip(),
+                "closest_question": closest.strip(),
+                "origin": "cortex",
+            }
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
     assert_envelope_valid(env)
+    from dms_executor.route_stamp import ROUTE_L1, ROUTE_VERIFIED, stamp_route
+
+    # Cortex built this answer. Its own L0/L1 badge names the rung (grade52
+    # reads the same badge). Any other badge, L2 included, does not say which
+    # route served it, so nothing is stamped and it stays unattributed. An
+    # abstain keeps the abstain:<stage> that build_abstain wrote.
+    served = {"L0_CERTIFIED": ROUTE_VERIFIED, "L1_GOVERNED_METRIC": ROUTE_L1}.get(
+        str(env.get("badge") or "")
+    )
+    if served and env.get("abstained") is not True:
+        stamp_route(env, served)
     return env
 
 
@@ -1607,11 +2107,14 @@ __all__ = [
     "canonical_space_id",
     "is_demo_space",
     "default_readable_tables",
+    "compile_source",
+    "connect_serving",
     "warehouse_path",
     "serving_sync_state",
     "infer_contract",
     "intersect_space_grants",
     "get_serving_engine",
+    "hide_echo",
     "read_health_engine_clock",
     "list_bronze_tables",
     "list_promote_targets",

@@ -44,6 +44,7 @@ GAP_REASONS = frozenset(
         "insights_bearer_missing",
         "insights_bearer_insecure_transport",
         "unhonored_qualifier",
+        "ungrounded_measure",
         # ONTO-DERIVE-01 (dms#277): a SQL-source Space's own ontology.
         "unverified_join",
         "no_declared_measure",

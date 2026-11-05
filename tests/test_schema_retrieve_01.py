@@ -1815,9 +1815,9 @@ def test_three_hundred_table_shortlist_p95_under_two_seconds(
     rows_read = 0
     real_read = schema_mod._bounded_read
 
-    def _counting(con: Any, table: str, column: str, limit: int) -> list[str]:
+    def _counting(con: Any, table: str, column: str, limit: int, **kwargs: Any) -> list[str]:
         nonlocal rows_read
-        got = real_read(con, table, column, limit)
+        got = real_read(con, table, column, limit, **kwargs)
         rows_read += len(got)
         return got
 
@@ -1865,7 +1865,7 @@ def test_three_hundred_table_shortlist_p95_under_two_seconds(
     assert data_sql == [], timing
     assert build_rows > 0, timing
     assert p95 < 2.0, timing
-    Path("/tmp/schema_index_timing.txt").write_text(timing + "\n", encoding="utf-8")
+    (tmp_path / "schema_index_timing.txt").write_text(timing + "\n", encoding="utf-8")
 
 
 def test_schema_from_serving_reuses_the_serving_connection(

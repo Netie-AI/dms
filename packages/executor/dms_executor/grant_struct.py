@@ -11,9 +11,11 @@ forward reference inside a CTE body is a relation. A file or external reader
 anywhere in the tree is refused. Every FROM, JOIN and LATERAL item is a plain
 table name, a subquery or a VALUES list; anything else (a table function, a
 table macro, a generator, ``LATERAL f(...)``) is not a relation and refuses.
-A name whose case fold is not ASCII-only is not settled: sqlglot folds with
-Python ``str.lower``, the engine folds ASCII. The default schema is part of
-the comparison, so a different schema is not the granted table. More than one
+A fold that invents an ASCII letter (Kelvin sign to ``k``) is not settled:
+sqlglot folds with Python ``str.lower``, the engine folds ASCII. A letter
+that stays non-ASCII (``Ä``) is the ASCII-folded original and stays distinct
+from ``ä``. The default schema is part of the comparison, so a different
+schema is not the granted table. More than one
 statement refuses, and so does one that is not a query. A parse failure
 refuses. No function-name list and no split on ``;``.
 
@@ -185,11 +187,14 @@ def relation_gap(name: str, *, grantable: set[str], dialect: str | None) -> str 
 
     The caller already has the relation. This does not build a statement.
     A statement still goes through ``serve_gap``. A missing dialect is
-    ``sql_dialect_unknown``.
+    ``sql_dialect_unknown``. The key is the allow-list key: ASCII fold only,
+    so a granted ``Äpfel`` resolves and stays distinct from ``äpfel``. A fold
+    that invents an ASCII letter stays ``sql_relation_unresolved``.
+    ``normalize_relation`` stays stricter and is not this key.
     """
     if _engine(dialect) is None:
         return "sql_dialect_unknown"
-    key = normalize_relation(name, dialect=dialect)
+    key = _grant_relation_key(name, dialect=dialect)
     if not key:
         return "sql_relation_unresolved"
     if key in _grant_keys(set(grantable), dialect):
@@ -435,6 +440,43 @@ def _bronze_default_key(token: str, dialect: str | None) -> str | None:
     return _relation_key([default, bare])
 
 
+def _grant_relation_key(name: str, *, dialect: str | None) -> str | None:
+    """Allow-list key for one relation token. None when a part will not settle.
+
+    Same parts ``_allow`` compares: each identifier through ``_grant_ident``
+    (ASCII letters only, so ``Ä`` stays ``Ä``), then the dialect's default
+    schema on a bare name. A fold that invents an ASCII letter is None.
+    """
+    found = _engine(dialect)
+    if found is None:
+        return None
+    dialect_name, engine = found
+    text = str(name or "").strip()
+    if not text:
+        return None
+    table = _parsed_table(text, dialect_name, engine)
+    if table is None:
+        return None
+    nodes = [
+        node
+        for node in (table.args.get("catalog"), table.args.get("db"), table.this)
+        if node is not None
+    ]
+    if not nodes or any(not isinstance(node, exp.Identifier) for node in nodes):
+        return None
+    names: list[str] = []
+    for node in nodes:
+        part = _grant_ident(node, engine)
+        if not part:
+            return None
+        names.append(part)
+    if len(names) == 1:
+        default = _default_schema(dialect_name, engine)
+        if default:
+            names.insert(0, default)
+    return _relation_key(names)
+
+
 def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
     """Exact keys. A dotted token is also the one-identifier table name."""
     keys: set[str] = set()
@@ -448,7 +490,7 @@ def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
         token = str(raw).strip()
         if not token or _slash_path(token):
             continue
-        key = normalize_relation(token, dialect=dialect)
+        key = _grant_relation_key(token, dialect=dialect)
         if key:
             keys.add(key)
             bare = _bronze_default_key(token, dialect)
@@ -456,7 +498,7 @@ def _grant_keys(grantable: set[str], dialect: str | None) -> set[str]:
                 keys.add(bare)
         if "." in token and quote not in token and end not in token and "`" not in token:
             one = token.replace(end, end + end)
-            quoted = normalize_relation(f"{quote}{one}{end}", dialect=dialect)
+            quoted = _grant_relation_key(f"{quote}{one}{end}", dialect=dialect)
             if quoted:
                 keys.add(quoted)
     return keys

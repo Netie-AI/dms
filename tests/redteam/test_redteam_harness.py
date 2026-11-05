@@ -207,6 +207,8 @@ def test_ungranted_table_abstains(records) -> None:
     assert r["stub_trace"]["submit_sql"] == []
     assert env(r)["abstained"] is True
     assert r["mechanical"]["verdict"] == "CORRECT"
+    # Bare code from serve_gap (explicit dialect, no cited tail). The name
+    # stays off the reason the customer reads.
     assert r["mechanical"]["abstain_reason"] == "validate:ungranted"
     assert "alerts" not in r["mechanical"]["abstain_reason"]
 

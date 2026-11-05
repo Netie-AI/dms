@@ -33,6 +33,15 @@ class AskRequest:
             question (str):
             dms_payload (AskPayload | None | Unset):
             plan_sql_confirm (AskRequestPlanSqlConfirmType0 | None | Unset):
+            schema_context (None | str | Unset): 1.9.0 caller shortlist, the SCHEMA-CONTEXT-01 string POST /v1/insights
+                takes. Read only when the engine has its schema_context switch on (off by default). Off, only its declared type
+                (string or null, maxLength 8192) is checked and the answer is the one the same ask gets without this field. On,
+                it is used only by the plan+SQL path (dms_payload set and that path switched on): its SQL prompt is then the
+                signed grant intersected with the tables, columns and joins this string declares, and a table outside the grant
+                is dropped. Absent or blank: the dms_payload schema is the prompt, as on 1.7. A value the insights rule refuses
+                (over 8192 UTF-8 bytes, a control or format character, a line outside the shapes it parses) is HTTP 422 with
+                that code before any model call. A string that declares no table, or no granted table, is a named abstain.
+                maxLength 8192; the engine cap is 8192 UTF-8 bytes.
             scored_pack_id (None | str | Unset):
             session_id (str | Unset):  Default: 'demo'.
             space_id (None | str | Unset):
@@ -41,6 +50,7 @@ class AskRequest:
     question: str
     dms_payload: AskPayload | None | Unset = UNSET
     plan_sql_confirm: AskRequestPlanSqlConfirmType0 | None | Unset = UNSET
+    schema_context: None | str | Unset = UNSET
     scored_pack_id: None | str | Unset = UNSET
     session_id: str | Unset = 'demo'
     space_id: None | str | Unset = UNSET
@@ -70,6 +80,12 @@ class AskRequest:
         else:
             plan_sql_confirm = self.plan_sql_confirm
 
+        schema_context: None | str | Unset
+        if isinstance(self.schema_context, Unset):
+            schema_context = UNSET
+        else:
+            schema_context = self.schema_context
+
         scored_pack_id: None | str | Unset
         if isinstance(self.scored_pack_id, Unset):
             scored_pack_id = UNSET
@@ -94,6 +110,8 @@ class AskRequest:
             field_dict["dms_payload"] = dms_payload
         if plan_sql_confirm is not UNSET:
             field_dict["plan_sql_confirm"] = plan_sql_confirm
+        if schema_context is not UNSET:
+            field_dict["schema_context"] = schema_context
         if scored_pack_id is not UNSET:
             field_dict["scored_pack_id"] = scored_pack_id
         if session_id is not UNSET:
@@ -151,6 +169,16 @@ class AskRequest:
         plan_sql_confirm = _parse_plan_sql_confirm(d.pop("plan_sql_confirm", UNSET))
 
 
+        def _parse_schema_context(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        schema_context = _parse_schema_context(d.pop("schema_context", UNSET))
+
+
         def _parse_scored_pack_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -177,6 +205,7 @@ class AskRequest:
             question=question,
             dms_payload=dms_payload,
             plan_sql_confirm=plan_sql_confirm,
+            schema_context=schema_context,
             scored_pack_id=scored_pack_id,
             session_id=session_id,
             space_id=space_id,

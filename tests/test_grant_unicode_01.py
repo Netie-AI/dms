@@ -286,7 +286,8 @@ def test_granted_unicode_table_serves_same_rows(
     assert body["rows"] == _SERVED_ROWS
     assert body["text"] == f"Found 1 row(s).\n  - n={_PLANTED}"
     assert "Catalog Error" not in json.dumps(body)
-    assert cortex.calls == 1
+    # The vote spends a second reading before the one submit. Flag off is one call.
+    assert cortex.calls == (2 if cloop else 1)
     assert cortex.sql_submits == 1
 
 
@@ -303,7 +304,8 @@ def test_granted_ascii_query_stays_served(
     assert body["rows"] == [{"location_code": "WH-C"}]
     assert body["text"] == "Found 1 row(s).\n  - location_code=WH-C"
     assert "Catalog Error" not in json.dumps(body)
-    assert cortex.calls == 1
+    # The vote spends a second reading before the one submit. Flag off is one call.
+    assert cortex.calls == (2 if cloop else 1)
     assert cortex.sql_submits == 1
 
 
