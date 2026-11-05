@@ -22,6 +22,7 @@ from ao_vendor.semantic.domain import DomainSummary
 from ao_vendor.semantic.fk_suggester import suggest_potential_foreign_keys
 from ao_vendor.semantic.models import ColumnAttributeSpec
 from ao_vendor.semantic.term_extractor import apply_display_names_to_specs, extract_term
+from ao_vendor.utils.sample_guard import guard_samples
 from ao_vendor.utils.sql_identifiers import qualified_name, quoted_identifier
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,13 @@ def _profile(
         values = [row[0] for row in sample_rows if row and row[0] is not None]
         total = int(counts[0]) if counts else 0
         distinct = int(counts[1]) if counts else 0
+        # dms#272: ``sample_values`` is what prompts see. A personal-data column
+        # carries placeholders only and gets no local probe. ``probe_values``
+        # is the full local sample for the semantic-FK membership SQL.
+        model_values, personal = guard_samples(table_name, str(name), values)
         entry: dict[str, Any] = {
-            "sample_values": values,
+            "sample_values": model_values or [],
+            "probe_values": [] if personal else values,
             "is_unique": bool(total) and total == distinct,
         }
         if is_date_type(column.get("data_type")):
@@ -124,6 +130,7 @@ def process_table(
                 "column_name": item.column_name,
                 "rationale": item.rationale,
                 "sample_values": (profiling.get(item.column_name) or {}).get("sample_values"),
+                "probe_values": (profiling.get(item.column_name) or {}).get("probe_values"),
             }
             for item in fk_result.suggestions
         ],

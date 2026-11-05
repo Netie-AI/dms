@@ -21,6 +21,7 @@ from sqlglot import exp
 from ao_vendor.llm.messages import HumanMessage, SystemMessage
 from ao_vendor.llm.ov_client import get_llm_client, invoke_with_structured_output
 from ao_vendor.semantic.models import FkHitSelection, SemanticFkJoinDefaultSelection
+from ao_vendor.utils.sample_guard import model_sample_values
 from ao_vendor.utils.sample_values import stringify_sample_values
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ def resolve_inferred_fks(
             "table_name": source_table,
             "description": suggestion.get("description") or "",
             "sample_values": suggestion.get("sample_values"),
+            "probe_values": suggestion.get("probe_values"),
         }
         selected = _llm_pick_hit(column, hits)
         if not selected and conn is not None:
@@ -142,13 +144,20 @@ def _format_sample_values(raw: Any) -> str:
     return "sample_values: " + ", ".join(values)
 
 
+def _model_samples(col: dict[str, Any]) -> list[Any] | None:
+    """The prompt's sample values pass the bound guard (dms#272)."""
+    return model_sample_values(
+        str(col.get("table_name") or ""), str(col.get("name") or ""), col.get("sample_values")
+    )
+
+
 def _llm_pick_hit(col: dict[str, Any], hits: list[dict[str, Any]]) -> str | None:
     """Ask which candidate column the foreign key references."""
     col_ctx = (
         f"Foreign-key column: {col.get('name', '')} "
         f"(table: {col.get('table_name', '')})\n"
         f"Description: {col.get('description') or '(none)'}\n"
-        f"Sample values: {_format_sample_values(col.get('sample_values')) or '(none)'}"
+        f"Sample values: {_format_sample_values(_model_samples(col)) or '(none)'}"
     )
     lines = []
     for hit in hits:
@@ -216,8 +225,13 @@ def _match_hit_by_samples(
     hits: list[dict[str, Any]],
     conn: Any,
 ) -> str | None:
-    """When the LLM abstains, keep a same-named PK whose values contain the samples."""
-    samples = _distinct_samples(col.get("sample_values"))
+    """When the LLM abstains, keep a same-named PK whose values contain the samples.
+
+    Local SQL on ``conn``. ``probe_values`` is the full local sample; it is
+    empty for a personal-data column, which is not probed (dms#272).
+    """
+    probe = col.get("probe_values")
+    samples = _distinct_samples(probe if probe is not None else col.get("sample_values"))
     if not samples:
         return None
     source_column = str(col.get("name") or "").lower()
