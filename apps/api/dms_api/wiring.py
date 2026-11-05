@@ -707,3 +707,17 @@ def engine_clock_fields() -> dict[str, str]:
         return dms_executor.read_health_engine_clock()
     except Exception:  # noqa: BLE001 - health must stay up
         return {}
+
+
+def resolve_action_key(action_type: str, key: dict[str, str]) -> dict[str, Any]:
+    """ACT-02: does a governed action's object key exist in its source, as encoded?
+
+    Hard rule 12. Delegates to ``dms_executor.action_keys``; identifiers come from
+    the code registry only. See that module for the result shapes.
+    """
+    from dms_core.control_plane.action_types import ACTION_TYPES
+
+    at = ACTION_TYPES[action_type]
+    return dms_executor.action_keys.resolve_key(
+        at.source_kind, at.source_table, at.key_fields, at.field, key
+    )

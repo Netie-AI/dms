@@ -2,6 +2,22 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-10-31 - ACT-02 fix 5: a reused entry id is never voided
+
+- **Reused entry id.** When Cortex returns an entry id that already backs an earlier, committed decision (`LedgerEntryReused`), apply and decline no longer append `action.*.void` naming that id (it put "did not commit" on the ledger over a real decision). They answer 409 `ledger_entry_reused` with `reused_entry_id` and `voided: false`, roll back, and append nothing. The entry Cortex really wrote for the refused attempt cannot be named, so it is disclosed as an orphan. Other refusals after the append (`receipt_mismatch`) still void the entry they name. DR-0008 item 4 updated (still Proposed).
+
+## 2026-10-30 - ACT-02 fix 4: a verbatim approval_ref carries no NRIC or card
+
+- **approval_ref.** Since fix 3 keeps the ref verbatim, a ticket-shaped ref that embeds an NRIC (`CHG-900101-14-5678`, `NRIC900101145678`, even after a letter prefix) or a Luhn-valid card number (`REF-4111-1111-1111-1111`) is refused with 400 `approval_ref_invalid` before any write, instead of reaching the immutable ledger as given. Ordinary numeric tickets (`CHG-2026-1030-4417`, `INC-60123456789`) are kept. No new refusal code. DR-0008 item 8 updated (still Proposed).
+
+## 2026-10-30 - ACT-02 fix 3: identifiers are kept verbatim, one actor spelling, a dead record is voided
+
+- **Evidence ids.** The PII masker no longer runs over the evidence keys `audit_id` and `reverts_decision_id` (it rewrote about 3% of UUID4 and 7% of 64-hex ids, so the pinned `evidence_audit_id` pointed at nothing and the proposal could never be applied). They are kept verbatim and shape-checked; a non-id value is refused at propose (400 `evidence_id_invalid`, a new refusal code).
+- **approval_ref.** Validated by shape and kept verbatim instead of PII-masked, so `CHG-2026-1030-4417` and `CHG-2026-1031-9999` stay distinct on the ledger, in the confirmation row and in the decision row. One ASCII ticket token of 3-200 characters with a letter; an email, a spaced narrative, a bare NRIC/phone/card number or a secret is refused (400 `approval_ref_invalid`, a new refusal code) before any write.
+- **Actor.** The configured actor is parsed with `uuid.UUID`; the shipped default is refused in any spelling (hyphenless, braced, `urn:uuid:`), and the canonical form is what the gate, the ledger actor, `created_by`, the confirmation row and the decision row receive. The core `_require_actor` canonicalises the same way.
+- **Record failure.** A non-refusal failure inside `record_decision` after the Cortex append (the database dies) now voids the known entry (`action.*.void`, `reason: record_failed`) and answers 503 `record_failed_after_append` with the entry id, instead of a 500 that left an unvoided `verified: true` entry.
+- **Docs.** DR-0008 updated (still Proposed).
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
@@ -9,6 +25,16 @@ Append-only. Never edited, only added to. Newest first.
 - **Refused record.** Apply and decline hold a savepoint until `record_decision` stores the decision; any refusal rolls it back, so a caller that commits anyway keeps no write, no status flip and no binding.
 - **Masking.** Integers in evidence are masked by their text. A key value that reads as PII or is longer than 200 characters is refused at propose (`key_value_invalid`, a new refusal code). An actor that is not a user id and reads as PII is refused (`ActorRequired`). A reason that masks past 500 characters is refused at propose.
 - **Docs.** DR-0008 items 6-9 updated (still Proposed).
+
+## 2026-10-30 - ACT-02: the route demo has no shared-server default
+
+- **Demo.** `act_02_route_demo.py` no longer defaults to `127.0.0.1:5432`; it refuses (exit 2) unless `ACT02_DEMO_URL` is set, as `act_01_writeback_demo.py` already does. The demo creates, migrates and drops a database and grants cluster-wide roles, so it must name a scratch server.
+
+## 2026-10-30 - ACT-02: carries the ACT-01 receipt fix to the routes
+
+- **Refusals.** `actor_required` (403), `receipt_mismatch` (409, with `field`) and `ledger_entry_reused` (409) are mapped. A receipt refused after the Cortex append appends an `action.apply.void` / `action.decline.void` and rolls the write back.
+- **PII.** The decline's ledger payload carries the masked `approval_ref` and reason, as the receipt does.
+
 ## 2026-10-30 - ACT-01 fix: the receipt is rebuilt from the database, not trusted
 
 - **Receipt.** `record_decision` rebuilds every receipt field from the stored version, its pins and the writeback row the version last wrote, and refuses a caller record that differs (`ReceiptMismatch`). A forged `applied` for a pending version, and a real apply recorded as `declined`, are refused; the real receipt can still be written. The Space is the proposal's own (`space_id`, if passed, must match). One Cortex entry id backs one pointer (`LedgerEntryReused`).
@@ -17,6 +43,15 @@ Append-only. Never edited, only added to. Newest first.
 - **Identity.** Apply and decline refuse a blank, `None` or shipped-default actor (`ActorRequired`); `action_decisions.actor_id` records it. DR-0004 Option A, no dual-control claim.
 - **Inputs.** Decline checks `approval_ref` before it flips the status. `approval_ref` needs 3 visible characters (code and table CHECK). Values are ASCII digits, at most 40 significant digits. The VerifyFailed branch is tested. The demo needs an explicit `ACT01_DEMO_URL`.
 - **Not fixed.** The advisory-lock unlock on an aborted transaction (pre-existing `advisory_lock.py`, shared with main's confirm) is left for its own ticket.
+
+## 2026-10-30 - ACT-02: governed action routes behind DMS_ACTIONS
+
+- **Flag.** `DMS_ACTIONS` defaults 0; only `1` is on. Off, nothing under `/v1/amend/actions` matches: every method and body (malformed JSON included) gets main's 404 bytes, and `/openapi.json` hashes the same as origin/main `58fcaa5` (`scripts/verify/act_flag_off_parity.py`). No route is in the schema with the flag on either. `app.py`, `settings.py`, `chat.py` and MCP `TOOLS` are untouched.
+- **Routes.** types, proposals (list, propose, apply, decline), objects, decisions (list, get, revert). Each calls `compliance_gate` (`action.*`) in its own body; mutations then require the steward grant and refuse the shipped default actor. List GETs require `space_id`.
+- **Proof.** Propose refuses a key that does not match the source encoding (`BETA` -> 422 with candidate `SKU-BETA`) and evidence that is not a validated, executed, row-returning answer that read `inventory` (E9). Apply checks the ledger chain first, then in one transaction re-checks evidence, writes, re-reads, appends `action.apply` to Cortex and stores the pointer. A failed append writes nothing. A failed commit after the append makes a best-effort `action.apply.void` and answers 503 `commit_failed_after_append`. The receipt says `separation_of_duties.proven: false` and `source_system_changed: false`. Revert is a new proposal that still needs an apply.
+- **Held files.** `wiring.py` (+1 function at the end) and `dms_executor/__init__.py` (+1 import line, needed so the import-linter exemption covers the new resolver).
+- **Decision.** DR-0008 gains an ACT-02 addendum and is still Proposed; it needs the founder stamp.
+- **Tests.** At `de09cd0`, Postgres 16 (scratch container), one file per process: `tests/test_act_02_flag_off.py` 10 passed, `tests/control_plane/test_act_02_routes.py` 11 passed, every other `tests/control_plane` file and every `tests/invariants` file passed, `ruff`, `mypy` (5 CI packages) and `lint-imports` clean. `act_02_route_demo.py` printed `ACT-02 PROOF OK @de09cd0d` against an in-process fake ledger (live Cortex not exercised). The full suite was not run. Not PASS.
 
 ## 2026-10-29 - ACT-01: governed action core behind DMS_ACTIONS
 

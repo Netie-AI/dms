@@ -1,0 +1,10 @@
+{
+  "_comment": "ACT-02 rule 12: the 422 body a key miss returns when the source holds PII-shaped key values. tests/control_plane/test_act_02_routes.py asserts the route returns exactly this detail; apps/ui/src/lib/actions.test.ts renders it. pii_values are inserted into the warehouse and must appear in neither.",
+  "pii_values": ["ali.baba@example.com", "900101-14-5678"],
+  "detail": {
+    "code": "object_key_not_found",
+    "object_key": {"sku": "SKU-BETA", "location_id": "WH-ZZ"},
+    "candidates": [{"sku": "SKU-BETA", "location_id": "WH-B"}]
+  },
+  "rendered": "No inventory item SKU \"SKU-BETA\" at WH-ZZ. Did you mean SKU-BETA at WH-B?"
+}

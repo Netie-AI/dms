@@ -29,6 +29,7 @@ from decimal import Context, Decimal, InvalidOperation
 from typing import Any
 
 from dms_core.control_plane.ask_audit_scrub import mask_pii_counted, scrub_counted
+from dms_core.pii import _luhn_ok, _valid_yymmdd
 
 
 def actions_enabled() -> bool:
@@ -270,6 +271,79 @@ def mask_json(value: Any) -> Any:
         masked = mask_text(text)
         return value if masked == text else masked
     return value
+
+
+#: Evidence keys that hold a structural identifier (a ledger pointer, a decision
+#: id). The PII masker is never run over them: it matches digit runs inside ids
+#: (about 3% of UUID4 ids, 7% of 64-hex ids) and a mangled pointer points nowhere.
+#: They are validated by shape instead and kept verbatim.
+EVIDENCE_ID_KEYS = frozenset({"audit_id", "reverts_decision_id"})
+_ID_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+
+
+def mask_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    """Evidence as stored: identifiers verbatim (shape-checked), everything else masked.
+
+    An identifier key whose value is not an ASCII id of at most 128 characters
+    (letters, digits, ``_ . : -``) is refused (``evidence_id_invalid``) rather
+    than masked: masking could only turn it into a pointer to nothing.
+    Idempotent, like ``mask_json``.
+    """
+    out: dict[str, Any] = {}
+    for key, value in evidence.items():
+        name = str(key)
+        if name in EVIDENCE_ID_KEYS:
+            if not isinstance(value, str) or not _ID_SHAPE.match(value):
+                raise ActionSpecError("evidence_id_invalid", f"evidence {name} is not an id")
+            out[name] = value
+        else:
+            out[mask_text(name)] = mask_json(value)
+    return out
+
+
+APPROVAL_REF_MIN = 3
+APPROVAL_REF_MAX = 200
+_REF_SHAPE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_./:#-]*\Z")
+_HAS_LETTER = re.compile(r"[A-Za-z]")
+#: An NRIC inside a ref, bounded by non-digits only (a letter prefix does not hide it).
+_REF_NRIC = re.compile(r"(?<!\d)(\d{6})-?\d{2}-?\d{4}(?!\d)")
+#: A card number inside a ref: 13-16 contiguous digits, or 4-4-4-(1-4) grouped by "-".
+_REF_CARD = re.compile(r"(?<!\d)(?:\d{13,16}|\d{4}-\d{4}-\d{4}-\d{1,4})(?!\d)")
+
+
+def approval_ref_problem(ref: str) -> str | None:
+    """Why an (already stripped) approval reference is refused, or None.
+
+    A ref names a change ticket (``CHG-2026-1030-4417``, ``CAB-1``): it is an
+    identifier, kept verbatim, so it is validated by shape and never PII-masked
+    (masking collapses distinct numeric tickets to one token). The shape: one
+    ASCII token of letters, digits and ``_ . / : # -``, with at least one letter,
+    so a bare NRIC, phone or card number is refused, and an email or a spaced
+    narrative cannot pass. A ref the secret scrubber would change is refused too.
+
+    Because the ref is kept verbatim, a ticket-shaped ref that carries an NRIC
+    (``CHG-900101-14-5678``, ``NRIC900101145678``) or a Luhn-valid card number
+    is refused as well: masking it would collapse it, storing it would put PII on
+    the immutable ledger. Only the NRIC and card classes are checked; the
+    masker's account and phone classes match ordinary numeric tickets
+    (``CHG-2026-1030-4417``, ``INC-60123456789``).
+    Returns ``approval_ref_too_long`` or ``approval_ref_invalid``.
+    """
+    if len(ref) > APPROVAL_REF_MAX:
+        return "approval_ref_too_long"
+    if not _REF_SHAPE.match(ref) or not _HAS_LETTER.search(ref):
+        return "approval_ref_invalid"
+    _clean, hits = scrub_counted(ref)
+    if hits:
+        return "approval_ref_invalid"
+    masked, _ = mask_pii_counted(ref)
+    if "DMSMASK_nric_" in masked or any(
+        _valid_yymmdd(m.group(1)) for m in _REF_NRIC.finditer(ref)
+    ):
+        return "approval_ref_invalid"
+    if any(_luhn_ok(m.group(0).replace("-", "")) for m in _REF_CARD.finditer(ref)):
+        return "approval_ref_invalid"
+    return None
 
 
 def object_key_hash(object_key: Mapping[str, Any]) -> str:
