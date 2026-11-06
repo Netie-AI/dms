@@ -16,6 +16,8 @@ captured, not against SQL alone.
 from __future__ import annotations
 
 import base64
+import contextlib
+import io
 import itertools
 import json
 import os
@@ -24,6 +26,7 @@ import subprocess
 import sys
 import threading
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -334,17 +337,19 @@ def _openvault(status: dict[str, Any] | None = None) -> _Server:
     )
 
 
-@pytest.fixture(autouse=True)
-def _clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """No armed settings, no profile flags; both restored after the test."""
+def _reset_state() -> None:
     grade52._bootstrap()
     from dms_api.settings import get_settings
     from dms_executor.reconfirm import _reset_reconfirm
 
     get_settings.cache_clear()
     _reset_reconfirm()
-    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path / "runner"))
-    monkeypatch.setenv("DMS_PIPELINE_FAILURE_JSONL", str(tmp_path / "failures.jsonl"))
+
+
+def _clear_env(monkeypatch: pytest.MonkeyPatch, tmp: Path) -> None:
+    """No armed settings, no profile flags. ``monkeypatch`` restores them."""
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp / "runner"))
+    monkeypatch.setenv("DMS_PIPELINE_FAILURE_JSONL", str(tmp / "failures.jsonl"))
     for name in (
         *_PROFILE_FLAGS,
         "CORTEX_BASE_URL",
@@ -357,9 +362,64 @@ def _clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None
     ):
         monkeypatch.setenv(name, "x")  # records the original, so teardown restores it
         monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
+def _clean_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No armed settings, no profile flags; both restored after the test."""
+    _reset_state()
+    _clear_env(monkeypatch, tmp_path)
     yield
-    _reset_reconfirm()
-    get_settings.cache_clear()
+    _reset_state()
+
+
+@dataclass(frozen=True)
+class _ArmedGate:
+    """One ``--armed --ai-first --gate`` run of two captures, shared by this module."""
+
+    code: int
+    out: str
+    runner: Path
+    pack: _Pack
+    model: _Model
+    leaked: list[str]
+
+    def records(self, run: int = 1) -> tuple[list[str], dict[str, dict[str, Any]]]:
+        lines = (self.runner / f"grade52.armed.run{run}.jsonl").read_text(encoding="utf-8")
+        capture = lines.splitlines()
+        return capture, {rec["id"]: rec for rec in map(json.loads, capture[1:])}
+
+
+@pytest.fixture(scope="module")
+def armed_gate(tmp_path_factory: pytest.TempPathFactory) -> _ArmedGate:
+    """Two armed AI-first runs through the real ask loop, once per module.
+
+    Each run is 52 real POST /v1/chat/ask envelopes plus the Yes confirms, so
+    the tests that read the captures share this one gate run.
+    """
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+
+    tmp = tmp_path_factory.mktemp("aif-armed")
+    with pytest.MonkeyPatch.context() as mp:
+        _reset_state()
+        _clear_env(mp, tmp)
+        pack = _Pack()
+        model = _Model(pack)
+        cortex = _cortex(ensure_demo_warehouse(tmp / "cortex.duckdb"), model)
+        vault = _openvault()
+        buf = io.StringIO()
+        try:
+            _arm(mp, cortex, vault)
+            with contextlib.redirect_stdout(buf):
+                code = grade52.main(["--armed", "--ai-first", "--layout", "full-tree", "--gate"])
+        finally:
+            cortex.close()
+            vault.close()
+            _reset_state()
+        # The profile's flags were for the run only.
+        names = (*grade52.AI_FIRST_FLAGS, *grade52.AI_FIRST_HELD_FLAGS)
+        leaked = [name for name in names if name in os.environ]
+    return _ArmedGate(code, buf.getvalue(), tmp / "runner" / "grade52", pack, model, leaked)
 
 
 def _arm(monkeypatch: pytest.MonkeyPatch, cortex: _Server, vault: _Server) -> None:
@@ -401,7 +461,7 @@ def _line(out: str, head: str) -> str:
 
 
 def test_ai_first_armed_run_yes_pass_copies_traps_and_gate(
-    monkeypatch: pytest.MonkeyPatch,
+    armed_gate: _ArmedGate,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -415,30 +475,16 @@ def test_ai_first_armed_run_yes_pass_copies_traps_and_gate(
     AI answer that served the example it was shown is ai_example_copy and is
     not in ai_share.
     """
-    from dms_executor.demo_warehouse import ensure_demo_warehouse
     from dms_executor.envelope import assert_envelope_valid
 
-    pack = _Pack()
-    model = _Model(pack)
-    cortex = _cortex(ensure_demo_warehouse(tmp_path / "cortex.duckdb"), model)
-    vault = _openvault()
-    try:
-        _arm(monkeypatch, cortex, vault)
-        code = grade52.main(["--armed", "--ai-first", "--layout", "full-tree", "--gate"])
-    finally:
-        cortex.close()
-        vault.close()
-    out = capsys.readouterr().out
-    assert code == 1, out
+    pack, model, out, runner = armed_gate.pack, armed_gate.model, armed_gate.out, armed_gate.runner
+    assert armed_gate.code == 1, out
 
     # The profile's flags were for the run only.
-    for name in (*grade52.AI_FIRST_FLAGS, *grade52.AI_FIRST_HELD_FLAGS):
-        assert name not in os.environ, name
+    assert armed_gate.leaked == []
 
-    runner = tmp_path / "runner" / "grade52"
-    capture = (runner / "grade52.armed.run1.jsonl").read_text(encoding="utf-8").splitlines()
+    capture, records = armed_gate.records()
     header = json.loads(capture[0])
-    records = {rec["id"]: rec for rec in map(json.loads, capture[1:])}
     assert len(records) == 52
     assert (runner / "grade52.armed.run2.jsonl").is_file()
 
@@ -550,6 +596,8 @@ def test_ai_first_armed_run_yes_pass_copies_traps_and_gate(
     case = cases[_COPY]
     assert case["bucket"] == "CORRECT" and case["ai_example_copy"] is True
     assert case["serve_path"] == "ai_example_copy" and case["served_route"] == "unattributed"
+    assert case["run_paths"] == ["ai_example_copy", "ai_example_copy"]
+    assert cases[_AI_CORRECT]["run_paths"] == ["ai", "ai"]
 
     # Every offer with a suggestion on a non-trap case got its Yes, and only those.
     for qid, record in records.items():
@@ -613,6 +661,191 @@ def test_ai_first_armed_run_yes_pass_copies_traps_and_gate(
         c["id"]: c["bucket"] for c in run1["cases"]
     }
     assert capsys.readouterr().out.splitlines()[1].startswith("profile ai-first dms_flags=")
+
+
+def _write_capture(path: Path, header: str, records: dict[str, dict[str, Any]]) -> Path:
+    lines = [header, *(json.dumps(record) for record in records.values())]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def test_worst_case_counts_a_copy_in_any_run_whatever_the_order(
+    armed_gate: _ArmedGate,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Two runs serve the same rows for the copy case: one copied, one did not.
+
+    The second run is run 1 with one change: the copy case's ask showed the
+    model no example, so the same served SQL is the model's own (AI). The
+    worst case of the two is a copy either way round (D7): out of
+    ``ai_share``, and the printed copy and metric lines do not depend on
+    the order the runs are given in.
+    """
+    from dms_executor.envelope import assert_envelope_valid
+
+    capture, records = armed_gate.records()
+    rec = records[_COPY]
+    gold = _gold_rows(tmp_path, armed_gate.pack, _COPY)
+    assert _values(rec["env"]["rows"]) == _values(gold)
+    _text_names(rec["env"]["rows"], str(rec["env"]["text"]))
+    assert grade52.sql_hash(rec["env"]["sql_used"]) in rec["served"]["example_sql_sha256"]
+
+    honest_records = json.loads(json.dumps(records))
+    honest = honest_records[_COPY]
+    honest["served"]["example_sql_sha256"] = []
+    honest["env"]["ai_first"] = {**honest["env"]["ai_first"], "examples": 0}
+    assert_envelope_valid(honest["env"])
+    honest_path = _write_capture(tmp_path / "honest.jsonl", capture[0], honest_records)
+    copied_path = armed_gate.runner / "grade52.armed.run1.jsonl"
+    runner = tmp_path / "runner" / "grade52"
+
+    printed: list[tuple[str, str]] = []
+    for order in ((honest_path, copied_path), (copied_path, honest_path)):
+        capsys.readouterr()
+        grade52.grade_runs(list(order))
+        out = capsys.readouterr().out
+        # Each run's own grade: the honest run is AI, the copied run is a copy.
+        own = [
+            {c["id"]: c for c in json.loads(path.read_text(encoding="utf-8"))["cases"]}[_COPY]
+            for path in (runner / "grade52.run1.json", runner / "grade52.run2.json")
+        ]
+        paths = ["ai" if path == honest_path else "ai_example_copy" for path in order]
+        assert [case["serve_path"] for case in own] == paths
+        assert [case["bucket"] for case in own] == ["CORRECT", "CORRECT"]
+
+        artifact = json.loads((runner / "grade52.json").read_text(encoding="utf-8"))
+        cases = {case["id"]: case for case in artifact["cases"]}
+        case = cases[_COPY]
+        assert case["bucket"] == "CORRECT" and case["ai_example_copy"] is True
+        assert case["serve_path"] == "ai_example_copy" and case["served_route"] == "unattributed"
+        assert case["runs"] == ["CORRECT", "CORRECT"] and case["run_paths"] == paths
+        first_correct = sorted(k for k, c in cases.items() if c["bucket"] == "CORRECT")
+        ai = sorted(k for k in first_correct if cases[k]["serve_path"] == "ai")
+        assert _COPY in first_correct and _COPY not in ai and _AI_CORRECT in ai
+        assert artifact["ai_share"] == {"ai": len(ai), "correct": len(first_correct)}
+        copies = _line(out, "worst of 2 unstable=0 copies ")
+        assert f"ai_share={len(ai)}/{len(first_correct)} excluded=ai_example_copy" in copies
+        assert f"ai_example_copy={artifact['copies']['ai_example_copy']} " in copies
+        metric = _line(out, "worst of 2 unstable=0 metric ")
+        assert metric.startswith(f"worst of 2 unstable=0 metric ai_share={len(ai)}/")
+        printed.append((copies, metric))
+    assert printed[0] == printed[1]
+
+
+def _tie_case(qid: str, bucket: str, path: str) -> dict[str, Any]:
+    case: dict[str, Any] = {
+        "id": qid,
+        "bucket": bucket,
+        "reason": "planted",
+        "serve_path": path,
+        "served_route": grade52.path_group(path),
+        "answered": True,
+    }
+    if path == grade52.PATH_EXAMPLE_COPY:
+        case["ai_example_copy"] = True
+    return case
+
+
+@pytest.mark.parametrize("profile", [None, grade52.PROFILE_AI_FIRST])
+def test_worst_case_ties_give_ai_least_credit_only_on_the_ai_first_profile(
+    profile: str | None,
+) -> None:
+    """Same worst bucket in both runs, different paths: which run is the score.
+
+    AI-first: a copy beats every path, and on a correct bucket any path beats
+    AI, in either order. Ties in other buckets keep the first run. The legacy
+    grade keeps the first run on every tie, exactly as EVAL-01 did.
+    """
+    copy = grade52.PATH_EXAMPLE_COPY
+    plan = [
+        ("correct_ai_vs_rule", "CORRECT", "ai", "L0"),
+        ("correct_ai_vs_copy", "CORRECT", "ai", copy),
+        ("wrong_ai_vs_rule", "WRONG", "ai", "L0"),
+        ("wrong_ai_vs_copy", "WRONG", "ai", copy),
+    ]
+    if profile:
+        plan.append(("after_yes_ai_vs_rule", "CORRECT_AFTER_YES", "ai", "L1"))
+
+    def report(side: int) -> dict[str, Any]:
+        return {
+            **({"profile": profile} if profile else {}),
+            "dms_sha": "d" * 40,
+            "cortex_sha": _CORTEX_SHA,
+            "layout": "full-tree",
+            "as_of": "2026-01-01",
+            "mode": grade52.MODE_ARMED,
+            "n": len(plan),
+            "pack_gold_served_ids": [],
+            "cases": [_tie_case(qid, bucket, paths[side]) for qid, bucket, *paths in plan],
+        }
+
+    run_a, run_b = report(0), report(1)
+    for first, second in ((run_a, run_b), (run_b, run_a)):
+        worst = grade52.worst_case([first, second])
+        picked = {case["id"]: case["serve_path"] for case in worst["cases"]}
+        given = {case["id"]: case["serve_path"] for case in first["cases"]}
+        assert worst["unstable"] == 0
+        if profile is None:
+            assert picked == given
+            assert all("run_paths" not in case for case in worst["cases"])
+            continue
+        assert picked == {
+            "correct_ai_vs_rule": "L0",
+            "correct_ai_vs_copy": copy,
+            "wrong_ai_vs_rule": given["wrong_ai_vs_rule"],
+            "wrong_ai_vs_copy": copy,
+            "after_yes_ai_vs_rule": "L1",
+        }
+        assert grade52.ai_share(worst) == {"ai": 0, "correct": 2}
+        assert grade52.copy_counts(worst["cases"])["ai_example_copy"] == 2
+
+
+@pytest.mark.parametrize("suggestion", ["", "Show the stock value of each region"])
+def test_a_wrong_figure_after_yes_is_wrong_whatever_offer_it_carries(
+    armed_gate: _ArmedGate, tmp_path: Path, suggestion: str
+) -> None:
+    """A Yes envelope that serves rows is graded on them, offer block or not.
+
+    The Yes envelope serves one row of a many-row answer and also carries a
+    reconfirm block (an empty suggestion, then a real one). It is WRONG, not
+    a reconfirm. Control: a Yes that abstains with the same block is a
+    reoffer when the suggestion is real and an abstain when it is empty.
+    """
+    _capture, records = armed_gate.records()
+    records = json.loads(json.dumps(records))
+    gold = _gold_rows(tmp_path, armed_gate.pack, _YES_WRONG)
+    served = records[_YES_WRONG]["yes"]["env"]
+    assert served["abstained"] is False and len(gold) > 1 and len(served["rows"]) == 1
+    assert _values(served["rows"])[0] in _values(gold)
+    _text_names(served["rows"], str(served["text"]))
+    block = records[_YES_WRONG]["env"]["reconfirm"]
+    served["reconfirm"] = {**block, "suggested_question": suggestion, "token": "rcf_served"}
+
+    abstained = json.loads(json.dumps(records[_YES_GOLD]["env"]))
+    assert abstained["abstained"] is True and abstained["rows"] == []
+    abstained["reconfirm"] = {
+        **abstained["reconfirm"],
+        "suggested_question": suggestion,
+        "token": "rcf_abstained",
+    }
+    records[_YES_GOLD]["yes"]["env"] = abstained
+
+    report = grade52.grade_envelopes(
+        list(records.values()),
+        mode=grade52.MODE_ARMED,
+        warehouse_dir=tmp_path / "wh",
+        profile=grade52.PROFILE_AI_FIRST,
+    )
+    cases = {case["id"]: case for case in report["cases"]}
+    case = cases[_YES_WRONG]
+    assert case["bucket"] == "WRONG" and case["yes_outcome"] == "wrong"
+    assert case["reason"] == f"after yes: rowcount 1 vs {len(gold)}"
+    assert case["served_n"] == len(served["rows"]) == 1
+    control = cases[_YES_GOLD]
+    assert control["bucket"] == "RECONFIRM" and control["served_n"] == 0
+    assert control["yes_outcome"] == ("reoffer" if suggestion else "abstain")
+    assert grade52.yes_counts(report["cases"])["wrong_after_yes"] >= 1
 
 
 def test_example_sql_hashes_read_what_the_product_writes() -> None:

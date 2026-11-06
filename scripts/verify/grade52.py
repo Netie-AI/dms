@@ -90,13 +90,16 @@ an AI-first capture:
   The follow-up envelope is graded against the original question's gold. A
   wrong figure is ``WRONG``; a correct one is ``CORRECT_AFTER_YES``, counted
   apart from first-pass ``correct``. A Yes that serves nothing leaves the
-  case a reconfirm.
+  case a reconfirm. A Yes envelope that serves rows is graded on them, even
+  if it also carries a reconfirm block.
 - The example SQL the ask path showed the model is recorded as sha256 of its
   sqlglot normal form. An AI answer whose served ``sql_used`` hashes to one
   of them is ``ai_example_copy``: it is not AI, so it is out of ``ai_share``
   (decision D7, taken as proposed). The legacy lines count it unattributed.
 - ``--gate`` is the worst case of ``--runs`` (at least 2) armed runs, through
   the same ``worst_case`` as ``--envelopes``, and prints ``wrong_ub95``.
+  When runs tie on a case's worst bucket, a copy in any of them makes it a
+  copy, and a correct case counts as AI only if every tied run served AI.
 
 Usage:
     python scripts/verify/grade52.py --self-test
@@ -1031,11 +1034,17 @@ def grade_case(
 
 
 def yes_offer(env: Mapping[str, Any]) -> str | None:
-    """The confirm token of a reconfirm a user could say Yes to, or None.
+    """The confirm token of a reconfirm the grader says Yes to, or None.
 
-    An offer needs a non-empty ``suggested_question`` and a token. An empty
-    suggestion is not an offer: the confirm route refuses it with
-    ``reconfirm_empty``.
+    An offer needs a non-empty ``suggested_question`` and a token: the
+    ticket's rule, so an empty suggestion is not an offer. The product is
+    wider in one case. Under ``DMS_RECONFIRM_RUN_HELD=1`` (this profile)
+    ``confirm_reconfirm`` runs a pending entry's held SQL (``held_ready``)
+    before it refuses an empty suggestion, and the UI's reconfirm card shows
+    Yes when the offer carries a ``definition``. A definition-only held offer
+    is a real customer offer that this grader does not press. Today
+    ``def_validate`` always sets ``closest_question`` to the question, so the
+    case does not arise.
     """
     raw = env.get("reconfirm") if isinstance(env, Mapping) else None
     if not isinstance(raw, Mapping):
@@ -1051,6 +1060,20 @@ def yes_offer(env: Mapping[str, Any]) -> str | None:
 
 def _without_offer(env: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in env.items() if key != "reconfirm"}
+
+
+def _yes_view(env: Mapping[str, Any]) -> dict[str, Any]:
+    """The Yes envelope as it is graded. Only an abstain with a real offer re-offers.
+
+    An empty suggestion is not an offer here either, and a Yes envelope that
+    serves rows is graded on those rows whatever block it carries: a wrong
+    figure after Yes is WRONG, never a reconfirm.
+    """
+    if not isinstance(env.get("reconfirm"), Mapping):
+        return dict(env)
+    if _is_abstain(env) and yes_offer(env) is not None:
+        return dict(env)
+    return _without_offer(env)
 
 
 def sql_hash(sql: Any) -> str | None:
@@ -1166,9 +1189,10 @@ def grade_case_ai_first(
     Traps and refusals are judged before the reconfirm branch: a trap is
     graded on its envelope without the offer, and nobody says Yes to it. An
     empty suggestion is not an offer, so that envelope is graded without it.
-    An offer's Yes envelope (``yes``) is graded against this question's gold.
-    Served wrong is ``WRONG``; served correct is ``CORRECT_AFTER_YES``. A Yes
-    that serves nothing keeps the first-pass reconfirm.
+    An offer's Yes envelope (``yes``) is graded against this question's gold,
+    under the same offer rule (``_yes_view``). Served wrong is ``WRONG``;
+    served correct is ``CORRECT_AFTER_YES``. A Yes that serves nothing keeps
+    the first-pass reconfirm.
     """
     offered = yes_offer(env) is not None
     has_block = isinstance(env.get("reconfirm"), Mapping)
@@ -1204,14 +1228,15 @@ def grade_case_ai_first(
     follow = grade_case(
         gold=gold,
         gold_sql=gold_sql,
-        env=yes_env,
+        env=_yes_view(yes_env),
         served_rows=_rows_of(yes_env.get("rows")),
         as_of=as_of,
         gold_broken=gold_broken,
         model_sql=_record_model_sql(yes) if isinstance(yes, Mapping) else None,
     )
     if not follow["answered"]:
-        first["yes_outcome"] = "reoffer" if _reconfirm_offer(yes_env) else "abstain"
+        reoffer = _is_abstain(yes_env) and yes_offer(yes_env) is not None
+        first["yes_outcome"] = "reoffer" if reoffer else "abstain"
         return _mark_copy(first, env, example_hashes)
     if follow["bucket"] == BUCKET_CORRECT:
         bucket, reason, outcome = BUCKET_CORRECT_AFTER_YES, "correct after yes", "correct"
@@ -1854,6 +1879,7 @@ _AI_FIRST_CASE_KEYS = (
     "first_pass",
     "ai_example_copy",
     "copy_check",
+    "run_paths",
 )
 # Run header fields of an AI-first capture, copied onto its report and artifact.
 _PROFILE_META_KEYS = (
@@ -3633,12 +3659,35 @@ def grade_envelopes_path(path: Path, **finish: Any) -> dict[str, Any]:
     )
 
 
+_CORRECT_BUCKETS = frozenset({BUCKET_CORRECT, BUCKET_CORRECT_AFTER_YES})
+
+
+def _ai_credit_rank(case: Mapping[str, Any]) -> int:
+    """AI-first tie-break among runs with the same worst bucket. Higher wins.
+
+    A served example copy outranks every other path, in any bucket: a copy in
+    any tied run makes the case a copy (D7), as that run's own grade did. On a
+    correct bucket any other path outranks AI, so a correct question counts
+    toward ``ai_share`` only when every run with that bucket served AI.
+    """
+    if case.get("ai_example_copy"):
+        return 2
+    if str(case.get("bucket")) in _CORRECT_BUCKETS and case.get("serve_path") != "ai":
+        return 1
+    return 0
+
+
 def worst_case(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Per case, the worst bucket any run gave it. One lucky run is not a score.
 
     A case correct in one run and wrong in another is wrong; correct in one and
     abstained in another is an abstain. Runs must grade one commit, layout and
     as-of date, or the worst case mixes two products.
+
+    Runs with the same worst bucket tie. The legacy grade keeps the first of
+    them (EVAL-01, unchanged). The AI-first profile breaks the tie with
+    ``_ai_credit_rank``, so ``ai_share`` and the copy count do not depend on
+    the order the runs are given in, and ``run_paths`` lists each run's path.
     """
     first = reports[0]
     for key in ("dms_sha", "cortex_sha", "layout", "as_of", "mode", "n", "profile"):
@@ -3647,12 +3696,20 @@ def worst_case(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     per_run = [{str(item["id"]): item for item in run["cases"]} for run in reports]
     cases: list[dict[str, Any]] = []
     unstable = 0
+    ai_first = _yes_pass(first)
+
+    def rank(case: Mapping[str, Any]) -> tuple[int, int]:
+        return (_SEVERITY[str(case["bucket"])], _ai_credit_rank(case) if ai_first else 0)
+
     for item in first["cases"]:
         seen = [run[str(item["id"])] for run in per_run]
-        worst = max(seen, key=lambda case: _SEVERITY[str(case["bucket"])])
+        worst = max(seen, key=rank)
         buckets = [str(case["bucket"]) for case in seen]
         unstable += len(set(buckets)) > 1
-        cases.append({**worst, "runs": buckets})
+        row = {**worst, "runs": buckets}
+        if ai_first:
+            row["run_paths"] = [str(case.get("serve_path") or "unattributed") for case in seen]
+        cases.append(row)
     profile = {key: first[key] for key in ("profile", *_PROFILE_META_KEYS) if key in first}
     return {
         **profile,
