@@ -13,7 +13,7 @@ from cortex_client.compute import (
     insights_call_cap,
     note_model_call,
 )
-from dms_executor.demo_pack import HOW_FULL_TRAP_Q
+from dms_executor.demo_pack import DELAYED_COUNT_TRAP_Q
 from dms_executor.generative_ask import maybe_generative_ask
 from dms_executor.lake_registry import (
     DEFAULT_SERVING_LEASE_RESERVE_S,
@@ -83,7 +83,7 @@ def test_product_client_ask_is_not_gated_by_demo_pack(tmp_path: Any) -> None:
             raise AssertionError("ledger")
 
     fake = Executor(cortex=_Fake(), warehouse_path=db)  # type: ignore[arg-type]
-    gated = fake.live_ask(HOW_FULL_TRAP_Q, session_id="ses_fake")
+    gated = fake.live_ask(DELAYED_COUNT_TRAP_Q, session_id="ses_fake")
     assert gated["abstained"] is True
     assert "uncertified paraphrase" in str(gated.get("assumptions"))
     assert calls == []
@@ -91,7 +91,7 @@ def test_product_client_ask_is_not_gated_by_demo_pack(tmp_path: Any) -> None:
     product = _Product("http://127.0.0.1:9")
     try:
         armed = Executor(cortex=product, warehouse_path=db)
-        opened = armed.live_ask(HOW_FULL_TRAP_Q, session_id="ses_armed")
+        opened = armed.live_ask(DELAYED_COUNT_TRAP_Q, session_id="ses_armed")
     finally:
         product.close()
     assert "uncertified paraphrase" not in str(opened.get("assumptions"))
@@ -106,7 +106,7 @@ def test_demo_gate_off_does_not_abstain_the_planted_paraphrase() -> None:
         return {"status": "ABSTAIN", "insights_fail": "insights_unarmed"}
 
     gated = maybe_generative_ask(
-        HOW_FULL_TRAP_Q,
+        DELAYED_COUNT_TRAP_Q,
         compute=compute,
         submit=lambda _sql: None,
         ledger_append=lambda _payload: None,
@@ -117,7 +117,7 @@ def test_demo_gate_off_does_not_abstain_the_planted_paraphrase() -> None:
     assert any("uncertified paraphrase" in str(item) for item in gated["assumptions"])
 
     opened = maybe_generative_ask(
-        HOW_FULL_TRAP_Q,
+        DELAYED_COUNT_TRAP_Q,
         compute=compute,
         submit=lambda _sql: None,
         ledger_append=lambda _payload: None,

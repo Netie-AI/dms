@@ -7,8 +7,11 @@ the answer source.
 
 Not steward VQ-02: these ids are the product pack, not Studio-registered.
 VQ-03 (#170) extras are Cortex ``certified_queries.yaml`` SQL, exact phrase
-only. VQ-04 (#176): planted refuse phrases are not certified synonyms and
-must not ship L1 even when Cortex ``route_to_metric`` would green them.
+only. A metric may also carry ``synonyms``, the same field a Cortex
+``certified_queries.yaml`` entry has: each is another exact phrase for that
+certified SQL, never a regex or a substring. VQ-04 (#176): planted refuse
+phrases are not certified synonyms and must not ship L1 even when Cortex
+``route_to_metric`` would green them.
 """
 
 from __future__ import annotations
@@ -42,7 +45,14 @@ COLD_STORAGE_Q = "Which locations are cold storage?"
 CAPACITY_ABOVE_90_Q = "Which locations are above 90 percent capacity?"
 EXPIRED_ITEMS_Q = "Which items are expired?"
 CCTV_WH_A_Q = "Show the CCTV camera for warehouse A"
+# Was a VQ-04 planted refuse. Now a certified synonym of capacity utilisation
+# (DMS EPIC-019 #38 / Cortex #11). The curated pack still marks it refuse.
 HOW_FULL_TRAP_Q = "how full is each warehouse"
+CAPACITY_UTILISATION_SYNONYMS: tuple[str, ...] = (
+    HOW_FULL_TRAP_Q,
+    "How full are the warehouses?",
+    "warehouse fullness",
+)
 DELAYED_COUNT_TRAP_Q = "How many delayed incoming shipments per warehouse?"
 STOCK_BY_BIN_TRAP_Q = "Show stock by storage bin"
 
@@ -99,6 +109,11 @@ class PackMetric:
     question: str
     sql: str
     tables: tuple[str, ...]
+    #: Exact phrases that are this certified metric, as on certified_queries.yaml.
+    synonyms: tuple[str, ...] = ()
+
+    def phrases(self) -> tuple[str, ...]:
+        return (self.question, *self.synonyms)
 
 
 _BASE_PACK_METRICS: tuple[PackMetric, ...] = (
@@ -125,6 +140,7 @@ _BASE_PACK_METRICS: tuple[PackMetric, ...] = (
         question=CAPACITY_UTILISATION_Q,
         sql=CAPACITY_UTILISATION_SQL,
         tables=("locations",),
+        synonyms=CAPACITY_UTILISATION_SYNONYMS,
     ),
     PackMetric(
         metric_id="cq_low_stock_wh_a",
@@ -362,7 +378,7 @@ def load_score_pack_metrics(
     if status.name != "curated_ceo":
         return ()
     oracle_rows = oracles.get("oracles") or {}
-    taken = {_norm(m.question) for m in base}
+    taken = {_norm(p) for m in base for p in m.phrases()}
     extra: list[PackMetric] = []
     for case in questions.get("questions") or []:
         qid = str(case.get("id") or "")
@@ -412,12 +428,11 @@ def _exact_pack_metrics() -> tuple[PackMetric, ...]:
 
 
 # Exact planted refuse from curated_ceo. Not regex. Cortex certify boundary:
-# cq_capacity_utilisation has no synonym; delayed_incoming_per_wh is TARGET.
-# Live L1 leak: vocabulary "how full" -> capacity utilisation, and
-# route_to_metric delayed+per+warehouse -> count_by_destination.
+# delayed_incoming_per_wh is TARGET. Live L1 leak: route_to_metric
+# delayed+per+warehouse -> count_by_destination. "how full is each warehouse"
+# left this list when it became a certified synonym of cq_capacity_utilisation.
 _UNCERTIFIED_PARAPHRASE = frozenset(
     {
-        _norm(HOW_FULL_TRAP_Q),
         _norm(DELAYED_COUNT_TRAP_Q),
         _norm(STOCK_BY_BIN_TRAP_Q),
     }
@@ -431,12 +446,6 @@ def is_uncertified_paraphrase(question: str | None) -> bool:
 
 def uncertified_refuse_text(question: str | None) -> str:
     qn = _norm(question or "")
-    if qn == _norm(HOW_FULL_TRAP_Q):
-        return (
-            "I cannot certify that phrasing. It is not a certified synonym of "
-            "warehouse capacity utilisation. Ask "
-            f"'{CAPACITY_UTILISATION_Q}'."
-        )
     if qn == _norm(STOCK_BY_BIN_TRAP_Q):
         return (
             "I cannot certify stock by storage bin. No Cortex certified query "
@@ -479,11 +488,7 @@ def maybe_uncertified_refuse_ask(
         session_id=session_id,
         ask_mode="live",
         route="abstain",
-        suggestions=(
-            [CAPACITY_UTILISATION_Q]
-            if _norm(question) == _norm(HOW_FULL_TRAP_Q)
-            else []
-        ),
+        suggestions=[],
     )
     assert_envelope_valid(env)
     return _stamp_l1(env)
@@ -523,7 +528,10 @@ def match_pack_phrase(
     qn = _norm(question)
     if not qn:
         return None
-    return next((m for m in _exact_pack_metrics() if _norm(m.question) == qn), None)
+    return next(
+        (m for m in _exact_pack_metrics() if any(_norm(p) == qn for p in m.phrases())),
+        None,
+    )
 
 
 def lookup_pack_metric(
@@ -685,6 +693,9 @@ def envelope_from_pack_submit(
     if not receipt:
         receipt = f"cortex_submit_{metric.metric_id}"
     text = f"Found {len(out_rows)} row(s)."
+    assumptions = [f"governed metric {metric.metric_id}", "executed via Cortex submit"]
+    if _norm(question) != _norm(metric.question):
+        assumptions.append(f"certified synonym of '{metric.question}'")
     if out_rows:
         text += "\n" + "\n".join(
             "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
@@ -696,10 +707,7 @@ def envelope_from_pack_submit(
         abstained=False,
         rows=out_rows,
         sql_used=metric.sql,
-        assumptions=[
-            f"governed metric {metric.metric_id}",
-            "executed via Cortex submit",
-        ],
+        assumptions=assumptions,
         as_of=_as_of(),
         space_id=space_id,
         session_id=session_id,
