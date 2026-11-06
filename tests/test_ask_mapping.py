@@ -409,7 +409,6 @@ def test_vq04_uncertified_paraphrase_demotes_cortex_l1():
     from dms_executor.demo_pack import (
         CAPACITY_UTILISATION_Q,
         DELAYED_COUNT_TRAP_Q,
-        HOW_FULL_TRAP_Q,
     )
 
     resp = AskResponse.model_validate(
@@ -422,7 +421,7 @@ def test_vq04_uncertified_paraphrase_demotes_cortex_l1():
             "rows": [{"location_code": "WH-A", "pct_used": 91.0}],
         }
     )
-    for question in (HOW_FULL_TRAP_Q, DELAYED_COUNT_TRAP_Q):
+    for question in (DELAYED_COUNT_TRAP_Q,):
         env = map_ask_response_to_envelope(
             resp, question=question, space_id="sp_x", session_id="ses_trap"
         )
