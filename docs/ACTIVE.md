@@ -6,4 +6,7 @@ Live tasks: [GitHub issues](https://github.com/Netie-AI/dms/issues). The source 
 
 Law: [CLAUDE.md](../CLAUDE.md).
 
+FDE landing playbook (land one customer SQL warehouse, with receipts):
+[NEXT_COMPANY_ONTOLOGY_SCALE.md](NEXT_COMPANY_ONTOLOGY_SCALE.md).
+
 The per-ticket file walk that lived here is retired. It is not current.
