@@ -291,13 +291,16 @@ def _gate_allows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(space_routes, "compliance_gate", _allow)
 
 
-def _space(
+def _rig(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     minter: ManifestMinter,
     name: str = "District schools",
     enroll_rows: list[list[str]] | None = None,
+    connection_cls: type[_FakeConnection] = _FakeConnection,
+    cortex_cls: type[_RecordingCortex] = _RecordingCortex,
 ) -> _Space:
+    """The app, a Space and the fake source, before anything is connected."""
     lake = tmp_path / "onto_derive.duckdb"
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(lake))
     dw._SEEDED.clear()
@@ -306,9 +309,9 @@ def _space(
     data = dict(TABLE_DATA)
     if enroll_rows is not None:
         data['"public"."enrollments"'] = (["enrollment_id", "school_id", "students"], enroll_rows)
-    _install(monkeypatch, _FakeConnection(PG_TABLES, data, pks=PG_PKS, fks=PG_FKS))
+    _install(monkeypatch, connection_cls(PG_TABLES, data, pks=PG_PKS, fks=PG_FKS))
     _gate_allows(monkeypatch)
-    cortex = _RecordingCortex(warehouse=lake, payload={})
+    cortex = cortex_cls(warehouse=lake, payload={})
     app = create_app()
     space = app.state.space_store.create(name)
     exe = Executor(cortex=cortex, minter=minter, warehouse_path=lake)  # type: ignore[arg-type]
@@ -321,9 +324,18 @@ def _space(
         dms_harness_ask_paths=True,
     )
     app.dependency_overrides[get_settings] = lambda: settings
-    client = TestClient(app)
-    rig = _Space(client, cortex, space.id, lake)
-    r = client.post(
+    return _Space(TestClient(app), cortex, space.id, lake)
+
+
+def _space(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    name: str = "District schools",
+    enroll_rows: list[list[str]] | None = None,
+) -> _Space:
+    rig = _rig(tmp_path, monkeypatch, minter, name, enroll_rows)
+    r = rig.client.post(
         "/v1/studio/sources/sql",
         json={
             "kind": "postgresql",
@@ -331,7 +343,7 @@ def _space(
             "database": "schools",
             "user": "reader",
             "password": "pw-never-echoed",
-            "space_id": space.id,
+            "space_id": rig.space_id,
         },
     )
     assert r.status_code == 200, r.text
