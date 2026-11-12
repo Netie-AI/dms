@@ -59,19 +59,19 @@ export function PreviewGrid({ sheet }: Props) {
         <div className="flex items-center gap-1">
           <button
             type="button"
-            className="border border-[var(--color-line)] px-2 py-0.5 text-[11px]"
+            className="border border-[var(--color-line)] px-2 py-0.5 text-[11px] max-lg:min-h-11 max-lg:min-w-11 max-lg:text-xs"
             onClick={() => jumpTo(cursor - 1)}
           >
             Prev
           </button>
-          <span className="text-[11px] text-[var(--color-ink-muted)]">
+          <span className="text-[11px] text-[var(--color-ink-muted)] max-lg:text-xs">
             {contributingRowList.length
               ? `${cursor + 1}/${contributingRowList.length}`
               : "0"}
           </span>
           <button
             type="button"
-            className="border border-[var(--color-line)] px-2 py-0.5 text-[11px]"
+            className="border border-[var(--color-line)] px-2 py-0.5 text-[11px] max-lg:min-h-11 max-lg:min-w-11 max-lg:text-xs"
             onClick={() => jumpTo(cursor + 1)}
           >
             Next
