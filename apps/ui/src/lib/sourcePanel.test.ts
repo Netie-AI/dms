@@ -101,10 +101,26 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
     expect(bar).not.toMatch(/topbar-title/);
   });
 
-  it("Chat heading keeps right padding so Sources does not sit on the h1", () => {
+  it("phone Sources opener lives in the chat composer, not fixed over the h1 or a banner", () => {
+    // IPHONE-PWA-01 replaced the fixed button + 8rem right gutter: the button
+    // covered the demo banner and the gutter cost a third of a 390px screen.
     const chat = readFileSync(join(here, "../pages/ChatPage.tsx"), "utf8");
-    expect(chat).toMatch(/max-lg:pr-32/);
+    expect(chat).toMatch(/!isLg && !sourcePanelOpen && <SourcesOpenButton \/>/);
+    expect(chat).not.toMatch(/max-lg:pr-32/);
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
+    const opener = panel.slice(
+      panel.indexOf("export function SourcesOpenButton"),
+      panel.indexOf("export function SourcePanel"),
+    );
+    expect(opener).toMatch(/data-testid="source-panel-open"/);
+    expect(opener).not.toMatch(/max-lg:fixed/);
+    // The open panel and its backdrop still overlay below the top bar.
     expect(panel).toMatch(/max-lg:top-12/);
+  });
+
+  it("the offline shell never caches an answer path", () => {
+    const sw = readFileSync(join(here, "../../public/sw.js"), "utf8");
+    expect(sw).toMatch(/const NEVER = \["\/api\/", "\/v1\/", "\/health"\]/);
+    expect(sw).toMatch(/NEVER\.some\(.*\)\) return;/);
   });
 });

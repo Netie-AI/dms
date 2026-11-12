@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-12 - IPHONE-PWA-01: the UI installs to an iPhone home screen
+
+- **Routing.** Built on a founder override in session. Not routed through the `prd-agent` or the feedback ledger (neither was reachable). Needs a ledger entry.
+- **Install.** `apps/ui/public/manifest.json` (standalone), 180 / 192 / 512 px icons, iOS home-screen meta tags, `viewport-fit=cover` with safe-area padding. No native binary, no new dependency.
+- **Offline shell.** `apps/ui/public/sw.js` caches the app shell and hashed `/assets/*` only. `/api`, `/v1` and `/health` are never intercepted, so no answer is served from a cache. Production builds only.
+- **Rule 11 fix.** Below `lg` the Sources opener was fixed under the top bar and covered the right third of the demo banner. It now sits in the chat composer row. The 8rem right gutter that made room for it is gone.
+- **Phone layout.** Top-bar controls are 44px. Text fields are 16px below `lg`. Library stacks the tree above the detail. Page padding is 16px.
+- **Tests.** New `apps/ui/e2e/iphone-pwa.spec.ts` (8 tests at 390x844). It failed 7 of 8 before the change, and the eighth failed once it waited for the banner. After: 27 of 27 across the five e2e specs that need only the API, vitest 130 passed, `tsc --noEmit` clean. Stack was DMS API in `DMS_ASK_MODE=demo` without Cortex, OpenVault or Postgres, in Chromium iPhone emulation. `e2e/library-receipt.spec.ts` (1 test) failed at its ingest setup with `403 gate_unavailable` because Cortex was not running. The Python suite was not run (no Python file changed). No real iPhone and no live Cortex ask were tested. Not PASS.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.

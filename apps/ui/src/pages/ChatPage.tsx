@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
 import { ScopeChip } from "@/components/ScopeChip";
+import { SourcesOpenButton } from "@/components/SourcePanel";
 import { useApp } from "@/context/AppContext";
+import { useIsLg } from "@/lib/viewport";
 
 export function ChatPage() {
   const {
@@ -27,7 +29,9 @@ export function ChatPage() {
     groundedLabels,
     setGrounded,
     productMode,
+    sourcePanelOpen,
   } = useApp();
+  const isLg = useIsLg();
   const location = useLocation();
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
@@ -72,7 +76,7 @@ export function ChatPage() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {groundedTables.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5 px-6 py-2 text-xs max-lg:pr-32">
+        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5 px-6 py-2 text-xs max-lg:px-4">
           <span className="font-medium text-[var(--color-ink)]">
             Grounded in {groundedTables.length}{" "}
             {groundedTables.length === 1 ? "file" : "files"}
@@ -92,7 +96,7 @@ export function ChatPage() {
           </button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 max-lg:pr-32">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 max-lg:px-4 max-lg:py-4">
         {empty ? (
           <div className={`mx-auto ${chatWidth}`}>
             <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight text-[var(--color-ink)]">
@@ -227,7 +231,12 @@ export function ChatPage() {
 
       <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3">
         <div className={`mx-auto flex ${chatWidth} flex-col gap-2`}>
-          <ScopeChip />
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="min-w-0 flex-1">
+              <ScopeChip />
+            </div>
+            {!isLg && !sourcePanelOpen && <SourcesOpenButton />}
+          </div>
           {composerPaused && composerPauseReason && (
             <p className="border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
               {composerPauseReason}
@@ -258,8 +267,11 @@ export function ChatPage() {
               placeholder={
                 asking
                   ? "Type next question — it will queue…"
-                  : "Ask about your data… (Shift+Enter for newline)"
+                  : isLg
+                    ? "Ask about your data… (Shift+Enter for newline)"
+                    : "Ask about your data…"
               }
+              enterKeyHint="send"
               rows={2}
               className="min-h-[2.75rem] flex-1 resize-y border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)]"
             />

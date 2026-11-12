@@ -1,0 +1,15 @@
+{
+  "name": "netie DMS",
+  "short_name": "DMS",
+  "description": "Ask your company's data. Every number is a button back to its cell.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f3f0ea",
+  "theme_color": "#faf8f4",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

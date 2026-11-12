@@ -1,5 +1,22 @@
+import { useSyncExternalStore } from "react";
+
 /** Tailwind `lg`. Below this, a docked 22rem Sources column covers Chat. */
 export const LG_MIN_WIDTH_PX = 1024;
+
+const lgQuery = () => window.matchMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`);
+
+/** Live `lg` match, for the few places where phone and desktop render different nodes. */
+export function useIsLg(): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const q = lgQuery();
+      q.addEventListener("change", onChange);
+      return () => q.removeEventListener("change", onChange);
+    },
+    () => lgQuery().matches,
+    () => true,
+  );
+}
 
 export function isLgViewport(widthPx: number): boolean {
   return widthPx >= LG_MIN_WIDTH_PX;

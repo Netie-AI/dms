@@ -360,7 +360,10 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   }
 
   return (
-    <article className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4">
+    <article
+      data-testid="answer-message"
+      className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4"
+    >
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <button
           type="button"

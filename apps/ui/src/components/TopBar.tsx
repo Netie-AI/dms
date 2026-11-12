@@ -28,7 +28,7 @@ export function TopBar() {
       <button
         type="button"
         onClick={toggleNav}
-        className="flex h-8 w-8 shrink-0 items-center justify-center border border-[var(--color-line)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+        className="flex h-11 w-11 shrink-0 lg:h-8 lg:w-8 items-center justify-center border border-[var(--color-line)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
         aria-label="Toggle sidebar"
         aria-expanded={!navCollapsed}
         aria-controls="primary-nav"
@@ -45,7 +45,7 @@ export function TopBar() {
         onChange={(e) =>
           setActiveSpaceId(e.target.value === "" ? null : e.target.value)
         }
-        className="h-8 min-w-[8rem] flex-1 border border-[var(--color-line)] bg-transparent px-2 text-sm lg:max-w-[12rem] lg:flex-none"
+        className="h-11 min-w-[8rem] flex-1 lg:h-8 border border-[var(--color-line)] bg-transparent px-2 text-sm lg:max-w-[12rem] lg:flex-none"
       >
         <option value="">Company (default ACL)</option>
         {spaces.map((s) => (
@@ -59,7 +59,7 @@ export function TopBar() {
         <button
           type="button"
           onClick={() => setNewOpen((o) => !o)}
-          className="h-8 shrink-0 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-on-accent)]"
+          className="h-11 shrink-0 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 lg:h-8 text-sm font-medium text-[var(--color-on-accent)]"
           aria-expanded={newOpen}
           aria-haspopup="menu"
         >
@@ -150,7 +150,7 @@ export function TopBar() {
       <button
         type="button"
         onClick={() => setProductMode(nextMode)}
-        className="h-8 shrink-0 border border-[var(--color-accent)] px-2.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+        className="h-11 shrink-0 border border-[var(--color-accent)] px-2.5 text-xs lg:h-8 font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
         aria-label={
           productMode === "cream" ? "Switch to operator mode" : "Switch to ask mode"
         }

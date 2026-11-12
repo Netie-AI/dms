@@ -5,6 +5,7 @@ import { postReveal } from "@/lib/api";
 import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
 import { sourcesHeadline } from "@/lib/sourcePanel";
+import { useIsLg } from "@/lib/viewport";
 
 function formatMoney(n: number) {
   return new Intl.NumberFormat("en-MY", {
@@ -14,7 +15,28 @@ function formatMoney(n: number) {
   }).format(n);
 }
 
+/**
+ * The closed-state opener. At lg it is the vertical tab on the dock rail. Below
+ * lg ChatPage renders it in the composer row: fixed under the top bar it sat on
+ * top of the demo banner, which rule 11 says must stay unmissable.
+ */
+export function SourcesOpenButton() {
+  const { setSourcePanelOpen } = useApp();
+  return (
+    <button
+      type="button"
+      data-testid="source-panel-open"
+      aria-label="Open sources"
+      onClick={() => setSourcePanelOpen(true)}
+      className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:min-h-11 max-lg:min-w-[2.75rem] max-lg:shrink-0 max-lg:border max-lg:border-[var(--color-line)] max-lg:px-3 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
+    >
+      Sources
+    </button>
+  );
+}
+
 export function SourcePanel() {
+  const isLg = useIsLg();
   const {
     sourcePanelOpen,
     setSourcePanelOpen,
@@ -27,17 +49,7 @@ export function SourcePanel() {
   const [revealNote, setRevealNote] = useState<string | null>(null);
 
   if (!sourcePanelOpen) {
-    return (
-      <button
-        type="button"
-        data-testid="source-panel-open"
-        aria-label="Open sources"
-        onClick={() => setSourcePanelOpen(true)}
-        className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:fixed max-lg:right-3 max-lg:top-12 max-lg:z-20 max-lg:min-h-11 max-lg:min-w-[2.75rem] max-lg:border max-lg:border-[var(--color-line)] max-lg:px-3 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
-      >
-        Sources
-      </button>
-    );
+    return isLg ? <SourcesOpenButton /> : null;
   }
 
   const totalRows = contributingSources.reduce((s, c) => s + c.row_count, 0);

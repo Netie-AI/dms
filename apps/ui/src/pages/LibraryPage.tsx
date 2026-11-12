@@ -316,14 +316,14 @@ export function LibraryPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-[var(--color-line)] px-8 py-5">
+      <div className="shrink-0 border-b border-[var(--color-line)] px-8 py-5 max-lg:px-4 max-lg:py-3">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
           U2 · Space repository
         </p>
         <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
           Library
         </h1>
-        <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)]">
+        <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)] max-lg:hidden">
           Folders and files for <strong className="text-[var(--color-ink)]">{scopeLabel}</strong> —
           expand Sources / Bronze / Warehouse / Silver / Gold like DbGate. Excel stays source-only.
         </p>
@@ -336,8 +336,11 @@ export function LibraryPage() {
         {err && <p className="mt-3 text-sm text-[var(--color-danger)]">{err}</p>}
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)]">
+      <div className="flex min-h-0 flex-1 max-lg:flex-col">
+        <aside
+          data-testid="library-tree"
+          className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:max-h-[40%] max-lg:w-full max-lg:border-r-0 max-lg:border-b"
+        >
           <div className="border-b border-[var(--color-line)] px-2 py-2">
             <input
               type="search"
@@ -379,7 +382,10 @@ export function LibraryPage() {
           </div>
         </aside>
 
-        <main className="min-w-0 flex-1 overflow-y-auto px-6 py-4">
+        <main
+          data-testid="library-detail"
+          className="min-w-0 flex-1 overflow-y-auto px-6 py-4 max-lg:px-4"
+        >
           {!active && (
             <p className="text-sm text-[var(--color-ink-muted)]">
               Select a file or table in the tree.

@@ -36,6 +36,26 @@ Demo answers use **L2 “generated — check sources”** — never certified gr
 
 `npm run test:e2e` needs the local stack with Cortex up (`Start-DMSStack.ps1 -StartSiblings -StartUi`). Cortex must open its own duckdb, not `DMS_WAREHOUSE_DB` — a shared file makes Studio ingest return ingested=0. The Library receipt spec leaves `e2e_`-prefixed tables in the lake.
 
+## iPhone (IPHONE-PWA-01)
+
+The same SPA installs to the iPhone home screen. There is no native binary and
+no App Store build.
+
+1. Serve the appliance over HTTPS (`deploy/compose`, Caddy). The phone must reach
+   that host and trust its certificate. `DMS_TLS_MODE=internal` needs Caddy's
+   root installed on the phone, so use `files` with a real certificate.
+2. Open the site in Safari, tap Share, then Add to Home Screen.
+3. Launch "DMS" from the home screen. It runs full screen.
+
+What the phone gets: `public/manifest.json`, a 180px touch icon, 44px top-bar
+controls, 16px text fields (no focus zoom), a stacked Library, and Sources in the
+chat composer row. `public/sw.js` caches the app shell and hashed build assets
+only. It never caches `/api`, `/v1` or `/health`, so an offline phone opens the
+app and shows the "DMS API unreachable" banner. It never shows a stored figure.
+The service worker registers in production builds only.
+
+`e2e/iphone-pwa.spec.ts` asserts all of this at 390x844 against the local stack.
+
 ## U0 / demo-core acceptance (this slice)
 
 - Empty Chat shows **six** suggested questions aligned to the demo warehouse.
