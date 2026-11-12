@@ -2,6 +2,22 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-12 - IPHONE-PWA-03: independent checks, desktop restored, offline cache fixed
+
+- **Routing.** Same founder override. Not in the feedback ledger.
+- **Why.** Rounds 1 and 2 passed their own tests. This round ran two build-then-verify chains and four read-only checks (a measured audit at four phone sizes, a comparison of every desktop route against a build of `main`, a review of the branch diff, a live Cortex bring-up). Both verifiers returned FAIL and every check found defects.
+- **Correction to PWA-01 and PWA-02.** Those entries say desktop is unchanged. It was not: 7 visible changes at 1280px. All are restored: the scope chip width, the derived-ontology card (now below `lg` only), the Ontology unavailable state and tab spacing, metric row height, the table pager height, the ranked chart's row font. `e2e/desktop-unchanged.spec.ts` and three reference-value chart tests pin them.
+- **CI.** `f12b58f` failed `lint-type-test`: `tests/test_studio_mobile_layout.py` mirrors the vitest layout pins and still pinned the old phone layout. Fixed in `9051848`. The Python suite had not been run because no Python file changed; that reasoning was wrong.
+- **Offline shell.** `sw.js` cached the SPA fallback (200 `text/html`) under a missing asset's URL for good, never pruned old builds, and served the shell for a file URL offline. Fixed and checked on a production build against the old one. A redirected response is never stored as the shell.
+- **Phone, behaviour.** A finished answer scrolls to its top, not its end. Tapping a figure opens Sources. Sources stays reachable in landscape. The Sources sheet and the drawer move focus in, close on Escape, return focus and make the page behind inert. More is the active tab on a page that is not a tab. The New menu has 44px rows and closes on Escape or an outside tap (all widths). An IME candidate confirmed with Enter does not send. Demo banner contrast in cream below `lg` is 5.8:1 (was 3.94:1).
+- **Phone, layout.** No text under 12px. iOS Safari gets a one-time install hint. Follow-up questions are one swipeable row. The hamburger is desktop only. Small phones show suggestions without scrolling.
+- **Tables.** Below `lg` the first data column stays in view (capped at 45vw), a fade shows while columns are hidden, the pager is 44px with "Rows a to b of n".
+- **Charts.** Below `lg` a tapped bar shows its label and exact value under the chart; one-row answers draw no chart; negative bars are hatched; more than 8 categories scroll inside the box. All widths: bars are focusable buttons labelled "label: value".
+- **Other lane's spec.** `e2e/library-receipt.spec.ts` had two ambiguous `getByLabel("Space")` locators (present on `main`, never reached without Cortex). Made exact.
+- **Tests.** e2e 92 of 92 across 11 specs, none skipped; vitest 136; `tsc`, build, `ruff` clean; `tests/test_studio_mobile_layout.py` and `test_walk_buyer_studio.py` 15 passed. 17 mutations on the new phone and desktop assertions and 4 spot-checked table and chart mutations each turned a test red. `library-receipt` passed 2 of 2 with a local Cortex (core profile, dev mode) on :8010.
+- **Not verified.** No real iPhone. No live model answer: live ask mode with no OpenVault returns an honest ABSTAIN (`insights_bearer_missing`, no values). The offline check is a script run by hand on a build, not yet a test. The full Python suite was run by CI on `01d282a` (green), not on the final commit. Not PASS.
+- **Found, not fixed.** The Ontology page proxies to Cortex `GET /dms/ontology`, which this Cortex answers 404 (and tests that it does), so the page always shows unavailable. On desktop `main` draws a 1036px chart for a one-value answer. The first two suggested questions abstain in demo mode.
+
 ## 2026-11-12 - IPHONE-PWA-02: one-handed phone use, answer first, ontology on a phone
 
 - **Routing.** Same founder override as IPHONE-PWA-01. Not in the feedback ledger.

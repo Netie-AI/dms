@@ -59,8 +59,17 @@ main navigation, an answer shows its figure before its tools, Sources is a botto
 sheet, every control is a 44px target, and the Ontology map is a tap-through list.
 Spaces shows the read-only derived ontology of the active Space.
 
-`e2e/iphone-pwa.spec.ts`, `e2e/iphone-onehand.spec.ts` and
-`e2e/iphone-ontology.spec.ts` assert all of this at 390x844 against the local stack.
+Everything phone-specific is scoped below `lg` (`max-lg:` or `useIsLg()`). Desktop
+must stay identical to `main`: `e2e/desktop-unchanged.spec.ts` pins the cases that
+have slipped before. One trap: `index.css` resets `font` on buttons outside the
+cascade layers, so a text-size utility placed on a `<button>` does nothing. Put it
+on a child element.
+
+`e2e/iphone-pwa.spec.ts`, `iphone-onehand.spec.ts`, `iphone-ontology.spec.ts`,
+`iphone-tables.spec.ts` and `iphone-charts.spec.ts` assert the phone behaviour at
+390x844 against the local stack. In a container with its own Chromium run them with
+`PW_CHROMIUM=<path> npx playwright test`. `tests/test_studio_mobile_layout.py`
+(pytest, runs in CI) mirrors the layout pins: update it with any layout change.
 
 ## U0 / demo-core acceptance (this slice)
 

@@ -26,13 +26,29 @@ function money(n: number): string {
 
 const PANEL =
   "mt-4 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-3 max-lg:min-h-[200px]";
-const TITLE =
-  "mb-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]";
+// 11px on desktop as it always was; below lg nothing in a chart is under 12px.
+const TITLE_SIZE = "max-lg:text-xs lg:text-[11px]";
+const TITLE = `mb-3 ${TITLE_SIZE} font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]`;
+// A negative value is hatched in the danger colour (a pattern, not only a colour), so it never
+// reads as a zero bar or as a positive one. Below lg only.
+const NEG_MARK = {
+  background: "repeating-linear-gradient(135deg, var(--color-danger) 0 3px, transparent 3px 6px)",
+  boxShadow: "inset 0 0 0 1px var(--color-danger)",
+};
 const FOCUS =
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--color-accent)]";
 
 /** One chart point as the answer's table shows it: same label, same value format. */
-type Point = { name: string; value: number; shown: string; aria: string };
+type Point = {
+  /** Label for the readout and aria: a placeholder when the row has none. */
+  name: string;
+  /** The label as the row has it ("" when null), which desktop draws as it always did. */
+  raw: string;
+  value: number;
+  shown: string;
+  aria: string;
+  neg: boolean;
+};
 
 /**
  * The exact figure of the selected point, under the chart. A readout row, not a hover
@@ -48,11 +64,18 @@ function Readout({ point, hint }: { point: Point | null; hint: ReactNode }) {
           data-testid="chart-readout"
           className="mt-2 flex items-baseline justify-between gap-3 border-t border-[var(--color-line)] pt-2 text-sm text-[var(--color-ink)] max-lg:min-h-11"
         >
-          <span className="min-w-0 break-words">{point.name}</span>
-          <span className="shrink-0 font-semibold tabular-nums">{point.shown}</span>
+          <span className="min-w-0 break-words line-clamp-3" title={point.name}>
+            {point.name}
+          </span>
+          <span className="shrink-0 font-semibold tabular-nums">
+            {point.neg && (
+              <span className="mr-1 font-normal text-[var(--color-danger)]">negative</span>
+            )}
+            {point.shown}
+          </span>
         </p>
       ) : (
-        <p className="mt-2 text-[11px] text-[var(--color-ink-muted)] lg:hidden">{hint}</p>
+        <p className="mt-2 text-xs text-[var(--color-ink-muted)] lg:hidden">{hint}</p>
       )}
     </div>
   );
@@ -92,7 +115,7 @@ export function SimpleChart({ chart, rows }: Props) {
     const shown = Number.isFinite(v) ? v : 0;
     return (
       <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-4 text-center">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+        <p className={`${TITLE_SIZE} font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]`}>
           {chart.label || title}
         </p>
         <p className="mt-2 text-3xl font-semibold tabular-nums text-[var(--color-ink)]">
@@ -103,13 +126,26 @@ export function SimpleChart({ chart, rows }: Props) {
   }
 
   if (!rows.length || !x || !y) return null;
+  // One bar says nothing: the sentence and the table above already state the value.
+  if (!isLg && rows.length === 1) return null;
 
   const vals = rows.map((r) => num(r[y]));
   const max = Math.max(...vals, 1);
+  // Below lg bars scale by magnitude so a negative value has a real size, not a 2px sliver.
+  const absMax = Math.max(...vals.map(Math.abs), 1);
   const points: Point[] = rows.map((r, i) => {
-    const name = label(r[x]);
-    const shown = formatCellValue(r[y]);
-    return { name, value: vals[i], shown, aria: `${name}: ${shown}` };
+    const raw = label(r[x]);
+    const name = raw === "" ? "(no label)" : raw;
+    const shown = formatCellValue(r[y]) || "no value";
+    const neg = vals[i] < 0;
+    return {
+      name,
+      raw,
+      value: vals[i],
+      shown,
+      aria: `${name}: ${shown}${neg ? ", negative" : ""}`,
+      neg,
+    };
   });
   const picked = selected != null && selected < count ? selected : null;
   const toggle = (i: number) => setSelected((s) => (s === i ? null : i));
@@ -120,32 +156,38 @@ export function SimpleChart({ chart, rows }: Props) {
     return (
       <div data-testid="answer-chart" className={PANEL}>
         <p className={TITLE}>{title}</p>
+        {/* Text size sits on the li: index.css resets font on buttons, so a size utility on
+            the button itself would not apply and the row would render at the inherited 16px. */}
         <ul className="space-y-2">
           {points.map((p, i) => {
-            const pct = Math.max(2, (p.value / max) * 100);
+            const useNeg = !isLg && p.neg;
+            const pct = isLg
+              ? Math.max(2, (p.value / max) * 100)
+              : Math.max(2, (Math.abs(p.value) / absMax) * 100);
             const on = picked === i;
             return (
-              <li key={`${p.name}-${i}`}>
+              <li key={`${p.name}-${i}`} className="text-sm">
                 <button
                   type="button"
                   aria-label={p.aria}
                   aria-pressed={on}
                   onClick={() => toggle(i)}
-                  className={`grid w-full grid-cols-[7rem_1fr_4.5rem] items-center gap-2 text-left text-sm max-lg:min-h-11 ${FOCUS} ${
+                  className={`grid w-full grid-cols-[7rem_1fr_4.5rem] items-center gap-2 text-left max-lg:min-h-11 ${FOCUS} ${
                     on ? "bg-[var(--color-accent-soft)]" : ""
                   }`}
                 >
                   <span data-chart-label className="truncate text-[var(--color-ink)]">
-                    {p.name}
+                    {isLg ? p.raw : p.name}
                   </span>
                   <span className="block h-3 overflow-hidden bg-[var(--color-paper-2)]">
                     <span
+                      data-testid="chart-mark"
                       className="block h-full bg-[var(--color-accent)] transition-[width] duration-500"
-                      style={{ width: `${pct}%` }}
+                      style={useNeg ? { width: `${pct}%`, ...NEG_MARK } : { width: `${pct}%` }}
                     />
                   </span>
                   <span className="text-right tabular-nums text-[var(--color-ink-muted)]">
-                    {money(p.value)}
+                    {isLg || p.shown !== "no value" ? money(p.value) : p.shown}
                   </span>
                 </button>
               </li>
@@ -163,8 +205,10 @@ export function SimpleChart({ chart, rows }: Props) {
     // Phone: real columns. Each is a full-height button at least 44px wide, so a thin
     // or zero-value bar is still easy to hit. Past what fits, the box scrolls sideways.
     const PLOT = 180;
-    const pctOf = (v: number) => Math.min(100, Math.max(0, (v / max) * 100));
-    const line = points.map((p, i) => `${i + 0.5},${100 - pctOf(p.value)}`).join(" ");
+    // Bars: height is the magnitude. A line: height is the value, floored at the axis.
+    const pctOf = (v: number) => Math.min(100, (Math.abs(v) / absMax) * 100);
+    const lineOf = (v: number) => Math.min(100, Math.max(0, (v / max) * 100));
+    const line = points.map((p, i) => `${i + 0.5},${100 - lineOf(p.value)}`).join(" ");
     return (
       <div data-testid="answer-chart" className={PANEL}>
         <p className={TITLE}>{title}</p>
@@ -172,7 +216,7 @@ export function SimpleChart({ chart, rows }: Props) {
           <div
             ref={scroller}
             data-testid="chart-scroll"
-            className="overflow-x-auto overscroll-x-contain"
+            className={`overflow-x-auto overscroll-x-contain ${isLine ? "pt-2" : ""}`}
           >
             <div className="relative flex min-w-full">
               {isLine && count > 1 && (
@@ -180,7 +224,7 @@ export function SimpleChart({ chart, rows }: Props) {
                   aria-hidden="true"
                   viewBox={`0 0 ${count} 100`}
                   preserveAspectRatio="none"
-                  className="pointer-events-none absolute left-0 top-0 w-full"
+                  className="pointer-events-none absolute left-0 top-0 w-full overflow-visible"
                   style={{ height: PLOT }}
                 >
                   <polyline
@@ -209,18 +253,25 @@ export function SimpleChart({ chart, rows }: Props) {
                       {isLine ? (
                         <span
                           className="absolute left-1/2 block h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-[var(--color-accent)]"
-                          style={{ bottom: `calc(${pctOf(p.value)}% - 5px)` }}
+                          style={{
+                            bottom: `calc(${lineOf(p.value)}% - 5px)`,
+                            ...(p.neg ? { background: "var(--color-danger)" } : {}),
+                          }}
                         />
                       ) : (
                         <span
+                          data-testid="chart-mark"
                           className="absolute bottom-0 left-1/2 block w-8 -translate-x-1/2 bg-[var(--color-accent)]"
-                          style={{ height: `max(2px, ${pctOf(p.value)}%)` }}
+                          style={{
+                            height: `max(2px, ${pctOf(p.value)}%)`,
+                            ...(p.neg ? NEG_MARK : {}),
+                          }}
                         />
                       )}
                     </span>
                     <span
                       data-chart-label
-                      className="block h-6 w-full truncate px-0.5 text-center text-[11px] leading-6 text-[var(--color-ink-muted)]"
+                      className="block h-6 w-full truncate px-0.5 text-center text-xs leading-6 text-[var(--color-ink-muted)]"
                     >
                       {p.name}
                     </span>
@@ -320,7 +371,7 @@ export function SimpleChart({ chart, rows }: Props) {
                 fontSize="10"
                 fill="var(--color-ink-muted)"
               >
-                {p.name.slice(0, 10)}
+                {p.raw.slice(0, 10)}
               </text>
             </g>
           );

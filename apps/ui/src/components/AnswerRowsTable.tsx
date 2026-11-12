@@ -60,12 +60,21 @@ export function AnswerRowsTable({
     shown.some((r) => typeof r[c] === "number");
   // Phone only: numbers right-aligned and tabular; the first data column stays put.
   const numCls = (c: string) => (isNumeric(c) ? " max-lg:text-right max-lg:tabular-nums" : "");
+  // The sticky cell is opaque so columns scrolling under it never show through. Its colour is
+  // inherited from its own row: below lg every row paints an opaque colour (the stripe is the
+  // /40 surface blended over paper), so the sticky cell always matches the row it sits in.
   const stickyTh = "max-lg:sticky max-lg:left-0 max-lg:z-10 max-lg:border-r max-lg:border-r-[var(--color-line)] ";
   const stickyTd =
-    "max-lg:sticky max-lg:left-0 max-lg:z-10 max-lg:border-r max-lg:border-r-[var(--color-line)] max-lg:bg-[var(--color-panel)] max-lg:group-odd:bg-[var(--color-surface)] ";
+    "max-lg:sticky max-lg:left-0 max-lg:z-10 max-lg:border-r max-lg:border-r-[var(--color-line)] max-lg:bg-inherit ";
+  // Capped below lg so one long value can never fill the viewport and hide every other column.
+  const capCls = "max-lg:max-w-[45vw] max-lg:truncate";
+  const cap = (text: string) => (isLg ? undefined : text);
 
   return (
-    <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-paper)]/50 lg:overflow-x-auto">
+    <div
+      data-testid="rows-block"
+      className="mt-4 border border-[var(--color-line)] max-lg:bg-[var(--color-paper)] lg:overflow-x-auto lg:bg-[var(--color-paper)]/50"
+    >
       <div className="relative">
       <div ref={scroller} data-testid="rows-scroller" className="max-lg:overflow-x-auto">
       <table data-testid="rows-table" className="min-w-full border-collapse text-left text-xs">
@@ -79,14 +88,23 @@ export function AnswerRowsTable({
                 key={c}
                 className={`${ci === 0 ? stickyTh + "max-lg:bg-[var(--color-paper-2)] " : ""}border-b border-[var(--color-line)] px-2 py-1.5 font-medium text-[var(--color-ink-muted)]${numCls(c)}`}
               >
-                {c}
+                {ci === 0 ? (
+                  <div className={capCls} title={cap(c)}>
+                    {c}
+                  </div>
+                ) : (
+                  c
+                )}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
           {shown.map((row, i) => (
-            <tr key={i} className="group odd:bg-[var(--color-surface)]/40">
+            <tr
+              key={i}
+              className="max-lg:bg-[var(--color-paper)] max-lg:odd:bg-[color-mix(in_srgb,var(--color-surface)_40%,var(--color-paper))] lg:odd:bg-[var(--color-surface)]/40"
+            >
               <td className="border-b border-[var(--color-line)]/50 px-2 py-1 tabular-nums text-[var(--color-ink-muted)]">
                 {serverPaging ? pageOffset + i + 1 : i + 1}
               </td>
@@ -95,7 +113,13 @@ export function AnswerRowsTable({
                   key={c}
                   className={`${ci === 0 ? stickyTd : ""}border-b border-[var(--color-line)]/50 px-2 py-1 text-[var(--color-ink)]${numCls(c)}`}
                 >
-                  {formatCellValue(row[c])}
+                  {ci === 0 ? (
+                    <div className={capCls} title={cap(formatCellValue(row[c]))}>
+                      {formatCellValue(row[c])}
+                    </div>
+                  ) : (
+                    formatCellValue(row[c])
+                  )}
                 </td>
               ))}
             </tr>
@@ -111,7 +135,7 @@ export function AnswerRowsTable({
         />
       )}
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--color-line)] px-2 py-1.5 text-xs text-[var(--color-ink-muted)] lg:text-[11px]">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--color-line)] px-2 py-1.5 text-[var(--color-ink-muted)] max-lg:text-xs lg:text-[11px]">
         <p>
           {isLg ? "Showing " : "Rows "}
           {start}
