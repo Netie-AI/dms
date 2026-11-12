@@ -113,6 +113,16 @@ body {
     min-height: 2.75rem;
   }
 
+  /*
+   * 12px text floor. The desktop design uses 10px and 11px micro-labels; on a
+   * phone held at arm's length they are unreadable. Matching the literal utility
+   * name keeps this to one rule instead of an edit in every page.
+   */
+  [class*="text-[10px]"],
+  [class*="text-[11px]"] {
+    font-size: 0.75rem;
+  }
+
   .tap-pad {
     position: relative;
   }

@@ -49,6 +49,26 @@ async function smallTargets(page: Page, root: string): Promise<string[]> {
   );
 }
 
+/** Visible text rendered under 12px. Uppercase micro-labels are the usual offenders. */
+async function smallText(page: Page, root: string): Promise<string[]> {
+  return page.evaluate((root) => {
+    const out = new Set<string>();
+    const scope = document.querySelector(root);
+    if (!scope) return [];
+    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const text = (n.textContent || "").trim();
+      const el = n.parentElement;
+      if (!text || !el) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const size = parseFloat(getComputedStyle(el).fontSize);
+      if (size < 11.99) out.add(`${size}px "${text.slice(0, 30)}"`);
+    }
+    return [...out];
+  }, root);
+}
+
 async function askQuestion(page: Page, q: string) {
   await page.getByPlaceholder(/Ask about your data/).fill(q);
   await page.getByRole("button", { name: "Ask", exact: true }).click();
@@ -160,6 +180,38 @@ test.describe("IPHONE-PWA-02 one-handed phone", () => {
     expect(scroller.height / main.height).toBeGreaterThan(0.7);
   });
 
+  test("follow-up questions are one swipeable row, not a stack", async ({ page }) => {
+    await page.goto("/");
+    await askQuestion(page, "What was total revenue?");
+    const row = page.getByTestId("continue-chips");
+    // One evaluate, one frame: the thread smooth-scrolls to the new answer, so
+    // boxes read one call at a time land on different frames.
+    const chips = await row.evaluate((el) =>
+      [...el.querySelectorAll("button")].map((b) => {
+        const r = b.getBoundingClientRect();
+        return { y: Math.round(r.y), h: r.height };
+      }),
+    );
+    expect(chips.length).toBeGreaterThan(1);
+    expect(new Set(chips.map((c) => c.y)).size).toBe(1);
+    for (const c of chips) expect(c.h).toBeGreaterThanOrEqual(TARGET);
+    expect(await row.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeGreaterThan(0);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(1);
+  });
+
+  test("the phone top bar has no hamburger; the tab bar is the navigation", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    await expect(page.getByRole("button", { name: "Toggle sidebar" })).toBeHidden();
+    const space = await box(page.locator("#space-switcher"));
+    expect(space.x).toBeLessThanOrEqual(12);
+    expect(space.width).toBeGreaterThan(170);
+  });
+
   for (const mode of ["ask", "operate"] as const) {
     test(`every control on every page is a 44px target (${mode})`, async ({ page }) => {
       await page.goto("/");
@@ -174,12 +226,54 @@ test.describe("IPHONE-PWA-02 one-handed phone", () => {
       const bad: Record<string, string[]> = {};
       for (const route of routes) {
         await go(page, route);
-        const small = await smallTargets(page, "main");
+        const small = [...(await smallTargets(page, "main")), ...(await smallText(page, "#root"))];
         if (small.length) bad[route] = small;
       }
       expect(bad).toEqual({});
     });
   }
+});
+
+test.describe("IPHONE-PWA-03 install hint", () => {
+  const IOS_SAFARI =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+
+  test("iOS Safari sees how to install, once; dismissing it sticks", async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true, userAgent: IOS_SAFARI });
+    const page = await ctx.newPage();
+    await page.goto("/");
+    const hint = page.getByTestId("install-hint");
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText("Add to Home Screen");
+    const dismiss = hint.getByRole("button", { name: "Dismiss install hint" });
+    expect((await box(dismiss)).height).toBeGreaterThanOrEqual(TARGET);
+    await dismiss.click();
+    await expect(hint).toHaveCount(0);
+    await page.reload();
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page.getByTestId("install-hint")).toHaveCount(0);
+    await ctx.close();
+  });
+
+  test("an installed app and a non-iOS browser never see it", async ({ browser }) => {
+    const android = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true });
+    const page = await android.newPage();
+    await page.goto("/");
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(page.getByTestId("install-hint")).toHaveCount(0);
+    await android.close();
+
+    const installed = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true, userAgent: IOS_SAFARI });
+    // iOS sets navigator.standalone when the page runs from the home screen.
+    await installed.addInitScript(() => {
+      Object.defineProperty(navigator, "standalone", { value: true });
+    });
+    const app = await installed.newPage();
+    await app.goto("/");
+    await expect(app.getByRole("heading", { level: 1 })).toBeVisible();
+    await expect(app.getByTestId("install-hint")).toHaveCount(0);
+    await installed.close();
+  });
 });
 
 test.describe("IPHONE-PWA-02 short and wide viewports", () => {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
+import { InstallHint } from "@/components/InstallHint";
 import { ScopeChip } from "@/components/ScopeChip";
 import { SourcesOpenButton } from "@/components/SourcePanel";
 import { useApp } from "@/context/AppContext";
@@ -119,6 +120,7 @@ export function ChatPage() {
                 ? `Scoped to ${activeSpace.name}. Every number is a button back to its cell.`
                 : "Company default ACL. Pick a Space in the top bar to sandbox sources."}
             </p>
+            <InstallHint />
             {productMode === "cream" && (
               <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
                 If we cannot stand behind a figure, we say so. Open Library, pick a
@@ -221,13 +223,16 @@ export function ChatPage() {
                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
                   Continue
                 </p>
-                <ul className="mt-2 flex flex-wrap gap-2">
+                <ul
+                  data-testid="continue-chips"
+                  className="mt-2 flex flex-wrap gap-2 max-lg:-mx-4 max-lg:flex-nowrap max-lg:overflow-x-auto max-lg:px-4 max-lg:pb-1"
+                >
                   {suggestions.slice(0, 4).map((q) => (
-                    <li key={q}>
+                    <li key={q} className="max-lg:shrink-0">
                       <button
                         type="button"
                         onClick={() => submit(q)}
-                        className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 py-1.5 text-xs text-[var(--color-ink)] hover:border-[var(--color-accent)]"
+                        className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 py-1.5 text-xs text-[var(--color-ink)] hover:border-[var(--color-accent)] max-lg:whitespace-nowrap"
                       >
                         {q}
                       </button>

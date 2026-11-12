@@ -106,7 +106,6 @@ test.describe("IPHONE-PWA-01 phone layout 390x844", () => {
   test("top bar controls are 44px touch targets", async ({ page }) => {
     await page.goto("/");
     for (const loc of [
-      page.getByRole("button", { name: "Toggle sidebar" }),
       page.locator("#space-switcher"),
       page.getByRole("button", { name: "New", exact: true }),
       page.getByRole("button", { name: "Switch to operator mode" }),

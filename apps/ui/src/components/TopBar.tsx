@@ -28,7 +28,7 @@ export function TopBar() {
       <button
         type="button"
         onClick={toggleNav}
-        className="flex h-11 w-11 shrink-0 lg:h-8 lg:w-8 items-center justify-center border border-[var(--color-line)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+        className="hidden h-8 w-8 shrink-0 items-center justify-center border border-[var(--color-line)] lg:flex text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
         aria-label="Toggle sidebar"
         aria-expanded={!navCollapsed}
         aria-controls="primary-nav"

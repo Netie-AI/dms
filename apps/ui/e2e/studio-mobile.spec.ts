@@ -172,7 +172,8 @@ test.describe("STUDIO-MOBILE-02 operate 390px", () => {
     await expect(page.getByRole("button", { name: "Switch to ask mode" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Manage Spaces" })).toBeHidden();
 
-    await page.getByRole("button", { name: "Toggle sidebar" }).click();
+    // IPHONE-PWA-03: below lg the drawer opens from the tab bar; the hamburger is desktop only.
+    await page.getByRole("button", { name: "More pages" }).click();
     await expect(page.getByTestId("left-nav")).toBeVisible();
     await expect(page.getByTestId("left-nav-backdrop")).toBeVisible();
     await expect(page.getByRole("link", { name: "Studio" })).toBeVisible();
