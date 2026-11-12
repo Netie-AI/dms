@@ -54,7 +54,13 @@ only. It never caches `/api`, `/v1` or `/health`, so an offline phone opens the
 app and shows the "DMS API unreachable" banner. It never shows a stored figure.
 The service worker registers in production builds only.
 
-`e2e/iphone-pwa.spec.ts` asserts all of this at 390x844 against the local stack.
+One-handed use (IPHONE-PWA-02): a bottom tab bar replaces the hamburger as the
+main navigation, an answer shows its figure before its tools, Sources is a bottom
+sheet, every control is a 44px target, and the Ontology map is a tap-through list.
+Spaces shows the read-only derived ontology of the active Space.
+
+`e2e/iphone-pwa.spec.ts`, `e2e/iphone-onehand.spec.ts` and
+`e2e/iphone-ontology.spec.ts` assert all of this at 390x844 against the local stack.
 
 ## U0 / demo-core acceptance (this slice)
 

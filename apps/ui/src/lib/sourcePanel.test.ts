@@ -63,11 +63,13 @@ describe("sourcePanel", () => {
 });
 
 describe("STUDIO-MOBILE-01 layout wiring", () => {
-  it("Chat Sources overlays below lg and keeps the 22rem dock at lg", () => {
+  it("Chat Sources is a bottom sheet below lg and keeps the 22rem dock at lg", () => {
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
     expect(panel).toMatch(/max-lg:fixed/);
     expect(panel).toMatch(/w-\[22rem\]/);
-    expect(panel).toMatch(/max-lg:w-\[min\(22rem,calc\(100%-2\.75rem\)\)\]/);
+    // IPHONE-PWA-02: a right-hand drawer is a two-handed reach; the sheet rises from the thumb zone.
+    expect(panel).toMatch(/max-lg:inset-x-0 max-lg:bottom-0/);
+    expect(panel).toMatch(/max-lg:max-h-\[75%\]/);
     expect(panel).toMatch(/data-testid="source-panel-open"/);
     expect(panel).toMatch(/min-h-11/);
     const ctx = readFileSync(join(here, "../context/AppContext.tsx"), "utf8");
@@ -114,8 +116,8 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
     );
     expect(opener).toMatch(/data-testid="source-panel-open"/);
     expect(opener).not.toMatch(/max-lg:fixed/);
-    // The open panel and its backdrop still overlay below the top bar.
-    expect(panel).toMatch(/max-lg:top-12/);
+    // The backdrop still starts below the top bar.
+    expect(panel).toMatch(/fixed inset-0 top-12/);
   });
 
   it("the offline shell never caches an answer path", () => {

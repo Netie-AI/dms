@@ -99,4 +99,52 @@ body {
   select {
     font-size: 16px;
   }
+
+  /*
+   * 44px touch targets (Apple HIG; WCAG 2.2 asks for 24px at minimum). A control
+   * may still look compact: its text keeps its size and the box grows around it.
+   * Inline controls inside a sentence pad their hit area with ::after instead.
+   */
+  main button,
+  main select,
+  main summary,
+  main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  aside button {
+    min-height: 2.75rem;
+  }
+
+  .tap-pad {
+    position: relative;
+  }
+
+  .tap-pad::after {
+    content: "";
+    position: absolute;
+    inset: -1rem -0.25rem;
+  }
+
+  /* The answer tools: one swipeable row of chips under the answer. */
+  [data-testid="answer-actions"] > * {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    min-height: 2.75rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--color-line);
+    white-space: nowrap;
+    text-decoration: none;
+  }
+}
+
+/* Landscape phone: the scope row and tab labels give their height to the conversation. */
+@media (max-width: 1023.98px) and (max-height: 480px) {
+  [data-short-hide] {
+    display: none;
+  }
+
+  [data-testid="tab-bar"] > * {
+    min-height: 2.75rem;
+    flex-direction: row;
+    gap: 0.375rem;
+  }
 }

@@ -85,7 +85,7 @@ export function SourcePanel() {
       <aside
         data-testid="source-panel"
         aria-label="Sources"
-        className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:right-0 max-lg:bottom-0 max-lg:z-40 max-lg:w-[min(22rem,calc(100%-2.75rem))]"
+        className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:z-40 max-lg:max-h-[75%] max-lg:min-h-[40%] max-lg:w-full max-lg:border-t max-lg:border-l-0 max-lg:pb-[env(safe-area-inset-bottom)] max-lg:shadow-[0_-8px_24px_rgba(0,0,0,0.18)]"
       >
       <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-3">
         <div>
@@ -102,7 +102,8 @@ export function SourcePanel() {
           className="flex min-h-11 min-w-11 items-center justify-center text-sm text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
           aria-label="Collapse sources"
         >
-          ⟩
+          <span className="lg:hidden" aria-hidden>✕</span>
+          <span className="max-lg:hidden" aria-hidden>⟩</span>
         </button>
       </div>
 

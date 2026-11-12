@@ -2,6 +2,20 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-12 - IPHONE-PWA-02: one-handed phone use, answer first, ontology on a phone
+
+- **Routing.** Same founder override as IPHONE-PWA-01. Not in the feedback ledger.
+- **Tab bar.** Below `lg` a bottom tab bar holds Chat, Library, Spaces, Trust (Ask mode) or Chat, Library, Studio, Ontology, More (Operate mode). More opens the existing drawer. The drawer closes on Escape and its rows are 44px.
+- **Answer first.** On a phone the badge row stays on top, then the sentence with the figure, table and chart. The eleven tool links moved under the answer as one swipeable row of 44px chips. Whatever a tool opens (SQL, check note, drill rows) appears under that row. Desktop order is unchanged.
+- **Targets.** Below `lg` every button, select, text field and `summary` in a page is at least 44px tall. Inline controls inside a sentence keep their text size and pad the hit area with `::after` (`.tap-pad`).
+- **Sources.** Below `lg` the Sources panel is a bottom sheet (40% to 75% of the height) with its close control in reach. It was a right-hand drawer.
+- **Composer.** One line on a phone, grows to about five. The in-thread demo notice is hidden below `lg`; the permanent banner and the per-answer `demo` tag stay.
+- **Ontology.** Below `lg` the Map tab is a list plus a neighbourhood view (tap an object, see its links, tap a link to move). The 42rem SVG stays at `lg`. An unreachable engine shows one honest panel with the API hint, not an empty list. Tabs are one scrolling row.
+- **Derived ontology.** Spaces shows a read-only card of what ingest derived for the active Space, from the existing `GET /v1/spaces/{id}/ontology`: objects, links, `unverified` tags and the violation text. It never says certified and never calls the derive route. Measures are stated as steward-declared.
+- **Fix.** `SpacesPage` kept an "aborted" error from a superseded sources fetch and showed it in place of the list.
+- **Test pins changed.** `sourcePanel.test.ts` pinned the right-hand drawer width; it now pins the bottom sheet.
+- **Tests.** New `e2e/iphone-onehand.spec.ts` (9) and `e2e/iphone-ontology.spec.ts` (5). One-hand: 7 of 9 failed before the change; the 2 tab-bar tests were written after the bar. Ontology: 5 mutations each failed their test; the `derived:false` test was not mutation-checked. After: 41 of 41 across seven e2e specs, vitest 135 passed, `tsc --noEmit` and build clean. Same stack as IPHONE-PWA-01 (demo ask mode, no Cortex, Chromium emulation). The ontology screens were tested against stubbed API responses in the backend's shape, not a live derived ontology. No real iPhone. Not PASS.
+
 ## 2026-11-12 - IPHONE-PWA-01: the UI installs to an iPhone home screen
 
 - **Routing.** Built on a founder override in session. Not routed through the `prd-agent` or the feedback ledger (neither was reachable). Needs a ledger entry.

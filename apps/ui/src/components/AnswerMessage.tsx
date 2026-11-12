@@ -125,7 +125,7 @@ function renderWithValues(
         key={v.id}
         type="button"
         onClick={() => onValue(v.id)}
-        className="mx-0.5 inline border-b-2 border-[var(--color-accent)] font-semibold text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+        className="tap-pad mx-0.5 inline border-b-2 border-[var(--color-accent)] font-semibold text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
       >
         {hit}
       </button>,
@@ -362,9 +362,12 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   return (
     <article
       data-testid="answer-message"
-      className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4"
+      // Below lg this is a flex column so `order` can put the figure first:
+      // badge row, the answer, then the tools strip and whatever a tool opens.
+      className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 max-lg:flex max-lg:flex-col"
     >
-      <div className="mb-3 flex flex-wrap items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2 max-lg:contents">
+        <div className="contents max-lg:mb-2 max-lg:flex max-lg:flex-wrap max-lg:items-center max-lg:gap-2">
         <button
           type="button"
           onClick={() => setShowLayer((s) => !s)}
@@ -380,6 +383,11 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             {envelope.demo_fallback_used ? "fallback → demo" : "demo"}
           </span>
         )}
+        </div>
+        <div
+          data-testid="answer-actions"
+          className="contents max-lg:order-last max-lg:-mx-4 max-lg:mt-4 max-lg:flex max-lg:gap-2 max-lg:overflow-x-auto max-lg:px-4 max-lg:pb-1"
+        >
         <button
           type="button"
           onClick={() => setShowSql((s) => !s)}
@@ -487,6 +495,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
             ⟨audit⟩
           </a>
         )}
+        </div>
       </div>
       <AbstainNote envelope={envelope} />
       {showLayer && (
@@ -500,17 +509,17 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           <p className="mt-2 flex flex-wrap gap-3 text-xs">
             <Link
               to={ceoSafeHref(productMode, "/ontology")}
-              className="text-[var(--color-accent)] hover:underline"
+              className="tap-pad text-[var(--color-accent)] hover:underline"
             >
               {productMode === "cream" ? "Open the tables" : "See the governed metrics"}
             </Link>
-            <Link to="/trust" className="text-[var(--color-accent)] hover:underline">
+            <Link to="/trust" className="tap-pad text-[var(--color-accent)] hover:underline">
               See the evidence behind this badge
             </Link>
             {envelope.audit_id && (
               <Link
                 to={ceoSafeHref(productMode, "/audit")}
-                className="text-[var(--color-accent)] hover:underline"
+                className="tap-pad text-[var(--color-accent)] hover:underline"
               >
                 {productMode === "cream" ? "Check this number" : "Find this in the ledger"}
               </Link>
@@ -520,14 +529,14 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
       )}
       {checkNote && (
         <p
-          className={`mb-3 border px-3 py-2 text-xs ${
+          className={`mb-3 border px-3 py-2 text-xs max-lg:order-last max-lg:mt-3 max-lg:mb-0 ${
             checkNote.startsWith("Mismatch")
               ? "border-[var(--color-danger)]/40 text-[var(--color-danger)]"
               : "border-[var(--color-line)] text-[var(--color-ink-muted)]"
           }`}
         >
           {checkNote}{" "}
-          <Link to="/trust" className="text-[var(--color-accent)] hover:underline">
+          <Link to="/trust" className="tap-pad text-[var(--color-accent)] hover:underline">
             Open Trust
           </Link>
         </p>
@@ -535,7 +544,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
       {receipt && (
         <div
           data-testid="audit-receipt"
-          className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5 text-xs text-[var(--color-ink-muted)]"
+          className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5 text-xs text-[var(--color-ink-muted)] max-lg:order-1 max-lg:mt-4 max-lg:mb-0"
         >
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">
             Include / exclude / unsure
@@ -551,7 +560,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           </p>
         </div>
       )}
-      <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
+      <p data-testid="answer-text" className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
         {renderWithValues(prose, envelope.values, selectValue)}
       </p>
       {insights.length > 0 && (
@@ -610,13 +619,13 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
           <p className="mt-2 flex flex-wrap gap-3 text-xs">
             <Link
               to={ceoSafeHref(productMode, "/ontology")}
-              className="text-[var(--color-accent)] hover:underline"
+              className="tap-pad text-[var(--color-accent)] hover:underline"
             >
               {productMode === "cream" ? "Pick a table in Library" : "Browse what can be asked"}
             </Link>
             <Link
               to={ceoSafeHref(productMode, "/studio")}
-              className="text-[var(--color-accent)] hover:underline"
+              className="tap-pad text-[var(--color-accent)] hover:underline"
             >
               {productMode === "cream" ? "Ask about this table" : "Attach the missing source"}
             </Link>
@@ -628,7 +637,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         <SimpleChart chart={envelope.chart} rows={rows} />
       )}
       {showCopilot && rows.length > 0 && (
-        <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-paper)] p-3">
+        <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-paper)] p-3 max-lg:order-last">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
             After Download CSV → Excel → Copilot
           </p>
@@ -657,15 +666,15 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         </div>
       )}
       {showSql && envelope.sql_used && (
-        <pre className="mt-3 overflow-x-auto border border-[var(--color-line)] bg-[var(--color-paper)] p-3 text-xs text-[var(--color-ink-muted)]">
+        <pre className="mt-3 overflow-x-auto border border-[var(--color-line)] bg-[var(--color-paper)] p-3 text-xs text-[var(--color-ink-muted)] max-lg:order-last">
           {envelope.sql_used}
         </pre>
       )}
       {exportErr && (
-        <p className="mt-3 text-xs text-[var(--color-danger)]">Export: {exportErr}</p>
+        <p className="mt-3 text-xs text-[var(--color-danger)] max-lg:order-last">Export: {exportErr}</p>
       )}
       {biPanel && biFocus && biStub(biPanel, biFocus) && (
-        <div className="mt-3 border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-3 py-2.5">
+        <div className="mt-3 border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-3 py-2.5 max-lg:order-last">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-warn)]">
             {biFocus === "powerbi" ? "Power BI" : "Superset"} -- envelope stub
           </p>
@@ -707,10 +716,10 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         </div>
       )}
       {drillErr && (
-        <p className="mt-3 text-xs text-[var(--color-danger)]">Drill-through: {drillErr}</p>
+        <p className="mt-3 text-xs text-[var(--color-danger)] max-lg:order-last">Drill-through: {drillErr}</p>
       )}
       {drillRows && (
-        <div className="mt-3">
+        <div className="mt-3 max-lg:order-last">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
             Drill-through rows
           </p>

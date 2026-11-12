@@ -1,16 +1,17 @@
+import { useEffect } from "react";
 import { NavLink } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
 import type { AppRole, NavId } from "@/lib/types";
 
-type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
+export type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
 
 /**
  * Grouped by the question the user is holding, not by the module that serves it.
  * Ten surfaces in one flat list reads as a settings menu; four groups of two or
  * three reads as a product with a shape.
  */
-const GROUPS: { title: string; items: NavItem[] }[] = [
+export const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: "Ask",
     items: [{ id: "chat", label: "Chat", to: "/", short: "C", hint: "Ask about your data" }],
@@ -77,11 +78,11 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
   },
 ];
 
-const ADMIN_ONLY: NavId[] = ["admin"];
+export const ADMIN_ONLY: NavId[] = ["admin"];
 const ROLES: AppRole[] = ["viewer", "steward", "admin"];
 
 function linkClass(isActive: boolean): string {
-  return `block px-3 py-1.5 text-sm font-medium ${
+  return `block px-3 py-1.5 text-sm font-medium max-lg:flex max-lg:min-h-11 max-lg:items-center ${
     isActive
       ? "border-l-2 border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-ink)]"
       : "border-l-2 border-transparent text-[var(--color-ink-muted)] hover:bg-[var(--color-paper-2)] hover:text-[var(--color-ink)]"
@@ -91,7 +92,7 @@ function linkClass(isActive: boolean): string {
 export function LeftNav() {
   const { navCollapsed, role, setRole, productMode, closeNavDrawer } = useApp();
   const allowed = navIdsForMode(productMode);
-  const visible = GROUPS.map((g) => ({
+  const visible = NAV_GROUPS.map((g) => ({
     ...g,
     items: g.items.filter(
       (i) =>
@@ -99,6 +100,16 @@ export function LeftNav() {
         (allowed == null || allowed.has(i.id)),
     ),
   })).filter((g) => g.items.length);
+
+  // Below lg the open nav is a modal drawer; Escape dismisses it like its backdrop does.
+  useEffect(() => {
+    if (navCollapsed) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeNavDrawer();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navCollapsed, closeNavDrawer]);
 
   if (navCollapsed) {
     return (

@@ -4,6 +4,7 @@ import { ApiOfflineBanner } from "@/components/ApiOfflineBanner";
 import { DemoFallbackBanner } from "@/components/DemoFallbackBanner";
 import { LeftNav } from "@/components/LeftNav";
 import { SourcePanel } from "@/components/SourcePanel";
+import { TabBar } from "@/components/TabBar";
 import { TopBar } from "@/components/TopBar";
 
 export function AppShell() {
@@ -34,6 +35,7 @@ export function AppShell() {
           </div>
         ) : null}
       </div>
+      <TabBar />
       <ActivityToast />
     </div>
   );
