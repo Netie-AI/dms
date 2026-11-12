@@ -316,10 +316,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSelectedValueId(id);
       if (id && latestAnswer?.contributing_sources[0]) {
         setFocusedSourceId(latestAnswer.contributing_sources[0].ref_id);
-        const width = typeof window === "undefined" ? LG_MIN_WIDTH_PX : window.innerWidth;
-        if (shouldExpandSourcesDock(width)) {
-          setSourcePanelOpen(true);
-        }
+        // Tapping a figure is an explicit ask for its sources, at every width.
+        // (An ask on its own still leaves the phone sheet closed.)
+        setSourcePanelOpen(true);
       }
     },
     [latestAnswer],

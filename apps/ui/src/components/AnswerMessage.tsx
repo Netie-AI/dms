@@ -364,7 +364,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
       data-testid="answer-message"
       // Below lg this is a flex column so `order` can put the figure first:
       // badge row, the answer, then the tools strip and whatever a tool opens.
-      className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 max-lg:flex max-lg:flex-col"
+      className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 max-lg:flex max-lg:scroll-mt-3 max-lg:flex-col"
     >
       <div className="mb-3 flex flex-wrap items-center gap-2 max-lg:contents">
         <div className="contents max-lg:mb-2 max-lg:flex max-lg:flex-wrap max-lg:items-center max-lg:gap-2">

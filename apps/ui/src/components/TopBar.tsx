@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { ceoSafeHref } from "@/lib/productMode";
@@ -21,6 +21,20 @@ export function TopBar() {
   } = useApp();
   const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
+  const newMenu = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!newOpen) return;
+    const dismiss = (e: KeyboardEvent | PointerEvent) => {
+      const outside = !newMenu.current?.contains(e.target as Node);
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : outside) setNewOpen(false);
+    };
+    window.addEventListener("keydown", dismiss);
+    window.addEventListener("pointerdown", dismiss);
+    return () => {
+      window.removeEventListener("keydown", dismiss);
+      window.removeEventListener("pointerdown", dismiss);
+    };
+  }, [newOpen]);
   const nextMode = productMode === "cream" ? "graphite" : "cream";
 
   return (
@@ -55,7 +69,7 @@ export function TopBar() {
         ))}
       </select>
 
-      <div className="relative shrink-0">
+      <div ref={newMenu} className="relative shrink-0">
         <button
           type="button"
           onClick={() => setNewOpen((o) => !o)}
@@ -73,7 +87,7 @@ export function TopBar() {
           >
             <button
               type="button"
-              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)] max-lg:min-h-11"
               onClick={() => {
                 setNewOpen(false);
                 navigate(ceoSafeHref(productMode, "/studio"));
@@ -84,7 +98,7 @@ export function TopBar() {
             {productMode === "graphite" && (
               <button
                 type="button"
-                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)] max-lg:min-h-11"
                 onClick={() => {
                   setNewOpen(false);
                   navigate("/amend");
@@ -95,7 +109,7 @@ export function TopBar() {
             )}
             <button
               type="button"
-              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)] max-lg:min-h-11"
               onClick={() => {
                 setNewOpen(false);
                 navigate("/spaces");

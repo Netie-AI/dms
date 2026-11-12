@@ -247,7 +247,7 @@ function ObjectCard({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex min-h-11 w-full items-start justify-between gap-3 px-3.5 py-3 text-left hover:bg-[var(--color-paper-2)]/40"
+        className="flex w-full items-start justify-between gap-3 px-3.5 py-3 text-left max-lg:min-h-11 hover:bg-[var(--color-paper-2)]/40"
       >
         <div className="min-w-0">
           <p className="font-medium text-[var(--color-ink)]">
@@ -343,7 +343,7 @@ function MetricRow({ metric }: { metric: OntologyMetric }) {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex min-h-11 w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left hover:bg-[var(--color-paper-2)]/40"
+        className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left max-lg:min-h-11 hover:bg-[var(--color-paper-2)]/40"
       >
         <span className="font-mono text-sm">{metric.id}</span>
         <span className="flex flex-wrap items-center gap-1.5">
@@ -429,7 +429,7 @@ export function OntologyPage() {
         }
       />
 
-      {degraded ? (
+      {degraded && !isLg ? (
         <div
           role="status"
           data-testid="ontology-unavailable"
@@ -451,6 +451,14 @@ export function OntologyPage() {
         </div>
       ) : (
       <>
+      {degraded && (
+        <DependencyNotice
+          tone="danger"
+          title="Ontology unavailable — Cortex did not answer"
+          hint={data?.summary.hint ?? "Start the engine on :8010, then Refresh."}
+        />
+      )}
+
       <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile label="Object types" value={counts?.object_types ?? "—"} />
         <StatTile label="Links" value={counts?.link_types ?? "—"} />
@@ -479,7 +487,7 @@ export function OntologyPage() {
       <div className="mt-7 flex flex-col border-b border-[var(--color-line)] lg:flex-row lg:flex-wrap lg:items-center lg:gap-2">
         <div
           role="tablist"
-          className="flex flex-nowrap overflow-x-auto lg:flex-wrap lg:overflow-visible"
+          className="flex flex-nowrap overflow-x-auto lg:contents"
         >
         {TABS.map((t) => (
           <button
@@ -488,7 +496,7 @@ export function OntologyPage() {
             role="tab"
             aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
-            className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium max-lg:min-h-11 ${
+            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium max-lg:min-h-11 max-lg:shrink-0 max-lg:whitespace-nowrap ${
               tab === t.id
                 ? "border-[var(--color-accent)] text-[var(--color-ink)]"
                 : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"

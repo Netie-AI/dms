@@ -10,6 +10,7 @@ import {
   StatTile,
 } from "@/components/PageShell";
 import { SpaceOntologyCard } from "@/components/SpaceOntologyCard";
+import { useIsLg } from "@/lib/viewport";
 import { useApp } from "@/context/AppContext";
 import {
   MOCK_STOCK_ASK,
@@ -28,6 +29,7 @@ import type { LibrarySource } from "@/lib/types";
  * chip reports, so there is one notion of scope in the product, not two.
  */
 export function SpacesPage() {
+  const isLg = useIsLg();
   const {
     spaces,
     activeSpaceId,
@@ -285,7 +287,7 @@ export function SpacesPage() {
                       ))}
                     </ul>
                   )}
-                  {active && <SpaceOntologyCard spaceId={space.id} />}
+                  {active && !isLg && <SpaceOntologyCard spaceId={space.id} />}
                 </li>
               );
             })}

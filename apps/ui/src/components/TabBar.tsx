@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 import { NAV_GROUPS } from "@/components/LeftNav";
 import { useApp } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
@@ -58,8 +58,9 @@ function Icon({ id }: { id: NavId | "more" }) {
   );
 }
 
-export function TabBar() {
+export function TabBar({ inert }: { inert: boolean }) {
   const isLg = useIsLg();
+  const { pathname } = useLocation();
   const { productMode, navCollapsed, toggleNav } = useApp();
   if (isLg) return null;
 
@@ -72,9 +73,9 @@ export function TabBar() {
     <nav
       aria-label="Tabs"
       data-testid="tab-bar"
-      // The open drawer is modal: what sits behind its backdrop must not take focus or taps.
-      inert={!navCollapsed}
-      aria-hidden={!navCollapsed || undefined}
+      // An open drawer or Sources sheet is modal: what sits behind it takes no focus or taps.
+      inert={inert}
+      aria-hidden={inert || undefined}
       className="flex shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]"
     >
       {tabs.map((t) => (
@@ -95,7 +96,8 @@ export function TabBar() {
           aria-label="More pages"
           aria-controls="primary-nav"
           aria-expanded={!navCollapsed}
-          className={`${cell} ${idle}`}
+          // A page that is not a tab lives behind More; show where the user is.
+          className={`${cell} ${tabs.some((t) => t.to === pathname) ? idle : active}`}
         >
           <Icon id="more" />
           <span className={label}>More</span>

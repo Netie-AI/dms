@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { PreviewGrid } from "@/components/PreviewGrid";
 import { useApp } from "@/context/AppContext";
 import { postReveal } from "@/lib/api";
 import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
 import { sourcesHeadline } from "@/lib/sourcePanel";
+import { useModalFocus } from "@/lib/useModalFocus";
 import { useIsLg } from "@/lib/viewport";
 
 function formatMoney(n: number) {
@@ -47,6 +48,9 @@ export function SourcePanel() {
     latestAnswer: answer,
   } = useApp();
   const [revealNote, setRevealNote] = useState<string | null>(null);
+  const sheet = useRef<HTMLElement | null>(null);
+  const close = useCallback(() => setSourcePanelOpen(false), [setSourcePanelOpen]);
+  useModalFocus(sourcePanelOpen && !isLg, sheet, close, '[data-testid="source-panel-open"]');
 
   if (!sourcePanelOpen) {
     return isLg ? <SourcesOpenButton /> : null;
@@ -83,6 +87,9 @@ export function SourcePanel() {
         onClick={() => setSourcePanelOpen(false)}
       />
       <aside
+        ref={sheet}
+        role={isLg ? undefined : "dialog"}
+        aria-modal={isLg ? undefined : true}
         data-testid="source-panel"
         aria-label="Sources"
         className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:z-40 max-lg:max-h-[75%] max-lg:min-h-[40%] max-lg:w-full max-lg:border-t max-lg:border-l-0 max-lg:pb-[env(safe-area-inset-bottom)] max-lg:shadow-[0_-8px_24px_rgba(0,0,0,0.18)]"

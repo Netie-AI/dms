@@ -1,7 +1,9 @@
-import { useEffect } from "react";
+import { useRef } from "react";
 import { NavLink } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
+import { useModalFocus } from "@/lib/useModalFocus";
+import { useIsLg } from "@/lib/viewport";
 import type { AppRole, NavId } from "@/lib/types";
 
 export type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
@@ -101,15 +103,15 @@ export function LeftNav() {
     ),
   })).filter((g) => g.items.length);
 
-  // Below lg the open nav is a modal drawer; Escape dismisses it like its backdrop does.
-  useEffect(() => {
-    if (navCollapsed) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeNavDrawer();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [navCollapsed, closeNavDrawer]);
+  // Below lg the open nav is a modal drawer.
+  const isLg = useIsLg();
+  const drawer = useRef<HTMLElement | null>(null);
+  useModalFocus(
+    !navCollapsed && !isLg,
+    drawer,
+    closeNavDrawer,
+    '[data-testid="tab-bar"] button[aria-controls="primary-nav"]',
+  );
 
   if (navCollapsed) {
     return (
@@ -155,6 +157,7 @@ export function LeftNav() {
         onClick={closeNavDrawer}
       />
       <nav
+        ref={drawer}
         id="primary-nav"
         aria-label="Primary"
         data-testid="left-nav"
@@ -205,7 +208,7 @@ export function LeftNav() {
             aria-label="Role"
             value={role}
             onChange={(e) => setRole(e.target.value as AppRole)}
-            className="h-8 w-full border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
+            className="h-11 w-full border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
           >
             {ROLES.map((r) => (
               <option key={r} value={r}>

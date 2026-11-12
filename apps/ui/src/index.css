@@ -114,6 +114,14 @@ body {
   }
 
   /*
+   * The cream warn pair (#9a6b1a on #f5ebd4) is 3.94:1. The demo banner is 12px
+   * text that rule 11 says must be unmissable, so it needs 4.5:1. This is 5.8:1.
+   */
+  :root:not([data-theme="graphite"]) {
+    --color-warn: #7a5210;
+  }
+
+  /*
    * 12px text floor. The desktop design uses 10px and 11px micro-labels; on a
    * phone held at arm's length they are unreadable. Matching the literal utility
    * name keeps this to one rule instead of an edit in every page.
@@ -146,12 +154,8 @@ body {
   }
 }
 
-/* Landscape phone: the scope row and tab labels give their height to the conversation. */
+/* Landscape phone: the tab labels sit beside their icons to save height. */
 @media (max-width: 1023.98px) and (max-height: 480px) {
-  [data-short-hide] {
-    display: none;
-  }
-
   [data-testid="tab-bar"] > * {
     min-height: 2.75rem;
     flex-direction: row;

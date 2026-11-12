@@ -125,4 +125,13 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
     expect(sw).toMatch(/const NEVER = \["\/api\/", "\/v1\/", "\/health"\]/);
     expect(sw).toMatch(/NEVER\.some\(.*\)\) return;/);
   });
+
+  it("the offline shell never stores HTML as an asset, a redirect as the shell, or a dead build", () => {
+    // Verified on a production build (the missing-asset, prune and file-URL cases);
+    // these pins keep the three guards from being dropped.
+    const sw = readFileSync(join(here, "../../public/sw.js"), "utf8");
+    expect(sw).toMatch(/res\.ok && !res\.redirected && !isHtml\(res\)/);
+    expect(sw).toMatch(/res\.ok && !res\.redirected && isHtml\(res\)\) event\.waitUntil\(refreshShell/);
+    expect(sw).toMatch(/!html\.includes\(path\)\) await cache\.delete\(req\)/);
+  });
 });

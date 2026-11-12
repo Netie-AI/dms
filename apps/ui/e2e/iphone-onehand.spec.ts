@@ -212,6 +212,149 @@ test.describe("IPHONE-PWA-02 one-handed phone", () => {
     expect(space.width).toBeGreaterThan(170);
   });
 
+  test("a finished answer is shown from its top: badge and figure on screen", async ({ page }) => {
+    await page.goto("/");
+    const scrollerEl = page.getByTestId("chat-scroll");
+    for (const q of ["What was total revenue?", "Top 5 selling SKUs by revenue"]) {
+      const answer = await askQuestion(page, q);
+      const text = answer.getByTestId("answer-text");
+      // The thread smooth-scrolls; measure only once it has stopped moving.
+      await scrollerEl.evaluate(
+        (el) =>
+          new Promise<void>((resolve) => {
+            let last = -1;
+            let still = 0;
+            const tick = () => {
+              still = el.scrollTop === last ? still + 1 : 0;
+              last = el.scrollTop;
+              if (still >= 20) resolve();
+              else requestAnimationFrame(tick);
+            };
+            tick();
+          }),
+      );
+      const scroller = await box(scrollerEl);
+      const a = await box(answer);
+      const t = await box(text);
+      // The answer's top is not above the screen, so the badge row is readable...
+      expect(a.y).toBeGreaterThanOrEqual(scroller.y - 1);
+      // ...and the sentence with the figure is fully on screen.
+      expect(t.y).toBeGreaterThanOrEqual(scroller.y);
+      expect(t.y + t.height).toBeLessThanOrEqual(scroller.y + scroller.height);
+      await expect(text).toContainText(/\d/);
+    }
+  });
+
+  test("tapping a figure opens its Sources", async ({ page }) => {
+    await page.goto("/");
+    const answer = await askQuestion(page, "What was total revenue?");
+    await expect(page.getByTestId("source-panel")).toHaveCount(0);
+    await answer.getByTestId("answer-text").getByRole("button").first().click();
+    await expect(page.getByTestId("source-panel")).toBeVisible();
+    await expect(page.getByTestId("source-panel")).toContainText(/Tracing/);
+  });
+
+  test("the Sources sheet is a dialog: focus moves in, Escape closes, focus returns", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await askQuestion(page, "What was total revenue?");
+    const opener = page.getByTestId("source-panel-open");
+    await opener.click();
+    const sheet = page.getByRole("dialog", { name: "Sources" });
+    await expect(sheet).toBeVisible();
+    await expect(page.getByRole("button", { name: "Collapse sources" })).toBeFocused();
+    // What sits behind the sheet takes no focus.
+    await expect(page.locator("main").first()).toHaveAttribute("inert", "");
+    await expect(page.getByTestId("tab-bar")).toHaveAttribute("inert", "");
+    await page.keyboard.press("Escape");
+    await expect(sheet).toHaveCount(0);
+    await expect(page.getByTestId("source-panel-open")).toBeFocused();
+    await expect(page.locator("main").first()).not.toHaveAttribute("inert", "");
+  });
+
+  test("the drawer takes focus and gives it back to More", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Switch to operator mode" }).click();
+    const more = page.getByRole("button", { name: "More pages" });
+    await more.click();
+    const drawer = page.getByTestId("left-nav");
+    await expect(drawer.getByRole("link").first()).toBeFocused();
+    await expect(page.locator("main").first()).toHaveAttribute("inert", "");
+    await page.keyboard.press("Escape");
+    await expect(drawer).toBeHidden();
+    await expect(more).toBeFocused();
+  });
+
+  test("More is the active tab on a page that is not a tab", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Switch to operator mode" }).click();
+    const more = page.getByRole("button", { name: "More pages" });
+    const colour = () => more.evaluate((el) => getComputedStyle(el).borderTopColor);
+    const idle = await colour();
+    await go(page, "/runs");
+    await expect(page.getByRole("heading", { name: "Runs", level: 1 })).toBeVisible();
+    expect(await colour()).not.toBe(idle);
+    await expect(page.getByTestId("tab-bar").locator('[aria-current="page"]')).toHaveCount(0);
+    await go(page, "/studio");
+    expect(await colour()).toBe(idle);
+  });
+
+  test("the New menu has 44px rows and closes on Escape and on an outside tap", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    const open = page.getByRole("button", { name: "New", exact: true });
+    const menu = page.getByTestId("topbar-new-menu");
+    await open.click();
+    for (const item of await menu.getByRole("button").all()) {
+      expect((await box(item)).height).toBeGreaterThanOrEqual(TARGET);
+    }
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await open.click();
+    await expect(menu).toBeVisible();
+    // Outside the menu, low on the screen (the menu hangs under the top bar).
+    await page.touchscreen.tap(40, 560);
+    await expect(menu).toHaveCount(0);
+  });
+
+  test("the demo banner is readable: 4.5:1 or better", async ({ page }) => {
+    // Force demo ask mode so the banner renders whatever mode the API under test is in.
+    await page.route("**/api/health", async (route) => {
+      const res = await route.fetch();
+      await route.fulfill({ response: res, json: { ...(await res.json()), ask_mode: "demo" } });
+    });
+    await page.goto("/");
+    const banner = page.getByRole("status").filter({ hasText: /DEMO ASK MODE/ });
+    await expect(banner).toBeVisible();
+    const ratio = await banner.evaluate((el) => {
+      const lum = (c: string) => {
+        const [r, g, b] = c.match(/[\d.]+/g)!.slice(0, 3).map((v) => {
+          const x = Number(v) / 255;
+          return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const s = getComputedStyle(el);
+      const [hi, lo] = [lum(s.color), lum(s.backgroundColor)].sort((a, b) => b - a);
+      return (hi + 0.05) / (lo + 0.05);
+    });
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("an IME candidate confirmed with Enter does not send the question", async ({ page }) => {
+    await page.goto("/");
+    const field = page.getByPlaceholder(/Ask about your data/);
+    await field.fill("zong shou ru");
+    await field.evaluate((el) => {
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true }));
+    });
+    await expect(field).toHaveValue("zong shou ru");
+    await expect(page.getByTestId("answer-message")).toHaveCount(0);
+    await field.press("Enter");
+    await expect(page.getByTestId("answer-message")).toHaveCount(1, { timeout: 20_000 });
+  });
+
   for (const mode of ["ask", "operate"] as const) {
     test(`every control on every page is a 44px target (${mode})`, async ({ page }) => {
       await page.goto("/");
@@ -285,6 +428,28 @@ test.describe("IPHONE-PWA-02 short and wide viewports", () => {
     const scroller = await box(page.getByTestId("chat-scroll"));
     expect(scroller.height).toBeGreaterThan(390 * 0.45);
     await expect(page.getByTestId("tab-bar")).toBeVisible();
+    // The scope row is hidden to save height; Sources must still be one tap away.
+    await expect(page.getByTestId("scope-chip")).toHaveCount(0);
+    const sources = page.getByTestId("source-panel-open");
+    await expect(sources).toBeVisible();
+    expect((await box(sources)).height).toBeGreaterThanOrEqual(TARGET);
+    await sources.click();
+    const sheet = await box(page.getByTestId("source-panel"));
+    expect(sheet.y).toBeGreaterThanOrEqual(0);
+    await expect(page.getByRole("button", { name: "Collapse sources" })).toBeVisible();
+    await ctx.close();
+  });
+
+  test("a small phone (375x667) shows suggestions without scrolling", async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 375, height: 667 }, hasTouch: true, isMobile: true });
+    const page = await ctx.newPage();
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    const scroller = await box(page.getByTestId("chat-scroll"));
+    const visible = await page.getByTestId("chat-scroll").evaluate((el, bottom) => {
+      return [...el.querySelectorAll("ul button")].filter((b) => b.getBoundingClientRect().bottom <= bottom).length;
+    }, scroller.y + scroller.height);
+    expect(visible).toBeGreaterThanOrEqual(2);
     await ctx.close();
   });
 

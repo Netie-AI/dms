@@ -1,21 +1,45 @@
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 /** Tailwind `lg`. Below this, a docked 22rem Sources column covers Chat. */
 export const LG_MIN_WIDTH_PX = 1024;
 
-const lgQuery = () => window.matchMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`);
+const queries = new Map<string, MediaQueryList>();
+
+function media(query: string): MediaQueryList {
+  let m = queries.get(query);
+  if (!m) {
+    m = window.matchMedia(query);
+    queries.set(query, m);
+  }
+  return m;
+}
+
+/** Live media-query match. `onServer` is the answer where there is no window. */
+export function useMedia(query: string, onServer: boolean): boolean {
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      const m = media(query);
+      m.addEventListener("change", onChange);
+      return () => m.removeEventListener("change", onChange);
+    },
+    [query],
+  );
+  return useSyncExternalStore(
+    subscribe,
+    () => media(query).matches,
+    () => onServer,
+  );
+}
 
 /** Live `lg` match, for the few places where phone and desktop render different nodes. */
 export function useIsLg(): boolean {
-  return useSyncExternalStore(
-    (onChange) => {
-      const q = lgQuery();
-      q.addEventListener("change", onChange);
-      return () => q.removeEventListener("change", onChange);
-    },
-    () => lgQuery().matches,
-    () => true,
-  );
+  return useMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`, true);
+}
+
+/** A phone on its side: too little height for anything but the conversation. */
+export function useIsShortPhone(): boolean {
+  const short = useMedia("(max-height: 480px)", false);
+  return short && !useIsLg();
 }
 
 export function isLgViewport(widthPx: number): boolean {

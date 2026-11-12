@@ -5,7 +5,7 @@ import { InstallHint } from "@/components/InstallHint";
 import { ScopeChip } from "@/components/ScopeChip";
 import { SourcesOpenButton } from "@/components/SourcePanel";
 import { useApp } from "@/context/AppContext";
-import { useIsLg } from "@/lib/viewport";
+import { useIsLg, useIsShortPhone } from "@/lib/viewport";
 
 export function ChatPage() {
   const {
@@ -33,10 +33,12 @@ export function ChatPage() {
     sourcePanelOpen,
   } = useApp();
   const isLg = useIsLg();
+  const short = useIsShortPhone();
   const location = useLocation();
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Phone composer: one line until the text needs more, capped at about five.
@@ -48,8 +50,16 @@ export function ChatPage() {
   }, [draft, isLg, asking]); // `asking` swaps the placeholder, which can wrap
 
   useEffect(() => {
+    // Phone: a finished answer is read from its top (badge, then the figure).
+    // Scrolling to its end put both above the screen on every ask.
+    const last = messages[messages.length - 1];
+    if (!isLg && !asking && last?.role === "assistant") {
+      const answers = scrollRef.current?.querySelectorAll('[data-testid="answer-message"]');
+      answers?.[answers.length - 1]?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, askError, asking, askQueueDepth]);
+  }, [messages, askError, asking, askQueueDepth, isLg]);
 
   // Studio hands the selection / buyer-walk question through router state.
   // Consume it once and clear it, so a later back-navigation does not silently
@@ -107,6 +117,7 @@ export function ChatPage() {
         </div>
       )}
       <div
+        ref={scrollRef}
         data-testid="chat-scroll"
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 max-lg:px-4 max-lg:py-4"
       >
@@ -122,14 +133,14 @@ export function ChatPage() {
             </p>
             <InstallHint />
             {productMode === "cream" && (
-              <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
+              <p className="mt-2 text-sm text-[var(--color-ink-muted)] max-lg:hidden">
                 If we cannot stand behind a figure, we say so. Open Library, pick a
                 table, Ask about this table. Share the CSV from any answer.
                 Operate mode in the top bar opens Studio, ontology, and the ledger.
               </p>
             )}
             {askMode === "demo" && (
-              <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
+              <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)] max-lg:hidden">
                 Demo ask mode — answers compute from the local DuckDB warehouse. Not certified.
                 {spacesFromApi ? " Spaces loaded from DMS API." : " Using offline Space fixtures."}
               </p>
@@ -248,12 +259,15 @@ export function ChatPage() {
 
       <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3 max-lg:py-2">
         <div className={`mx-auto flex ${chatWidth} flex-col gap-2`}>
-          <div data-short-hide className="flex min-w-0 items-center gap-2">
-            <div className="min-w-0 flex-1">
-              <ScopeChip />
+          {/* At lg the wrappers are `contents`, so the chip is laid out exactly as before. */}
+          {!short && (
+            <div className={isLg ? "contents" : "flex min-w-0 items-center gap-2"}>
+              <div className={isLg ? "contents" : "min-w-0 flex-1"}>
+                <ScopeChip />
+              </div>
+              {!isLg && !sourcePanelOpen && <SourcesOpenButton />}
             </div>
-            {!isLg && !sourcePanelOpen && <SourcesOpenButton />}
-          </div>
+          )}
           {composerPaused && composerPauseReason && (
             <p className="border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
               {composerPauseReason}
@@ -277,6 +291,8 @@ export function ChatPage() {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                // An IME (pinyin, kana, hangul) confirms a candidate with Enter; that is not a send.
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   if (draft.trim()) submit(draft.trim());
@@ -293,6 +309,8 @@ export function ChatPage() {
               rows={isLg ? 2 : 1}
               className="min-h-[2.75rem] flex-1 resize-y border max-lg:resize-none border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)]"
             />
+            {/* Landscape hides the scope row; Sources must stay reachable. */}
+            {short && !sourcePanelOpen && <SourcesOpenButton />}
             <button
               type="submit"
               disabled={!draft.trim()}
