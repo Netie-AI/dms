@@ -52,7 +52,7 @@ RUN set -eu; \
         -e ./packages/executor \
         -e ./packages/ledger \
         "fastapi>=0.110" "uvicorn[standard]>=0.27" "httpx>=0.27" "pydantic-settings>=2.2" \
-        "duckdb>=1.0" "psycopg[binary]>=3.1" "sqlalchemy>=2.0" "alembic>=1.13" "python-multipart>=0.0.9"; \
+        "duckdb>=1.1,<2" "psycopg[binary]>=3.1" "sqlalchemy>=2.0" "alembic>=1.13" "python-multipart>=0.0.9"; \
     rm -f /tmp/cortex-contract.pin
 
 ENV PYTHONPATH=/app/apps/api:/app/packages/core:/app/packages/cortex_client:/app/packages/executor:/app/packages/ledger

@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - DuckDB pinned below 2 (F-TBD-28, repo infrastructure)
+
+- **Defect.** DMS allowed any DuckDB from 1.0 up, and a fresh install now resolves to 2.0.0, which writes storage version 69. The Cortex engine pins `duckdb>=1.1,<2`; its 1.x refuses the serving warehouse file DMS wrote ("we can only read versions between 64 and 68"), so every ask that reaches Cortex's execution fails with "the model step failed (IOException)".
+- **Fix.** `duckdb>=1.1,<2` (Cortex's range) in `pyproject.toml`, `packages/executor/pyproject.toml` and `apps/api/Dockerfile`. No other install site names DuckDB: CI, `scripts/ci_local.sh` and the README install through those pyprojects.
+- **Gate.** `tests/test_duckdb_pin.py` scans every tracked install file (pyproject, requirements, Dockerfile, workflow, shell and PowerShell script) and fails on a DuckDB requirement that allows 2.x, so a fourth site without the bound fails too.
+- **Open.** Which DuckDB major DMS and Cortex share needs a founder decision record. Not decided here.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
