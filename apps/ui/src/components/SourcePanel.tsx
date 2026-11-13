@@ -36,7 +36,7 @@ export function SourcesOpenButton() {
       data-testid="source-panel-open"
       aria-label={isLg ? "Open sources" : `Sources: ${scope}`}
       onClick={() => setSourcePanelOpen(true)}
-      className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:min-h-11 max-lg:min-w-[2.75rem] max-lg:shrink-0 max-lg:self-end max-lg:border max-lg:border-[var(--color-line)] max-lg:gap-1 max-lg:px-2 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
+      className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:min-h-11 max-lg:min-w-[3.5rem] max-lg:shrink-0 max-lg:self-end max-lg:border max-lg:border-[var(--color-line)] max-lg:gap-1 max-lg:px-2 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
     >
       {/* Phone: an icon, the row has no room for the word. aria-label names it. */}
       <svg
@@ -52,7 +52,7 @@ export function SourcesOpenButton() {
         <path d="m3 12.5 9 4.5 9-4.5" />
         <path d="m3 16.5 9 4.5 9-4.5" />
       </svg>
-      {scopedSourceCount !== null && (
+      {!isLg && scopedSourceCount !== null && (
         <span data-testid="source-count" className="text-xs tabular-nums lg:hidden">
           {scopedSourceCount}
         </span>

@@ -5,7 +5,7 @@ import { InstallHint } from "@/components/InstallHint";
 import { ScopeChip } from "@/components/ScopeChip";
 import { SourcesOpenButton } from "@/components/SourcePanel";
 import { useApp } from "@/context/AppContext";
-import { useIsLg } from "@/lib/viewport";
+import { useIsLg, useIsNarrowPhone } from "@/lib/viewport";
 
 export function ChatPage() {
   const {
@@ -33,6 +33,7 @@ export function ChatPage() {
     sourcePanelOpen,
   } = useApp();
   const isLg = useIsLg();
+  const narrow = useIsNarrowPhone();
   const location = useLocation();
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
@@ -292,15 +293,20 @@ export function ChatPage() {
                 }
               }}
               placeholder={
-                asking
-                  ? "Type next question — it will queue…"
-                  : isLg
-                    ? "Ask about your data… (Shift+Enter for newline)"
-                    : "Ask about your data…"
+                isLg
+                  ? asking
+                    ? "Type next question — it will queue…"
+                    : "Ask about your data… (Shift+Enter for newline)"
+                  : asking
+                    ? "Next question…"
+                    : narrow
+                      ? "Ask a question…"
+                      : "Ask about your data…"
               }
+              aria-label={isLg ? undefined : "Ask about your data"}
               enterKeyHint="send"
               rows={isLg ? 2 : 1}
-              className="min-h-[2.75rem] min-w-0 flex-1 resize-y border max-lg:resize-none border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)]"
+              className="min-h-[2.75rem] min-w-0 flex-1 resize-y border max-lg:resize-none border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)] max-lg:px-2.5"
             />
             {!isLg && !sourcePanelOpen && <SourcesOpenButton />}
             <button

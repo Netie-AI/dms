@@ -40,9 +40,9 @@ async function box(loc: Locator) {
 }
 
 /** Whether the corners and centre of a 44x44 box around the control's centre hit the control. */
-async function effectiveHit(page: Page, testid: string) {
-  return page.evaluate((id) => {
-    const el = document.querySelector<HTMLElement>(`[data-testid="${id}"]`)!;
+async function effectiveHit(page: Page, selector: string) {
+  return page.evaluate((sel) => {
+    const el = document.querySelector<HTMLElement>(sel)!;
     const r = el.getBoundingClientRect();
     const cx = r.left + r.width / 2;
     const cy = r.top + r.height / 2;
@@ -52,7 +52,7 @@ async function effectiveHit(page: Page, testid: string) {
       hits.push(!!hit && (hit === el || el.contains(hit)));
     }
     return hits;
-  }, testid);
+  }, selector);
 }
 
 for (const size of SIZES) {
@@ -62,6 +62,11 @@ for (const size of SIZES) {
 
       test("the thread gets at least 40px more and the chrome share drops", async ({ page }) => {
         await open(page, mode);
+        // Independent of any banner: the composer block was 113px tall, one row is 61.
+        const composer = await box(page.getByTestId("chat-scroll").locator("xpath=following-sibling::*[1]"));
+        expect(composer.height).toBeLessThanOrEqual(64);
+        // The thread numbers below assume the 50px demo banner is showing (the demo API is up);
+        // without it the thread is taller and they pass trivially, hence the check above.
         const thread = await box(page.getByTestId("chat-scroll"));
         expect(thread.height).toBeGreaterThanOrEqual(size.thread + 40);
         expect(1 - thread.height / size.height).toBeLessThanOrEqual(size.share);
@@ -122,23 +127,9 @@ for (const size of SIZES) {
         expect(lines).toBeLessThanOrEqual(3);
       });
 
-      test("while an answer is pending the longer placeholder does not grow the field", async ({ page }) => {
-        await open(page, mode);
-        await page.route("**/api/v1/chat/ask", async (route) => {
-          await new Promise((r) => setTimeout(r, 2500));
-          await route.continue();
-        });
-        const field = page.getByPlaceholder(/Ask about your data/);
-        await field.fill("What was total revenue?");
-        await page.getByRole("button", { name: "Ask", exact: true }).click();
-        const pending = page.getByPlaceholder(/Type next question/);
-        await expect(pending).toBeVisible();
-        expect((await box(pending)).height).toBeLessThanOrEqual(48);
-      });
-
       test("Sources keeps a 44x44 hit area", async ({ page }) => {
         await open(page, mode);
-        expect(await effectiveHit(page, "source-panel-open")).toEqual([true, true, true, true, true]);
+        expect(await effectiveHit(page, '[data-testid="source-panel-open"]')).toEqual([true, true, true, true, true]);
         const b = await box(page.getByTestId("source-panel-open"));
         expect(b.height).toBeGreaterThanOrEqual(TARGET);
         expect(b.width).toBeGreaterThanOrEqual(TARGET);
@@ -172,22 +163,30 @@ for (const size of SIZES) {
   }
 }
 
-test.describe("landscape phone 844x390", () => {
-  test.use({ viewport: { width: 844, height: 390 }, hasTouch: true });
+for (const vp of [{ width: 844, height: 390 }, { width: 667, height: 375 }]) {
+  for (const mode of ["cream", "graphite"] as const) {
+    test.describe(`landscape phone ${vp.width}x${vp.height} ${mode}`, () => {
+      test.use({ viewport: vp, hasTouch: true });
 
-  test("one row: field, Sources, Ask; the top bar still names the Space", async ({ page }) => {
-    await open(page, "cream");
-    await expect(page.getByTestId("scope-chip")).toHaveCount(0);
-    await expect(page.locator("#space-switcher")).toBeVisible();
-    const f = await box(page.getByPlaceholder(/Ask about your data/));
-    const s = await box(page.getByTestId("source-panel-open"));
-    expect(Math.abs(s.y - f.y)).toBeLessThanOrEqual(2);
-    expect(s.height).toBeGreaterThanOrEqual(TARGET);
-    expect(f.height).toBeLessThanOrEqual(48);
-    expect(f.width).toBeGreaterThanOrEqual(500);
-    expect(await spaceName(page)).toBeTruthy();
-  });
-});
+      test("one row: field, Sources, Ask; the top bar still names the Space", async ({ page }) => {
+        await open(page, mode);
+        await expect(page.getByTestId("scope-chip")).toHaveCount(0);
+        await expect(page.locator("#space-switcher")).toBeVisible();
+        const f = await box(page.locator("form textarea"));
+        const s = await box(page.getByTestId("source-panel-open"));
+        const a = await box(page.getByRole("button", { name: "Ask", exact: true }));
+        expect(Math.abs(s.y - f.y)).toBeLessThanOrEqual(2);
+        expect(Math.abs(a.y + a.height - (f.y + f.height))).toBeLessThanOrEqual(2);
+        expect(s.height).toBeGreaterThanOrEqual(TARGET);
+        expect(f.height).toBeLessThanOrEqual(48);
+        expect(f.width).toBeGreaterThanOrEqual(400);
+        expect(f.x + f.width).toBeLessThanOrEqual(s.x);
+        expect(s.x + s.width).toBeLessThanOrEqual(a.x);
+        expect(await spaceName(page)).toBeTruthy();
+      });
+    });
+  }
+}
 
 test.describe("desktop 1280x800", () => {
   test.use({ viewport: { width: 1280, height: 800 } });
@@ -202,3 +201,223 @@ test.describe("desktop 1280x800", () => {
     expect(await box(page.locator("form"))).toEqual({ x: 262, y: 722, width: 768, height: 66 });
   });
 });
+
+for (const width of [1280, 1024]) {
+  test.describe(`desktop ${width}`, () => {
+    test.use({ viewport: { width, height: 800 } });
+
+    test("Sources keeps its desktop name and word", async ({ page }) => {
+      await open(page, "cream");
+      const collapse = page.getByRole("button", { name: "Collapse sources" });
+      if (await collapse.count()) await collapse.click();
+      const btn = page.getByRole("button", { name: "Open sources", exact: true });
+      await expect(btn).toBeVisible();
+      await expect(btn).toHaveAttribute("data-testid", "source-panel-open");
+      await expect(btn).toHaveText("Sources");
+      expect(await btn.getAttribute("aria-label")).toBe("Open sources");
+      await expect(page.getByTestId("source-count")).toHaveCount(0);
+    });
+  });
+}
+
+/** Spaces without a source_count, so the count is unknown until the library list answers. */
+async function stubSpacesWithoutCount(page: Page) {
+  await page.route(
+    (url) => url.pathname === "/api/v1/spaces",
+    async (route) => {
+      const res = await route.fetch();
+      const body = await res.json();
+      await route.fulfill({
+        response: res,
+        json: { ...body, spaces: body.spaces.map(({ source_count: _drop, ...rest }: Record<string, unknown>) => rest) },
+      });
+    },
+  );
+}
+
+/** A stubbed library list of `n` rows for any Space, optionally delayed per Space id. */
+async function stubSources(page: Page, counts: Record<string, number>, delayMs: Record<string, number> = {}) {
+  await page.route("**/api/v1/library/sources**", async (route) => {
+    const id = new URL(route.request().url()).searchParams.get("space_id") ?? "";
+    const n = counts[id] ?? counts["*"] ?? 0;
+    if (delayMs[id]) await new Promise((r) => setTimeout(r, delayMs[id]));
+    await route.fulfill({
+      json: Array.from({ length: n }, (_, i) => ({
+        id: `src_${i}`, kind: "csv", ref: `x/${i}.csv`, scope: "team", space_id: id, space_name: "x",
+      })),
+    });
+  });
+}
+
+const FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+const WAREHOUSE = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+
+const FIT_WIDTHS = [
+  { width: 320, height: 568 },
+  { width: 360, height: 640 },
+  { width: 375, height: 667 },
+  { width: 390, height: 844 },
+  { width: 430, height: 932 },
+];
+
+async function fit(field: Locator) {
+  return field.evaluate((el: HTMLTextAreaElement) => {
+    const cs = getComputedStyle(el);
+    const ctx = document.createElement("canvas").getContext("2d")!;
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const inner = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    return { text: ctx.measureText(el.placeholder).width, inner, placeholder: el.placeholder };
+  });
+}
+
+for (const vp of FIT_WIDTHS) {
+  for (const mode of ["cream", "graphite"] as const) {
+    test.describe(`composer ${vp.width}x${vp.height} ${mode}`, () => {
+      test.use({ viewport: vp, hasTouch: true, isMobile: true });
+
+      test("idle and pending placeholders fit on one line; the field keeps a name", async ({ page }) => {
+        await open(page, mode);
+        const field = page.locator("form textarea");
+        const idle = await fit(field);
+        expect(idle.text + 4, `idle "${idle.placeholder}" ${idle.text}px in ${idle.inner}px`).toBeLessThanOrEqual(idle.inner);
+        if (vp.width >= 360) expect(idle.placeholder).toBe("Ask about your data…");
+        await expect(page.getByRole("textbox", { name: "Ask about your data" })).toHaveCount(1);
+        await page.route("**/api/v1/chat/ask", async (route) => {
+          await new Promise((r) => setTimeout(r, 2500));
+          await route.continue();
+        });
+        await field.fill("What was total revenue?");
+        await page.getByRole("button", { name: "Ask", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Queue", exact: true })).toBeVisible();
+        const pending = await fit(field);
+        expect(pending.placeholder).not.toBe(idle.placeholder);
+        expect(pending.text + 4, `pending "${pending.placeholder}" ${pending.text}px in ${pending.inner}px`).toBeLessThanOrEqual(pending.inner);
+        expect((await box(field)).height).toBeLessThanOrEqual(48);
+      });
+
+      test("all three controls keep a 44x44 hit area", async ({ page }) => {
+        await open(page, mode);
+        for (const sel of ['form textarea', '[data-testid="source-panel-open"]', 'form button[type="submit"]']) {
+          // Ask is disabled while the field is empty; elementFromPoint still reports it.
+          expect(await effectiveHit(page, sel), sel).toEqual([true, true, true, true, true]);
+          const b = await box(page.locator(sel));
+          expect(b.height, sel).toBeGreaterThanOrEqual(TARGET);
+          expect(b.width, sel).toBeGreaterThanOrEqual(TARGET);
+        }
+      });
+
+      test("order is field, Sources, Ask by position and by Tab; the icon is 20px or more", async ({ page }) => {
+        await open(page, mode);
+        const f = await box(page.locator("form textarea"));
+        const s = await box(page.getByTestId("source-panel-open"));
+        const a = await box(page.getByRole("button", { name: "Ask", exact: true }));
+        expect(f.x + f.width).toBeLessThanOrEqual(s.x);
+        expect(s.x + s.width).toBeLessThanOrEqual(a.x);
+        await page.locator("form textarea").fill("hello");
+        await page.locator("form textarea").focus();
+        await page.keyboard.press("Tab");
+        await expect(page.getByTestId("source-panel-open")).toBeFocused();
+        await page.keyboard.press("Tab");
+        await expect(page.getByRole("button", { name: "Ask", exact: true })).toBeFocused();
+        const icon = await box(page.getByTestId("source-panel-open").locator("svg"));
+        expect(icon.width).toBeGreaterThanOrEqual(20);
+        expect(icon.height).toBeGreaterThanOrEqual(20);
+      });
+
+      test("the Sources control does not change width when the count arrives", async ({ page }) => {
+        await stubSpacesWithoutCount(page);
+        await stubSources(page, { "*": 2 }, { [FINANCE]: 1500 });
+        await page.goto("/");
+        await expect(page.locator("#space-switcher")).toBeVisible();
+        await page.evaluate(() => document.fonts.ready); // a late web font would move Ask by 2px
+        const btn = page.getByTestId("source-panel-open");
+        const before = await box(btn);
+        const fieldBefore = await box(page.locator("form textarea"));
+        await expect(btn.getByTestId("source-count")).toBeVisible({ timeout: 10_000 });
+        const after = await box(btn);
+        expect(Math.abs(after.width - before.width)).toBeLessThan(0.5);
+        expect(Math.abs((await box(page.locator("form textarea"))).width - fieldBefore.width)).toBeLessThan(0.5);
+      });
+
+      test("an unknown count shows no number, and a 3-digit count fits", async ({ page }) => {
+        await stubSpacesWithoutCount(page);
+        await page.route("**/api/v1/library/sources**", (route) => route.abort()); // the count stays unknown
+        await page.goto("/");
+        await expect(page.locator("#space-switcher")).toBeVisible();
+        const btn = page.getByTestId("source-panel-open");
+        await expect(btn).toBeVisible();
+        // The fixture Space reads 3 until the stubbed Spaces list (no counts) lands.
+        await expect(btn).toHaveAttribute("aria-label", "Sources: Finance");
+        await expect(btn.getByTestId("source-count")).toHaveCount(0);
+        expect(await btn.innerText()).not.toMatch(/\d|null|NaN/);
+      });
+
+      test("a 3-digit count: nothing overlaps and all three controls stay on screen", async ({ page }) => {
+        await stubSources(page, { "*": 120 });
+        await open(page, mode);
+        await expect(page.getByTestId("source-count")).toHaveText("120");
+        const boxes = [
+          await box(page.locator("form textarea")),
+          await box(page.getByTestId("source-panel-open")),
+          await box(page.getByRole("button", { name: "Ask", exact: true })),
+        ];
+        for (let i = 0; i < boxes.length; i++) {
+          expect(boxes[i].x + boxes[i].width).toBeLessThanOrEqual(vp.width);
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i];
+            const b = boxes[j];
+            expect(a.x + a.width <= b.x + 0.5 || b.x + b.width <= a.x + 0.5, `${i} overlaps ${j}`).toBe(true);
+          }
+        }
+        expect(boxes[0].width).toBeGreaterThanOrEqual(130);
+      });
+    });
+  }
+}
+
+test.describe("Sources sheet open", () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  test("the Sources control is not rendered while the sheet is open", async ({ page }) => {
+    await open(page, "cream");
+    await page.getByTestId("source-panel-open").click();
+    await expect(page.getByTestId("source-panel")).toBeVisible();
+    await expect(page.getByTestId("source-panel-open")).toHaveCount(0);
+    await page.getByRole("button", { name: "Collapse sources" }).click();
+    await expect(page.getByTestId("source-panel-open")).toBeVisible();
+  });
+});
+
+for (const [label, vp] of [["phone", { width: 390, height: 844 }], ["desktop", { width: 1280, height: 800 }]] as const) {
+  test.describe(`switching Space, ${label}`, () => {
+    test.use({ viewport: vp, hasTouch: label === "phone", isMobile: label === "phone" });
+
+    test("the old Space's count is never shown under the new Space's name", async ({ page }) => {
+      await stubSources(page, { [FINANCE]: 3, [WAREHOUSE]: 2 }, { [WAREHOUSE]: 2500 });
+      await open(page, "cream");
+      await page.evaluate(() => {
+        const seen: string[] = [];
+        (window as unknown as { __seen: string[] }).__seen = seen;
+        const read = () => {
+          const b = document.querySelector('[data-testid="source-panel-open"]');
+          const c = document.querySelector('[data-testid="scope-chip"]');
+          if (b) seen.push(b.getAttribute("aria-label") ?? "");
+          if (c) seen.push(c.textContent ?? "");
+        };
+        new MutationObserver(read).observe(document.body, { subtree: true, childList: true, attributes: true, characterData: true });
+      });
+      const collapse = page.getByRole("button", { name: "Collapse sources" });
+      if (label === "desktop" && (await collapse.count())) await collapse.click();
+      await page.locator("#space-switcher").selectOption(WAREHOUSE);
+      await page.waitForTimeout(800);
+      const during = await page.evaluate(() => (window as unknown as { __seen: string[] }).__seen);
+      expect(during.join("\n")).toContain("Warehouse Ops");
+      expect(during.filter((t) => t.includes("Warehouse Ops") && /\b3 sources/.test(t))).toEqual([]);
+      await page.waitForTimeout(2500);
+      const last = label === "phone"
+        ? await page.getByTestId("source-panel-open").getAttribute("aria-label")
+        : await page.getByTestId("scope-chip").innerText();
+      expect(last).toContain("Warehouse Ops · 2 sources");
+    });
+  });
+}

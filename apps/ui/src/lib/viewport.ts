@@ -36,10 +36,9 @@ export function useIsLg(): boolean {
   return useMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`, true);
 }
 
-/** A phone on its side: too little height for anything but the conversation. */
-export function useIsShortPhone(): boolean {
-  const short = useMedia("(max-height: 480px)", false);
-  return short && !useIsLg();
+/** Under 360px (iPhone SE, small Android): the idle placeholder needs a shorter line. */
+export function useIsNarrowPhone(): boolean {
+  return useMedia("(max-width: 359.98px)", false);
 }
 
 export function isLgViewport(widthPx: number): boolean {
