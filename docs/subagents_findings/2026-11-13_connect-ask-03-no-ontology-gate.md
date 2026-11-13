@@ -42,3 +42,11 @@ A guard keyed on "the rule's input exists" (`if space_onto is not None`) reads a
 ## Counts seen
 
 Python 3.11.18, DuckDB 2.0.0. Suite, `DMS_SKIP_CONTROL_PLANE_TESTS=1`: 3814 passed, 75 skipped, 34 xfailed, 1601s. Invariants 104 passed. `score_answers --oracle-only` and `score_bird --self-check` exit 0, output identical to the parent.
+
+## Adversary round (same day)
+
+- A join check that raised was HTTP 503 `live_ask_failed` on all four doors, not an abstain. Now `unverified_join:check_unavailable`. Root-cause class: fail closed was implemented as "nothing served", not as "the customer gets the abstain envelope".
+- Coverage cost: the allowlist counts table references, so one-table SQL naming its table twice abstains `no_ontology` (cast threshold, `UNION ALL` self, self `EXISTS`, self-join). The bare same-column threshold answers through every door.
+- Open, not caused here (F-TBD-39): a CTE alias joined to itself is counted as one table and served with a fanned-out total (400, 1000, 4000 against 250) on `ebe65cc` and on this branch.
+- Open, not gated here: a join saved under `DMS_VQ_RAG=1` (provenance `yes:reconfirm`) or registered through `POST /v1/studio/verified-queries` replays as `L0_CERTIFIED`, 2 rows, in a file Space.
+- Open (F-TBD-35): held SQL on Yes is not join-checked in a Space that has an ontology.

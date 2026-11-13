@@ -375,6 +375,12 @@ SECOND_TABLE_SHAPES = {
         ONE_TABLE_Q,
         f"SELECT SUM(CAST(amount AS INTEGER)) AS total FROM query('SELECT * FROM {ORDERS}')",
     ),
+    # The allowlist admits a same-column threshold on ONE table. Not on another.
+    "threshold_other_table": (
+        "Which orders are above the average customer id?",
+        f"SELECT order_id FROM {ORDERS} WHERE customer_id > "
+        f"(SELECT AVG(customer_id) FROM {CUSTOMERS}) ORDER BY order_id",
+    ),
     "derived_table": (
         ONE_TABLE_Q,
         "SELECT SUM(t.amount) AS total FROM (SELECT CAST(o.amount AS INTEGER) AS amount "
@@ -772,20 +778,6 @@ ONE_TABLE_STILL_ANSWERS: dict[str, tuple[str, str, list[dict[str, Any]]]] = {
         "ORDER BY order_id",
         [{"order_id": r[0]} for r in ORDER_ROWS if r[2] > _MEAN],
     ),
-    # One base table reference inside a CTE that is then used twice. The plain
-    # self-join and UNION ALL above refuse; these pass the allowlist as it is.
-    "cte_referenced_twice_self_join": (
-        "How many order pairs share a customer?",
-        f"WITH o AS (SELECT * FROM {ORDERS}) SELECT COUNT(*) AS pairs FROM o a "
-        "JOIN o b ON a.customer_id = b.customer_id",
-        [{"pairs": sum(1 for a in ORDER_ROWS for b in ORDER_ROWS if a[1] == b[1])}],
-    ),
-    "cte_referenced_twice_union_all": (
-        "List every order id twice",
-        f"WITH o AS (SELECT order_id FROM {ORDERS}) SELECT order_id FROM o "
-        "UNION ALL SELECT order_id FROM o",
-        [{"order_id": r[0]} for r in ORDER_ROWS] * 2,
-    ),
 }
 
 
@@ -800,8 +792,8 @@ def test_one_table_shape_still_answers_the_truth(
     assert env["abstained"] is False
     assert _multiset(env["rows"]) == _multiset(truth), env["rows"]
     text = str(env.get("text") or "")
-    first = ", ".join(f"{k}={v}" for k, v in truth[0].items())
-    assert first in text, text
+    for row in truth:
+        assert ", ".join(f"{k}={v}" for k, v in row.items()) in text, (row, text)
     assert rig.cortex.executed == [sql]
 
 
@@ -842,3 +834,63 @@ def test_onto_from_data_contract_ask_abstains_even_over_a_verified_link(
     text = _assert_abstain(env, "unverified_join")
     assert NO_ONTOLOGY in _reasons(env) + text
     assert "3 schools" not in text
+
+
+# --- adversary round: the same-table threshold answers through every door ----------
+
+THRESHOLD_Q = "Which orders are above the average amount?"
+THRESHOLD_SQL = (
+    f"SELECT order_id FROM {ORDERS} WHERE amount > (SELECT avg(amount) FROM {ORDERS}) "
+    "ORDER BY order_id"
+)
+THRESHOLD_TRUTH = [{"order_id": r[0]} for r in ORDER_ROWS if r[2] > _MEAN]
+
+
+@pytest.mark.parametrize("door", ["first_generate", "extract_loop", "contract_ask", "held_yes"])
+def test_same_table_threshold_answers_through_every_door(
+    door: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """Clause 2: ``WHERE x > (SELECT avg(x) FROM t)`` reads one table and answers.
+
+    The allowlist's own same-column threshold admission decides it, with zero
+    links. The CAST form is refused by that same admission (it wants a bare
+    column) and is pinned in ONE_TABLE_NOW_ABSTAINS.
+    """
+    assert THRESHOLD_TRUTH == [{"order_id": 1}, {"order_id": 3}]
+    if door == "extract_loop":
+        monkeypatch.setenv("DMS_CLOOP_B", "1")
+        monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    if door == "held_yes":
+        monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+        monkeypatch.setenv("DMS_RECONFIRM_RUN_HELD", "1")
+    rig = _file_space(tmp_path, monkeypatch, minter)
+    assert _oracle(rig.lake, THRESHOLD_SQL) == THRESHOLD_TRUTH
+    if door == "contract_ask":
+
+        def _ask(req: Any) -> AskResponse:
+            rig.cortex.asks.append(req)
+            return AskResponse(
+                answer="Orders 1 and 3 are above the average.",
+                abstained=False,
+                badge="generated",
+                route="generated",
+                sql_used=THRESHOLD_SQL,
+                rows=list(THRESHOLD_TRUTH),
+            )
+
+        monkeypatch.setattr(rig.cortex, "ask", _ask)
+        env = rig.ask(THRESHOLD_Q, {})
+        assert rig.cortex.asks, "the contract ask was not reached"
+        assert "Orders 1 and 3" in str(env.get("text") or ""), env.get("text")
+    elif door == "held_yes":
+        offer = rig.ask(THRESHOLD_Q, _gen(THRESHOLD_SQL))
+        assert offer["badge"] == "ABSTAIN" and offer["rows"] == []
+        env = rig.confirm(offer["reconfirm"]["token"], yes=True)
+    else:
+        env = rig.ask(THRESHOLD_Q, _gen(THRESHOLD_SQL))
+        text = str(env.get("text") or "")
+        for row in THRESHOLD_TRUTH:
+            assert f"order_id={row['order_id']}" in text, text
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert env["abstained"] is False
+    assert env["rows"] == THRESHOLD_TRUTH
