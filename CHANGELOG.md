@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - ONTO-PROFILE-01: a file Space is measured and keys and links are proposed (dms#514)
+
+- **Profile.** `POST /v1/ontology/data/profile?space_id=` measures the Space's file-landed tables with no model call and stores candidate keys (a column, or a pair when no single column qualifies) and links (every non-NULL value exists in a single-column key of another table) as `proposed` items of source `profile`. Orphans and keyless children are returned as `observations` and not stored. Counts, names and landed types only. Every search bound is stated under `bounds`.
+- **Scope.** A profile item belongs to the Space its version names. `GET /v1/ontology/data/spaces/{space_id}/items` reads it. The tenant-wide `approved_items()`, and so `Ontology.from_store()`, never contains it: no answer reads a profile item in any status.
+- **One key per table.** Approving a second profile key for a table answers 409 `key_already_approved` naming the approved item.
+- **Not in this change.** No ask path reads approved profile items (ONTO-PROFILE-02). No screen (ONTO-PROFILE-03). No migration. Draft, not verified by a second run.
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.

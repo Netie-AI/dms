@@ -147,6 +147,7 @@ from dms_executor.name_echo import (
     note_turn_grants,
     turn_grants,
 )
+from dms_executor.onto_profile import profile_space
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
@@ -2112,6 +2113,7 @@ __all__ = [
     "warehouse_path",
     "serving_sync_state",
     "infer_contract",
+    "profile_space",
     "intersect_space_grants",
     "get_serving_engine",
     "hide_echo",
