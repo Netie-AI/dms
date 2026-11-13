@@ -1180,7 +1180,12 @@ class _JoinRule:
             clause = fn.find_ancestor(exp.Where, exp.Having, exp.Qualify, exp.Select)
             if clause is None or isinstance(clause, exp.Select):
                 name = str(fn.name).lower()
-                return f"unproven_function ({name})" if name.isidentifier() else "unproven_function"
+                which = f" ({name})" if name.isidentifier() else ""
+                return (
+                    f"unproven_function{which} because its effect on the number of rows "
+                    "cannot be proven, so the statement is not treated as one read of one "
+                    "table. A function with a known row effect is accepted"
+                )
         if {id(q) for q in root_expr.find_all(exp.Select)} != set(self.scope_of):
             return "not_one_read"
         base, joined = 0, False

@@ -631,6 +631,12 @@ def test_space_without_a_derived_ontology_is_unchanged(
 # --- unit: the join rule ---------------------------------------------------------
 
 _E_TOTAL = f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL}"
+#: The refusal for a function sqlglot cannot type, as the retry ladder receives it.
+UNPROVEN = (
+    "unverified_join:unproven_function ({}) because its effect on the number of rows cannot "
+    "be proven, so the statement is not treated as one read of one table. A function with a "
+    "known row effect is accepted"
+)
 #: JOIN-HOLE-01 (#527): name -> (sql, the wrong figure it returns, the true figure).
 #: True figures: 107 students enrolled, school ids sum to 10. Shapes 1 to 8 are
 #: the issue's; the rest read one table twice, or multiply it, some other way.
@@ -658,6 +664,7 @@ JOIN_HOLE_SHAPES: dict[str, tuple[str, int, int]] = {
     "unlist_in_order_by": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL} ORDER BY unlist([1, 2]))", 214, 107),
     "unlist_in_group_by": (f"SELECT SUM(s) AS total FROM (SELECT SUM(CAST(students AS INTEGER)) AS s FROM {ENROLL} GROUP BY unlist([1, 2]))", 214, 107),
     "unnest_in_order_by": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL} ORDER BY UNNEST([1, 2]))", 214, 107),
+    "unlist_mixed_case": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n, Unlist([1, 2]) AS u FROM {ENROLL})", 214, 107),
     "unnest_in_a_derived_projection": (f"SELECT SUM(x) AS total FROM (SELECT CAST(students AS INTEGER) AS x, UNNEST([1, 2]) AS u FROM {ENROLL})", 214, 107),
 }
 #: Refused on the parent already (controls): a row constructor joined directly.
@@ -775,8 +782,25 @@ def test_join_rule_units(
         == "unverified_join:second_row_source"
     )
     assert why(JOIN_HOLE_SHAPES["unnest_in_a_derived_projection"][0]) == "unverified_join:row_generator"
-    assert why(JOIN_HOLE_SHAPES["unlist_alias"][0]) == "unverified_join:unproven_function (unlist)"
-    assert why(JOIN_HOLE_SHAPES["unnest_schema_qualified"][0]) == "unverified_join:unproven_function (unnest)"
+    assert why(JOIN_HOLE_SHAPES["unlist_alias"][0]) == UNPROVEN.format("unlist")
+    assert why(JOIN_HOLE_SHAPES["unnest_schema_qualified"][0]) == UNPROVEN.format("unnest")
+    # The name is reported lower-cased whatever the spelling (DuckDB folds case).
+    assert why(JOIN_HOLE_SHAPES["unlist_mixed_case"][0]) == UNPROVEN.format("unlist")
+    # WHERE, HAVING and QUALIFY excuse a function in their own SELECT only: a
+    # generator in the projection of a subquery under WHERE still adds rows there.
+    assert (
+        why(f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} WHERE CAST(students AS INTEGER) < (SELECT SUM(k) FROM (SELECT 30 AS k, unlist([1, 2]) AS u))")
+        == UNPROVEN.format("unlist")
+    )
+    assert (
+        why(f"SELECT school_id FROM {ENROLL} GROUP BY school_id HAVING COUNT(*) < (SELECT SUM(k) FROM (SELECT 1 AS k, unlist([1, 2]) AS u))")
+        == UNPROVEN.format("unlist")
+    )
+    # A window around an untyped function proves nothing about it.
+    assert (
+        why(f"SELECT enrollment_id, SUM(date_part('year', DATE '2024-05-01')) OVER () AS y FROM {ENROLL}")
+        == UNPROVEN.format("date_part")
+    )
     # A statement that reads no table is not one read of one base table.
     for sql in ("SELECT 1", "SELECT 42 AS total", "SELECT 2 - 1 AS n"):
         assert why(sql) == "unverified_join:no_table", (sql, why(sql))

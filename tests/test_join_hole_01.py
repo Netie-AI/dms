@@ -95,6 +95,15 @@ NEWLY_ABSTAIN: dict[str, tuple[str, str]] = {
         "List the enrollments",
         f"SELECT enrollment_id, students FROM {E} ORDER BY dayname(DATE '2024-05-01'), enrollment_id",
     ),
+    "untyped_function_inside_a_window": (
+        "List the enrollments",
+        f"SELECT enrollment_id, SUM(date_part('year', DATE '2024-05-01')) OVER () AS y FROM {E} ORDER BY enrollment_id",
+    ),
+    # The generator doubles the subquery's SUM (60, not 30), so the filter keeps every row.
+    "row_generator_in_a_where_subquery": (
+        Q,
+        f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {E} WHERE CAST(students AS INTEGER) < (SELECT SUM(k) FROM (SELECT 30 AS k, unlist([1, 2]) AS u))",
+    ),
     "one_row_constant_cross_join": (
         Q,
         f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {E} o CROSS JOIN (SELECT 1 AS n) v",
@@ -253,7 +262,13 @@ def test_one_table_statements_that_now_abstain_are_named(
     rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, question)
     assert od._oracle(rig.lake, sql), "the statement runs and returns rows"
     _assert_join_abstain(env, rig, ())
-    assert (_why(rig, sql) or "").startswith("unverified_join:")
+    why = _why(rig, sql) or ""
+    assert why.startswith("unverified_join:")
+    if "unproven_function" in why:
+        # The reason names the function and reaches the envelope whole.
+        fn = why.split("(")[1].split(")")[0]
+        assert why == od.UNPROVEN.format(fn) and fn == fn.lower()
+        assert why in od._reasons(env) + str(env.get("text") or ""), (why, env.get("assumptions"))
 
 
 def test_two_reads_of_one_base_table_are_judged_as_before(
