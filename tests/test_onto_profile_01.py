@@ -543,10 +543,23 @@ def test_orphans_and_keyless_children_are_observed_and_not_stored(
 # --- clause 4: no cell value anywhere -------------------------------------------------
 
 
-def test_no_cell_value_reaches_the_response_the_store_or_the_log(
-    rig: Rig, caplog: pytest.LogCaptureFixture
-) -> None:
-    space_id = rig.new_space("Canaries")
+#: Shapes a leaked canary cell would have, with or without its decimals. A
+#: bare run of digits is not one: an item id or a ``measured_at`` timestamp
+#: can hold the same digits by chance, so a number must stand on its own.
+CANARY_PATTERNS = (
+    r"CNRY",
+    r"(?<![\w.])919[23]\d(?:\.\d+)?(?!\w)",
+    r"(?<![\w.])828[23]\d(?:\.\d+)?(?!\w)",
+    r"2031-07",
+)
+
+
+def _leaks(text: str) -> list[str]:
+    """Every canary pattern found in ``text``. Empty means no cell value."""
+    return [pattern for pattern in CANARY_PATTERNS if re.search(pattern, text)]
+
+
+def canary_files() -> dict[str, bytes]:
     accounts = [
         [f"CNRYacct{i}q", f"CNRYowner{i % 3}q", f"{91919.25 + i:.2f}", f"2031-07-{i:02d}"]
         for i in range(1, 13)
@@ -555,13 +568,46 @@ def test_no_cell_value_reaches_the_response_the_store_or_the_log(
         [f"CNRYmove{i}q", f"CNRYacct{1 + i % 12}q", f"{82828.5 + i % 4:.2f}"] for i in range(1, 31)
     ]
     moves[7][1] = "CNRYghostq"  # one orphan, so an observation is serialised too
-    t = rig.ingest(
-        space_id,
-        {
-            "accounts.csv": _csv(["acct", "owner", "balance", "opened"], accounts),
-            "moves.csv": _csv(["move", "acct", "amount"], moves),
-        },
-    )
+    return {
+        "accounts.csv": _csv(["acct", "owner", "balance", "opened"], accounts),
+        "moves.csv": _csv(["move", "acct", "amount"], moves),
+    }
+
+
+def test_the_canary_patterns_catch_every_fixture_cell_in_every_form() -> None:
+    """The fixture and the patterns cannot drift apart: each cell is checked here."""
+    cells = 0
+    for raw in canary_files().values():
+        for line in raw.decode().splitlines()[1:]:
+            for cell in line.split(","):
+                cells += 1
+                forms = [cell]
+                try:
+                    number = float(cell)
+                except ValueError:
+                    pass
+                else:
+                    # As landed (DOUBLE), as JSON prints it, and without decimals.
+                    forms += [str(number), json.dumps(number), str(int(number))]
+                for form in forms:
+                    assert _leaks(form), (cell, form)
+                    assert _leaks(json.dumps({"min": form, "note": f"saw {form} here"})), form
+    assert cells == 12 * 4 + 30 * 3
+    # And they do not fire on what a clean response does contain.
+    for clean in (
+        "2026-11-13T01:30:04.919205+00:00",
+        "2026-11-13T01:30:04.828291+00:00",
+        "a9192031-8282-4919-9828-919208282912",
+        '{"row_count": 12, "distinct_count": 12, "child_rows": 30, "max_fanout": 3}',
+    ):
+        assert _leaks(clean) == [], clean
+
+
+def test_no_cell_value_reaches_the_response_the_store_or_the_log(
+    rig: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    space_id = rig.new_space("Canaries")
+    t = rig.ingest(space_id, canary_files())
     with caplog.at_level("DEBUG"):
         body = rig.profile(space_id)
         again = rig.profile(space_id)
@@ -576,10 +622,45 @@ def test_no_cell_value_reaches_the_response_the_store_or_the_log(
             caplog.text,
         ]
     )
-    # Shapes a leaked cell would have. A bare run of digits is not one: an item
-    # id or a ``measured_at`` timestamp can contain the same digits by chance.
-    for canary in (r"CNRY", r"919[12]\d\.\d", r"8282\d\.\d", r"2031-07"):
-        assert re.search(canary, text) is None, canary
+    assert _leaks(text) == []
+
+
+@pytest.mark.parametrize(
+    "aggregate",
+    [
+        "MAX(balance)",
+        "CAST(FLOOR(MIN(balance)) AS BIGINT)",
+        "MAX(amount)",
+        "CAST(FLOOR(MIN(amount)) AS BIGINT)",
+        "MAX(opened)",
+    ],
+)
+def test_the_canary_check_fails_when_a_column_extreme_leaks(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, aggregate: str
+) -> None:
+    """The gate above can fail: a leaked maximum, or a minimum without decimals."""
+    import dms_executor
+
+    space_id = rig.new_space("Canaries")
+    t = rig.ingest(space_id, canary_files())
+    table = t["moves.csv"] if "amount" in aggregate else t["accounts.csv"]
+    ((value,),) = _oracle(rig.lake, f"SELECT {aggregate} FROM {table}")
+    real = dms_executor.profile_space
+
+    def _leaky(space: str, **kw: Any) -> dict[str, Any]:
+        profile = real(space, **kw)
+        profile["bounds"]["widest"] = {"aggregate": value if isinstance(value, int) else str(value)}
+        profile["keys"][0]["evidence"]["extreme"] = (
+            value if isinstance(value, float) else str(value)
+        )
+        return profile
+
+    assert _leaks(json.dumps(rig.profile(space_id))) == []
+    monkeypatch.setattr(dms_executor, "profile_space", _leaky)
+    leaked = rig.profile(space_id)
+    assert _leaks(json.dumps(leaked["bounds"])), (aggregate, value)
+    assert _leaks(json.dumps(leaked["items"])), (aggregate, value)
+    assert _leaks(_stored_text()), (aggregate, value)
 
 
 def test_a_failed_measurement_is_named_by_class_only(
