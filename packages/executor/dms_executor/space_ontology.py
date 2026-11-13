@@ -856,8 +856,18 @@ def _under_predicate(node: exp.Expression, stop: exp.Expression) -> bool:
 class _JoinRule:
     """An allowlist, not a blocklist (adversary rounds 1 and 2, ONTO-DERIVE-01).
 
-    SQL reading one table reference has nothing to join and passes. SQL reading
-    two or more must be ONE flat SELECT over base tables:
+    SQL that is one read of one base table has nothing to join and passes
+    (``_one_read``, JOIN-HOLE-01). Every relation a FROM or JOIN names counts,
+    not only base tables, and so does anything that can add rows inside one
+    SELECT: a CTE read twice, a table joined to a constant row source, or a
+    row generator in a projection multiplies rows like any other join. One
+    read means: no set operation and no recursive CTE; no row constructor
+    (VALUES, UNNEST, LATERAL); no function sqlglot cannot type outside WHERE,
+    HAVING and QUALIFY (DuckDB takes ``unlist`` or a macro over UNNEST in a
+    projection, GROUP BY or ORDER BY); every FROM names one item; each CTE
+    name is read at most once; one base table is named, once. Anything else
+    with at most one base table refuses, naming which of these failed.
+    Everything with two or more base tables must be ONE flat SELECT over them:
 
     * no set operation, no CTE, no derived table, no subquery outside the
       top-level WHERE conjuncts;
@@ -878,8 +888,9 @@ class _JoinRule:
       ``col <op> (SELECT AGG(same col) ...)`` uncorrelated.
 
     Anything else refuses. Some correct SQL refuses too (a derived table
-    grouped on the key, CAST on both join sides, USING); that is the price of
-    WRONG=0 until each shape is proven on its own.
+    grouped on the key, CAST on both join sides, USING, a CTE compared with
+    its own average, a constant UNION branch); that is the price of WRONG=0
+    until each shape is proven on its own.
     """
 
     def __init__(
@@ -1024,7 +1035,10 @@ class _JoinRule:
                 # query('...'), read_csv(...): a table function can hide any join.
                 raise _Refuse("table_function")
         if len(tables) <= 1:
-            return
+            why = self._one_read(root_expr)
+            if why is None:
+                return
+            raise _Refuse(why)
         if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
             raise _Refuse("set_operation")
         if root_expr.find(exp.With):
@@ -1144,6 +1158,63 @@ class _JoinRule:
             named = sorted({lbl for src in own.values() if (lbl := _source_label(src))})
             raise _Refuse(f"cross_product ({', '.join(named)} not joined by a verified link)")
         self._fan_trap(root_expr, root, set(parent_of_child))
+
+    def _one_read(self, root_expr: exp.Expression) -> str | None:
+        """None when the statement is one read of one base table, else why not.
+
+        Counts what each FROM and JOIN names, per SELECT and per CTE name
+        (JOIN-HOLE-01). Scope sources are not used for the count: a scope lists
+        every CTE it can see, used or not. Anything this cannot place is not
+        one read.
+        """
+        if any(w.args.get("recursive") for w in root_expr.find_all(exp.With)):
+            return "recursive_cte"
+        if root_expr.find(*_SET_OPS):
+            return "set_operation"
+        if root_expr.find(exp.UDTF):
+            return "row_generator"  # VALUES, UNNEST, LATERAL: rows from no table
+        for fn in root_expr.find_all(exp.Anonymous):
+            # sqlglot does not know this function, so nothing proves it returns
+            # one row per row. DuckDB refuses a row generator in WHERE, HAVING
+            # and QUALIFY, and takes one anywhere else in a SELECT.
+            clause = fn.find_ancestor(exp.Where, exp.Having, exp.Qualify, exp.Select)
+            if clause is None or isinstance(clause, exp.Select):
+                name = str(fn.name).lower()
+                which = f" ({name})" if name.isidentifier() else ""
+                return (
+                    f"unproven_function{which} because its effect on the number of rows "
+                    "cannot be proven, so the statement is not treated as one read of one "
+                    "table. A function with a known row effect is accepted"
+                )
+        if {id(q) for q in root_expr.find_all(exp.Select)} != set(self.scope_of):
+            return "not_one_read"
+        base, joined = 0, False
+        cte_reads: dict[int, int] = {}
+        for sc in self.scopes:
+            from_ = sc.expression.args.get("from")
+            items = [from_.this] if from_ is not None else []
+            items += [j.this for j in sc.expression.args.get("joins") or []]
+            joined = joined or len(items) > 1
+            for item in items:
+                if isinstance(item, exp.Subquery) and isinstance(item.this, exp.Select):
+                    continue  # a derived table: its own SELECT is counted
+                src = _sources(sc).get(str(item.alias_or_name).lower())
+                if isinstance(item, exp.Table) and isinstance(src, exp.Table):
+                    base += 1
+                elif isinstance(item, exp.Table) and isinstance(src, Scope):
+                    cte_reads[id(src.expression)] = cte_reads.get(id(src.expression), 0) + 1
+                else:
+                    return "not_one_read"
+        if any(n > 1 for n in cte_reads.values()):
+            return "cte_read_twice"
+        if joined:
+            return "second_row_source"
+        named = base + sum(cte_reads.values())
+        if root_expr.find(exp.Join) or named != len(list(root_expr.find_all(exp.Table))):
+            return "not_one_read"
+        if base == 0:
+            return "no_table"
+        return None if base == 1 else "not_one_read"
 
     def _node_or_alias(self, c: exp.Column, root: Scope, outputs: set[str]) -> _Node | None:
         """A column's table, or None for a bare output alias (``HAVING n > 1``).
