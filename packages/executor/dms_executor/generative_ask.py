@@ -477,11 +477,10 @@ def no_ontology_join_reason(
     empty = Ontology()
     try:
         cols = relation_columns(empty, warehouse, sorted(grantable))
-    except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+        refused = unverified_join_reason(sql, empty, [], columns_of=cols)
+    except Exception:  # noqa: BLE001 - a check that cannot finish proves no join
         return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
-    if unverified_join_reason(sql, empty, [], columns_of=cols):
-        return f"{REASON_UNVERIFIED_JOIN}:no_ontology"
-    return None
+    return f"{REASON_UNVERIFIED_JOIN}:no_ontology" if refused else None
 
 
 def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:

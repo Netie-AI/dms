@@ -47,14 +47,16 @@ from test_onto_derive_01 import (
     make_minter,
 )
 
-pytest_plugins: list[str] = []
-
 ORDERS = "bronze.orders"
 CUSTOMERS = "bronze.customers"
 # order_id, customer_id, amount. Customer 10 and 12 are North, 11 is South.
 ORDER_ROWS = [(1, 10, 100), (2, 10, 50), (3, 11, 70), (4, 12, 30)]
 CUSTOMER_ROWS = [(10, "North"), (11, "South"), (12, "North")]
-ORDERS_CSV = "order_id,customer_id,amount\n" + "".join(f"{a},{b},{c}\n" for a, b, c in ORDER_ROWS)
+# One order date per order row: two in January, one in February, one in March.
+ORDER_DATES = ["2026-01-05", "2026-01-20", "2026-02-11", "2026-03-02"]
+ORDERS_CSV = "order_id,customer_id,amount,order_date\n" + "".join(
+    f"{a},{b},{c},{d}\n" for (a, b, c), d in zip(ORDER_ROWS, ORDER_DATES, strict=True)
+)
 CUSTOMERS_CSV = "customer_id,region\n" + "".join(f"{a},{b}\n" for a, b in CUSTOMER_ROWS)
 
 JOIN_Q = "What is the total order amount by region?"
@@ -584,3 +586,259 @@ def test_contract_ask_unreadable_lake_abstains(
     assert "unverified_join:check_unavailable" in _reasons(env) or (
         "unverified_join:check_unavailable" in text
     )
+
+
+# --- adversary round (dms#522): an analyser that raises abstains on every door ----
+
+
+def _boom(*_a: Any, **_k: Any) -> str | None:
+    raise RuntimeError("join analyser raised")
+
+
+def _assert_check_unavailable(env: dict[str, Any], rig: _Rig) -> None:
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"))
+    assert env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert not env.get("drillthrough_token")
+    text = str(env.get("text") or "")
+    assert "unverified_join:check_unavailable" in _reasons(env) + text, (
+        text,
+        env.get("assumptions"),
+    )
+    for figure in JOIN_FIGURES:
+        assert not re.search(rf"\b{figure}\b", text), text
+    assert rig.cortex.executed == []
+
+
+@pytest.mark.parametrize("door", ["first_generate", "extract_loop", "contract_ask"])
+def test_analyser_that_raises_abstains_check_unavailable(
+    door: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """Clause 9. Before the fix this was HTTP 503 ``live_ask_failed``, not an abstain."""
+    import dms_executor.generative_ask as ga
+
+    if door == "extract_loop":
+        monkeypatch.setenv("DMS_CLOOP_B", "1")
+        monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    rig = _file_space(tmp_path, monkeypatch, minter)
+    monkeypatch.setattr(ga, "unverified_join_reason", _boom)
+    if door == "contract_ask":
+        _contract_join(rig, monkeypatch)
+        env = rig.ask(JOIN_Q, {})
+        assert rig.cortex.asks, "the contract ask was not reached"
+    else:
+        env = rig.ask(JOIN_Q, _gen(JOIN_SQL))
+    _assert_check_unavailable(env, rig)
+
+
+def _parked_join(rig: _Rig) -> str:
+    """Ask the join under def-validate; return the Yes token of the parked SQL."""
+    from dms_executor.reconfirm import held_ready, peek_pending
+
+    env = rig.ask(JOIN_Q, _gen(JOIN_SQL))
+    assert env["badge"] == "ABSTAIN" and env["rows"] == [] and env["values"] == []
+    token = env["reconfirm"]["token"]
+    pending = peek_pending(token)
+    assert pending is not None and held_ready(pending), "no SQL was parked for a Yes"
+    assert pending["sql"] == JOIN_SQL
+    return str(token)
+
+
+def test_held_sql_yes_with_an_analyser_that_raises_abstains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    import dms_executor.generative_ask as ga
+
+    monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+    monkeypatch.setenv("DMS_RECONFIRM_RUN_HELD", "1")
+    rig = _file_space(tmp_path, monkeypatch, minter)
+    token = _parked_join(rig)
+    monkeypatch.setattr(ga, "unverified_join_reason", _boom)
+    _assert_check_unavailable(rig.confirm(token, yes=True), rig)
+
+
+def test_held_sql_yes_with_an_unreadable_ontology_store_abstains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """The store cannot say whether this Space has an ontology: a Yes never serves."""
+    import dms_executor as de
+
+    monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+    monkeypatch.setenv("DMS_RECONFIRM_RUN_HELD", "1")
+    rig = _file_space(tmp_path, monkeypatch, minter)
+    token = _parked_join(rig)
+
+    def _unreadable(*_a: Any, **_k: Any) -> None:
+        raise OSError("ontology store cannot be read")
+
+    monkeypatch.setattr(de, "load_space_ontology", _unreadable)
+    _assert_check_unavailable(rig.confirm(token, yes=True), rig)
+
+
+# --- adversary round: the coverage cost, pinned ------------------------------------
+#
+# The allowlist counts table references, not distinct tables. With zero links a
+# statement that names ONE table twice is refused like a join. Each case below
+# answered on the parent and abstains here. The reason says ``no_ontology``
+# although one table is read. Pinned so a later allowlist change shows up as a
+# moved case. Routed to the PRD agent; not changed here.
+
+ONE_TABLE_NOW_ABSTAINS = {
+    "scalar_subquery_cast": (
+        "Which orders are above the average amount?",
+        f"SELECT order_id FROM {ORDERS} WHERE CAST(amount AS INTEGER) > "
+        f"(SELECT AVG(CAST(amount AS INTEGER)) FROM {ORDERS}) ORDER BY order_id",
+    ),
+    "union_all_self": (
+        "List every order id twice",
+        f"SELECT order_id FROM {ORDERS} UNION ALL SELECT order_id FROM {ORDERS}",
+    ),
+    "exists_self": (
+        "Which orders have another order from the same customer?",
+        f"SELECT a.order_id FROM {ORDERS} a WHERE EXISTS (SELECT 1 FROM {ORDERS} b "
+        "WHERE b.customer_id = a.customer_id AND b.order_id <> a.order_id) ORDER BY a.order_id",
+    ),
+    "self_join": SECOND_TABLE_SHAPES["self_join"],
+    "generate_series": ("List the numbers one to three", "SELECT * FROM generate_series(1, 3)"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(ONE_TABLE_NOW_ABSTAINS))
+def test_one_table_shape_that_names_the_table_twice_abstains_today(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    rig = _file_space(tmp_path, monkeypatch, minter)
+    question, sql = ONE_TABLE_NOW_ABSTAINS[name]
+    env = rig.ask(question, _gen(sql))
+    _assert_abstain(env, "unverified_join")
+    assert NO_ONTOLOGY in _reasons(env), env.get("assumptions")
+    assert rig.cortex.executed == []
+
+
+_TOTAL_BY_CUSTOMER: dict[int, int] = {}
+for _order, _customer, _amount in ORDER_ROWS:
+    _TOTAL_BY_CUSTOMER[_customer] = _TOTAL_BY_CUSTOMER.get(_customer, 0) + _amount
+_MEAN = sum(a for _o, _c, a in ORDER_ROWS) / len(ORDER_ROWS)
+_LARGEST = max(ORDER_ROWS, key=lambda r: r[2])
+_WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Monday"]  # of ORDER_DATES, by calendar
+
+# name -> (question, SQL, truth rows computed from the CSV constants in Python).
+ONE_TABLE_STILL_ANSWERS: dict[str, tuple[str, str, list[dict[str, Any]]]] = {
+    "window": (
+        "What is each order's customer total?",
+        "SELECT order_id, SUM(CAST(amount AS INTEGER)) OVER (PARTITION BY customer_id) "
+        f"AS customer_total FROM {ORDERS} ORDER BY order_id",
+        [{"order_id": o, "customer_total": _TOTAL_BY_CUSTOMER[c]} for o, c, _a in ORDER_ROWS],
+    ),
+    "distinct": (
+        "Which customers have ordered?",
+        f"SELECT DISTINCT customer_id FROM {ORDERS} ORDER BY customer_id",
+        [{"customer_id": c} for c in sorted(_TOTAL_BY_CUSTOMER)],
+    ),
+    "order_limit": (
+        "Which order is the largest?",
+        f"SELECT order_id, CAST(amount AS INTEGER) AS amount FROM {ORDERS} "
+        "ORDER BY CAST(amount AS INTEGER) DESC LIMIT 1",
+        [{"order_id": _LARGEST[0], "amount": _LARGEST[2]}],
+    ),
+    "qualify": (
+        "What is each customer's largest order?",
+        f"SELECT customer_id, order_id FROM {ORDERS} QUALIFY ROW_NUMBER() OVER "
+        "(PARTITION BY customer_id ORDER BY CAST(amount AS INTEGER) DESC) = 1 ORDER BY customer_id",
+        [
+            {
+                "customer_id": c,
+                "order_id": max((r for r in ORDER_ROWS if r[1] == c), key=lambda r: r[2])[0],
+            }
+            for c in sorted(_TOTAL_BY_CUSTOMER)
+        ],
+    ),
+    "date_function": (
+        "On which weekday was each order placed?",
+        f"SELECT order_id, dayname(order_date) AS weekday FROM {ORDERS} ORDER BY order_id",
+        [{"order_id": r[0], "weekday": d} for r, d in zip(ORDER_ROWS, _WEEKDAYS, strict=True)],
+    ),
+    "cte_used_once": (
+        "How many orders are above 40?",
+        f"WITH big AS (SELECT * FROM (SELECT * FROM {ORDERS}) s "
+        "WHERE CAST(amount AS INTEGER) > 40) "
+        "SELECT COUNT(*) AS orders FROM big",
+        [{"orders": sum(1 for r in ORDER_ROWS if r[2] > 40)}],
+    ),
+    # The allowlist's own one-table threshold shape: same column both sides.
+    "threshold_same_column": (
+        "Which orders are above the average amount?",
+        f"SELECT order_id FROM {ORDERS} WHERE amount > (SELECT AVG(amount) FROM {ORDERS}) "
+        "ORDER BY order_id",
+        [{"order_id": r[0]} for r in ORDER_ROWS if r[2] > _MEAN],
+    ),
+    # One base table reference inside a CTE that is then used twice. The plain
+    # self-join and UNION ALL above refuse; these pass the allowlist as it is.
+    "cte_referenced_twice_self_join": (
+        "How many order pairs share a customer?",
+        f"WITH o AS (SELECT * FROM {ORDERS}) SELECT COUNT(*) AS pairs FROM o a "
+        "JOIN o b ON a.customer_id = b.customer_id",
+        [{"pairs": sum(1 for a in ORDER_ROWS for b in ORDER_ROWS if a[1] == b[1])}],
+    ),
+    "cte_referenced_twice_union_all": (
+        "List every order id twice",
+        f"WITH o AS (SELECT order_id FROM {ORDERS}) SELECT order_id FROM o "
+        "UNION ALL SELECT order_id FROM o",
+        [{"order_id": r[0]} for r in ORDER_ROWS] * 2,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(ONE_TABLE_STILL_ANSWERS))
+def test_one_table_shape_still_answers_the_truth(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    rig = _file_space(tmp_path, monkeypatch, minter)
+    question, sql, truth = ONE_TABLE_STILL_ANSWERS[name]
+    env = rig.ask(question, _gen(sql))
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert env["abstained"] is False
+    assert _multiset(env["rows"]) == _multiset(truth), env["rows"]
+    text = str(env.get("text") or "")
+    first = ", ".join(f"{k}={v}" for k, v in truth[0].items())
+    assert first in text, text
+    assert rig.cortex.executed == [sql]
+
+
+# --- adversary round: DMS_ONTO_FROM_DATA=1 on a Space that HAS an ontology ---------
+
+
+def test_onto_from_data_contract_ask_abstains_even_over_a_verified_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    """A recorded decision, not an accident (dms#520 "fail closed there").
+
+    Under ``DMS_ONTO_FROM_DATA=1`` the contract-ask guard never loads the Space
+    ontology, so it cannot tell a verified link from a guessed one. The parent
+    served this join (L2_VALIDATED, 1 row, 3 schools) with no check at all. It
+    now abstains. The reason says ``no_ontology`` although this Space has one:
+    that wording is untrue for this Space and is routed to the PRD agent.
+    """
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", "1")
+    rig = od._space(tmp_path, monkeypatch, minter)
+    assert load_space_ontology(rig.space_id) is not None
+    assert _oracle(rig.lake, od.VERIFIED_SQL) == [{"school_count": 3}]
+
+    def _ask(req: Any) -> AskResponse:
+        rig.cortex.asks.append(req)
+        return AskResponse(
+            answer="There are 3 schools.",
+            abstained=False,
+            badge="generated",
+            route="generated",
+            sql_used=od.VERIFIED_SQL,
+            rows=[{"school_count": 3}],
+        )
+
+    monkeypatch.setattr(rig.cortex, "ask", _ask)
+    monkeypatch.setattr(rig.cortex, "compute_insights", lambda *_a, **_k: {}, raising=True)
+    env = rig.ask(od.VERIFIED_Q, {})
+    assert rig.cortex.asks, "the contract ask was not reached"
+    text = _assert_abstain(env, "unverified_join")
+    assert NO_ONTOLOGY in _reasons(env) + text
+    assert "3 schools" not in text

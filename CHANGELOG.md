@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - CONNECT-ASK-03 adversary round: a check that raises abstains
+
+- **Fix.** If the join analyser raised, the three ask doors and the held-SQL Yes returned HTTP 503 `live_ask_failed`. Nothing was served, but clause 9 asks for an abstain. `no_ontology_join_reason` now turns any error from the check into `unverified_join:check_unavailable`.
+- **Coverage cost, pinned.** The allowlist counts table references. With zero links, one-table SQL that names its table twice now abstains `unverified_join:no_ontology` in a Space with no ontology: a scalar subquery with a cast, `UNION ALL` of a table with itself, a self-correlated `EXISTS`, a self-join. Each answered on the parent. Window, DISTINCT, ORDER/LIMIT, QUALIFY, date functions, a CTE used once, the same-column threshold subquery, and a CTE referenced twice still answer. Routed to the PRD agent, not changed here.
+- **`DMS_ONTO_FROM_DATA=1`, recorded decision.** In a Space that has a verified ontology, a contract-ask join over the verified link was served on the parent with no check and now abstains `unverified_join:no_ontology`. The reason is untrue for that Space. Pinned in a test.
+- **Not gated, unresolved.** A join registered through `POST /v1/studio/verified-queries`, or saved while `DMS_VQ_RAG=1` and replayed with it off, is served `L0_CERTIFIED` in a file Space. Same on the parent.
+- **Tests.** `tests/test_connect_ask_03.py` now has 43 tests. The 4 raise tests failed with the 503 before the fix. The store-unreadable Yes test fails under the adversary's mutation.
+
 ## 2026-11-13 - CONNECT-ASK-03: a Space with no ontology answers one-table SQL only
 
 - **Defect (F-TBD-33, first reproduction).** The rule 16 join check ran only when the ask had a Space ontology. On `ebe65cc` a non-demo Space holding two uploaded CSV tables and no ontology was asked with a stubbed generate leg that returned a two-table join: the envelope was `L2_VALIDATED`, `abstained` false, 2 rows. Today the hole is masked in live use because a file Space sends the model no schema (#518). Fixing #518 alone would have opened it.
