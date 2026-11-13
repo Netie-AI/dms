@@ -647,6 +647,17 @@ JOIN_HOLE_SHAPES: dict[str, tuple[str, int, int]] = {
     "cte_joined_to_derived_over_itself": (f"WITH c AS (SELECT * FROM {ENROLL}) SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a JOIN (SELECT * FROM c) b ON TRUE", 428, 107),
     "two_ctes_over_a_third": (f"WITH c AS (SELECT * FROM {ENROLL}), d AS (SELECT * FROM c), e AS (SELECT * FROM c) SELECT SUM(CAST(d.students AS INTEGER)) AS total FROM d, e", 428, 107),
     "cte_unioned_with_itself_summed": (f"WITH c AS (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL}) SELECT SUM(n) AS total FROM (SELECT n FROM c UNION ALL SELECT n FROM c)", 214, 107),
+    # Adversary round (#527 clause 10): the same row generator under spellings
+    # sqlglot does not type as UNNEST, and in the other clauses DuckDB takes one.
+    "unnest_schema_qualified": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n, main.unnest([1, 2]) AS u FROM {ENROLL})", 214, 107),
+    "unnest_pg_catalog": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n, pg_catalog.unnest([1, 2]) AS u FROM {ENROLL})", 214, 107),
+    "unlist_alias": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n, unlist([1, 2]) AS u FROM {ENROLL})", 214, 107),
+    "generate_subscripts_macro": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n, generate_subscripts([1, 2], 1) AS u FROM {ENROLL})", 214, 107),
+    "regexp_split_to_table_macro": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n, regexp_split_to_table('a,b', ',') AS u FROM {ENROLL})", 214, 107),
+    "unnest_method_call": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n, [1, 2].unnest() AS u FROM {ENROLL})", 214, 107),
+    "unlist_in_order_by": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL} ORDER BY unlist([1, 2]))", 214, 107),
+    "unlist_in_group_by": (f"SELECT SUM(s) AS total FROM (SELECT SUM(CAST(students AS INTEGER)) AS s FROM {ENROLL} GROUP BY unlist([1, 2]))", 214, 107),
+    "unnest_in_order_by": (f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL} ORDER BY UNNEST([1, 2]))", 214, 107),
     "unnest_in_a_derived_projection": (f"SELECT SUM(x) AS total FROM (SELECT CAST(students AS INTEGER) AS x, UNNEST([1, 2]) AS u FROM {ENROLL})", 214, 107),
 }
 #: Refused on the parent already (controls): a row constructor joined directly.
@@ -669,6 +680,8 @@ JOIN_HOLE_ONE_READ: dict[str, str] = {
     "scalar_subquery_over_cte_once": f"WITH c AS (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL}) SELECT (SELECT SUM(n) FROM c) AS total",
     "tableless_scalar_in_where": f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} WHERE CAST(students AS INTEGER) > (SELECT 20)",
     "unused_tableless_cte": f"WITH c AS (SELECT 1 AS n) SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL}",
+    "typed_function_in_projection": f"SELECT UPPER(enrollment_id) AS id, ROUND(CAST(students AS INTEGER) / 2, 1) AS half FROM {ENROLL} ORDER BY enrollment_id",
+    "untyped_function_in_where": f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} WHERE hash(school_id) = hash(school_id) AND date_part('year', DATE '2024-05-01') = 2024",
     "pivot_of_a_derived_table": f"SELECT * FROM (SELECT school_id, CAST(students AS INTEGER) AS n FROM {ENROLL}) PIVOT (SUM(n) FOR school_id IN ('1', '2'))",
 }
 
@@ -751,6 +764,27 @@ def test_join_rule_units(
     # is not a base table. The one-table shortcut counted base tables only.
     for name, (sql, _wrong, _true) in JOIN_HOLE_SHAPES.items():
         assert (why(sql) or "").startswith("unverified_join:"), (name, why(sql))
+    # The reason says what happened: it is fed to the retry ladder and logged.
+    assert why(JOIN_HOLE_SHAPES["s2_cte_comma"][0]) == "unverified_join:cte_read_twice"
+    assert why(JOIN_HOLE_SHAPES["s6_cte_scalar_subquery"][0]) == "unverified_join:cte_read_twice"
+    assert why(JOIN_HOLE_SHAPES["s4_recursive_cte"][0]) == "unverified_join:recursive_cte"
+    assert why(JOIN_HOLE_SHAPES["s7_constant_derived_table"][0]) == "unverified_join:set_operation"
+    assert why(JOIN_HOLE_SHAPES["s8_cte_reading_no_table"][0]) == "unverified_join:row_generator"
+    assert (
+        why(f"SELECT COUNT(*) AS total FROM {ENROLL} o CROSS JOIN (SELECT 1 AS n) v")
+        == "unverified_join:second_row_source"
+    )
+    assert why(JOIN_HOLE_SHAPES["unnest_in_a_derived_projection"][0]) == "unverified_join:row_generator"
+    assert why(JOIN_HOLE_SHAPES["unlist_alias"][0]) == "unverified_join:unproven_function (unlist)"
+    assert why(JOIN_HOLE_SHAPES["unnest_schema_qualified"][0]) == "unverified_join:unproven_function (unnest)"
+    # A statement that reads no table is not one read of one base table.
+    for sql in ("SELECT 1", "SELECT 42 AS total", "SELECT 2 - 1 AS n"):
+        assert why(sql) == "unverified_join:no_table", (sql, why(sql))
+    # A set operation is refused wherever it sits, not only at the root.
+    assert (
+        why(f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL} UNION ALL SELECT 0)")
+        == "unverified_join:set_operation"
+    )
     # One read of one base table still has nothing to join.
     for name, sql in JOIN_HOLE_ONE_READ.items():
         assert why(sql) is None, (name, why(sql))

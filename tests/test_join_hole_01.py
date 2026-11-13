@@ -69,6 +69,32 @@ NEWLY_ABSTAIN: dict[str, tuple[str, str]] = {
         "List the students per enrollment",
         f"WITH c AS (SELECT enrollment_id, students FROM {E}) SELECT * FROM c EXCEPT SELECT * FROM c WHERE enrollment_id = '100'",
     ),
+    "cte_rows_at_its_own_maximum": (
+        "Which school has the most students?",
+        f"WITH c AS (SELECT school_id, SUM(CAST(students AS INTEGER)) AS n FROM {E} GROUP BY school_id) SELECT school_id, n FROM c WHERE n = (SELECT MAX(n) FROM c)",
+    ),
+    "cte_cross_joined_to_its_own_total": (
+        "Show each school's share of students",
+        f"WITH c AS (SELECT school_id, SUM(CAST(students AS INTEGER)) AS n FROM {E} GROUP BY school_id), t AS (SELECT SUM(n) AS total FROM c) SELECT c.school_id, c.n * 100 / t.total AS pct FROM c CROSS JOIN t ORDER BY c.school_id",
+    ),
+    "constant_union_in_a_derived_table": (
+        Q,
+        f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n FROM {E} UNION ALL SELECT 0)",
+    ),
+    # A function sqlglot does not type cannot be proven to keep the row count
+    # (unlist and generate_subscripts are such functions). EXTRACT / YEAR are typed.
+    "untyped_function_in_projection": (
+        Q,
+        f"SELECT SUM(CAST(students AS INTEGER)) AS total, date_part('year', DATE '2024-05-01') AS y FROM {E}",
+    ),
+    "untyped_function_in_a_listing": (
+        "List the enrollments",
+        f"SELECT enrollment_id, hash(students) AS h FROM {E} ORDER BY enrollment_id",
+    ),
+    "untyped_function_in_order_by": (
+        "List the enrollments",
+        f"SELECT enrollment_id, students FROM {E} ORDER BY dayname(DATE '2024-05-01'), enrollment_id",
+    ),
     "one_row_constant_cross_join": (
         Q,
         f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {E} o CROSS JOIN (SELECT 1 AS n) v",
@@ -242,3 +268,21 @@ def test_two_reads_of_one_base_table_are_judged_as_before(
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"))
     assert env["rows"] == [{"total": 3}] and "total=3" in str(env.get("text") or "")
     assert _why(rig, sql) is None
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_statement_reading_no_table_abstains(
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """``SELECT 42`` is not one read of one base table (it abstained ``ungranted`` before)."""
+    sql = "SELECT 42 AS total"
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    assert "42" not in str(env.get("text") or ""), env.get("text")
+    assert rig.cortex.executed == []
+    assert _why(rig, sql) == "unverified_join:no_table"
