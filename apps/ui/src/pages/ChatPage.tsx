@@ -5,7 +5,7 @@ import { InstallHint } from "@/components/InstallHint";
 import { ScopeChip } from "@/components/ScopeChip";
 import { SourcesOpenButton } from "@/components/SourcePanel";
 import { useApp } from "@/context/AppContext";
-import { useIsLg, useIsShortPhone } from "@/lib/viewport";
+import { useIsLg } from "@/lib/viewport";
 
 export function ChatPage() {
   const {
@@ -33,7 +33,6 @@ export function ChatPage() {
     sourcePanelOpen,
   } = useApp();
   const isLg = useIsLg();
-  const short = useIsShortPhone();
   const location = useLocation();
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
@@ -46,7 +45,8 @@ export function ChatPage() {
     const el = composerRef.current;
     if (!el) return;
     el.style.height = "";
-    if (!isLg) el.style.height = `${Math.min(el.scrollHeight + 2, 148)}px`;
+    // Empty: stay one line even when the placeholder is wider than the field.
+    if (!isLg && draft) el.style.height = `${Math.min(el.scrollHeight + 2, 148)}px`;
   }, [draft, isLg, asking]); // `asking` swaps the placeholder, which can wrap
 
   useEffect(() => {
@@ -259,15 +259,8 @@ export function ChatPage() {
 
       <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3 max-lg:py-2">
         <div className={`mx-auto flex ${chatWidth} flex-col gap-2`}>
-          {/* At lg the wrappers are `contents`, so the chip is laid out exactly as before. */}
-          {!short && (
-            <div className={isLg ? "contents" : "flex min-w-0 items-center gap-2"}>
-              <div className={isLg ? "contents" : "min-w-0 flex-1"}>
-                <ScopeChip />
-              </div>
-              {!isLg && !sourcePanelOpen && <SourcesOpenButton />}
-            </div>
-          )}
+          {/* Desktop: the chip spans the composer. Phone: the top bar names the Space and Sources carries the count. */}
+          {isLg && <ScopeChip />}
           {composerPaused && composerPauseReason && (
             <p className="border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
               {composerPauseReason}
@@ -280,7 +273,7 @@ export function ChatPage() {
             </p>
           )}
           <form
-            className="flex gap-2"
+            className="flex gap-2 max-lg:gap-1.5"
             onSubmit={(e) => {
               e.preventDefault();
               if (draft.trim()) submit(draft.trim());
@@ -307,14 +300,13 @@ export function ChatPage() {
               }
               enterKeyHint="send"
               rows={isLg ? 2 : 1}
-              className="min-h-[2.75rem] flex-1 resize-y border max-lg:resize-none border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)]"
+              className="min-h-[2.75rem] min-w-0 flex-1 resize-y border max-lg:resize-none border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)]"
             />
-            {/* Landscape hides the scope row; Sources must stay reachable. */}
-            {short && !sourcePanelOpen && <SourcesOpenButton />}
+            {!isLg && !sourcePanelOpen && <SourcesOpenButton />}
             <button
               type="submit"
               disabled={!draft.trim()}
-              className="h-11 self-end bg-[var(--color-accent)] px-4 text-sm font-medium text-[var(--color-on-accent)] disabled:opacity-50"
+              className="h-11 shrink-0 self-end bg-[var(--color-accent)] px-4 max-lg:px-3 text-sm font-medium text-[var(--color-on-accent)] disabled:opacity-50"
             >
               {asking ? "Queue" : "Ask"}
             </button>

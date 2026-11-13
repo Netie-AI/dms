@@ -4,6 +4,7 @@ import { useApp } from "@/context/AppContext";
 import { postReveal } from "@/lib/api";
 import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
+import { scopeChipLabel } from "@/lib/scopeChipLabel";
 import { sourcesHeadline } from "@/lib/sourcePanel";
 import { useModalFocus } from "@/lib/useModalFocus";
 import { useIsLg } from "@/lib/viewport";
@@ -22,16 +23,41 @@ function formatMoney(n: number) {
  * top of the demo banner, which rule 11 says must stay unmissable.
  */
 export function SourcesOpenButton() {
-  const { setSourcePanelOpen } = useApp();
+  const { setSourcePanelOpen, activeSpace, scopedSourceCount } = useApp();
+  const isLg = useIsLg();
+  // Phone: the name carries the whole scope. An unknown count is left out, never shown as 0.
+  const scope =
+    scopedSourceCount === null
+      ? (activeSpace?.name ?? "Company (default ACL)")
+      : scopeChipLabel(activeSpace?.name, scopedSourceCount).replace(/^Asking: /, "");
   return (
     <button
       type="button"
       data-testid="source-panel-open"
-      aria-label="Open sources"
+      aria-label={isLg ? "Open sources" : `Sources: ${scope}`}
       onClick={() => setSourcePanelOpen(true)}
-      className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:min-h-11 max-lg:min-w-[2.75rem] max-lg:shrink-0 max-lg:border max-lg:border-[var(--color-line)] max-lg:px-3 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
+      className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:min-h-11 max-lg:min-w-[2.75rem] max-lg:shrink-0 max-lg:self-end max-lg:border max-lg:border-[var(--color-line)] max-lg:gap-1 max-lg:px-2 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
     >
-      Sources
+      {/* Phone: an icon, the row has no room for the word. aria-label names it. */}
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        className="h-5 w-5 lg:hidden"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      >
+        <path d="M12 4 3 8.5l9 4.5 9-4.5L12 4Z" />
+        <path d="m3 12.5 9 4.5 9-4.5" />
+        <path d="m3 16.5 9 4.5 9-4.5" />
+      </svg>
+      {scopedSourceCount !== null && (
+        <span data-testid="source-count" className="text-xs tabular-nums lg:hidden">
+          {scopedSourceCount}
+        </span>
+      )}
+      <span className="max-lg:hidden">Sources</span>
     </button>
   );
 }
