@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - CI: the pytest shard gate was made to fail on purpose, and one hole was closed (F-TBD-42)
+
+- **Red test.** A probe test that always fails was pushed to the branch (`252827d`). Its shard concluded `failure`, the other two shards ran to `success`, and `lint-type-test` concluded `failure` (not skipped), printing `protected-paths=success contract-pin=success pytest=failure`.
+- **Hole found.** A probe file with a syntax error showed that `scripts/ci_pytest_shard.sh files` exited 0 and left the file out of its shard: bash drops `-e` inside `$(...)`. `verify` already failed, so `lint-type-test` would have been red, but the shard itself was not. Fixed with `inherit_errexit` (`8810387`). On the probe head (`3a9c7ca`) all three shards and `lint-type-test` concluded `failure`.
+- **Cause in the log.** The shard failed with exit 2 and no reason. The script now prints pytest's collection error and one error line (`37a24f4`).
+- **Probes removed.** `git ls-files tests | grep zz_ci_gate` prints nothing.
+
 ## 2026-11-13 - CI: pytest runs as three shards, the 30 minute cap is unchanged (F-TBD-42)
 
 - **Measured.** On four PR heads (#510, #519, #521, #522) pytest was 96 to 97 percent of `lint-type-test`: 22.0 to 26.6 min of a 22.9 to 27.7 min job. Everything else (install, ruff, mypy, import linter, scoring, UI) was 42 to 61 s. The same suite varied by about 4.5 min between runners.
