@@ -12,6 +12,10 @@
 # and with pipefail that fails the caller: it is not silently left out.
 # Run from the repo root with the same PYTHONPATH and env as the test step.
 set -euo pipefail
+# bash drops -e inside $(...) unless told otherwise. Without this line a
+# collection error inside shard_files was swallowed and the file it named was
+# left out of its shard (seen with a syntax-error probe file, #530).
+shopt -s inherit_errexit
 
 shard_files() { # K N
   local out
