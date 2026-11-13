@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -388,6 +389,41 @@ def test_a_pair_is_proposed_only_when_no_single_column_is_a_key(rig: Rig) -> Non
     assert body["unkeyed_tables"] == []
 
 
+def test_a_column_with_nulls_is_never_part_of_a_proposed_pair_key(rig: Rig) -> None:
+    """``g`` and ``h`` each hold a NULL and repeat; the pair is distinct on every row.
+
+    A NULL key is not a key (``Ontology.verify`` key_not_null), so nothing is
+    proposed and the response says which columns were left out of the pair search.
+    """
+    space_id = rig.new_space("Null pair")
+    rows = [["a", "x", "k"], ["a", "y", "k"], ["b", "x", "k"], ["b", "y", "k"]]
+    rows += [["", "x", "k"], ["a", "", "k"]]
+    t = rig.ingest(space_id, {"gh.csv": _csv(["g", "h", "v"], rows)})
+    table = t["gh.csv"]
+    # The trap is real on the lake: both columns hold a NULL, the pair is unique.
+    ((total, g_nulls, h_nulls, pairs),) = _oracle(
+        rig.lake,
+        f"SELECT COUNT(*), COUNT(*) - COUNT(g), COUNT(*) - COUNT(h), "
+        f"(SELECT COUNT(*) FROM (SELECT DISTINCT g, h FROM {table})) FROM {table}",
+    )
+    assert (total, g_nulls, h_nulls, pairs) == (6, 1, 1, 6)
+
+    body = rig.profile(space_id)
+    assert body["items"] == [] and body["version_id"] is None
+    (unkeyed,) = body["unkeyed_tables"]
+    assert unkeyed["table"] == table
+    assert unkeyed["reason"] == "no_unique_column_or_pair"
+    assert unkeyed["searched"] == {"single_columns": 3, "pairs": 0}
+    assert body["bounds"]["pair_search"]["tables"][table] == {
+        "pairs_searched": 0,
+        "columns_with_nulls_not_paired": ["g", "h"],
+        "columns_over_pair_cap_not_paired": [],
+    }
+    # And nothing was stored for the steward to approve.
+    assert _space_items(rig, space_id) == []
+    assert ontology_data_store()._items == {}  # type: ignore[union-attr]
+
+
 # --- clause 2: links ----------------------------------------------------------------
 
 
@@ -540,8 +576,10 @@ def test_no_cell_value_reaches_the_response_the_store_or_the_log(
             caplog.text,
         ]
     )
-    for canary in ("CNRY", "91919", "91920", "82828", "82829", "2031-07", "2031"):
-        assert canary not in text, canary
+    # Shapes a leaked cell would have. A bare run of digits is not one: an item
+    # id or a ``measured_at`` timestamp can contain the same digits by chance.
+    for canary in (r"CNRY", r"919[12]\d\.\d", r"8282\d\.\d", r"2031-07"):
+        assert re.search(canary, text) is None, canary
 
 
 def test_a_failed_measurement_is_named_by_class_only(
@@ -633,6 +671,55 @@ def test_an_approved_profile_item_is_read_only_through_its_space(
     onto = Ontology.from_store()
     assert onto.objects == {} and onto.links == {}
     assert onto.__dict__["_served_ids"] == ()
+
+
+def test_profiling_one_space_measures_and_stores_nothing_of_another(
+    retail: tuple[Rig, str, dict[str, str]],
+) -> None:
+    rig, space_a, t = retail
+    space_b = rig.new_space("Depot files")
+    depots = [[f"D{i:02d}", f"zone{i % 3}"] for i in range(1, 10)]
+    crates = [[f"K{i:03d}", f"D{1 + i % 9:02d}", str(i % 4)] for i in range(1, 41)]
+    b_tables = rig.ingest(
+        space_b,
+        {
+            "depots.csv": _csv(["depot_id", "zone"], depots),
+            "crates.csv": _csv(["crate_id", "depot_id", "weight"], crates),
+        },
+    )
+    assert not set(b_tables.values()) & set(t.values())
+
+    body = rig.profile(space_a)
+    # Space A's response is exactly Space A: tables, items, observations, counts.
+    assert {tb["table"] for tb in body["tables"]} == set(t.values())
+    assert len(_objects(body)) == 7 and len(_links(body)) == 1
+    assert len(body["observations"]) == 3 and len(body["unkeyed_tables"]) == 1
+    text = json.dumps(body)
+    for foreign in (*b_tables.values(), "depot_id", "crate_id", "zone", "weight"):
+        assert foreign not in text, foreign
+    links = body["bounds"]["link_search"]
+    columns = {tb["table"]: len(tb["columns"]) for tb in body["tables"]}
+    considered = sum(
+        sum(n for table, n in columns.items() if table != item["payload"]["relation"])
+        for item in _objects(body)
+    )
+    assert considered == links["pairs_measured"] + links["pairs_type_incompatible"]
+
+    # Stored for A: only A's tables. Stored for B: nothing at all.
+    stored_a = _space_items(rig, space_a)
+    assert len(stored_a) == 8
+    assert not any(table in json.dumps(stored_a) for table in b_tables.values())
+    assert _space_items(rig, space_b) == []
+    store = ontology_data_store()
+    assert {v.space_id for v in store._versions.values()} == {space_a}  # type: ignore[union-attr]
+    assert not any(table in _stored_text() for table in b_tables.values())
+
+    # Space B, profiled on its own, has its own proposals: the fixture can link.
+    own = rig.profile(space_b)
+    assert {tb["table"] for tb in own["tables"]} == set(b_tables.values())
+    assert len(_links(own)) == 1 and len(_objects(own)) == 2
+    assert not any(table in json.dumps(own) for table in t.values())
+    assert len(_space_items(rig, space_a)) == 8
 
 
 # --- clause 7: a proposal never reaches an answer --------------------------------------
