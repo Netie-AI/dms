@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - CI: pytest runs as three shards, the 30 minute cap is unchanged (F-TBD-42)
+
+- **Measured.** On four PR heads (#510, #519, #521, #522) pytest was 96 to 97 percent of `lint-type-test`: 22.0 to 26.6 min of a 22.9 to 27.7 min job. Everything else (install, ruff, mypy, import linter, scoring, UI) was 42 to 61 s. The same suite varied by about 4.5 min between runners.
+- **Change.** `.github/workflows/ci.yml` only, plus `scripts/ci_pytest_shard.sh`. pytest moves to a matrix job, `pytest (shard K of 3)`, one pytest process per runner, each under the same 30 minute cap. Each shard takes every third test file from pytest's own collection order. No test, fixture, assertion or product file changed. Nothing is deselected.
+- **Gate.** `lint-type-test` keeps its name. It fails unless `protected-paths`, `contract-pin` and every shard are green, and on every run it checks that the three shards collect exactly the ids `pytest tests/` collects, each once. The check was shown to fail on a dropped file and on a doubled file.
+- **Proof.** At `ebe65cc`: `pytest tests/` collects 3900 ids and the shards collect the same 3900 (1441 + 1231 + 1228). CI on the branch: 3791 passed, 75 skipped, 34 xfailed summed over the shards, the same as the single job. Locally, per test id, the three shards gave the same outcome as one single-process run for 3899 of 3900 ids; the other one, `tests/test_conn_pool_01.py::test_serving_abstain_tickets_follow_the_flag`, is timing-sensitive on the slow local box (it failed in the single run and passed in the shard run) and passes in CI in both layouts.
+- **Timing.** First CI run of the branch: shards 5 min 7 s, 8 min 13 s, 12 min 8 s; `lint-type-test` 1 min 21 s; workflow start to finish 13 min 40 s. One run, so runner variance is not measured for the new layout.
+- **Not done.** No fixture-scope change and no `pytest-xdist`: 49 test files reach the app without their own `DMS_WAREHOUSE_DB` and share the default DuckDB file, so one pytest process per machine still holds. `tests/test_conn_pool_01.py` is about a fifth of pytest time and now sets the longest shard.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
