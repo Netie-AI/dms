@@ -52,6 +52,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
+| P0 CONNECT-ASK-03 (#520): a non-demo Space with no ontology answers one-table SQL only; a second table abstains `unverified_join:no_ontology`. BIRD multi-table questions abstain by design until that Space has an ontology | this branch |
 | AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
 | GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
 | GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |

@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - CONNECT-ASK-03: a Space with no ontology answers one-table SQL only
+
+- **Defect (F-TBD-33, first reproduction).** The rule 16 join check ran only when the ask had a Space ontology. On `ebe65cc` a non-demo Space holding two uploaded CSV tables and no ontology was asked with a stubbed generate leg that returned a two-table join: the envelope was `L2_VALIDATED`, `abstained` false, 2 rows. Today the hole is masked in live use because a file Space sends the model no schema (#518). Fixing #518 alone would have opened it.
+- **Gate.** At the three `if space_onto is not None` guards (`_run_extract_loop`, `maybe_generative_ask`, the contract ask's `sql_used`), a non-demo Space (`is_demo_space` false) with no ontology now runs the same `unverified_join_reason` allowlist with an empty `Ontology()`: zero verified links. One table reference passes. Anything reading a second table, or a table function, refuses `unverified_join:no_ontology`. A lake that cannot be read refuses `unverified_join:check_unavailable`. No second analyser, no regex, no new allowed shape. What Cortex is sent is unchanged.
+- **Fourth door.** With `DMS_DEF_VALIDATE=1` and `DMS_RECONFIRM_RUN_HELD=1`, a Yes ran the parked SQL after a grant and EXPLAIN check only and served the same join. `_run_held_sql` now applies the same gate when the Space is non-demo and has no ontology.
+- **Unchanged.** Demo Spaces (seeded, or no Space id) and Spaces with a verified ontology. `tests/test_onto_derive_01.py` is not edited and passes.
+- **`DMS_ONTO_FROM_DATA=1`.** The contract-ask guard has no Space ontology under that flag, so a non-demo Space fails closed there: multi-table `sql_used` abstains.
+- **BIRD.** A multi-table question in the Platform BIRD Space abstains by design whenever that Space has no stored ontology with a keyed object. Whether it has one was not verified from this repo (the store is on the Platform).
+- **Tests.** `tests/test_connect_ask_03.py`, 23 envelope tests through `POST /v1/chat/ask` and `POST /v1/chat/ask/confirm`. 19 fail on the `ebe65cc` source and pass here.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
