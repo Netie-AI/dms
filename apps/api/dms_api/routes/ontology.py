@@ -11,14 +11,19 @@ Cortex offline is a normal state, not an error: every route answers 200 with
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from cortex_client import compliance_gate
-from dms_core.control_plane.onto_data import _public_item, ontology_data_store
+from dms_core.control_plane.onto_data import (
+    PostgresOntologyDataStore,
+    ProfileKeyConflict,
+    _public_item,
+    ontology_data_store,
+)
 from fastapi import APIRouter, HTTPException
 
 from dms_api.cortex_read import cortex_get
-from dms_api.deps import CortexDep, SettingsDep
+from dms_api.deps import CortexDep, SettingsDep, SpaceStoreDep
 from dms_api.gatekeeping import enforce
 
 router = APIRouter(prefix="/v1/ontology", tags=["ontology"])
@@ -96,6 +101,72 @@ def compile_ontology_data(
     )
 
 
+@router.post("/data/profile")
+def profile_ontology_data(
+    space_id: str,
+    settings: SettingsDep,
+    cortex: CortexDep,
+    spaces: SpaceStoreDep,
+) -> dict[str, Any]:
+    """ONTO-PROFILE-01: measure a file Space, store keys and links as proposed.
+
+    Counts, names and landed types only. Never served: a steward approves.
+    """
+    _require_steward(settings)
+    decision = compliance_gate(
+        action="ontology.profile",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "ontology.profile", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision)
+    space = spaces.get(space_id)
+    if space is None:
+        raise HTTPException(status_code=404, detail="space_not_found")
+    from dms_api.wiring import profile_ontology_proposal
+
+    result = profile_ontology_proposal(
+        actor=settings.dms_actor_user_id,
+        tenant_id=settings.dms_tenant_id,
+        space_id=str(space.id),
+    )
+    if result["status"] == "no_file_tables":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "no_file_tables", "skipped": result["skipped"]},
+        )
+    return result
+
+
+@router.get("/data/spaces/{space_id}/items")
+def space_ontology_items(
+    space_id: str,
+    settings: SettingsDep,
+    cortex: CortexDep,
+    spaces: SpaceStoreDep,
+    status: Literal["proposed", "approved", "revoked"] | None = None,
+) -> dict[str, Any]:
+    """Profile items of one Space with status and stored evidence."""
+    _require_steward(settings)
+    decision = compliance_gate(
+        action="ontology.space_items",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "ontology.space_items", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
+    space = spaces.get(space_id)
+    if space is None:
+        raise HTTPException(status_code=404, detail="space_not_found")
+    store = ontology_data_store()
+    return {
+        "space_id": str(space.id),
+        "served": False,
+        "persisted": isinstance(store, PostgresOntologyDataStore),
+        "items": store.space_profile_items(str(space.id), status),
+    }
+
+
 @router.get("/data/diff")
 def diff_ontology_data(
     settings: SettingsDep,
@@ -128,7 +199,17 @@ def approve_ontology_item(
         client=cortex,
     )
     enforce(decision)
-    row = ontology_data_store().approve(item_id, actor=settings.dms_actor_user_id)
+    try:
+        row = ontology_data_store().approve(item_id, actor=settings.dms_actor_user_id)
+    except ProfileKeyConflict as conflict:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "key_already_approved",
+                "relation": conflict.relation,
+                "approved_item_id": conflict.approved_item_id,
+            },
+        ) from None
     if row is None:
         raise HTTPException(status_code=404, detail="ontology_item_not_found")
     return _public_item(row)
