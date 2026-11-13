@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, DEF-VALIDATE-02
+**Last updated:** 2026-11-13, ONTO-PROFILE-01 (draft, Refs #514)
 **Remote:** https://github.com/Netie-AI/dms
 **Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
@@ -55,5 +55,6 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
 | GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
 | GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |
+| ONTO-PROFILE-01: file Space keys and links proposed, Space-scoped, never served. Draft, a second run must verify. | #514 |
 
 Not listed: 15 older open drafts (#424, #408, #398, #397, #391, #379, #378, #376, #375, #344, #343, #339, #336, #331, #329).
