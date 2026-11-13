@@ -61,6 +61,14 @@ NEWLY_ABSTAIN: dict[str, tuple[str, str]] = {
         "List the students per enrollment",
         f"WITH c AS (SELECT enrollment_id, students FROM {E}) SELECT * FROM c UNION ALL SELECT * FROM c",
     ),
+    "cte_intersected_with_itself": (
+        "List the students per enrollment",
+        f"WITH c AS (SELECT enrollment_id, students FROM {E}) SELECT * FROM c INTERSECT SELECT * FROM c",
+    ),
+    "cte_except_itself_filtered": (
+        "List the students per enrollment",
+        f"WITH c AS (SELECT enrollment_id, students FROM {E}) SELECT * FROM c EXCEPT SELECT * FROM c WHERE enrollment_id = '100'",
+    ),
     "one_row_constant_cross_join": (
         Q,
         f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {E} o CROSS JOIN (SELECT 1 AS n) v",

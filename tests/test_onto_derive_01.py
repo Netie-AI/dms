@@ -646,6 +646,7 @@ JOIN_HOLE_SHAPES: dict[str, tuple[str, int, int]] = {
     "s8_cte_reading_no_table": (f"WITH r AS (SELECT * FROM (VALUES (1), (2)) v(n)) SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, r", 214, 107),
     "cte_joined_to_derived_over_itself": (f"WITH c AS (SELECT * FROM {ENROLL}) SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a JOIN (SELECT * FROM c) b ON TRUE", 428, 107),
     "two_ctes_over_a_third": (f"WITH c AS (SELECT * FROM {ENROLL}), d AS (SELECT * FROM c), e AS (SELECT * FROM c) SELECT SUM(CAST(d.students AS INTEGER)) AS total FROM d, e", 428, 107),
+    "cte_unioned_with_itself_summed": (f"WITH c AS (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL}) SELECT SUM(n) AS total FROM (SELECT n FROM c UNION ALL SELECT n FROM c)", 214, 107),
     "unnest_in_a_derived_projection": (f"SELECT SUM(x) AS total FROM (SELECT CAST(students AS INTEGER) AS x, UNNEST([1, 2]) AS u FROM {ENROLL})", 214, 107),
 }
 #: Refused on the parent already (controls): a row constructor joined directly.
