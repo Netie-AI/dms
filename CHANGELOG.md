@@ -2,6 +2,25 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - CONNECT-ASK-03 adversary round: a check that raises abstains
+
+- **Fix.** If the join analyser raised, the three ask doors and the held-SQL Yes returned HTTP 503 `live_ask_failed`. Nothing was served, but clause 9 asks for an abstain. `no_ontology_join_reason` now turns any error from the check into `unverified_join:check_unavailable`.
+- **Coverage cost, pinned.** The allowlist counts table references. With zero links, one-table SQL that names its table twice now abstains `unverified_join:no_ontology` in a Space with no ontology: a scalar subquery with a cast, `UNION ALL` of a table with itself, a self-correlated `EXISTS`, a self-join. Each answered on the parent. Window, DISTINCT, ORDER/LIMIT, QUALIFY, date functions, a CTE used once and the same-column threshold subquery (`WHERE x > (SELECT avg(x) FROM t)`, through every door) still answer with the truth. The threshold with a cast on both sides is refused by the allowlist itself. Routed to the PRD agent, not changed here.
+- **`DMS_ONTO_FROM_DATA=1`, recorded decision.** In a Space that has a verified ontology, a contract-ask join over the verified link was served on the parent with no check and now abstains `unverified_join:no_ontology`. The reason is untrue for that Space. Pinned in a test.
+- **Not gated, unresolved.** A join registered through `POST /v1/studio/verified-queries`, or saved while `DMS_VQ_RAG=1` and replayed with it off, is served `L0_CERTIFIED` in a file Space. Same on the parent.
+- **Known hole, not caused and not closed here (F-TBD-39).** A CTE alias joined to itself reads one physical table more than once. The existing allowlist counts table references, sees one, and returns before any join check. It is served with a fanned-out total on `ebe65cc` and on this branch alike (file Space: 400, 1000 or 4000 shown, 250 true). The fix is in `space_ontology.py` and has its own ticket.
+- **Tests.** `tests/test_connect_ask_03.py` now has 46 tests. The 4 raise tests failed with the 503 before the fix. The store-unreadable Yes test fails under the adversary's mutation.
+
+## 2026-11-13 - CONNECT-ASK-03: a Space with no ontology answers one-table SQL only
+
+- **Defect (F-TBD-33, first reproduction).** The rule 16 join check ran only when the ask had a Space ontology. On `ebe65cc` a non-demo Space holding two uploaded CSV tables and no ontology was asked with a stubbed generate leg that returned a two-table join: the envelope was `L2_VALIDATED`, `abstained` false, 2 rows. Today the hole is masked in live use because a file Space sends the model no schema (#518). Fixing #518 alone would have opened it.
+- **Gate.** At the three `if space_onto is not None` guards (`_run_extract_loop`, `maybe_generative_ask`, the contract ask's `sql_used`), a non-demo Space (`is_demo_space` false) with no ontology now runs the same `unverified_join_reason` allowlist with an empty `Ontology()`: zero verified links. One table reference passes. Anything reading a second table, or a table function, refuses `unverified_join:no_ontology`. A lake that cannot be read refuses `unverified_join:check_unavailable`. No second analyser, no regex, no new allowed shape. What Cortex is sent is unchanged.
+- **Fourth door.** With `DMS_DEF_VALIDATE=1` and `DMS_RECONFIRM_RUN_HELD=1`, a Yes ran the parked SQL after a grant and EXPLAIN check only and served the same join. `_run_held_sql` now applies the same gate when the Space is non-demo and has no ontology.
+- **Unchanged.** Demo Spaces (seeded, or no Space id) and Spaces with a verified ontology. `tests/test_onto_derive_01.py` is not edited and passes.
+- **`DMS_ONTO_FROM_DATA=1`.** The contract-ask guard has no Space ontology under that flag, so a non-demo Space fails closed there: multi-table `sql_used` abstains.
+- **BIRD.** A multi-table question in the Platform BIRD Space abstains by design whenever that Space has no stored ontology with a keyed object. Whether it has one was not verified from this repo (the store is on the Platform).
+- **Tests.** `tests/test_connect_ask_03.py`, 23 envelope tests through `POST /v1/chat/ask` and `POST /v1/chat/ask/confirm`. 19 fail on the `ebe65cc` source and pass here.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
