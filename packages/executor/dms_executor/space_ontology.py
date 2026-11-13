@@ -856,8 +856,14 @@ def _under_predicate(node: exp.Expression, stop: exp.Expression) -> bool:
 class _JoinRule:
     """An allowlist, not a blocklist (adversary rounds 1 and 2, ONTO-DERIVE-01).
 
-    SQL reading one table reference has nothing to join and passes. SQL reading
-    two or more must be ONE flat SELECT over base tables:
+    SQL that is one read of one base table has nothing to join and passes
+    (``_one_read``, JOIN-HOLE-01): every FROM names one item, one base table is
+    named once, each CTE name is read at most once, and there is no JOIN, set
+    operation, recursive CTE or row constructor (VALUES, UNNEST, LATERAL)
+    anywhere. Every relation a FROM or JOIN names counts, not only base tables:
+    a CTE read twice, or a table joined to a constant row source, multiplies
+    rows like any other join. Everything else must be ONE flat SELECT over two
+    or more base tables:
 
     * no set operation, no CTE, no derived table, no subquery outside the
       top-level WHERE conjuncts;
@@ -878,8 +884,9 @@ class _JoinRule:
       ``col <op> (SELECT AGG(same col) ...)`` uncorrelated.
 
     Anything else refuses. Some correct SQL refuses too (a derived table
-    grouped on the key, CAST on both join sides, USING); that is the price of
-    WRONG=0 until each shape is proven on its own.
+    grouped on the key, CAST on both join sides, USING, a CTE compared with
+    its own average, a constant UNION branch); that is the price of WRONG=0
+    until each shape is proven on its own.
     """
 
     def __init__(
@@ -1023,7 +1030,8 @@ class _JoinRule:
             if not isinstance(t.this, exp.Identifier):
                 # query('...'), read_csv(...): a table function can hide any join.
                 raise _Refuse("table_function")
-        if len(tables) <= 1:
+        lone = len(tables) <= 1
+        if lone and self._one_read(root_expr):
             return
         if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
             raise _Refuse("set_operation")
@@ -1144,6 +1152,48 @@ class _JoinRule:
             named = sorted({lbl for src in own.values() if (lbl := _source_label(src))})
             raise _Refuse(f"cross_product ({', '.join(named)} not joined by a verified link)")
         self._fan_trap(root_expr, root, set(parent_of_child))
+        if lone:
+            # At most one base table, yet not one read of it: the rules above
+            # judge links between base tables and prove nothing here.
+            raise _Refuse("not_one_read")
+
+    def _one_read(self, root_expr: exp.Expression) -> bool:
+        """Whether the statement is one read of one base table (JOIN-HOLE-01).
+
+        Counts what each FROM names, per SELECT and per CTE name. Scope sources
+        are not used for the count: a scope lists every CTE it can see, used or
+        not. Anything this cannot place is not one read.
+        """
+        if root_expr.find(exp.Join, exp.UDTF, *_SET_OPS):
+            return False  # a second FROM item, a row constructor, a set operation
+        if any(w.args.get("recursive") for w in root_expr.find_all(exp.With)):
+            return False
+        if {id(q) for q in root_expr.find_all(exp.Select)} != set(self.scope_of):
+            return False
+        base = 0
+        cte_reads: dict[int, int] = {}
+        for sc in self.scopes:
+            from_ = sc.expression.args.get("from")
+            item = from_.this if from_ is not None else None
+            if item is None:
+                continue  # SELECT without FROM: one row, no relation
+            if isinstance(item, exp.Subquery) and isinstance(item.this, exp.Select):
+                continue  # one derived table: its own SELECT is counted
+            src = _sources(sc).get(str(item.alias_or_name).lower())
+            if not isinstance(item, exp.Table) or src is None:
+                return False
+            if isinstance(src, exp.Table):
+                base += 1
+            elif isinstance(src, Scope):
+                cte_reads[id(src.expression)] = cte_reads.get(id(src.expression), 0) + 1
+            else:
+                return False
+        named = base + sum(cte_reads.values())
+        return (
+            base == 1
+            and all(n == 1 for n in cte_reads.values())
+            and named == len(list(root_expr.find_all(exp.Table)))
+        )
 
     def _node_or_alias(self, c: exp.Column, root: Scope, outputs: set[str]) -> _Node | None:
         """A column's table, or None for a bare output alias (``HAVING n > 1``).

@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - JOIN-HOLE-01 (P0): the join allowlist counts every relation a FROM names
+
+- **Defect.** Rule 16's allowlist (`_JoinRule.check`) counted base tables only. One table read twice through a CTE name, or joined to a recursive CTE, a constant derived table or a CTE that reads no table, counted as one table and skipped every join check. `POST /v1/chat/ask` served the fanned-out total as `L2_VALIDATED` in a Space with a verified ontology: 428 for a true 107, 24 for a true 10, on the first generate, the extract loop and the contract ask's `sql_used`. The recursive shape was served through the contract door (321 for 107).
+- **Fix.** The shortcut is now for one read of one base table (`_JoinRule._one_read`): every FROM names one item, one base table is named once, each CTE name is read at most once, and there is no JOIN, set operation, recursive CTE or row constructor (VALUES, UNNEST, LATERAL) anywhere. Everything else goes on to the existing checks; a statement with at most one base table that they do not refuse abstains `unverified_join:not_one_read`. Statements over two or more base tables are decided as before. Nothing moves from abstain to served.
+- **Now abstains (named, `tests/test_join_hole_01.py`).** A CTE compared with its own average or divided by its own total, a constant `UNION` branch, a CTE unioned with itself, a cross join to a one-row constant, `UNNEST` in a listing, `IN (VALUES ...)`, a `WITH RECURSIVE` CTE that does not recurse. A statement that reads no table refuses at the rule (it already abstained `ungranted`).
+- **Not fixed, reported on #527.** `GROUP BY ROLLUP` or `GROUPING SETS` summed by an outer query, and `UNPIVOT`, double a one-table total inside one read. They are not a second relation and need their own decision.
+- **Not in this change.** The same shapes in a file Space with no ontology (needs #522's gate) and held SQL confirmed with Yes (needs #524). A real Cortex was not exercised.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.

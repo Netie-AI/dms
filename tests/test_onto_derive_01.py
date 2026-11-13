@@ -630,6 +630,48 @@ def test_space_without_a_derived_ontology_is_unchanged(
 
 # --- unit: the join rule ---------------------------------------------------------
 
+_E_TOTAL = f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL}"
+#: JOIN-HOLE-01 (#527): name -> (sql, the wrong figure it returns, the true figure).
+#: True figures: 107 students enrolled, school ids sum to 10. Shapes 1 to 8 are
+#: the issue's; the rest read one table twice, or multiply it, some other way.
+JOIN_HOLE_SHAPES: dict[str, tuple[str, int, int]] = {
+    "s1_cte_self_join_on": (f"WITH c AS (SELECT * FROM {SCHOOLS}) SELECT SUM(CAST(a.school_id AS INTEGER)) AS total FROM c a JOIN c b ON a.district_id = b.district_id", 24, 10),
+    "s2_cte_comma": (f"WITH c AS (SELECT * FROM {ENROLL}) SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a, c b", 428, 107),
+    "s2_cte_three_aliases": (f"WITH c AS (SELECT * FROM {ENROLL}) SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a, c b, c d", 1712, 107),
+    "s3_cte_cross_join": (f"WITH c AS (SELECT * FROM {ENROLL}) SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a CROSS JOIN c b", 428, 107),
+    "s4_recursive_cte": (f"WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, r", 321, 107),
+    "s5_cte_using": (f"WITH c AS (SELECT * FROM {SCHOOLS}) SELECT SUM(CAST(a.school_id AS INTEGER)) AS total FROM c a JOIN c b USING (district_id)", 24, 10),
+    "s6_cte_scalar_subquery": (f"WITH c AS (SELECT CAST(school_id AS INTEGER) AS x FROM {SCHOOLS}) SELECT (SELECT SUM(x) FROM c) * COUNT(*) AS total FROM c", 40, 10),
+    "s7_constant_derived_table": (f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) v", 214, 107),
+    "s8_cte_reading_no_table": (f"WITH r AS (SELECT * FROM (VALUES (1), (2)) v(n)) SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, r", 214, 107),
+    "cte_joined_to_derived_over_itself": (f"WITH c AS (SELECT * FROM {ENROLL}) SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a JOIN (SELECT * FROM c) b ON TRUE", 428, 107),
+    "two_ctes_over_a_third": (f"WITH c AS (SELECT * FROM {ENROLL}), d AS (SELECT * FROM c), e AS (SELECT * FROM c) SELECT SUM(CAST(d.students AS INTEGER)) AS total FROM d, e", 428, 107),
+    "unnest_in_a_derived_projection": (f"SELECT SUM(x) AS total FROM (SELECT CAST(students AS INTEGER) AS x, UNNEST([1, 2]) AS u FROM {ENROLL})", 214, 107),
+}
+#: Refused on the parent already (controls): a row constructor joined directly.
+JOIN_HOLE_CONTROLS: dict[str, tuple[str, int, int]] = {
+    "values_joined": (f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, (VALUES (1), (2)) v(n)", 214, 107),
+    "unnest_joined": (f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, UNNEST([1, 2]) u(n)", 214, 107),
+    "plain_self_join": (f"SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM {ENROLL} a, {ENROLL} b", 428, 107),
+}
+#: One read of one base table: answers exactly as before (name -> sql).
+JOIN_HOLE_ONE_READ: dict[str, str] = {
+    "plain_select": _E_TOTAL,
+    "plain_listing": f"SELECT enrollment_id, students FROM {ENROLL} ORDER BY enrollment_id",
+    "cte_selected_once": f"WITH c AS (SELECT * FROM {ENROLL}) SELECT SUM(CAST(students AS INTEGER)) AS total FROM c",
+    "cte_selected_once_aliased": f"WITH c AS (SELECT school_id, CAST(students AS INTEGER) AS n FROM {ENROLL}) SELECT SUM(a.n) AS total FROM c a",
+    "ctes_chained_each_once": f"WITH c AS (SELECT * FROM {ENROLL}), d AS (SELECT school_id, CAST(students AS INTEGER) AS n FROM c) SELECT SUM(n) AS total FROM d",
+    "three_ctes_chained": f"WITH c AS (SELECT * FROM {ENROLL}), d AS (SELECT * FROM c WHERE school_id <> '9'), e AS (SELECT CAST(students AS INTEGER) AS n FROM d) SELECT SUM(n) AS total FROM e",
+    "derived_table_once": f"SELECT SUM(n) AS total FROM (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL}) t",
+    "derived_tables_nested": f"SELECT SUM(n) AS total FROM (SELECT n FROM (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL}) a) b",
+    "window_over_one_table": f"SELECT enrollment_id, SUM(CAST(students AS INTEGER)) OVER () AS total FROM {ENROLL} ORDER BY enrollment_id",
+    "scalar_subquery_over_cte_once": f"WITH c AS (SELECT CAST(students AS INTEGER) AS n FROM {ENROLL}) SELECT (SELECT SUM(n) FROM c) AS total",
+    "tableless_scalar_in_where": f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} WHERE CAST(students AS INTEGER) > (SELECT 20)",
+    "unused_tableless_cte": f"WITH c AS (SELECT 1 AS n) SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL}",
+    "pivot_of_a_derived_table": f"SELECT * FROM (SELECT school_id, CAST(students AS INTEGER) AS n FROM {ENROLL}) PIVOT (SUM(n) FOR school_id IN ('1', '2'))",
+}
+
+
 
 def test_join_rule_units(
     tmp_path: Path,
@@ -704,6 +746,13 @@ def test_join_rule_units(
         )
         or ""
     )
+    # JOIN-HOLE-01 (#527): one table multiplied through a second row source that
+    # is not a base table. The one-table shortcut counted base tables only.
+    for name, (sql, _wrong, _true) in JOIN_HOLE_SHAPES.items():
+        assert (why(sql) or "").startswith("unverified_join:"), (name, why(sql))
+    # One read of one base table still has nothing to join.
+    for name, sql in JOIN_HOLE_ONE_READ.items():
+        assert why(sql) is None, (name, why(sql))
 
 
 # --- store: migration 0006 and the snapshot rules (CI has no Postgres) -----------
