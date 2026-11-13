@@ -150,6 +150,8 @@ test.describe("IPHONE-PWA-02 one-handed phone", () => {
     expect(s.width).toBe(PHONE.width);
     expect(Math.round(s.y + s.height)).toBe(PHONE.height);
     expect(s.y).toBeGreaterThanOrEqual(PHONE.height * 0.2);
+    // Two short source rows must not collapse the sheet to a sliver.
+    expect(s.height).toBeGreaterThanOrEqual(PHONE.height * 0.4 - 1);
     const close = page.getByRole("button", { name: "Collapse sources" });
     const c = await box(close);
     expect(c.height).toBeGreaterThanOrEqual(TARGET);
@@ -318,39 +320,49 @@ test.describe("IPHONE-PWA-02 one-handed phone", () => {
     await expect(menu).toHaveCount(0);
   });
 
-  test("the demo banner is readable: 4.5:1 or better", async ({ page }) => {
-    // Force demo ask mode so the banner renders whatever mode the API under test is in.
-    await page.route("**/api/health", async (route) => {
-      const res = await route.fetch();
-      await route.fulfill({ response: res, json: { ...(await res.json()), ask_mode: "demo" } });
+  for (const theme of ["cream", "graphite"] as const) {
+    test(`the demo banner is readable in ${theme}: 4.5:1 or better`, async ({ page }) => {
+      // Force demo ask mode so the banner renders whatever mode the API under test is in.
+      await page.route("**/api/health", async (route) => {
+        const res = await route.fetch();
+        await route.fulfill({ response: res, json: { ...(await res.json()), ask_mode: "demo" } });
+      });
+      await page.goto("/");
+      if (theme === "graphite") {
+        await page.getByRole("button", { name: "Switch to operator mode" }).click();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", "graphite");
+      }
+      const banner = page.getByRole("status").filter({ hasText: /DEMO ASK MODE/ });
+      await expect(banner).toBeVisible();
+      const ratio = await banner.evaluate((el) => {
+        const lum = (c: string) => {
+          const [r, g, b] = c.match(/[\d.]+/g)!.slice(0, 3).map((v) => {
+            const x = Number(v) / 255;
+            return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+          });
+          return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        };
+        const cs = getComputedStyle(el);
+        const [hi, lo] = [lum(cs.color), lum(cs.backgroundColor)].sort((x, y) => y - x);
+        return (hi + 0.05) / (lo + 0.05);
+      });
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
     });
-    await page.goto("/");
-    const banner = page.getByRole("status").filter({ hasText: /DEMO ASK MODE/ });
-    await expect(banner).toBeVisible();
-    const ratio = await banner.evaluate((el) => {
-      const lum = (c: string) => {
-        const [r, g, b] = c.match(/[\d.]+/g)!.slice(0, 3).map((v) => {
-          const x = Number(v) / 255;
-          return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
-        });
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      };
-      const s = getComputedStyle(el);
-      const [hi, lo] = [lum(s.color), lum(s.backgroundColor)].sort((a, b) => b - a);
-      return (hi + 0.05) / (lo + 0.05);
-    });
-    expect(ratio).toBeGreaterThanOrEqual(4.5);
-  });
+  }
 
   test("an IME candidate confirmed with Enter does not send the question", async ({ page }) => {
     await page.goto("/");
     const field = page.getByPlaceholder(/Ask about your data/);
     await field.fill("zong shou ru");
-    await field.evaluate((el) => {
-      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, isComposing: true }));
-    });
-    await expect(field).toHaveValue("zong shou ru");
-    await expect(page.getByTestId("answer-message")).toHaveCount(0);
+    // Two separate signals: `isComposing` (the standard) and keyCode 229, which
+    // iOS and older WebKit report while composing without setting isComposing.
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      await field.evaluate((el, extra) => {
+        el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, ...extra }));
+      }, init);
+      await expect(field).toHaveValue("zong shou ru");
+      await expect(page.getByTestId("answer-message")).toHaveCount(0);
+    }
     await field.press("Enter");
     await expect(page.getByTestId("answer-message")).toHaveCount(1, { timeout: 20_000 });
   });
@@ -452,6 +464,28 @@ test.describe("IPHONE-PWA-02 short and wide viewports", () => {
     expect(visible).toBeGreaterThanOrEqual(2);
     await ctx.close();
   });
+
+  for (const [width, phone] of [
+    [1023, true],
+    [1024, false],
+    [1099, false],
+  ] as const) {
+    test(`at ${width}px the script breakpoint agrees with the stylesheet (${phone ? "phone" : "desktop"})`, async ({
+      browser,
+    }) => {
+      // useIsLg() picks which nodes render; Tailwind's lg: classes pick how they look.
+      // If the two disagree, a width gets a tab bar AND a desktop rail, or neither.
+      const ctx = await browser.newContext({ viewport: { width, height: 800 } });
+      const page = await ctx.newPage();
+      await page.goto("/");
+      await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+      await expect(page.getByTestId("tab-bar")).toHaveCount(phone ? 1 : 0);
+      const hamburger = page.getByRole("button", { name: "Toggle sidebar" });
+      if (phone) await expect(hamburger).toBeHidden();
+      else await expect(hamburger).toBeVisible();
+      await ctx.close();
+    });
+  }
 
   test("desktop has no tab bar", async ({ browser }) => {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });

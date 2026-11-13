@@ -75,13 +75,43 @@ test("Ontology tabs keep their 8px gap and the filter sits on the same row", asy
   expect(filter.height).toBe(32);
 });
 
-test("the answer thread still ends at the newest answer's foot", async ({ page }) => {
+test("answer tools stay in the header row above the sentence", async ({ page }) => {
   await page.goto("/");
   await page.getByPlaceholder(/Ask about your data/).fill("Top 5 selling SKUs by revenue");
   await page.getByRole("button", { name: "Ask", exact: true }).click();
   await expect(page.getByTestId("answer-message")).toBeVisible({ timeout: 20_000 });
-  // Tools stay in the header row above the sentence at lg.
   const tools = (await page.getByRole("button", { name: "Download CSV" }).boundingBox())!;
   const text = (await page.getByTestId("answer-text").boundingBox())!;
   expect(tools.y + tools.height).toBeLessThanOrEqual(text.y);
+});
+
+test("the thread still scrolls to the newest answer's foot, not its top", async ({ page }) => {
+  // The phone scrolls a finished answer to its top. Desktop keeps main's behaviour:
+  // the end of the thread (the Continue row) is in view.
+  await page.goto("/");
+  const scroller = page.getByTestId("chat-scroll");
+  for (const q of ["Top 5 selling SKUs by revenue", "Show warehouse capacity utilisation"]) {
+    await page.getByPlaceholder(/Ask about your data/).fill(q);
+    await page.getByRole("button", { name: "Ask", exact: true }).click();
+    await expect(page.getByText("Thinking…")).toHaveCount(0, { timeout: 20_000 });
+  }
+  await expect(page.getByTestId("answer-message")).toHaveCount(2);
+  // Wait until the smooth scroll has stopped, then read one frame.
+  const m = await scroller.evaluate(
+    (el) =>
+      new Promise<{ top: number; height: number; client: number }>((resolve) => {
+        let last = -1;
+        let still = 0;
+        const tick = () => {
+          still = el.scrollTop === last ? still + 1 : 0;
+          last = el.scrollTop;
+          if (still >= 20) resolve({ top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight });
+          else requestAnimationFrame(tick);
+        };
+        tick();
+      }),
+  );
+  expect(m.height).toBeGreaterThan(m.client); // the thread is long enough to scroll
+  // scrollIntoView(end) stops above the scroller's 24px bottom padding, as on main.
+  expect(m.top + m.client).toBeGreaterThanOrEqual(m.height - 40);
 });

@@ -45,7 +45,7 @@ no App Store build.
    that host and trust its certificate. `DMS_TLS_MODE=internal` needs Caddy's
    root installed on the phone, so use `files` with a real certificate.
 2. Open the site in Safari, tap Share, then Add to Home Screen.
-3. Launch "DMS" from the home screen. It runs full screen.
+3. Launch "netie DMS" from the home screen (the label comes from `apple-mobile-web-app-title`). It runs full screen.
 
 What the phone gets: `public/manifest.json`, a 180px touch icon, 44px top-bar
 controls, 16px text fields (no focus zoom), a stacked Library, and Sources in the

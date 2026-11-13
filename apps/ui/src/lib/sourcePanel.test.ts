@@ -126,6 +126,14 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
     expect(sw).toMatch(/NEVER\.some\(.*\)\) return;/);
   });
 
+  it("the shell keeps its home-indicator padding (cannot be measured in a browser test)", () => {
+    // Emulated devices report no safe-area inset, so this is a source pin by necessity.
+    const css = readFileSync(join(here, "../index.css"), "utf8");
+    expect(css).toMatch(/#root \{[^}]*env\(safe-area-inset-bottom\)/);
+    const html = readFileSync(join(here, "../../index.html"), "utf8");
+    expect(html).toMatch(/viewport-fit=cover/);
+  });
+
   it("the offline shell never stores HTML as an asset, a redirect as the shell, or a dead build", () => {
     // Verified on a production build (the missing-asset, prune and file-URL cases);
     // these pins keep the three guards from being dropped.

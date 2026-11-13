@@ -2,6 +2,17 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-13 - IPHONE-PWA-04 (PHONE-APP-01, #512): independent verification of #510, five weak gates closed
+
+- **Routing.** No longer an override. PRD agent verdict F-TBD-19 (provisional, not yet in PRD-001): the phone work belongs to EPIC-008 (#8), which the founder reopened on 2026-11-12. Ticket #512 PHONE-APP-01 is the one PR #510 answers to. #513 PHONE-PATH-01 (upload, grounded ask and truthful scope on a phone) is not covered by #510.
+- **Independent run** (a different agent, on `5272972`, verdict VERIFIED WITH EXCEPTIONS): e2e 92 of 92 twice with no test changing outcome; vitest 136; `tsc` clean; the two Python layout files 15 passed. Desktop compared against a build of `main` at 1280x800 and 1024x768, both modes, 9 routes plus chat after three questions: pixel diff 0 except one frame caught mid smooth-scroll, identical once settled. Phone at 390x844 and 375x667 by its own script: 0 controls under 44px, 0 text under 12px, 0 overflow, answer sentence on screen after each question. Offline cache on a production build: all four checks held. No product defect found.
+- **What it refuted.** Nine single-line mutations of its own choosing: four turned a test red, five did not. The PWA-03 entry's "17 mutations ... each turned a test red" is true of those 17 and said nothing about these five.
+- **Gates closed in this entry** (each of the five now turns a test red): the script breakpoint (`LG_MIN_WIDTH_PX`) disagreeing with the stylesheet's `lg` between 1024 and 1099px; desktop scrolling to an answer's top instead of the thread's end (the old test's title claimed this and asserted something else; it is now two tests); the IME `keyCode === 229` guard on its own; the Sources sheet's minimum height; the shell's safe-area padding (a source pin, because emulation reports no inset).
+- **Also.** Demo banner contrast is asserted in the graphite theme too. README said the home-screen label is "DMS"; it is "netie DMS" (`apple-mobile-web-app-title`).
+- **Correction to PWA-03's headline.** "e2e 92 of 92" includes `library-receipt.spec.ts`, which needs a Cortex engine on :8010 for the compliance gate.
+- **Tests.** e2e 97 of 97 across 11 specs, none skipped (Cortex up); vitest 137; `tsc` clean; the two Python layout files 15 passed.
+- **Still not verified.** A real iPhone (#512 A10). A live model answer on the phone layout. `public/sw.js` has no automated test: the evidence is two hand-run checks on a build, mine and the verifier's. A populated Ontology page (Cortex answers 404 for it). `theme-color` is the cream colour only, so the installed app's chrome is not themed in Operate mode. Not PASS.
+
 ## 2026-11-12 - IPHONE-PWA-03: independent checks, desktop restored, offline cache fixed
 
 - **Routing.** Same founder override. Not in the feedback ledger.
