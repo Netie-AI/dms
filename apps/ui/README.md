@@ -54,6 +54,9 @@ only. It never caches `/api`, `/v1` or `/health`, so an offline phone opens the
 app and shows the "DMS API unreachable" banner. It never shows a stored figure.
 The service worker registers in production builds only.
 
+`npm run e2e:sw` builds the production bundle into the OS temp directory, serves it with `vite preview` and runs `e2e-sw/sw-production.pw.ts` against the real `public/sw.js`.
+No API stack is needed. In a container with its own Chromium set `PW_CHROMIUM=<path>`.
+
 One-handed use (IPHONE-PWA-02): a bottom tab bar replaces the hamburger as the
 main navigation, an answer shows its figure before its tools, Sources is a bottom
 sheet, every control is a 44px target, and the Ontology map is a tap-through list.
