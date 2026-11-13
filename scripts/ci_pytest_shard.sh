@@ -17,9 +17,20 @@ set -euo pipefail
 # left out of its shard (seen with a syntax-error probe file, #530).
 shopt -s inherit_errexit
 
+# Collect quietly, but if pytest cannot collect, say why before failing.
+collect() {
+  local out
+  if ! out=$(python -m pytest "$@" --collect-only -q 2>&1); then
+    printf '%s\n' "$out" | tail -n 40 >&2
+    echo "::error::pytest could not collect the suite (output above). No test file may be left out, so this fails." >&2
+    exit 2
+  fi
+  printf '%s\n' "$out"
+}
+
 shard_files() { # K N
   local out
-  out=$(python -m pytest tests/ --collect-only -q)
+  out=$(collect tests/)
   printf '%s\n' "$out" | grep '::' | sed 's/::.*//' | awk '!seen[$0]++' \
     | awk -v k="$1" -v n="$2" '(NR - 1) % n == k - 1'
 }
@@ -34,12 +45,13 @@ case "${1:-}" in
   verify)
     n="$2"
     tmp=$(mktemp -d)
-    full=$(python -m pytest tests/ --collect-only -q)
+    full=$(collect tests/)
     printf '%s\n' "$full" | grep '::' | sort > "$tmp/full"
     : > "$tmp/shards"
     for k in $(seq 1 "$n"); do
       shard_files "$k" "$n" > "$tmp/files"
-      part=$(xargs -a "$tmp/files" python -m pytest --collect-only -q)
+      mapfile -t shard < "$tmp/files"
+      part=$(collect "${shard[@]}")
       printf '%s\n' "$part" | grep '::' >> "$tmp/shards"
       echo "shard $k of $n: $(wc -l < "$tmp/files") files, $(printf '%s\n' "$part" | grep -c '::') tests"
     done
