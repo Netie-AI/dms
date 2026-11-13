@@ -149,15 +149,104 @@ jobs:
             exit 1
           fi
 
-  lint-type-test:
+  # F-TBD-42. pytest is 96 to 97 percent of what used to be one job (22.0 to
+  # 26.6 min on four PR heads, 2026-11-13, against the 30 minute cap). The suite
+  # now runs as three shards, each on its own runner with the same cap. Nothing
+  # is deselected: every shard asks pytest itself for the collected test files,
+  # in pytest's own order, and takes every third one (scripts/ci_pytest_shard.sh).
+  # lint-type-test proves on every run that the three shards collect exactly the
+  # ids `pytest tests/` collects, and fails if any shard is not green.
+  # One pytest process per runner, as before: the shards share no filesystem,
+  # so the shared default DuckDB file is not shared between them.
+  pytest:
+    name: pytest (shard ${{ matrix.shard }} of 3)
     runs-on: ubuntu-latest
-    # The job takes 18.5 min on main (a52ccb2, 8ff2623). 20 left 1.5 min, so
-    # a PR adding about two minutes of tests was cancelled with nothing failed.
     timeout-minutes: 30
     needs: [protected-paths, contract-pin]
+    strategy:
+      # A red shard must not hide another shard's failures.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     env:
       PYTHONUTF8: "1"
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          # secrets.GITHUB_TOKEN is scoped to the repo the workflow runs in, so
+          # it cannot read the private Netie-AI/Cortex and the API answers 404
+          # rather than 403. Everything downstream - ruff, mypy, import-linter,
+          # the test suite - sat behind this step and had never run.
+          # This is CI-02 option A. Option C (install the published wheel and
+          # delete this step) is the long-term answer, and must not land before
+          # Netie-AI/Cortex#5 or a packaging bug presents as a crypto bug.
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev]"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Invariant + unit tests (shard ${{ matrix.shard }} of 3)
+        shell: bash
+        env:
+          # Control-plane suite hard-fails without Postgres (R-0002). This job has
+          # no compose service yet; skip is an explicit decision, not a silent green.
+          # Add a postgres service job before flipping this off.
+          DMS_SKIP_CONTROL_PLANE_TESTS: "1"
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
+          # DEF-VALIDATE-01: tests/test_def_validate_01.py runs here. No skip.
+          bash scripts/ci_pytest_shard.sh files ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard_files.txt"
+          echo "shard ${{ matrix.shard }} of 3: $(wc -l < "$RUNNER_TEMP/shard_files.txt") test files"
+          xargs -a "$RUNNER_TEMP/shard_files.txt" python -m pytest -q --tb=short
+
+  lint-type-test:
+    runs-on: ubuntu-latest
+    # The cap dates from when pytest ran inside this job (18.5 min on main
+    # a52ccb2, then 22 to 27 min). pytest now runs in the `pytest` shards above
+    # and this job takes about a minute. The cap is not raised.
+    timeout-minutes: 30
+    # This job keeps its name and stays the single gate: it is red unless the
+    # two gates and every pytest shard are green. `!cancelled()` is needed so a
+    # failed shard makes this job FAIL. Without it the job would be skipped, and
+    # a skipped required check counts as passing.
+    needs: [protected-paths, contract-pin, pytest]
+    if: ${{ !cancelled() }}
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - name: Require the gates and every pytest shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }}"
+          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ]; then
+            echo "::error::a required job is not green (see the line above)"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -204,17 +293,14 @@ jobs:
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           lint-imports
 
-      - name: Invariant + unit tests
+      - name: The pytest shards run exactly the suite (no test dropped or run twice)
+        shell: bash
         env:
-          # Control-plane suite hard-fails without Postgres (R-0002). This job has
-          # no compose service yet; skip is an explicit decision, not a silent green.
-          # Add a postgres service job before flipping this off.
           DMS_SKIP_CONTROL_PLANE_TESTS: "1"
         run: |
+          set -euo pipefail
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
-          # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
-          # DEF-VALIDATE-01: tests/test_def_validate_01.py runs here. No skip.
-          python -m pytest tests/ -q --tb=short
+          bash scripts/ci_pytest_shard.sh verify 3
 
       - name: grade52 metric self-test (stack-free, not a score)
         run: python scripts/verify/grade52.py --self-test
