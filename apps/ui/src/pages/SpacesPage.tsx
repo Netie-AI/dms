@@ -9,6 +9,8 @@ import {
   Section,
   StatTile,
 } from "@/components/PageShell";
+import { SpaceOntologyCard } from "@/components/SpaceOntologyCard";
+import { useIsLg } from "@/lib/viewport";
 import { useApp } from "@/context/AppContext";
 import {
   MOCK_STOCK_ASK,
@@ -27,6 +29,7 @@ import type { LibrarySource } from "@/lib/types";
  * chip reports, so there is one notion of scope in the product, not two.
  */
 export function SpacesPage() {
+  const isLg = useIsLg();
   const {
     spaces,
     activeSpaceId,
@@ -57,9 +60,16 @@ export function SpacesPage() {
         fetchSpaceSources(space.id, ctrl.signal).then((body) => [space.id, body.sources] as const),
       ),
     )
-      .then((pairs) => setSpaceSources(Object.fromEntries(pairs)))
-      .catch((err) => setSourcesErr(err instanceof Error ? err.message : String(err)))
-      .finally(() => setSourcesLoading(false));
+      .then((pairs) => {
+        if (!ctrl.signal.aborted) setSpaceSources(Object.fromEntries(pairs));
+      })
+      .catch((err) => {
+        // An aborted run is a superseded one; its error must not outlive its successor.
+        if (!ctrl.signal.aborted) setSourcesErr(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setSourcesLoading(false);
+      });
     return () => ctrl.abort();
   }, [spaces]);
 
@@ -277,6 +287,7 @@ export function SpacesPage() {
                       ))}
                     </ul>
                   )}
+                  {active && !isLg && <SpaceOntologyCard spaceId={space.id} />}
                 </li>
               );
             })}

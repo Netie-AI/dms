@@ -349,7 +349,7 @@ export function StudioPage() {
             title="Add CSV or Excel files"
             disabled={busy}
             onClick={() => fileInput.current?.click()}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-accent)] text-xl font-semibold leading-none text-white hover:opacity-90 disabled:opacity-50"
+            className="flex h-10 w-10 items-center justify-center rounded-full max-lg:h-11 max-lg:w-11 bg-[var(--color-accent)] text-xl font-semibold leading-none text-white hover:opacity-90 disabled:opacity-50"
           >
             {busy ? "…" : "+"}
           </button>

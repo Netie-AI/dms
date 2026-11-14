@@ -63,11 +63,13 @@ describe("sourcePanel", () => {
 });
 
 describe("STUDIO-MOBILE-01 layout wiring", () => {
-  it("Chat Sources overlays below lg and keeps the 22rem dock at lg", () => {
+  it("Chat Sources is a bottom sheet below lg and keeps the 22rem dock at lg", () => {
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
     expect(panel).toMatch(/max-lg:fixed/);
     expect(panel).toMatch(/w-\[22rem\]/);
-    expect(panel).toMatch(/max-lg:w-\[min\(22rem,calc\(100%-2\.75rem\)\)\]/);
+    // IPHONE-PWA-02: a right-hand drawer is a two-handed reach; the sheet rises from the thumb zone.
+    expect(panel).toMatch(/max-lg:inset-x-0 max-lg:bottom-0/);
+    expect(panel).toMatch(/max-lg:max-h-\[75%\]/);
     expect(panel).toMatch(/data-testid="source-panel-open"/);
     expect(panel).toMatch(/min-h-11/);
     const ctx = readFileSync(join(here, "../context/AppContext.tsx"), "utf8");
@@ -101,10 +103,43 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
     expect(bar).not.toMatch(/topbar-title/);
   });
 
-  it("Chat heading keeps right padding so Sources does not sit on the h1", () => {
+  it("phone Sources opener lives in the chat composer, not fixed over the h1 or a banner", () => {
+    // IPHONE-PWA-01 replaced the fixed button + 8rem right gutter: the button
+    // covered the demo banner and the gutter cost a third of a 390px screen.
     const chat = readFileSync(join(here, "../pages/ChatPage.tsx"), "utf8");
-    expect(chat).toMatch(/max-lg:pr-32/);
+    expect(chat).toMatch(/!isLg && !sourcePanelOpen && <SourcesOpenButton \/>/);
+    expect(chat).not.toMatch(/max-lg:pr-32/);
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
-    expect(panel).toMatch(/max-lg:top-12/);
+    const opener = panel.slice(
+      panel.indexOf("export function SourcesOpenButton"),
+      panel.indexOf("export function SourcePanel"),
+    );
+    expect(opener).toMatch(/data-testid="source-panel-open"/);
+    expect(opener).not.toMatch(/max-lg:fixed/);
+    // The backdrop still starts below the top bar.
+    expect(panel).toMatch(/fixed inset-0 top-12/);
+  });
+
+  it("the offline shell never caches an answer path", () => {
+    const sw = readFileSync(join(here, "../../public/sw.js"), "utf8");
+    expect(sw).toMatch(/const NEVER = \["\/api\/", "\/v1\/", "\/health"\]/);
+    expect(sw).toMatch(/NEVER\.some\(.*\)\) return;/);
+  });
+
+  it("the shell keeps its home-indicator padding (cannot be measured in a browser test)", () => {
+    // Emulated devices report no safe-area inset, so this is a source pin by necessity.
+    const css = readFileSync(join(here, "../index.css"), "utf8");
+    expect(css).toMatch(/#root \{[^}]*env\(safe-area-inset-bottom\)/);
+    const html = readFileSync(join(here, "../../index.html"), "utf8");
+    expect(html).toMatch(/viewport-fit=cover/);
+  });
+
+  it("the offline shell never stores HTML as an asset, a redirect as the shell, or a dead build", () => {
+    // Verified on a production build (the missing-asset, prune and file-URL cases);
+    // these pins keep the three guards from being dropped.
+    const sw = readFileSync(join(here, "../../public/sw.js"), "utf8");
+    expect(sw).toMatch(/res\.ok && !res\.redirected && !isHtml\(res\)/);
+    expect(sw).toMatch(/res\.ok && !res\.redirected && isHtml\(res\)\) event\.waitUntil\(refreshShell/);
+    expect(sw).toMatch(/!html\.includes\(path\)\) await cache\.delete\(req\)/);
   });
 });

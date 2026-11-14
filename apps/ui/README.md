@@ -36,6 +36,44 @@ Demo answers use **L2 “generated — check sources”** — never certified gr
 
 `npm run test:e2e` needs the local stack with Cortex up (`Start-DMSStack.ps1 -StartSiblings -StartUi`). Cortex must open its own duckdb, not `DMS_WAREHOUSE_DB` — a shared file makes Studio ingest return ingested=0. The Library receipt spec leaves `e2e_`-prefixed tables in the lake.
 
+## iPhone (IPHONE-PWA-01)
+
+The same SPA installs to the iPhone home screen. There is no native binary and
+no App Store build.
+
+1. Serve the appliance over HTTPS (`deploy/compose`, Caddy). The phone must reach
+   that host and trust its certificate. `DMS_TLS_MODE=internal` needs Caddy's
+   root installed on the phone, so use `files` with a real certificate.
+2. Open the site in Safari, tap Share, then Add to Home Screen.
+3. Launch "netie DMS" from the home screen (the label comes from `apple-mobile-web-app-title`). It runs full screen.
+
+What the phone gets: `public/manifest.json`, a 180px touch icon, 44px top-bar
+controls, 16px text fields (no focus zoom), a stacked Library, and Sources in the
+chat composer row. `public/sw.js` caches the app shell and hashed build assets
+only. It never caches `/api`, `/v1` or `/health`, so an offline phone opens the
+app and shows the "DMS API unreachable" banner. It never shows a stored figure.
+The service worker registers in production builds only.
+
+`npm run e2e:sw` builds the production bundle into the OS temp directory, serves it with `vite preview` and runs `e2e-sw/sw-production.pw.ts` against the real `public/sw.js`.
+No API stack is needed. In a container with its own Chromium set `PW_CHROMIUM=<path>`.
+
+One-handed use (IPHONE-PWA-02): a bottom tab bar replaces the hamburger as the
+main navigation, an answer shows its figure before its tools, Sources is a bottom
+sheet, every control is a 44px target, and the Ontology map is a tap-through list.
+Spaces shows the read-only derived ontology of the active Space.
+
+Everything phone-specific is scoped below `lg` (`max-lg:` or `useIsLg()`). Desktop
+must stay identical to `main`: `e2e/desktop-unchanged.spec.ts` pins the cases that
+have slipped before. One trap: `index.css` resets `font` on buttons outside the
+cascade layers, so a text-size utility placed on a `<button>` does nothing. Put it
+on a child element.
+
+`e2e/iphone-pwa.spec.ts`, `iphone-onehand.spec.ts`, `iphone-ontology.spec.ts`,
+`iphone-tables.spec.ts` and `iphone-charts.spec.ts` assert the phone behaviour at
+390x844 against the local stack. In a container with its own Chromium run them with
+`PW_CHROMIUM=<path> npx playwright test`. `tests/test_studio_mobile_layout.py`
+(pytest, runs in CI) mirrors the layout pins: update it with any layout change.
+
 ## U0 / demo-core acceptance (this slice)
 
 - Empty Chat shows **six** suggested questions aligned to the demo warehouse.

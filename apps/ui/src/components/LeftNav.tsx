@@ -1,16 +1,19 @@
+import { useRef } from "react";
 import { NavLink } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
+import { useModalFocus } from "@/lib/useModalFocus";
+import { useIsLg } from "@/lib/viewport";
 import type { AppRole, NavId } from "@/lib/types";
 
-type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
+export type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
 
 /**
  * Grouped by the question the user is holding, not by the module that serves it.
  * Ten surfaces in one flat list reads as a settings menu; four groups of two or
  * three reads as a product with a shape.
  */
-const GROUPS: { title: string; items: NavItem[] }[] = [
+export const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: "Ask",
     items: [{ id: "chat", label: "Chat", to: "/", short: "C", hint: "Ask about your data" }],
@@ -77,11 +80,11 @@ const GROUPS: { title: string; items: NavItem[] }[] = [
   },
 ];
 
-const ADMIN_ONLY: NavId[] = ["admin"];
+export const ADMIN_ONLY: NavId[] = ["admin"];
 const ROLES: AppRole[] = ["viewer", "steward", "admin"];
 
 function linkClass(isActive: boolean): string {
-  return `block px-3 py-1.5 text-sm font-medium ${
+  return `block px-3 py-1.5 text-sm font-medium max-lg:flex max-lg:min-h-11 max-lg:items-center ${
     isActive
       ? "border-l-2 border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-ink)]"
       : "border-l-2 border-transparent text-[var(--color-ink-muted)] hover:bg-[var(--color-paper-2)] hover:text-[var(--color-ink)]"
@@ -91,7 +94,7 @@ function linkClass(isActive: boolean): string {
 export function LeftNav() {
   const { navCollapsed, role, setRole, productMode, closeNavDrawer } = useApp();
   const allowed = navIdsForMode(productMode);
-  const visible = GROUPS.map((g) => ({
+  const visible = NAV_GROUPS.map((g) => ({
     ...g,
     items: g.items.filter(
       (i) =>
@@ -99,6 +102,16 @@ export function LeftNav() {
         (allowed == null || allowed.has(i.id)),
     ),
   })).filter((g) => g.items.length);
+
+  // Below lg the open nav is a modal drawer.
+  const isLg = useIsLg();
+  const drawer = useRef<HTMLElement | null>(null);
+  useModalFocus(
+    !navCollapsed && !isLg,
+    drawer,
+    closeNavDrawer,
+    '[data-testid="tab-bar"] button[aria-controls="primary-nav"]',
+  );
 
   if (navCollapsed) {
     return (
@@ -144,8 +157,12 @@ export function LeftNav() {
         onClick={closeNavDrawer}
       />
       <nav
+        ref={drawer}
         id="primary-nav"
-        aria-label="Primary"
+        // Below lg the open nav is a modal dialog (like the Sources sheet); at lg it is a docked landmark.
+        role={isLg ? undefined : "dialog"}
+        aria-modal={isLg ? undefined : true}
+        aria-label={isLg ? "Primary" : "Primary navigation"}
         data-testid="left-nav"
         className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:z-40"
       >
@@ -194,7 +211,7 @@ export function LeftNav() {
             aria-label="Role"
             value={role}
             onChange={(e) => setRole(e.target.value as AppRole)}
-            className="h-8 w-full border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
+            className="h-11 w-full border border-[var(--color-line)] bg-transparent px-2 text-sm capitalize"
           >
             {ROLES.map((r) => (
               <option key={r} value={r}>

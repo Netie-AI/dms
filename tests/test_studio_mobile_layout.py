@@ -17,7 +17,11 @@ def test_chat_source_panel_is_overlay_below_lg_not_a_docked_22rem_sibling() -> N
     src = (UI / "components" / "SourcePanel.tsx").read_text(encoding="utf-8")
     assert "max-lg:fixed" in src
     assert "w-[22rem]" in src
-    assert "max-lg:w-[min(22rem,calc(100%-2.75rem))]" in src
+    # IPHONE-PWA-02 (#510): still an overlay, now a bottom sheet instead of a
+    # right-hand drawer, so it rises from the thumb zone.
+    assert "max-lg:inset-x-0 max-lg:bottom-0" in src
+    assert "max-lg:max-h-[75%]" in src
+    assert "max-lg:w-[min(22rem,calc(100%-2.75rem))]" not in src
     assert 'data-testid="source-panel-open"' in src
     assert "min-h-11" in src
     shell = (UI / "components" / "AppShell.tsx").read_text(encoding="utf-8")
@@ -95,10 +99,19 @@ def test_topbar_does_not_clip_primary_actions_below_lg() -> None:
 
 
 def test_chat_heading_clears_sources_chip_below_lg() -> None:
-    """#192: Sources chip at top-right must not sit on the Chat h1."""
+    """#192: the Sources opener must not sit on the Chat h1.
+
+    IPHONE-PWA-01 (#510): fixed at top-12 it also sat on the demo banner (rule
+    11), and the 8rem gutter that made room for it cost a third of a 390px
+    screen. Below lg it now renders in the composer row, so nothing at the top
+    of the page can be covered and the gutter is gone.
+    """
     chat = (UI / "pages" / "ChatPage.tsx").read_text(encoding="utf-8")
-    assert "max-lg:pr-32" in chat
+    assert "!isLg && !sourcePanelOpen && <SourcesOpenButton />" in chat
+    assert "max-lg:pr-32" not in chat
     src = (UI / "components" / "SourcePanel.tsx").read_text(encoding="utf-8")
-    assert "max-lg:top-12" in src
-    assert "max-lg:right-3" in src
-    assert "min-h-11" in src
+    start = src.index("export function SourcesOpenButton")
+    opener = src[start : src.index("export function SourcePanel")]
+    assert 'data-testid="source-panel-open"' in opener
+    assert "max-lg:fixed" not in opener
+    assert "min-h-11" in opener

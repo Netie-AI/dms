@@ -38,7 +38,7 @@ export function PageHeader({
 export function Page({ children }: { children: ReactNode }) {
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-6xl px-8 py-8">{children}</div>
+      <div className="mx-auto max-w-6xl px-4 py-5 lg:px-8 lg:py-8">{children}</div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
 import { ceoSafeHref } from "@/lib/productMode";
@@ -6,7 +6,7 @@ import type { AppRole } from "@/lib/types";
 
 const ROLES: AppRole[] = ["viewer", "steward", "admin"];
 
-export function TopBar() {
+export function TopBar({ inert = false }: { inert?: boolean }) {
   const {
     toggleNav,
     navCollapsed,
@@ -21,14 +21,31 @@ export function TopBar() {
   } = useApp();
   const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
+  const newMenu = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!newOpen) return;
+    const dismiss = (e: KeyboardEvent | PointerEvent) => {
+      const outside = !newMenu.current?.contains(e.target as Node);
+      if (e instanceof KeyboardEvent ? e.key === "Escape" : outside) setNewOpen(false);
+    };
+    window.addEventListener("keydown", dismiss);
+    window.addEventListener("pointerdown", dismiss);
+    return () => {
+      window.removeEventListener("keydown", dismiss);
+      window.removeEventListener("pointerdown", dismiss);
+    };
+  }, [newOpen]);
   const nextMode = productMode === "cream" ? "graphite" : "cream";
 
   return (
-    <header className="relative z-40 flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
+    <header
+      // An open drawer or Sources sheet is modal: the top bar behind it takes no focus or taps.
+      inert={inert}
+      className="relative z-40 flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
       <button
         type="button"
         onClick={toggleNav}
-        className="flex h-8 w-8 shrink-0 items-center justify-center border border-[var(--color-line)] text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+        className="hidden h-8 w-8 shrink-0 items-center justify-center border border-[var(--color-line)] lg:flex text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
         aria-label="Toggle sidebar"
         aria-expanded={!navCollapsed}
         aria-controls="primary-nav"
@@ -45,7 +62,7 @@ export function TopBar() {
         onChange={(e) =>
           setActiveSpaceId(e.target.value === "" ? null : e.target.value)
         }
-        className="h-8 min-w-[8rem] flex-1 border border-[var(--color-line)] bg-transparent px-2 text-sm lg:max-w-[12rem] lg:flex-none"
+        className="h-11 min-w-[8rem] flex-1 lg:h-8 border border-[var(--color-line)] bg-transparent px-2 text-sm lg:max-w-[12rem] lg:flex-none"
       >
         <option value="">Company (default ACL)</option>
         {spaces.map((s) => (
@@ -55,11 +72,11 @@ export function TopBar() {
         ))}
       </select>
 
-      <div className="relative shrink-0">
+      <div ref={newMenu} className="relative shrink-0">
         <button
           type="button"
           onClick={() => setNewOpen((o) => !o)}
-          className="h-8 shrink-0 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 text-sm font-medium text-[var(--color-on-accent)]"
+          className="h-11 shrink-0 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 lg:h-8 text-sm font-medium text-[var(--color-on-accent)]"
           aria-expanded={newOpen}
           aria-haspopup="menu"
         >
@@ -73,7 +90,7 @@ export function TopBar() {
           >
             <button
               type="button"
-              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)] max-lg:min-h-11"
               onClick={() => {
                 setNewOpen(false);
                 navigate(ceoSafeHref(productMode, "/studio"));
@@ -84,7 +101,7 @@ export function TopBar() {
             {productMode === "graphite" && (
               <button
                 type="button"
-                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+                className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)] max-lg:min-h-11"
                 onClick={() => {
                   setNewOpen(false);
                   navigate("/amend");
@@ -95,7 +112,7 @@ export function TopBar() {
             )}
             <button
               type="button"
-              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)] max-lg:min-h-11"
               onClick={() => {
                 setNewOpen(false);
                 navigate("/spaces");
@@ -150,7 +167,7 @@ export function TopBar() {
       <button
         type="button"
         onClick={() => setProductMode(nextMode)}
-        className="h-8 shrink-0 border border-[var(--color-accent)] px-2.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+        className="h-11 shrink-0 border border-[var(--color-accent)] px-2.5 text-xs lg:h-8 font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
         aria-label={
           productMode === "cream" ? "Switch to operator mode" : "Switch to ask mode"
         }

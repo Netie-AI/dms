@@ -75,3 +75,96 @@ input,
 textarea {
   font: inherit;
 }
+
+/* iPhone home-screen app (IPHONE-PWA-01). */
+html {
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  /* The shell scrolls its own panes; the page itself must not rubber-band. */
+  overscroll-behavior: none;
+}
+
+#root {
+  /* viewport-fit=cover draws under the home indicator and the landscape notch. */
+  padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+@media (max-width: 1023.98px) {
+  /* iOS Safari zooms the page when a focused field is under 16px. */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  /*
+   * 44px touch targets (Apple HIG; WCAG 2.2 asks for 24px at minimum). A control
+   * may still look compact: its text keeps its size and the box grows around it.
+   * Inline controls inside a sentence pad their hit area with ::after instead.
+   */
+  main button,
+  main select,
+  main summary,
+  main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  aside button {
+    min-height: 2.75rem;
+  }
+
+  /*
+   * The cream warn pair (#9a6b1a on #f5ebd4) is 3.94:1. The demo banner is 12px
+   * text that rule 11 says must be unmissable, so it needs 4.5:1. This is 5.8:1.
+   */
+  :root:not([data-theme="graphite"]) {
+    --color-warn: #7a5210;
+  }
+
+  /*
+   * 12px text floor. The desktop design uses 10px and 11px micro-labels; on a
+   * phone held at arm's length they are unreadable. Matching the literal utility
+   * name keeps this to one rule instead of an edit in every page.
+   */
+  [class*="text-[10px]"],
+  [class*="text-[11px]"] {
+    font-size: 0.75rem;
+  }
+
+  .tap-pad {
+    position: relative;
+  }
+
+  .tap-pad::after {
+    content: "";
+    position: absolute;
+    inset: -1rem -0.25rem;
+  }
+
+  /* The answer tools: one swipeable row of chips under the answer. */
+  [data-testid="answer-actions"] > * {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    min-height: 2.75rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--color-line);
+    white-space: nowrap;
+    text-decoration: none;
+  }
+
+  /* More chips are off to the right: fade the edge. A mask draws nothing, so no chip is hidden and no tap is caught. */
+  [data-testid="answer-actions"][data-more="true"] {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+  }
+}
+
+/* Landscape phone: the tab labels sit beside their icons to save height. */
+@media (max-width: 1023.98px) and (max-height: 480px) {
+  [data-testid="tab-bar"] > * {
+    min-height: 2.75rem;
+    flex-direction: row;
+    gap: 0.375rem;
+  }
+}

@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
+import { InstallHint } from "@/components/InstallHint";
 import { ScopeChip } from "@/components/ScopeChip";
+import { SourcesOpenButton } from "@/components/SourcePanel";
 import { useApp } from "@/context/AppContext";
+import { useIsLg, useIsNarrowPhone } from "@/lib/viewport";
 
 export function ChatPage() {
   const {
@@ -27,15 +30,37 @@ export function ChatPage() {
     groundedLabels,
     setGrounded,
     productMode,
+    sourcePanelOpen,
   } = useApp();
+  const isLg = useIsLg();
+  const narrow = useIsNarrowPhone();
   const location = useLocation();
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Phone composer: one line until the text needs more, capped at about five.
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "";
+    // Empty: stay one line even when the placeholder is wider than the field.
+    if (!isLg && draft) el.style.height = `${Math.min(el.scrollHeight + 2, 148)}px`;
+  }, [draft, isLg, asking]); // `asking` swaps the placeholder, which can wrap
 
   useEffect(() => {
+    // Phone: a finished answer is read from its top (badge, then the figure).
+    // Scrolling to its end put both above the screen on every ask.
+    const last = messages[messages.length - 1];
+    if (!isLg && !asking && last?.role === "assistant") {
+      const answers = scrollRef.current?.querySelectorAll('[data-testid="answer-message"]');
+      answers?.[answers.length - 1]?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, askError, asking, askQueueDepth]);
+  }, [messages, askError, asking, askQueueDepth, isLg]);
 
   // Studio hands the selection / buyer-walk question through router state.
   // Consume it once and clear it, so a later back-navigation does not silently
@@ -72,7 +97,7 @@ export function ChatPage() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       {groundedTables.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5 px-6 py-2 text-xs max-lg:pr-32">
+        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-accent)]/40 bg-[var(--color-accent)]/5 px-6 py-2 text-xs max-lg:px-4">
           <span className="font-medium text-[var(--color-ink)]">
             Grounded in {groundedTables.length}{" "}
             {groundedTables.length === 1 ? "file" : "files"}
@@ -92,7 +117,11 @@ export function ChatPage() {
           </button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 max-lg:pr-32">
+      <div
+        ref={scrollRef}
+        data-testid="chat-scroll"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 py-6 max-lg:px-4 max-lg:py-4"
+      >
         {empty ? (
           <div className={`mx-auto ${chatWidth}`}>
             <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight text-[var(--color-ink)]">
@@ -103,15 +132,16 @@ export function ChatPage() {
                 ? `Scoped to ${activeSpace.name}. Every number is a button back to its cell.`
                 : "Company default ACL. Pick a Space in the top bar to sandbox sources."}
             </p>
+            <InstallHint />
             {productMode === "cream" && (
-              <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
+              <p className="mt-2 text-sm text-[var(--color-ink-muted)] max-lg:hidden">
                 If we cannot stand behind a figure, we say so. Open Library, pick a
                 table, Ask about this table. Share the CSV from any answer.
                 Operate mode in the top bar opens Studio, ontology, and the ledger.
               </p>
             )}
             {askMode === "demo" && (
-              <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
+              <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)] max-lg:hidden">
                 Demo ask mode — answers compute from the local DuckDB warehouse. Not certified.
                 {spacesFromApi ? " Spaces loaded from DMS API." : " Using offline Space fixtures."}
               </p>
@@ -178,7 +208,7 @@ export function ChatPage() {
               </button>
             </div>
             {askMode === "demo" && (
-              <p className="border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
+              <p className="border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)] max-lg:hidden">
                 Demo mode — L2 badges only. Numbers come from DuckDB, not a certified Cortex path.
               </p>
             )}
@@ -205,13 +235,16 @@ export function ChatPage() {
                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
                   Continue
                 </p>
-                <ul className="mt-2 flex flex-wrap gap-2">
+                <ul
+                  data-testid="continue-chips"
+                  className="mt-2 flex flex-wrap gap-2 max-lg:-mx-4 max-lg:flex-nowrap max-lg:overflow-x-auto max-lg:px-4 max-lg:pb-1"
+                >
                   {suggestions.slice(0, 4).map((q) => (
-                    <li key={q}>
+                    <li key={q} className="max-lg:shrink-0">
                       <button
                         type="button"
                         onClick={() => submit(q)}
-                        className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 py-1.5 text-xs text-[var(--color-ink)] hover:border-[var(--color-accent)]"
+                        className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 py-1.5 text-xs text-[var(--color-ink)] hover:border-[var(--color-accent)] max-lg:whitespace-nowrap"
                       >
                         {q}
                       </button>
@@ -225,9 +258,10 @@ export function ChatPage() {
         )}
       </div>
 
-      <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3">
+      <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3 max-lg:py-2">
         <div className={`mx-auto flex ${chatWidth} flex-col gap-2`}>
-          <ScopeChip />
+          {/* Desktop: the chip spans the composer. Phone: the top bar names the Space and Sources carries the count. */}
+          {isLg && <ScopeChip />}
           {composerPaused && composerPauseReason && (
             <p className="border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
               {composerPauseReason}
@@ -240,33 +274,45 @@ export function ChatPage() {
             </p>
           )}
           <form
-            className="flex gap-2"
+            className="flex gap-2 max-lg:gap-1.5"
             onSubmit={(e) => {
               e.preventDefault();
               if (draft.trim()) submit(draft.trim());
             }}
           >
             <textarea
+              ref={composerRef}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
+                // An IME (pinyin, kana, hangul) confirms a candidate with Enter; that is not a send.
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   if (draft.trim()) submit(draft.trim());
                 }
               }}
               placeholder={
-                asking
-                  ? "Type next question — it will queue…"
-                  : "Ask about your data… (Shift+Enter for newline)"
+                isLg
+                  ? asking
+                    ? "Type next question — it will queue…"
+                    : "Ask about your data… (Shift+Enter for newline)"
+                  : asking
+                    ? "Next question…"
+                    : narrow
+                      ? "Ask a question…"
+                      : "Ask about your data…"
               }
-              rows={2}
-              className="min-h-[2.75rem] flex-1 resize-y border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)]"
+              aria-label={isLg ? undefined : "Ask about your data"}
+              enterKeyHint="send"
+              rows={isLg ? 2 : 1}
+              className="min-h-[2.75rem] min-w-0 flex-1 resize-y border max-lg:resize-none border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)] caret-[var(--color-ink)] placeholder:text-[var(--color-ink-muted)] max-lg:px-2.5"
             />
+            {!isLg && !sourcePanelOpen && <SourcesOpenButton />}
             <button
               type="submit"
               disabled={!draft.trim()}
-              className="h-11 self-end bg-[var(--color-accent)] px-4 text-sm font-medium text-[var(--color-on-accent)] disabled:opacity-50"
+              className="h-11 shrink-0 self-end bg-[var(--color-accent)] px-4 max-lg:px-3 text-sm font-medium text-[var(--color-on-accent)] disabled:opacity-50"
             >
               {asking ? "Queue" : "Ask"}
             </button>

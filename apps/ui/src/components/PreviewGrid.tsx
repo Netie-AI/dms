@@ -8,6 +8,11 @@ type Props = {
 /**
  * Lightweight virtualized grid (windowed rows) — TanStack Virtual lands in U1 polish.
  * Contributing cells are highlighted; jump-to-next stepper included.
+ *
+ * Phone: the grid scrolls inside its own box (it never widens the page) and the stepper is a
+ * 44px target. Its first column is deliberately not sticky: non-contributing cells are drawn at
+ * half opacity, which would let columns show through an opaque sticky cell. Button text is set by
+ * font inheritance (index.css resets font on buttons), not by a size utility on the button.
  */
 export function PreviewGrid({ sheet }: Props) {
   const rows = useMemo(() => {
@@ -59,19 +64,19 @@ export function PreviewGrid({ sheet }: Props) {
         <div className="flex items-center gap-1">
           <button
             type="button"
-            className="border border-[var(--color-line)] px-2 py-0.5 text-[11px]"
+            className="border border-[var(--color-line)] px-2 py-0.5 max-lg:min-h-11 max-lg:min-w-11"
             onClick={() => jumpTo(cursor - 1)}
           >
             Prev
           </button>
-          <span className="text-[11px] text-[var(--color-ink-muted)]">
+          <span className="text-[11px] text-[var(--color-ink-muted)] max-lg:text-xs">
             {contributingRowList.length
               ? `${cursor + 1}/${contributingRowList.length}`
               : "0"}
           </span>
           <button
             type="button"
-            className="border border-[var(--color-line)] px-2 py-0.5 text-[11px]"
+            className="border border-[var(--color-line)] px-2 py-0.5 max-lg:min-h-11 max-lg:min-w-11"
             onClick={() => jumpTo(cursor + 1)}
           >
             Next

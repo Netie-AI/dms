@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { PreviewGrid } from "@/components/PreviewGrid";
 import { useApp } from "@/context/AppContext";
 import { postReveal } from "@/lib/api";
 import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
+import { scopeChipLabel } from "@/lib/scopeChipLabel";
 import { sourcesHeadline } from "@/lib/sourcePanel";
+import { useModalFocus } from "@/lib/useModalFocus";
+import { useIsLg } from "@/lib/viewport";
 
 function formatMoney(n: number) {
   return new Intl.NumberFormat("en-MY", {
@@ -14,7 +17,53 @@ function formatMoney(n: number) {
   }).format(n);
 }
 
+/**
+ * The closed-state opener. At lg it is the vertical tab on the dock rail. Below
+ * lg ChatPage renders it in the composer row: fixed under the top bar it sat on
+ * top of the demo banner, which rule 11 says must stay unmissable.
+ */
+export function SourcesOpenButton() {
+  const { setSourcePanelOpen, activeSpace, scopedSourceCount } = useApp();
+  const isLg = useIsLg();
+  // Phone: the name carries the whole scope. An unknown count is left out, never shown as 0.
+  const scope =
+    scopedSourceCount === null
+      ? (activeSpace?.name ?? "Company (default ACL)")
+      : scopeChipLabel(activeSpace?.name, scopedSourceCount).replace(/^Asking: /, "");
+  return (
+    <button
+      type="button"
+      data-testid="source-panel-open"
+      aria-label={isLg ? "Open sources" : `Sources: ${scope}`}
+      onClick={() => setSourcePanelOpen(true)}
+      className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:min-h-11 max-lg:min-w-[3.5rem] max-lg:shrink-0 max-lg:self-end max-lg:border max-lg:border-[var(--color-line)] max-lg:gap-1 max-lg:px-2 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
+    >
+      {/* Phone: an icon, the row has no room for the word. aria-label names it. */}
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        className="h-5 w-5 lg:hidden"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      >
+        <path d="M12 4 3 8.5l9 4.5 9-4.5L12 4Z" />
+        <path d="m3 12.5 9 4.5 9-4.5" />
+        <path d="m3 16.5 9 4.5 9-4.5" />
+      </svg>
+      {!isLg && scopedSourceCount !== null && (
+        <span data-testid="source-count" className="text-xs tabular-nums lg:hidden">
+          {scopedSourceCount}
+        </span>
+      )}
+      <span className="max-lg:hidden">Sources</span>
+    </button>
+  );
+}
+
 export function SourcePanel() {
+  const isLg = useIsLg();
   const {
     sourcePanelOpen,
     setSourcePanelOpen,
@@ -25,19 +74,12 @@ export function SourcePanel() {
     latestAnswer: answer,
   } = useApp();
   const [revealNote, setRevealNote] = useState<string | null>(null);
+  const sheet = useRef<HTMLElement | null>(null);
+  const close = useCallback(() => setSourcePanelOpen(false), [setSourcePanelOpen]);
+  useModalFocus(sourcePanelOpen && !isLg, sheet, close, '[data-testid="source-panel-open"]');
 
   if (!sourcePanelOpen) {
-    return (
-      <button
-        type="button"
-        data-testid="source-panel-open"
-        aria-label="Open sources"
-        onClick={() => setSourcePanelOpen(true)}
-        className="flex items-center justify-center bg-[var(--color-panel)] text-[10px] font-semibold uppercase tracking-wider text-[var(--color-ink-muted)] max-lg:fixed max-lg:right-3 max-lg:top-12 max-lg:z-20 max-lg:min-h-11 max-lg:min-w-[2.75rem] max-lg:border max-lg:border-[var(--color-line)] max-lg:px-3 lg:relative lg:w-9 lg:shrink-0 lg:items-start lg:border-l lg:border-[var(--color-line)] lg:pt-4 lg:[writing-mode:vertical-rl]"
-      >
-        Sources
-      </button>
-    );
+    return isLg ? <SourcesOpenButton /> : null;
   }
 
   const totalRows = contributingSources.reduce((s, c) => s + c.row_count, 0);
@@ -71,9 +113,12 @@ export function SourcePanel() {
         onClick={() => setSourcePanelOpen(false)}
       />
       <aside
+        ref={sheet}
+        role={isLg ? undefined : "dialog"}
+        aria-modal={isLg ? undefined : true}
         data-testid="source-panel"
         aria-label="Sources"
-        className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:right-0 max-lg:bottom-0 max-lg:z-40 max-lg:w-[min(22rem,calc(100%-2.75rem))]"
+        className="flex w-[22rem] shrink-0 flex-col border-l border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:z-40 max-lg:max-h-[75%] max-lg:min-h-[40%] max-lg:w-full max-lg:border-t max-lg:border-l-0 max-lg:pb-[env(safe-area-inset-bottom)] max-lg:shadow-[0_-8px_24px_rgba(0,0,0,0.18)]"
       >
       <div className="flex items-center justify-between border-b border-[var(--color-line)] px-3 py-3">
         <div>
@@ -90,7 +135,8 @@ export function SourcePanel() {
           className="flex min-h-11 min-w-11 items-center justify-center text-sm text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
           aria-label="Collapse sources"
         >
-          ⟩
+          <span className="lg:hidden" aria-hidden>✕</span>
+          <span className="max-lg:hidden" aria-hidden>⟩</span>
         </button>
       </div>
 

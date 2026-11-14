@@ -4,6 +4,7 @@ import { Badge } from "@/components/Badge";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
+import { isAbstain } from "@/components/studio/abstainReason";
 import { ResultView } from "@/components/studio/ResultView";
 import { useApp } from "@/context/AppContext";
 import {
@@ -29,6 +30,7 @@ import {
 } from "@/lib/rowsToCsv";
 import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
+import { useIsLg } from "@/lib/viewport";
 
 const EXCLUSION_YES_RE = /^Yes — exclude\b/i;
 const EXCLUSION_NO_RE = /^No — show\b|without excluding/i;
@@ -125,7 +127,7 @@ function renderWithValues(
         key={v.id}
         type="button"
         onClick={() => onValue(v.id)}
-        className="mx-0.5 inline border-b-2 border-[var(--color-accent)] font-semibold text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+        className="tap-pad mx-0.5 inline border-b-2 border-[var(--color-accent)] font-semibold text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
       >
         {hit}
       </button>,
@@ -157,8 +159,46 @@ function reconfirmCard(envelope: AnswerEnvelope): {
   };
 }
 
+/**
+ * Below lg the tools are one swipeable row of chips. A row that scrolls says so: while
+ * more chips are off to the right, `data-more` is set and index.css fades the right
+ * edge (a mask, so it draws no element, hides no chip and takes no tap).
+ */
+function ToolsStrip({ children }: { children: ReactNode }) {
+  const strip = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  // Every render: a chip can come or go (the Share note changes its width).
+  useEffect(() => {
+    const el = strip.current;
+    if (!el) return;
+    const measure = () => setMore(el.scrollWidth - el.clientWidth - el.scrollLeft > 1);
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const ro = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    ro?.observe(el);
+    for (const chip of el.children) ro?.observe(chip);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      ro?.disconnect();
+    };
+  });
+  return (
+    <div
+      ref={strip}
+      role="group"
+      aria-label="Answer tools"
+      data-testid="answer-actions"
+      data-more={more ? "true" : "false"}
+      className="-mx-4 mt-4 flex gap-2 overflow-x-auto px-4 pb-1"
+    >
+      {children}
+    </div>
+  );
+}
+
 export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const { selectValue, setSourcePanelOpen, ask, suggestions, productMode } = useApp();
+  const isLg = useIsLg();
   const [follow, setFollow] = useState<AnswerEnvelope | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -359,425 +399,523 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     return <AnswerMessage envelope={follow} />;
   }
 
-  return (
-    <article className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setShowLayer((s) => !s)}
-          aria-expanded={showLayer}
-          title="What does this badge mean?"
-          className="cursor-pointer"
-        >
-          <Badge kind={envelope.badge} />
-        </button>
-        <ServedModelLine envelope={envelope} />
-        {(envelope.demo_fallback_used || envelope.ask_mode === "demo") && (
-          <span className="border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-warn)]">
-            {envelope.demo_fallback_used ? "fallback → demo" : "demo"}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => setShowSql((s) => !s)}
-          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-        >
-          ⟨sql⟩
-        </button>
-        {rows.length > 0 && (
-          <button
-            type="button"
-            onClick={() => void downloadRowsCsv()}
-            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-          >
-            Download CSV
-          </button>
-        )}
-        {envelope.answer_id ? (
-          <button
-            type="button"
-            onClick={() => void downloadRowsXlsx()}
-            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-          >
-            Download Excel
-          </button>
-        ) : null}
-        {envelope.answer_id ? (
-          <button
-            type="button"
-            onClick={() => void loadBi("powerbi")}
-            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-          >
-            Power BI
-          </button>
-        ) : null}
-        {envelope.answer_id ? (
-          <button
-            type="button"
-            onClick={() => void loadBi("superset")}
-            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-          >
-            Superset
-          </button>
-        ) : null}
-        <button
-          type="button"
-          onClick={() => {
-            void copyText(shareEnvelopePayload(envelope)).then((ok) => {
-              setShareNote(ok ? "Envelope copied" : "Copy failed");
-              window.setTimeout(() => setShareNote(null), 1600);
-            });
-          }}
-          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-        >
-          {shareNote ?? "Share answer"}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const r = checkAnswerTotals(envelope);
-            setCheckNote(r.message);
-          }}
-          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-        >
-          Check accuracy
-        </button>
-        <Link
-          to="/trust"
-          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-        >
-          Trust runs
-        </Link>
-        {rows.length > 0 && (
-          <button
-            type="button"
-            onClick={() => setShowCopilot((s) => !s)}
-            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-          >
-            Copilot prompts
-          </button>
-        )}
-        {envelope.drillthrough_token ? (
-          <button
-            type="button"
-            disabled={drillBusy}
-            onClick={() => void runDrillthrough()}
-            className="text-xs text-[var(--color-accent)] underline-offset-2 hover:underline disabled:opacity-50"
-          >
-            {drillBusy ? "Drilling…" : "Show me why"}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setSourcePanelOpen(true)}
-            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-          >
-            ⟨sources⟩
-          </button>
-        )}
-        {envelope.audit_id && (
-          <a
-            href={ceoSafeHref(productMode, "/audit")}
-            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
-            title={envelope.audit_id}
-          >
-            ⟨audit⟩
-          </a>
-        )}
-      </div>
-      <AbstainNote envelope={envelope} />
-      {showLayer && (
-        <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
-          <p className="text-sm font-medium text-[var(--color-ink)]">
-            {layerCopy(envelope).headline}
-          </p>
-          <p className="mt-1 text-xs leading-relaxed text-[var(--color-ink-muted)]">
-            {layerCopy(envelope).detail}
-          </p>
-          <p className="mt-2 flex flex-wrap gap-3 text-xs">
-            <Link
-              to={ceoSafeHref(productMode, "/ontology")}
-              className="text-[var(--color-accent)] hover:underline"
-            >
-              {productMode === "cream" ? "Open the tables" : "See the governed metrics"}
-            </Link>
-            <Link to="/trust" className="text-[var(--color-accent)] hover:underline">
-              See the evidence behind this badge
-            </Link>
-            {envelope.audit_id && (
-              <Link
-                to={ceoSafeHref(productMode, "/audit")}
-                className="text-[var(--color-accent)] hover:underline"
-              >
-                {productMode === "cream" ? "Check this number" : "Find this in the ledger"}
-              </Link>
-            )}
-          </p>
-        </div>
-      )}
-      {checkNote && (
-        <p
-          className={`mb-3 border px-3 py-2 text-xs ${
-            checkNote.startsWith("Mismatch")
-              ? "border-[var(--color-danger)]/40 text-[var(--color-danger)]"
-              : "border-[var(--color-line)] text-[var(--color-ink-muted)]"
-          }`}
-        >
-          {checkNote}{" "}
-          <Link to="/trust" className="text-[var(--color-accent)] hover:underline">
-            Open Trust
-          </Link>
-        </p>
-      )}
-      {receipt && (
-        <div
-          data-testid="audit-receipt"
-          className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5 text-xs text-[var(--color-ink-muted)]"
-        >
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">
-            Include / exclude / unsure
-          </p>
-          <p data-testid="audit-receipt-include" className="mt-1">
-            Include: {receipt.include}
-          </p>
-          <p data-testid="audit-receipt-exclude" className="mt-1">
-            Exclude: {receipt.exclude}
-          </p>
-          <p data-testid="audit-receipt-unsure" className="mt-1">
-            Unsure: {receipt.unsure}
-          </p>
-        </div>
-      )}
-      <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
-        {renderWithValues(prose, envelope.values, selectValue)}
-      </p>
-      {insights.length > 0 && (
-        <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
-            Insights
-          </p>
-          <ul className="mt-1 list-inside list-disc text-sm text-[var(--color-ink)]">
-            {insights.map((b) => (
-              <li key={b}>{b}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+  // Below lg an abstained answer has no rows and no executed SQL. The tools that act on
+  // rows or SQL (the downloads, the BI stubs, Check accuracy, a SQL view with no SQL, a
+  // sources panel with no sources) have nothing to act on there, so a phone omits them.
+  // lg keeps every tool.
+  const bare = isAbstain(envelope) && rows.length === 0;
+  const hasSql = Boolean(envelope.sql_used);
+  const hasSources = (envelope.contributing_sources?.length ?? 0) > 0;
 
-      {/* Usability rule 12 — abstain is never a dead end. */}
-      {envelope.badge === "ABSTAIN" && (
-        <div className="mt-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
-            {isExclusionConfirm ? "Confirm exclusion" : "Try one of these instead"}
-          </p>
-          <ul className="mt-2 flex flex-wrap gap-1.5">
-            {chipSuggestions.slice(0, 4).map((q) => {
-              const isYes = EXCLUSION_YES_RE.test(q);
-              const isNo = EXCLUSION_NO_RE.test(q);
-              return (
-                <li key={q}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      confirmFired.current = true;
-                      setConfirmLeft(null);
-                      void ask(isNo ? resolveExclusionNoChip(q) : q);
-                    }}
-                    className={
-                      isYes
-                        ? "border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-2.5 py-1.5 text-xs font-semibold text-[var(--color-accent)]"
-                        : "border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 py-1.5 text-xs hover:border-[var(--color-accent)]"
-                    }
-                  >
-                    {isYes && confirmLeft != null && confirmLeft > 0
-                      ? `${q} (${confirmLeft}s)`
-                      : isNo && confirmLeft === 0
-                        ? `${q} (auto)`
-                        : q}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          {isExclusionConfirm && confirmLeft != null && confirmLeft > 0 && (
-            <p className="mt-2 text-xs text-[var(--color-ink-muted)]">
-              Yes cancels automatically in {confirmLeft}s — then the unfiltered top ranking runs.
-            </p>
+  // Each block is built once and placed once. DOM order is the order a person reads and
+  // tabs in, so a phone places the blocks where they are drawn: below lg there is no CSS
+  // `order` anywhere in an answer (WCAG 1.3.2, 2.4.3). lg draws the badge row and the
+  // tools first; a phone draws the figure first and the tools after the answer.
+  const badgeBits = (
+    <>
+    <button
+      type="button"
+      onClick={() => setShowLayer((s) => !s)}
+      aria-expanded={showLayer}
+      title="What does this badge mean?"
+      className="cursor-pointer"
+    >
+      <Badge kind={envelope.badge} />
+    </button>
+    <ServedModelLine envelope={envelope} />
+    {(envelope.demo_fallback_used || envelope.ask_mode === "demo") && (
+      <span className="border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-warn)]">
+        {envelope.demo_fallback_used ? "fallback → demo" : "demo"}
+      </span>
+    )}
+    </>
+  );
+  const toolButtons = (
+    <>
+    {(isLg || !bare || hasSql) && (
+    <button
+      type="button"
+      onClick={() => setShowSql((s) => !s)}
+      className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+    >
+      ⟨sql⟩
+    </button>
+    )}
+    {rows.length > 0 && (
+      <button
+        type="button"
+        onClick={() => void downloadRowsCsv()}
+        className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+      >
+        Download CSV
+      </button>
+    )}
+    {envelope.answer_id && (isLg || !bare) ? (
+      <button
+        type="button"
+        onClick={() => void downloadRowsXlsx()}
+        className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+      >
+        Download Excel
+      </button>
+    ) : null}
+    {envelope.answer_id && (isLg || !bare) ? (
+      <button
+        type="button"
+        onClick={() => void loadBi("powerbi")}
+        className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+      >
+        Power BI
+      </button>
+    ) : null}
+    {envelope.answer_id && (isLg || !bare) ? (
+      <button
+        type="button"
+        onClick={() => void loadBi("superset")}
+        className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+      >
+        Superset
+      </button>
+    ) : null}
+    <button
+      type="button"
+      onClick={() => {
+        void copyText(shareEnvelopePayload(envelope)).then((ok) => {
+          setShareNote(ok ? "Envelope copied" : "Copy failed");
+          window.setTimeout(() => setShareNote(null), 1600);
+        });
+      }}
+      className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+    >
+      {shareNote ?? "Share answer"}
+    </button>
+    {(isLg || !bare) && (
+    <button
+      type="button"
+      onClick={() => {
+        const r = checkAnswerTotals(envelope);
+        setCheckNote(r.message);
+      }}
+      className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+    >
+      Check accuracy
+    </button>
+    )}
+    <Link
+      to="/trust"
+      className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+    >
+      Trust runs
+    </Link>
+    {rows.length > 0 && (
+      <button
+        type="button"
+        onClick={() => setShowCopilot((s) => !s)}
+        className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+      >
+        Copilot prompts
+      </button>
+    )}
+    {envelope.drillthrough_token ? (
+      <button
+        type="button"
+        // aria-disabled, not disabled: a disabled button drops focus, and this one opens the Sources
+        // sheet, which must hand focus back to it on close.
+        aria-disabled={drillBusy || undefined}
+        onClick={() => {
+          if (!drillBusy) void runDrillthrough();
+        }}
+        className="text-xs text-[var(--color-accent)] underline-offset-2 hover:underline aria-disabled:opacity-50"
+      >
+        {drillBusy ? "Drilling…" : "Show me why"}
+      </button>
+    ) : isLg || !bare || hasSources ? (
+      <button
+        type="button"
+        onClick={() => setSourcePanelOpen(true)}
+        className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+      >
+        ⟨sources⟩
+      </button>
+    ) : null}
+    {envelope.audit_id && (
+      <a
+        href={ceoSafeHref(productMode, "/audit")}
+        className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        title={envelope.audit_id}
+      >
+        ⟨audit⟩
+      </a>
+    )}
+    </>
+  );
+  const abstainNote = <AbstainNote envelope={envelope} />;
+  const layerPanel = (
+    <>
+    {showLayer && (
+      <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
+        <p className="text-sm font-medium text-[var(--color-ink)]">
+          {layerCopy(envelope).headline}
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-[var(--color-ink-muted)]">
+          {layerCopy(envelope).detail}
+        </p>
+        <p className="mt-2 flex flex-wrap gap-3 text-xs">
+          <Link
+            to={ceoSafeHref(productMode, "/ontology")}
+            className="tap-pad text-[var(--color-accent)] hover:underline"
+          >
+            {productMode === "cream" ? "Open the tables" : "See the governed metrics"}
+          </Link>
+          <Link to="/trust" className="tap-pad text-[var(--color-accent)] hover:underline">
+            See the evidence behind this badge
+          </Link>
+          {envelope.audit_id && (
+            <Link
+              to={ceoSafeHref(productMode, "/audit")}
+              className="tap-pad text-[var(--color-accent)] hover:underline"
+            >
+              {productMode === "cream" ? "Check this number" : "Find this in the ledger"}
+            </Link>
           )}
-          <p className="mt-2 flex flex-wrap gap-3 text-xs">
-            <Link
-              to={ceoSafeHref(productMode, "/ontology")}
-              className="text-[var(--color-accent)] hover:underline"
-            >
-              {productMode === "cream" ? "Pick a table in Library" : "Browse what can be asked"}
-            </Link>
-            <Link
-              to={ceoSafeHref(productMode, "/studio")}
-              className="text-[var(--color-accent)] hover:underline"
-            >
-              {productMode === "cream" ? "Ask about this table" : "Attach the missing source"}
-            </Link>
-          </p>
-        </div>
-      )}
-      {rows.length > 0 && <AnswerRowsTable rows={rows} />}
-      {envelope.chart && rows.length > 0 && (
-        <SimpleChart chart={envelope.chart} rows={rows} />
-      )}
-      {showCopilot && rows.length > 0 && (
-        <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-paper)] p-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
-            After Download CSV → Excel → Copilot
-          </p>
-          <ol className="mt-2 space-y-2">
-            {COPILOT_PROMPTS.map((p, i) => (
-              <li key={i} className="flex gap-2 text-xs text-[var(--color-ink)]">
-                <span className="shrink-0 text-[var(--color-ink-muted)]">{i + 1}.</span>
-                <span className="flex-1">{p}</span>
+        </p>
+      </div>
+    )}
+    </>
+  );
+  const checkPanel = (
+    <>
+    {checkNote && (
+      <p
+        className={`mb-3 border px-3 py-2 text-xs max-lg:mt-3 max-lg:mb-0 ${
+          checkNote.startsWith("Mismatch")
+            ? "border-[var(--color-danger)]/40 text-[var(--color-danger)]"
+            : "border-[var(--color-line)] text-[var(--color-ink-muted)]"
+        }`}
+      >
+        {checkNote}{" "}
+        <Link to="/trust" className="tap-pad text-[var(--color-accent)] hover:underline">
+          Open Trust
+        </Link>
+      </p>
+    )}
+    </>
+  );
+  const receiptPanel = (
+    <>
+    {receipt && (
+      <div
+        data-testid="audit-receipt"
+        className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5 text-xs text-[var(--color-ink-muted)] max-lg:mt-4 max-lg:mb-0"
+      >
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em]">
+          Include / exclude / unsure
+        </p>
+        <p data-testid="audit-receipt-include" className="mt-1">
+          Include: {receipt.include}
+        </p>
+        <p data-testid="audit-receipt-exclude" className="mt-1">
+          Exclude: {receipt.exclude}
+        </p>
+        <p data-testid="audit-receipt-unsure" className="mt-1">
+          Unsure: {receipt.unsure}
+        </p>
+      </div>
+    )}
+    </>
+  );
+  const answerText = (
+    <>
+    <p data-testid="answer-text" className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
+      {renderWithValues(prose, envelope.values, selectValue)}
+    </p>
+    {insights.length > 0 && (
+      <div className="mt-3">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+          Insights
+        </p>
+        <ul className="mt-1 list-inside list-disc text-sm text-[var(--color-ink)]">
+          {insights.map((b) => (
+            <li key={b}>{b}</li>
+          ))}
+        </ul>
+      </div>
+    )}
+    </>
+  );
+  const abstainChips = (
+    <>
+    {/* Usability rule 12 — abstain is never a dead end. */}
+    {envelope.badge === "ABSTAIN" && (
+      <div className="mt-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+          {isExclusionConfirm ? "Confirm exclusion" : "Try one of these instead"}
+        </p>
+        <ul className="mt-2 flex flex-wrap gap-1.5">
+          {chipSuggestions.slice(0, 4).map((q) => {
+            const isYes = EXCLUSION_YES_RE.test(q);
+            const isNo = EXCLUSION_NO_RE.test(q);
+            return (
+              <li key={q}>
                 <button
                   type="button"
-                  className="shrink-0 underline-offset-2 hover:underline"
                   onClick={() => {
-                    void copyText(copilotClipboard(p)).then((ok) => {
-                      if (ok) {
-                        setCopiedIdx(i);
-                        window.setTimeout(() => setCopiedIdx(null), 1200);
-                      }
-                    });
+                    confirmFired.current = true;
+                    setConfirmLeft(null);
+                    void ask(isNo ? resolveExclusionNoChip(q) : q);
                   }}
+                  className={
+                    isYes
+                      ? "border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-2.5 py-1.5 text-xs font-semibold text-[var(--color-accent)]"
+                      : "border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-2.5 py-1.5 text-xs hover:border-[var(--color-accent)]"
+                  }
                 >
-                  {copiedIdx === i ? "Copied" : "Copy"}
+                  {isYes && confirmLeft != null && confirmLeft > 0
+                    ? `${q} (${confirmLeft}s)`
+                    : isNo && confirmLeft === 0
+                      ? `${q} (auto)`
+                      : q}
                 </button>
               </li>
-            ))}
-          </ol>
+            );
+          })}
+        </ul>
+        {isExclusionConfirm && confirmLeft != null && confirmLeft > 0 && (
+          <p className="mt-2 text-xs text-[var(--color-ink-muted)]">
+            Yes cancels automatically in {confirmLeft}s — then the unfiltered top ranking runs.
+          </p>
+        )}
+        <p className="mt-2 flex flex-wrap gap-3 text-xs">
+          <Link
+            to={ceoSafeHref(productMode, "/ontology")}
+            className="tap-pad text-[var(--color-accent)] hover:underline"
+          >
+            {productMode === "cream" ? "Pick a table in Library" : "Browse what can be asked"}
+          </Link>
+          <Link
+            to={ceoSafeHref(productMode, "/studio")}
+            className="tap-pad text-[var(--color-accent)] hover:underline"
+          >
+            {productMode === "cream" ? "Ask about this table" : "Attach the missing source"}
+          </Link>
+        </p>
+      </div>
+    )}
+    </>
+  );
+  const rowsAndChart = (
+    <>
+    {rows.length > 0 && <AnswerRowsTable rows={rows} />}
+    {envelope.chart && rows.length > 0 && (
+      <SimpleChart chart={envelope.chart} rows={rows} />
+    )}
+    </>
+  );
+  const toolPanels = (
+    <>
+    {showCopilot && rows.length > 0 && (
+      <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-paper)] p-3">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+          After Download CSV → Excel → Copilot
+        </p>
+        <ol className="mt-2 space-y-2">
+          {COPILOT_PROMPTS.map((p, i) => (
+            <li key={i} className="flex gap-2 text-xs text-[var(--color-ink)]">
+              <span className="shrink-0 text-[var(--color-ink-muted)]">{i + 1}.</span>
+              <span className="flex-1">{p}</span>
+              <button
+                type="button"
+                className="shrink-0 underline-offset-2 hover:underline"
+                onClick={() => {
+                  void copyText(copilotClipboard(p)).then((ok) => {
+                    if (ok) {
+                      setCopiedIdx(i);
+                      window.setTimeout(() => setCopiedIdx(null), 1200);
+                    }
+                  });
+                }}
+              >
+                {copiedIdx === i ? "Copied" : "Copy"}
+              </button>
+            </li>
+          ))}
+        </ol>
+      </div>
+    )}
+    {showSql && envelope.sql_used && (
+      <pre className="mt-3 overflow-x-auto border border-[var(--color-line)] bg-[var(--color-paper)] p-3 text-xs text-[var(--color-ink-muted)]">
+        {envelope.sql_used}
+      </pre>
+    )}
+    {exportErr && (
+      <p className="mt-3 text-xs text-[var(--color-danger)]">Export: {exportErr}</p>
+    )}
+    {biPanel && biFocus && biStub(biPanel, biFocus) && (
+      <div className="mt-3 border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-3 py-2.5">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-warn)]">
+          {biFocus === "powerbi" ? "Power BI" : "Superset"} -- envelope stub
+        </p>
+        <p className="mt-1 text-xs text-[var(--color-ink)]">
+          {biPanelHeadline(biPanel, biFocus)}
+        </p>
+        <p className="mt-1 text-xs text-[var(--color-ink-muted)]">
+          {biPanel.row_count} {biPanel.source_table} row(s) copied from this ask.
+          No metrics invented. Not a live connector.
+        </p>
+        <ul className="mt-2 list-inside list-disc text-xs text-[var(--color-ink)]">
+          {biStub(biPanel, biFocus)!.needs_you.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+        <p className="mt-2 flex flex-wrap gap-3 text-xs">
+          <button
+            type="button"
+            className="text-[var(--color-accent)] underline-offset-2 hover:underline"
+            onClick={() => {
+              const stub = biStub(biPanel, biFocus);
+              if (!stub) return;
+              void copyText(biCopyText(stub)).then((ok) => {
+                setBiNote(ok ? "Copied" : "Copy failed");
+                window.setTimeout(() => setBiNote(null), 1600);
+              });
+            }}
+          >
+            {biNote ?? (biFocus === "powerbi" ? "Copy Power Query" : "Copy dataset JSON")}
+          </button>
+          <button
+            type="button"
+            className="text-[var(--color-accent)] underline-offset-2 hover:underline"
+            onClick={() => downloadBiStub(biFocus)}
+          >
+            Download {biStub(biPanel, biFocus)!.filename}
+          </button>
+        </p>
+      </div>
+    )}
+    {drillErr && (
+      <p className="mt-3 text-xs text-[var(--color-danger)]">Drill-through: {drillErr}</p>
+    )}
+    {drillRows && (
+      <div className="mt-3">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+          Drill-through rows
+        </p>
+        {drillRows.length ? (
+          <AnswerRowsTable rows={drillRows} />
+        ) : (
+          <p className="mt-2 text-xs text-[var(--color-ink-muted)]">No drill rows returned.</p>
+        )}
+      </div>
+    )}
+    </>
+  );
+  const reconfirmCardEl = (
+    <>
+    {offer ? (
+      <div
+        data-testid="chat-reconfirm"
+        className="mt-4 border border-[var(--color-line)] bg-[var(--color-panel)] px-4 py-3.5"
+      >
+        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+          Reconfirm
+        </p>
+        {offer.reason && offer.reason !== envelope.text.trim() ? (
+          <p data-testid="chat-reconfirm-reason" className="mt-2 text-sm leading-relaxed text-[var(--color-ink)]">
+            {offer.reason}
+          </p>
+        ) : null}
+        {offer.definition ? (
+          <p
+            data-testid="chat-reconfirm-definition"
+            className="mt-2 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2 text-sm leading-relaxed text-[var(--color-ink)]"
+          >
+            {offer.definition}
+          </p>
+        ) : null}
+        {offer.suggestion ? (
+          <p data-testid="chat-reconfirm-suggestion" className="mt-2 text-sm font-medium leading-relaxed text-[var(--color-ink)]">
+            {offer.suggestion}
+          </p>
+        ) : null}
+        <div className="mt-3 flex gap-2">
+          <button
+            type="button"
+            data-testid="chat-reconfirm-yes"
+            disabled={confirming}
+            onClick={() => {
+              void choose(true);
+            }}
+            className="border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-sm font-medium text-[var(--color-ink)] disabled:opacity-50"
+          >
+            Yes
+          </button>
+          <button
+            type="button"
+            data-testid="chat-reconfirm-no"
+            disabled={confirming}
+            onClick={() => {
+              void choose(false);
+            }}
+            className="border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm text-[var(--color-ink)] disabled:opacity-50"
+          >
+            No
+          </button>
         </div>
-      )}
-      {showSql && envelope.sql_used && (
-        <pre className="mt-3 overflow-x-auto border border-[var(--color-line)] bg-[var(--color-paper)] p-3 text-xs text-[var(--color-ink-muted)]">
-          {envelope.sql_used}
-        </pre>
-      )}
-      {exportErr && (
-        <p className="mt-3 text-xs text-[var(--color-danger)]">Export: {exportErr}</p>
-      )}
-      {biPanel && biFocus && biStub(biPanel, biFocus) && (
-        <div className="mt-3 border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-3 py-2.5">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-warn)]">
-            {biFocus === "powerbi" ? "Power BI" : "Superset"} -- envelope stub
+        {confirmError ? (
+          <p data-testid="chat-reconfirm-error" className="mt-2 text-xs text-[var(--color-danger)]">
+            {confirmError}
           </p>
-          <p className="mt-1 text-xs text-[var(--color-ink)]">
-            {biPanelHeadline(biPanel, biFocus)}
-          </p>
-          <p className="mt-1 text-xs text-[var(--color-ink-muted)]">
-            {biPanel.row_count} {biPanel.source_table} row(s) copied from this ask.
-            No metrics invented. Not a live connector.
-          </p>
-          <ul className="mt-2 list-inside list-disc text-xs text-[var(--color-ink)]">
-            {biStub(biPanel, biFocus)!.needs_you.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-          <p className="mt-2 flex flex-wrap gap-3 text-xs">
-            <button
-              type="button"
-              className="text-[var(--color-accent)] underline-offset-2 hover:underline"
-              onClick={() => {
-                const stub = biStub(biPanel, biFocus);
-                if (!stub) return;
-                void copyText(biCopyText(stub)).then((ok) => {
-                  setBiNote(ok ? "Copied" : "Copy failed");
-                  window.setTimeout(() => setBiNote(null), 1600);
-                });
-              }}
-            >
-              {biNote ?? (biFocus === "powerbi" ? "Copy Power Query" : "Copy dataset JSON")}
-            </button>
-            <button
-              type="button"
-              className="text-[var(--color-accent)] underline-offset-2 hover:underline"
-              onClick={() => downloadBiStub(biFocus)}
-            >
-              Download {biStub(biPanel, biFocus)!.filename}
-            </button>
-          </p>
-        </div>
-      )}
-      {drillErr && (
-        <p className="mt-3 text-xs text-[var(--color-danger)]">Drill-through: {drillErr}</p>
-      )}
-      {drillRows && (
-        <div className="mt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
-            Drill-through rows
-          </p>
-          {drillRows.length ? (
-            <AnswerRowsTable rows={drillRows} />
-          ) : (
-            <p className="mt-2 text-xs text-[var(--color-ink-muted)]">No drill rows returned.</p>
-          )}
-        </div>
-      )}
-      {offer ? (
-        <div
-          data-testid="chat-reconfirm"
-          className="mt-4 border border-[var(--color-line)] bg-[var(--color-panel)] px-4 py-3.5"
-        >
-          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
-            Reconfirm
-          </p>
-          {offer.reason && offer.reason !== envelope.text.trim() ? (
-            <p data-testid="chat-reconfirm-reason" className="mt-2 text-sm leading-relaxed text-[var(--color-ink)]">
-              {offer.reason}
-            </p>
-          ) : null}
-          {offer.definition ? (
-            <p
-              data-testid="chat-reconfirm-definition"
-              className="mt-2 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2 text-sm leading-relaxed text-[var(--color-ink)]"
-            >
-              {offer.definition}
-            </p>
-          ) : null}
-          {offer.suggestion ? (
-            <p data-testid="chat-reconfirm-suggestion" className="mt-2 text-sm font-medium leading-relaxed text-[var(--color-ink)]">
-              {offer.suggestion}
-            </p>
-          ) : null}
-          <div className="mt-3 flex gap-2">
-            <button
-              type="button"
-              data-testid="chat-reconfirm-yes"
-              disabled={confirming}
-              onClick={() => {
-                void choose(true);
-              }}
-              className="border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-sm font-medium text-[var(--color-ink)] disabled:opacity-50"
-            >
-              Yes
-            </button>
-            <button
-              type="button"
-              data-testid="chat-reconfirm-no"
-              disabled={confirming}
-              onClick={() => {
-                void choose(false);
-              }}
-              className="border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-1.5 text-sm text-[var(--color-ink)] disabled:opacity-50"
-            >
-              No
-            </button>
+        ) : null}
+      </div>
+    ) : null}
+    </>
+  );
+  const detailsPanel = (
+    <AnswerDetails envelope={envelope}>
+      <ResultView envelope={envelope} />
+    </AnswerDetails>
+  );
+
+  return (
+    <article
+      data-testid="answer-message"
+      className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 max-lg:flex max-lg:scroll-mt-3 max-lg:flex-col"
+    >
+      {isLg ? (
+        <>
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="contents">{badgeBits}</div>
+            <div data-testid="answer-actions" className="contents">
+              {toolButtons}
+            </div>
           </div>
-          {confirmError ? (
-            <p data-testid="chat-reconfirm-error" className="mt-2 text-xs text-[var(--color-danger)]">
-              {confirmError}
-            </p>
-          ) : null}
-        </div>
-      ) : null}
-      <AnswerDetails envelope={envelope}>
-        <ResultView envelope={envelope} />
-      </AnswerDetails>
+          {abstainNote}
+          {layerPanel}
+          {checkPanel}
+          {receiptPanel}
+          {answerText}
+          {abstainChips}
+          {rowsAndChart}
+          {toolPanels}
+          {reconfirmCardEl}
+          {detailsPanel}
+        </>
+      ) : (
+        <>
+          <div className="mb-2 flex flex-wrap items-center gap-2">{badgeBits}</div>
+          {abstainNote}
+          {layerPanel}
+          {answerText}
+          {abstainChips}
+          {rowsAndChart}
+          {reconfirmCardEl}
+          {detailsPanel}
+          {receiptPanel}
+          <ToolsStrip>{toolButtons}</ToolsStrip>
+          {checkPanel}
+          {toolPanels}
+        </>
+      )}
     </article>
   );
 }

@@ -18,6 +18,7 @@ import {
   navStartsCollapsed,
   shouldExpandSourcesDock,
   sourcesStartOpen,
+  useIsLg,
 } from "@/lib/viewport";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
 
@@ -119,7 +120,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [cortexTrustHint, setCortexTrustHint] = useState<string | null>(null);
   const [spaces, setSpaces] = useState<SpaceSummary[]>(FIXTURE_SPACES);
   const [spacesFromApi, setSpacesFromApi] = useState(false);
-  const [scopedSourceCount, setScopedSourceCount] = useState<number | null>(null);
+  // Keyed by Space, so a count read for one Space is never shown under another.
+  const [scoped, setScoped] = useState<{ id: string | null; n: number | null }>({ id: null, n: null });
   const [activeSpaceId, setActiveSpaceIdState] = useState<string | null>(FIXTURE_SPACES[0].id);
   const [role, setRole] = useState<AppRole>("steward");
   const [selectedValueId, setSelectedValueId] = useState<string | null>(null);
@@ -141,6 +143,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         : undefined,
     ),
   );
+  // Crossing lg re-seeds the Sources panel as a fresh start at the new width: docked and open at lg,
+  // a closed sheet below it. Without this a docked panel that shrinks becomes an open modal sheet,
+  // takes focus from the composer and makes main inert, uninvited. Set during render (not in an
+  // effect). One transient commit can still show the sheet open for a frame at phone width (the media-query listeners of child components run before this one); the end state is right. Reopening still works.
+  const isLg = useIsLg();
+  const [seenLg, setSeenLg] = useState(isLg);
+  if (seenLg !== isLg) {
+    setSeenLg(isLg);
+    setSourcePanelOpen(isLg);
+  }
   const [productMode, setProductModeState] = useState<ProductMode>(storedProductMode);
   const [navCollapsed, setNavCollapsed] = useState(() =>
     navStartsCollapsed(
@@ -289,14 +301,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const ctrl = new AbortController();
     if (!activeSpaceId) {
-      setScopedSourceCount(null);
+      setScoped({ id: null, n: null });
       return () => ctrl.abort();
     }
     void fetchLibrarySources(activeSpaceId, ctrl.signal)
-      .then((rows) => setScopedSourceCount(rows.length))
-      .catch(() => setScopedSourceCount(activeSpace?.source_count ?? null));
+      .then((rows) => setScoped({ id: activeSpaceId, n: rows.length }))
+      .catch(() => {
+        // An aborted request belongs to a Space or render that is already gone.
+        if (ctrl.signal.aborted) return;
+        setScoped({ id: activeSpaceId, n: activeSpace?.source_count ?? null });
+      });
     return () => ctrl.abort();
   }, [activeSpaceId, activeSpace?.source_count]);
+
+  const scopedSourceCount = scoped.id === activeSpaceId ? scoped.n : null;
 
   const latestAnswer = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -316,10 +334,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSelectedValueId(id);
       if (id && latestAnswer?.contributing_sources[0]) {
         setFocusedSourceId(latestAnswer.contributing_sources[0].ref_id);
-        const width = typeof window === "undefined" ? LG_MIN_WIDTH_PX : window.innerWidth;
-        if (shouldExpandSourcesDock(width)) {
-          setSourcePanelOpen(true);
-        }
+        // Tapping a figure is an explicit ask for its sources, at every width.
+        // (An ask on its own still leaves the phone sheet closed.)
+        setSourcePanelOpen(true);
       }
     },
     [latestAnswer],
