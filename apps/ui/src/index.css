@@ -152,6 +152,12 @@ body {
     white-space: nowrap;
     text-decoration: none;
   }
+
+  /* More chips are off to the right: fade the edge. A mask draws nothing, so no chip is hidden and no tap is caught. */
+  [data-testid="answer-actions"][data-more="true"] {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 2.5rem), transparent);
+  }
 }
 
 /* Landscape phone: the tab labels sit beside their icons to save height. */

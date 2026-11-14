@@ -12,6 +12,8 @@ const TABBABLE =
 function tabbable(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(TABBABLE)].filter((el) => {
     if ((el as HTMLButtonElement).disabled) return false;
+    // `button` and `a[href]` match the selector whatever their tabindex; -1 takes them out of Tab order.
+    if (el.getAttribute("tabindex") === "-1") return false;
     if (el.closest("[inert]")) return false;
     if (el.getClientRects().length === 0) return false;
     if (getComputedStyle(el).visibility === "hidden") return false;
