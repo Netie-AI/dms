@@ -2,6 +2,19 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-14 - IPHONE-A11Y-01 (PHONE-APP-01, #512): phone answer DOM order equals visual order, Tab trap hardened
+
+- **Routing.** Answers to #512 under EPIC-008 (#8), as PWA-04 and PWA-05. Not a founder override.
+- **Answer order.** Below `lg` each block of an answer is built once and placed once by `useIsLg()`, so DOM order is the drawn order (no `max-lg:order-*`). Before, every checked case had 1 or 2 adjacent DOM-versus-visual inversions; now 0 in 26 cases each at 390x844, 320x568 and 844x390 (5 each at 375x667, 430x932).
+- **Tool strip.** `role=group` named "Answer tools", a right-edge fade while chips are hidden (`data-more`). All 11 chips at least 44px by 59px, contrast 5.6:1 or better.
+- **Trim (product decision for the founder).** An abstained answer with no rows drops the SQL, Excel, BI stubs, Check accuracy and Sources chips when they have nothing behind them. Share answer, Trust runs and the audit link stay. Real loss: the Excel cover sheet (receipt, text, `sql_used`, `ask_mode`) has no other phone path.
+- **Tab trap.** `useModalFocus` recomputes the stops on every key, skips disabled, inert, hidden, zero-size and `tabindex=-1` controls, treats a radio group as one stop, pulls stray focus back in, and with zero stops keeps focus where it is.
+- **Independent check** (a different agent, on `3c8aab1`, verdict VERIFIED WITH EXCEPTIONS): `tsc` clean, vitest 137, two Python layout files 15, `ruff` clean, full Playwright 258 of 258 twice, none skipped. Tab and Shift+Tab 40 times each in a 30-source sheet, the empty sheet and the drawer: focus never left. CI on `3c8aab1`: four checks green (CI runs no browser tests).
+- **Correction.** "lg DOM exactly as origin/main" is false. Against `HEAD~1` the lg DOM is identical after stripping dead `max-lg:*` class tokens (116 of 116 captures; computed styles equal). Against `main` it differs because of earlier branch commits (`data-testid` on the article, `display:contents` wrappers, `tap-pad`, rewritten chart and table components).
+- **Mutations.** 18 single-line mutations run: 11 turned a test red (M14, no forward wrap, only its first failures were confirmed) and 7 did not (trim applied with rows; phone swap of abstain note and answer text; phone panels before the strip; alt/ctrl/meta guard removed; stop list cached on first press; strip role and label dropped; no ResizeObserver). Those seven gates are open. Stop-list caching at open was not run.
+- **Open defects, not fixed here.** (1) The nav drawer is a bare `<nav>` with no `role=dialog` or `aria-modal`, and the top bar is not inert. (2) Narrowing from lg to 800 opens the Sources sheet uninvited and moves focus into it. (3) After Esc, focus returns to the top-bar Sources button, not the "Show me why" button that opened the sheet. (4) Crossing `lg` remounts the answer: Details closes, focus on a tool falls to body.
+- **Still not verified.** A real iPhone or any WebKit. A live model answer on the phone layout. Browser suites are not in CI.
+
 ## 2026-11-13 - IPHONE-PWA-05 (PHONE-APP-01, #512): one-row phone composer, service-worker suite
 
 - **Routing.** Same as PWA-04: this answers to #512 under EPIC-008 (#8). The commit messages of `cdff5c9`, `fb1dc40` and `03c59be` say "Founder override, not in the PRD ledger"; that wording is stale and wrong.
