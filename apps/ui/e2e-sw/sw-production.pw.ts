@@ -110,6 +110,13 @@ test("4 offline, a file URL that was never cached is a network error, not the sh
 
 test("5 no API response is cached and offline API navigations are network errors", async ({ page, context }) => {
   await bootWithAssets(page);
+  // The preview server proxies these paths to an API that is not running here, and
+  // answers 500, which makes a navigation throw. Answer them ourselves so the test
+  // needs no stack: the worker must still leave the response alone and never cache it.
+  const apiPaths = /\/(api|v1)\/|\/health$/;
+  await context.route(apiPaths, (route) =>
+    route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' }),
+  );
   await page.evaluate(async () => {
     await fetch("/api/health").catch(() => undefined);
     await fetch("/health").catch(() => undefined);
@@ -123,6 +130,8 @@ test("5 no API response is cached and offline API navigations are network errors
   const bad = (await paths(page)).filter((p) => p.startsWith("/api/") || p.startsWith("/v1/") || p === "/health");
   expect(bad).toEqual([]);
   // Offline, the worker must not stand in for an answer with the cached shell.
+  // Remove the stub first: a route handler would answer even with the network off.
+  await context.unroute(apiPaths);
   await context.setOffline(true);
   for (const p of ["/api/health", "/health", "/v1/spaces"]) {
     await expect(page.goto(p), p).rejects.toThrow(/net::ERR/);
