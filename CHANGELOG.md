@@ -2,6 +2,19 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-14 - IPHONE-A11Y-02 (PHONE-APP-01, #512): nav drawer is a modal dialog, narrowing keeps Sources closed, focus returns to the opener
+
+- **Routing.** Answers to #512 under EPIC-008 (#8). Closes three defects found by the A11Y-01 checker.
+- **Nav drawer.** Below `lg` the open drawer is `role=dialog`, `aria-modal`, named "Primary navigation"; the top bar, main and tab bar are inert while it or the Sources sheet is open. At `lg` the nav keeps `aria-label="Primary"` and no role.
+- **Narrowing.** `AppProvider` re-seeds the Sources panel when `useIsLg()` flips (closed below `lg`, open at `lg`), so 1280 to 800 no longer opens the sheet over a composer draft. Product call to confirm: growing back to `lg` re-opens the dock even if the user had collapsed it.
+- **Focus return.** `useModalFocus` returns focus to the control that had it when the overlay opened (the "Show me why" button), falling back to the old selector. "Show me why" uses `aria-disabled` plus a click guard instead of `disabled`, because Chrome drops focus from a disabled button.
+- **Tests.** Builder: Playwright 267 of 267, `tsc` clean, vitest 137. One existing test changed: the stray-focus test removes `inert` from the header first (it models a browser that ignores inert); the checker judged this legitimate. CI on `bd76919`: no check failed or running (no browser tests in CI).
+- **Independent check** (a different agent, on `bd76919`, verdict VERIFIED WITH EXCEPTIONS): Playwright 267 of 267, no skips; desktop `outerHTML` equal to `a48ffd9` except the "Show me why" class string (`disabled:opacity-50` became `aria-disabled:opacity-50`) in answered states; `useModalFocus` does not re-run or steal focus while open (checked in drawer and sheet); Esc, backdrop and close button return focus to the opener for sheet and drawer.
+- **Correction.** The code comment claimed no committed render ever shows the sheet open at phone width. False: on 1280 to 800 and 1024 to 390 one transient commit renders the dialog, sets inert and moves focus to "Collapse sources" for a frame, then reverts. No painted dialog in a per-frame sample, but the composer loses focus for a frame. Cause is inferred (child media-query listeners run before the provider's). The comment is corrected. On iPadOS a focus blur may dismiss the soft keyboard: not checked.
+- **Mutations.** 20 run: 13 red, 7 not caught. Open gates: "Show me why" busy guard, `aria-disabled` and its styling (nothing tests them); desktop nav label (a mutation to "Primary navigation" at every width passes, because role name matching is by substring); Sources sheet inert on a non-chat route; opener removed while open; invoker inside the container.
+- **Open, not fixed.** `role=dialog` on `<nav>` is not a permitted ARIA role for `nav` (inferred, no axe in the repo); a `<div role=dialog>` around the `<nav>` is the safer markup, and while the drawer is open no navigation landmark remains. The transient flash above. After picking a nav link focus stays on "More pages" (not diffed against before). No busy cue besides text and `aria-disabled` (no live region). Collapsing the dock is lost on any round trip through phone width.
+- **Still not verified.** A real iPhone or any WebKit, VoiceOver or NVDA, a live Cortex answer on the phone layout.
+
 ## 2026-11-14 - IPHONE-A11Y-01 (PHONE-APP-01, #512): phone answer DOM order equals visual order, Tab trap hardened
 
 - **Routing.** Answers to #512 under EPIC-008 (#8), as PWA-04 and PWA-05. Not a founder override.

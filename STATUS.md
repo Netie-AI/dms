@@ -52,7 +52,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
-| IPHONE-PWA-01 to 05 and IPHONE-A11Y-01 (#512, EPIC-008): installable iPhone PWA, one-handed layout, one-row composer, phone tables, charts and ontology, service-worker suite, phone answer order, Tab trap; desktop pinned to HEAD~1 of the A11Y commit, not to main. Chromium emulation only, no real iPhone. Not PASS. | #510 |
+| IPHONE-PWA-01 to 05 and IPHONE-A11Y-01, -02 (#512, EPIC-008): installable iPhone PWA, one-handed layout, one-row composer, phone tables, charts and ontology, service-worker suite, phone answer order, Tab trap; desktop pinned to HEAD~1 of the A11Y commit, not to main. Chromium emulation only, no real iPhone. Not PASS. | #510 |
 | AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
 | GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
 | GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |
