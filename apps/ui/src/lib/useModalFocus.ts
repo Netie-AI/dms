@@ -45,11 +45,23 @@ export function useModalFocus(
   open: boolean,
   container: RefObject<HTMLElement | null>,
   onClose: () => void,
-  /** Selector of the opener. It is re-rendered or un-inerted by the close, so it is looked up late. */
+  /**
+   * Selector of the fallback opener, for when focus was on nothing when the overlay opened (a tap
+   * on Safari does not focus a button). It is re-rendered or un-inerted by the close, so it is
+   * looked up late.
+   */
   opener: string,
 ) {
   useEffect(() => {
     if (!open) return;
+    // The control that had focus when the overlay opened (a "Show me why" button, say) gets it back.
+    const active = document.activeElement;
+    const invoker =
+      active instanceof HTMLElement &&
+      active !== document.body &&
+      !container.current?.contains(active)
+        ? active
+        : null;
     container.current?.querySelector<HTMLElement>("a[href], button, select, input")?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -83,7 +95,10 @@ export function useModalFocus(
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
-      requestAnimationFrame(() => document.querySelector<HTMLElement>(opener)?.focus());
+      requestAnimationFrame(() => {
+        const target = invoker?.isConnected ? invoker : document.querySelector<HTMLElement>(opener);
+        target?.focus();
+      });
     };
   }, [open, container, onClose, opener]);
 }

@@ -519,9 +519,13 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     {envelope.drillthrough_token ? (
       <button
         type="button"
-        disabled={drillBusy}
-        onClick={() => void runDrillthrough()}
-        className="text-xs text-[var(--color-accent)] underline-offset-2 hover:underline disabled:opacity-50"
+        // aria-disabled, not disabled: a disabled button drops focus, and this one opens the Sources
+        // sheet, which must hand focus back to it on close.
+        aria-disabled={drillBusy || undefined}
+        onClick={() => {
+          if (!drillBusy) void runDrillthrough();
+        }}
+        className="text-xs text-[var(--color-accent)] underline-offset-2 hover:underline aria-disabled:opacity-50"
       >
         {drillBusy ? "Drilling…" : "Show me why"}
       </button>

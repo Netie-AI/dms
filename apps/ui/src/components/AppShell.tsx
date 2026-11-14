@@ -19,7 +19,7 @@ export function AppShell() {
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col overflow-x-hidden">
-      <TopBar />
+      <TopBar inert={overlay} />
       <DemoFallbackBanner />
       <ApiOfflineBanner />
       <div className="flex min-h-0 min-w-0 flex-1">

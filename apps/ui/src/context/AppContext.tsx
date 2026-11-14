@@ -18,6 +18,7 @@ import {
   navStartsCollapsed,
   shouldExpandSourcesDock,
   sourcesStartOpen,
+  useIsLg,
 } from "@/lib/viewport";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
 
@@ -142,6 +143,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         : undefined,
     ),
   );
+  // Crossing lg re-seeds the Sources panel as a fresh start at the new width: docked and open at lg,
+  // a closed sheet below it. Without this a docked panel that shrinks becomes an open modal sheet,
+  // takes focus from the composer and makes main inert, uninvited. Set during render (not in an
+  // effect) so no committed render ever shows the sheet open at phone width. Reopening still works.
+  const isLg = useIsLg();
+  const [seenLg, setSeenLg] = useState(isLg);
+  if (seenLg !== isLg) {
+    setSeenLg(isLg);
+    setSourcePanelOpen(isLg);
+  }
   const [productMode, setProductModeState] = useState<ProductMode>(storedProductMode);
   const [navCollapsed, setNavCollapsed] = useState(() =>
     navStartsCollapsed(

@@ -129,7 +129,10 @@ test.describe("IPHONE-A11Y-01 focus is trapped in a modal phone overlay", () => 
     test(`${mode}: Sources sheet, Tab from a stray focus outside comes back in`, async ({ page }) => {
       await openSheet(page, mode);
       const names = await stops(page, "source-panel");
-      // Focus can land outside by a tap on the top bar (not covered by the backdrop).
+      // Focus can land outside by a tap on the top bar. The bar is inert while the sheet is open
+      // (see the inert test below), so lift that here to model a browser that ignores `inert`:
+      // the Tab guard must still bring focus back in.
+      await page.evaluate(() => document.querySelector("header")!.removeAttribute("inert"));
       await page.evaluate(() => (document.getElementById("space-switcher") as HTMLElement).focus());
       expect((await where(page, "source-panel")).inside).toBe(false);
       await page.keyboard.press("Tab");
@@ -224,6 +227,90 @@ test.describe("IPHONE-A11Y-01 focus is trapped in a modal phone overlay", () => 
       await expect(more).toBeFocused();
     });
   }
+
+  test("graphite: the nav drawer is a modal dialog with a name, and the top bar, main and tab bar are inert", async ({ page }) => {
+    await openDrawer(page);
+    const drawer = page.getByRole("dialog", { name: "Primary navigation" });
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toHaveAttribute("aria-modal", "true");
+    await expect(drawer).toHaveAttribute("data-testid", "left-nav");
+    for (const behind of [page.locator("header"), page.locator("main"), page.getByTestId("tab-bar")]) {
+      await expect(behind).toHaveAttribute("inert", "");
+    }
+    // Inert is real: focus cannot be placed on the top bar's controls.
+    const stuck = await page.evaluate(() => {
+      (document.getElementById("space-switcher") as HTMLElement).focus();
+      return document.activeElement?.id === "space-switcher";
+    });
+    expect(stuck).toBe(false);
+    // Closing lifts all of it.
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    for (const behind of [page.locator("header"), page.locator("main"), page.getByTestId("tab-bar")]) {
+      await expect(behind).not.toHaveAttribute("inert", "");
+    }
+  });
+
+  test("Sources sheet: the top bar is inert while it is open and free again after", async ({ page }) => {
+    await openSheet(page, "cream");
+    await expect(page.locator("header")).toHaveAttribute("inert", "");
+    await expect(page.locator("main")).toHaveAttribute("inert", "");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("header")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("main")).not.toHaveAttribute("inert", "");
+  });
+
+  test("Sources sheet: Escape returns focus to the control that opened it, not the Sources button", async ({ page }) => {
+    await page.route("**/v1/chat/drillthrough", (route) =>
+      route.fulfill({ json: { rows: [{ sku: "SKU-A", qty: 3 }] } }),
+    );
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    await askQuestion(page);
+    const why = page.getByTestId("answer-actions").last().getByRole("button", { name: "Show me why" });
+    await why.click();
+    await expect(page.getByRole("dialog", { name: "Sources" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Collapse sources" })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Sources" })).toHaveCount(0);
+    await expect(why).toBeFocused();
+    // The backdrop gives it back the same way.
+    await why.click();
+    await expect(page.getByRole("dialog", { name: "Sources" })).toBeVisible();
+    await page.getByTestId("source-panel-backdrop").click({ position: { x: 195, y: 40 } });
+    await expect(page.getByRole("dialog", { name: "Sources" })).toHaveCount(0);
+    await expect(why).toBeFocused();
+  });
+
+  // The guard lets the browser own Alt+Tab, Ctrl+Tab and Cmd+Tab (switch window or tab).
+  for (const mod of ["Alt", "Control", "Meta"] as const) {
+    test(`Sources sheet: ${mod}+Tab is not trapped or wrapped by the dialog`, async ({ page }) => {
+      await openSheet(page, "cream");
+      const names = await stops(page, "source-panel");
+      expect(names.length).toBeGreaterThanOrEqual(2);
+      await focusStop(page, "source-panel", -1);
+      await page.keyboard.press(`${mod}+Tab`);
+      // On the last stop, a plain Tab would wrap to the first; with a modifier it must not.
+      const w = await where(page, "source-panel");
+      expect(w.name, `${mod}+Tab wrapped focus to the first stop`).not.toBe(names[0]);
+      expect(w).toMatchObject({ name: names.at(-1), inside: true });
+      // Same from the first stop with Shift: no wrap to the last.
+      await focusStop(page, "source-panel", 0);
+      await page.keyboard.press(`${mod}+Shift+Tab`);
+      expect((await where(page, "source-panel")).name).not.toBe(names.at(-1));
+    });
+  }
+
+  test("the answer tools strip is a named group", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    await askQuestion(page);
+    const strip = page.getByRole("group", { name: "Answer tools" });
+    await expect(strip).toHaveCount(1);
+    await expect(strip).toHaveAttribute("data-testid", "answer-actions");
+    await expect(strip.getByRole("button", { name: "Share answer" })).toBeVisible();
+  });
 
   test("cream: there is no phone drawer to trap (no More pages, and crossing lg closes the nav)", async ({ page }) => {
     await page.goto("/");
@@ -340,6 +427,55 @@ test.describe("IPHONE-A11Y-01 no trap at lg", () => {
     await page.keyboard.press("Shift+Tab");
     const back = await where(page, "source-panel");
     expect(back.inside && names.length > 1 && back.name === names.at(-1)).toBe(false);
+  });
+
+  test("docked Sources shrinking past lg starts closed: no uninvited sheet, focus and draft stay in the composer", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    await expect(page.getByTestId("source-panel")).toBeVisible();
+    const composer = page.getByPlaceholder(/Ask about your data/);
+    await composer.click();
+    await composer.fill("revenue by region next quarter");
+    await expect(composer).toBeFocused();
+
+    await page.setViewportSize({ width: 800, height: 800 });
+    // Not a sheet, not a dialog, main is live, focus and draft are where they were.
+    const phoneComposer = page.getByRole("textbox", { name: "Ask about your data" });
+    await expect(phoneComposer).toHaveValue("revenue by region next quarter");
+    await expect(page.getByTestId("source-panel")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("main")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("header")).not.toHaveAttribute("inert", "");
+    await expect(phoneComposer).toBeFocused();
+    // Give any late effect or frame a chance to steal focus, then look again.
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+    await expect(phoneComposer).toBeFocused();
+    await expect(page.getByTestId("source-panel")).toHaveCount(0);
+
+    // The state is kept: the Sources button opens the sheet on demand, and Escape gives focus back to it.
+    await page.getByTestId("source-panel-open").click();
+    await expect(page.getByRole("dialog", { name: "Sources" })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(phoneComposer).toHaveValue("revenue by region next quarter");
+
+    // Growing back to lg docks it open again, as on a fresh desktop load.
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await expect(page.getByTestId("source-panel")).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByPlaceholder(/Ask about your data/)).toHaveValue("revenue by region next quarter");
+  });
+
+  test("at lg nothing is inert and the nav and top bar carry no phone dialog markup", async ({ page }) => {
+    await page.goto("/");
+    await page.waitForLoadState("networkidle");
+    await page.getByRole("button", { name: "Switch to operator mode" }).click();
+    await expect(page.locator("header")).not.toHaveAttribute("inert", "");
+    await expect(page.locator("main")).not.toHaveAttribute("inert", "");
+    const nav = page.getByRole("navigation", { name: "Primary" });
+    await expect(nav).toBeVisible();
+    await expect(nav).not.toHaveAttribute("role", /.*/);
+    await expect(nav).not.toHaveAttribute("aria-modal", /.*/);
   });
 
   test("the nav is docked, not a drawer, and Tab is free of it", async ({ page }) => {

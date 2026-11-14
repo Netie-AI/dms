@@ -159,7 +159,10 @@ export function LeftNav() {
       <nav
         ref={drawer}
         id="primary-nav"
-        aria-label="Primary"
+        // Below lg the open nav is a modal dialog (like the Sources sheet); at lg it is a docked landmark.
+        role={isLg ? undefined : "dialog"}
+        aria-modal={isLg ? undefined : true}
+        aria-label={isLg ? "Primary" : "Primary navigation"}
         data-testid="left-nav"
         className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:z-40"
       >

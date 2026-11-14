@@ -6,7 +6,7 @@ import type { AppRole } from "@/lib/types";
 
 const ROLES: AppRole[] = ["viewer", "steward", "admin"];
 
-export function TopBar() {
+export function TopBar({ inert = false }: { inert?: boolean }) {
   const {
     toggleNav,
     navCollapsed,
@@ -38,7 +38,10 @@ export function TopBar() {
   const nextMode = productMode === "cream" ? "graphite" : "cream";
 
   return (
-    <header className="relative z-40 flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
+    <header
+      // An open drawer or Sources sheet is modal: the top bar behind it takes no focus or taps.
+      inert={inert}
+      className="relative z-40 flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
       <button
         type="button"
         onClick={toggleNav}
