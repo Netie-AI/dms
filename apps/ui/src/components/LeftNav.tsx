@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { NavLink } from "react-router-dom";
-import { useApp } from "@/context/AppContext";
+import { useApp, useNavCollapsed } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
 import { useModalFocus } from "@/lib/useModalFocus";
 import { useIsLg } from "@/lib/viewport";
@@ -91,8 +91,13 @@ function linkClass(isActive: boolean): string {
   }`;
 }
 
+// One box, two roles: the docked column at lg, the fixed drawer below it.
+const SHELL =
+  "flex w-52 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:z-40";
+
 export function LeftNav() {
-  const { navCollapsed, role, setRole, productMode, closeNavDrawer } = useApp();
+  const { role, setRole, productMode, closeNavDrawer } = useApp();
+  const navCollapsed = useNavCollapsed();
   const allowed = navIdsForMode(productMode);
   const visible = NAV_GROUPS.map((g) => ({
     ...g,
@@ -105,7 +110,7 @@ export function LeftNav() {
 
   // Below lg the open nav is a modal drawer.
   const isLg = useIsLg();
-  const drawer = useRef<HTMLElement | null>(null);
+  const drawer = useRef<HTMLDivElement | null>(null);
   useModalFocus(
     !navCollapsed && !isLg,
     drawer,
@@ -147,25 +152,8 @@ export function LeftNav() {
     );
   }
 
-  return (
+  const content = (
     <>
-      <button
-        type="button"
-        data-testid="left-nav-backdrop"
-        aria-label="Dismiss menu"
-        className="fixed inset-0 top-12 z-30 bg-black/40 lg:hidden"
-        onClick={closeNavDrawer}
-      />
-      <nav
-        ref={drawer}
-        id="primary-nav"
-        // Below lg the open nav is a modal dialog (like the Sources sheet); at lg it is a docked landmark.
-        role={isLg ? undefined : "dialog"}
-        aria-modal={isLg ? undefined : true}
-        aria-label={isLg ? "Primary" : "Primary navigation"}
-        data-testid="left-nav"
-        className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:z-40"
-      >
       <div className="border-b border-[var(--color-line)] px-4 py-4">
         <p className="font-[family-name:var(--font-display)] text-xl font-semibold tracking-tight text-[var(--color-ink)]">
           netie
@@ -231,7 +219,44 @@ export function LeftNav() {
           Admin is hidden for the {role} role.
         </p>
       )}
-    </nav>
+    </>
+  );
+
+  return (
+    <>
+      <button
+        type="button"
+        data-testid="left-nav-backdrop"
+        aria-label="Dismiss menu"
+        className="fixed inset-0 top-12 z-30 bg-black/40 lg:hidden"
+        onClick={closeNavDrawer}
+      />
+      {/* Below lg the open nav is a modal dialog around the Primary landmark (role=dialog is not a
+          permitted role on <nav>). At lg it is the docked landmark alone, no wrapper, no role. */}
+      {isLg ? (
+        <nav
+          id="primary-nav"
+          aria-label="Primary"
+          data-testid="left-nav"
+          className={SHELL}
+        >
+          {content}
+        </nav>
+      ) : (
+        <div
+          ref={drawer}
+          id="primary-nav"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Primary navigation"
+          data-testid="left-nav"
+          className={SHELL}
+        >
+          <nav aria-label="Primary" className="flex flex-1 flex-col">
+            {content}
+          </nav>
+        </div>
+      )}
     </>
   );
 }

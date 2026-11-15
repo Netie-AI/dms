@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { PreviewGrid } from "@/components/PreviewGrid";
-import { useApp } from "@/context/AppContext";
+import { useApp, useSourcePanelOpen } from "@/context/AppContext";
 import { postReveal } from "@/lib/api";
 import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
@@ -64,8 +64,8 @@ export function SourcesOpenButton() {
 
 export function SourcePanel() {
   const isLg = useIsLg();
+  const sourcePanelOpen = useSourcePanelOpen();
   const {
-    sourcePanelOpen,
     setSourcePanelOpen,
     contributingSources,
     focusedSourceId,

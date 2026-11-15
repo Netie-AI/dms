@@ -36,6 +36,13 @@ export function useIsLg(): boolean {
   return useMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`, true);
 }
 
+/** The width right now, read live (for event handlers). Missing window => desktop. */
+export function isLgNow(): boolean {
+  return typeof window === "undefined" || typeof window.matchMedia !== "function"
+    ? true
+    : media(`(min-width: ${LG_MIN_WIDTH_PX}px)`).matches;
+}
+
 /** Under 360px (iPhone SE, small Android): the idle placeholder needs a shorter line. */
 export function useIsNarrowPhone(): boolean {
   return useMedia("(max-width: 359.98px)", false);

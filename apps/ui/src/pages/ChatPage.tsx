@@ -4,7 +4,7 @@ import { AnswerMessage } from "@/components/AnswerMessage";
 import { InstallHint } from "@/components/InstallHint";
 import { ScopeChip } from "@/components/ScopeChip";
 import { SourcesOpenButton } from "@/components/SourcePanel";
-import { useApp } from "@/context/AppContext";
+import { useApp, useSourcePanelOpen } from "@/context/AppContext";
 import { useIsLg, useIsNarrowPhone } from "@/lib/viewport";
 
 export function ChatPage() {
@@ -30,9 +30,9 @@ export function ChatPage() {
     groundedLabels,
     setGrounded,
     productMode,
-    sourcePanelOpen,
   } = useApp();
   const isLg = useIsLg();
+  const sourcePanelOpen = useSourcePanelOpen();
   const narrow = useIsNarrowPhone();
   const location = useLocation();
   const navigate = useNavigate();

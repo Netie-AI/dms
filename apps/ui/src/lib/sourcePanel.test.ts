@@ -73,7 +73,9 @@ describe("STUDIO-MOBILE-01 layout wiring", () => {
     expect(panel).toMatch(/data-testid="source-panel-open"/);
     expect(panel).toMatch(/min-h-11/);
     const ctx = readFileSync(join(here, "../context/AppContext.tsx"), "utf8");
-    expect(ctx).toMatch(/sourcesStartOpen/);
+    // Two separate states (the lg dock, the phone sheet), derived per reader from its own width.
+    expect(ctx).toMatch(/useState\(true\);\s*const \[sheetOpen, setSheetOpen\] = useState\(false\)/);
+    expect(ctx).toMatch(/export function useSourcePanelOpen/);
     expect(ctx).toMatch(/shouldExpandSourcesDock/);
     const shell = readFileSync(join(here, "../components/AppShell.tsx"), "utf8");
     expect(shell).toMatch(/source-panel-slot/);

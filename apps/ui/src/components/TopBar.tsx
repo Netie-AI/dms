@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useApp } from "@/context/AppContext";
+import { useApp, useNavCollapsed } from "@/context/AppContext";
 import { ceoSafeHref } from "@/lib/productMode";
 import type { AppRole } from "@/lib/types";
 
@@ -9,7 +9,6 @@ const ROLES: AppRole[] = ["viewer", "steward", "admin"];
 export function TopBar({ inert = false }: { inert?: boolean }) {
   const {
     toggleNav,
-    navCollapsed,
     spaces,
     activeSpaceId,
     setActiveSpaceId,
@@ -19,6 +18,7 @@ export function TopBar({ inert = false }: { inert?: boolean }) {
     productMode,
     setProductMode,
   } = useApp();
+  const navCollapsed = useNavCollapsed();
   const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
   const newMenu = useRef<HTMLDivElement | null>(null);

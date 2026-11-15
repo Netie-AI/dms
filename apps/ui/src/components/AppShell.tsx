@@ -6,14 +6,15 @@ import { LeftNav } from "@/components/LeftNav";
 import { SourcePanel } from "@/components/SourcePanel";
 import { TabBar } from "@/components/TabBar";
 import { TopBar } from "@/components/TopBar";
-import { useApp } from "@/context/AppContext";
+import { useNavCollapsed, useSourcePanelOpen } from "@/context/AppContext";
 import { useIsLg } from "@/lib/viewport";
 
 export function AppShell() {
   const { pathname } = useLocation();
   const onChat = pathname === "/";
-  const { navCollapsed, sourcePanelOpen } = useApp();
+  const navCollapsed = useNavCollapsed();
   const isLg = useIsLg();
+  const sourcePanelOpen = useSourcePanelOpen();
   // Below lg the drawer and the Sources sheet are modal overlays.
   const overlay = !isLg && (!navCollapsed || (onChat && sourcePanelOpen));
 

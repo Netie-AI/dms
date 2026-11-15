@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { NAV_GROUPS } from "@/components/LeftNav";
-import { useApp } from "@/context/AppContext";
+import { useApp, useNavCollapsed } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
 import type { NavId } from "@/lib/types";
 import { useIsLg } from "@/lib/viewport";
@@ -61,7 +61,8 @@ function Icon({ id }: { id: NavId | "more" }) {
 export function TabBar({ inert }: { inert: boolean }) {
   const isLg = useIsLg();
   const { pathname } = useLocation();
-  const { productMode, navCollapsed, toggleNav } = useApp();
+  const { productMode, toggleNav } = useApp();
+  const navCollapsed = useNavCollapsed();
   if (isLg) return null;
 
   const allowed = navIdsForMode(productMode);
