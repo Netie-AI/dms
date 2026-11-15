@@ -31,7 +31,11 @@ def test_chat_source_panel_is_overlay_below_lg_not_a_docked_22rem_sibling() -> N
 
 def test_chat_sources_start_closed_below_lg_and_do_not_auto_open_after_ask() -> None:
     ctx = (UI / "context" / "AppContext.tsx").read_text(encoding="utf-8")
-    assert "sourcesStartOpen" in ctx
+    # IPHONE-A11Y-03: two separate states, the lg dock (starts open) and the phone sheet (starts
+    # closed), each reader derives its own from its own width.
+    assert "const [dockOpen, setDockOpen] = useState(true)" in ctx
+    assert "const [sheetOpen, setSheetOpen] = useState(false)" in ctx
+    assert "export function useSourcePanelOpen" in ctx
     assert "shouldExpandSourcesDock" in ctx
     assert "setSourcePanelOpen(true)" in ctx
 
