@@ -2,8 +2,9 @@ import { useRef } from "react";
 import { NavLink } from "react-router-dom";
 import { useApp, useNavCollapsed } from "@/context/AppContext";
 import { navIdsForMode } from "@/lib/productMode";
+import { MORE_BUTTON, phoneNavTarget, useFocusHandoff } from "@/lib/useFocusHandoff";
 import { useModalFocus } from "@/lib/useModalFocus";
-import { useIsLg } from "@/lib/viewport";
+import { isLgNow, useIsLg } from "@/lib/viewport";
 import type { AppRole, NavId } from "@/lib/types";
 
 export type NavItem = { id: NavId; label: string; to: string; short: string; hint: string };
@@ -115,8 +116,17 @@ export function LeftNav() {
     !navCollapsed && !isLg,
     drawer,
     closeNavDrawer,
-    '[data-testid="tab-bar"] button[aria-controls="primary-nav"]',
+    MORE_BUTTON,
   );
+  // The drawer (div > nav) and the docked nav (a lone nav) are different nodes: a focused link does
+  // not survive the swap, so it is handed to the same page's link on the other side.
+  useFocusHandoff((lost) => {
+    if (!lost.closest("#primary-nav")) return null;
+    const href = lost.getAttribute("href");
+    if (!isLgNow()) return phoneNavTarget(href);
+    const links = [...document.querySelectorAll<HTMLElement>("nav#primary-nav a[href]")];
+    return links.find((a) => a.getAttribute("href") === href) ?? links[0] ?? null;
+  });
 
   if (navCollapsed) {
     return (

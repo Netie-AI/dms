@@ -14,6 +14,13 @@ function media(query: string): MediaQueryList {
   return m;
 }
 
+/** The shared `lg` MediaQueryList (the one every `useIsLg` subscribes to), or null where there is no window. */
+export function lgMedia(): MediaQueryList | null {
+  return typeof window === "undefined" || typeof window.matchMedia !== "function"
+    ? null
+    : media(`(min-width: ${LG_MIN_WIDTH_PX}px)`);
+}
+
 /** Live media-query match. `onServer` is the answer where there is no window. */
 export function useMedia(query: string, onServer: boolean): boolean {
   const subscribe = useCallback(

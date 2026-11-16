@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp, useNavCollapsed } from "@/context/AppContext";
 import { ceoSafeHref } from "@/lib/productMode";
+import { phoneNavTarget, useFocusHandoff } from "@/lib/useFocusHandoff";
 import type { AppRole } from "@/lib/types";
 
 const ROLES: AppRole[] = ["viewer", "steward", "admin"];
@@ -19,6 +20,9 @@ export function TopBar({ inert = false }: { inert?: boolean }) {
     setProductMode,
   } = useApp();
   const navCollapsed = useNavCollapsed();
+  // The sidebar toggle is display:none below lg; a focused one goes to the phone's More button.
+  const toggle = useRef<HTMLButtonElement | null>(null);
+  useFocusHandoff((lost) => (lost === toggle.current ? phoneNavTarget(null) : null));
   const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
   const newMenu = useRef<HTMLDivElement | null>(null);
@@ -43,6 +47,7 @@ export function TopBar({ inert = false }: { inert?: boolean }) {
       inert={inert}
       className="relative z-40 flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
       <button
+        ref={toggle}
         type="button"
         onClick={toggleNav}
         className="hidden h-8 w-8 shrink-0 items-center justify-center border border-[var(--color-line)] lg:flex text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"

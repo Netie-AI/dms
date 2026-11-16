@@ -6,6 +6,7 @@ import { isFilesystemOriginUri } from "@/lib/filesystemOrigin";
 import { sheetForSource } from "@/lib/previewFixtures";
 import { scopeChipLabel } from "@/lib/scopeChipLabel";
 import { sourcesHeadline } from "@/lib/sourcePanel";
+import { composerEl, useFocusHandoff } from "@/lib/useFocusHandoff";
 import { useModalFocus } from "@/lib/useModalFocus";
 import { useIsLg } from "@/lib/viewport";
 
@@ -77,6 +78,13 @@ export function SourcePanel() {
   const sheet = useRef<HTMLElement | null>(null);
   const close = useCallback(() => setSourcePanelOpen(false), [setSourcePanelOpen]);
   useModalFocus(sourcePanelOpen && !isLg, sheet, close, '[data-testid="source-panel-open"]');
+  // The dock and the composer's Sources button are different nodes: a focused Sources control does
+  // not survive a crossing, so it goes to the Sources button on the other side (else the composer).
+  useFocusHandoff((lost) =>
+    lost.closest('[data-testid="source-panel"]') || lost.matches('[data-testid="source-panel-open"]')
+      ? (document.querySelector<HTMLElement>('[data-testid="source-panel-open"]') ?? composerEl())
+      : null,
+  );
 
   if (!sourcePanelOpen) {
     return isLg ? <SourcesOpenButton /> : null;

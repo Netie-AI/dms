@@ -496,3 +496,89 @@ test("C6: focus already inside the container when the modal opens is not taken a
   });
   expect(landed).toEqual({ whileOpen: "inside-first", afterClose: "opener" });
 });
+
+// ---------------------------------------------------------------------------------------------
+// D. aria-expanded on the nav toggles is the real open state, every time
+// ---------------------------------------------------------------------------------------------
+
+test.describe("D: aria-expanded equals whether the nav is open", () => {
+  /** The attribute as the page has it right now (the tab bar is inert behind the drawer, so no role query). */
+  const attr = (page: Page, selector: string) => page.locator(selector).getAttribute("aria-expanded");
+
+  test.describe("phone: the More pages button", () => {
+    test.use({ viewport: PHONE, hasTouch: true, isMobile: true });
+    const MORE = 'button[aria-label="More pages"]';
+
+    /** Both reads in one place: what the drawer is, and what the button says it is. */
+    async function state(page: Page) {
+      const open = (await page.getByRole("dialog", { name: "Primary navigation" }).count()) === 1;
+      return { open, expanded: await attr(page, MORE) };
+    }
+
+    test("false when closed, true when open, false after Escape, after a link tap and after the backdrop", async ({ page }) => {
+      await page.goto("/");
+      await page.waitForLoadState("networkidle");
+      await page.getByRole("button", { name: "Switch to operator mode" }).click();
+      const more = page.getByRole("button", { name: "More pages" });
+      await expect(more).toBeVisible();
+
+      expect(await state(page)).toEqual({ open: false, expanded: "false" });
+
+      for (const close of ["escape", "link", "backdrop"] as const) {
+        await more.click();
+        await expect(page.getByRole("dialog", { name: "Primary navigation" })).toBeVisible();
+        expect(await state(page), `open, then closed by ${close}`).toEqual({ open: true, expanded: "true" });
+
+        if (close === "escape") await page.keyboard.press("Escape");
+        else if (close === "link") await page.getByRole("dialog").getByRole("link", { name: "Amend" }).click();
+        else await page.getByTestId("left-nav-backdrop").click({ position: { x: 370, y: 300 } });
+
+        await expect(page.getByRole("dialog")).toHaveCount(0);
+        expect(await state(page), `closed by ${close}`).toEqual({ open: false, expanded: "false" });
+      }
+
+      // The button is a toggle: a second tap on it while open is not reachable (the tab bar is inert
+      // behind the drawer), so the reverse transition is the three closes above.
+      await expect(page.locator(MORE)).toHaveAttribute("aria-controls", "primary-nav");
+    });
+  });
+
+  test.describe("lg: the Toggle sidebar button", () => {
+    test.use({ viewport: { width: 1280, height: 800 } });
+    const TOGGLE = 'button[aria-label="Toggle sidebar"]';
+
+    /** Expanded nav shows link names; the rail does not (its links are one-letter, named by title). */
+    async function state(page: Page) {
+      const open = (await page.getByTestId("left-nav").getByRole("link", { name: "Chat" }).count()) > 0;
+      return { open, expanded: await attr(page, TOGGLE) };
+    }
+
+    for (const [mode, startsOpen] of [["cream", false], ["graphite", true]] as const) {
+      test(`${mode}: starts ${startsOpen ? "expanded" : "as the rail"}, and each toggle flips the attribute with the nav`, async ({ page }) => {
+        await page.goto("/");
+        await page.waitForLoadState("networkidle");
+        if (mode === "graphite") await page.getByRole("button", { name: "Switch to operator mode" }).click();
+        const toggle = page.getByRole("button", { name: "Toggle sidebar" });
+        await expect(toggle).toBeVisible();
+
+        let want = startsOpen;
+        expect(await state(page)).toEqual({ open: want, expanded: String(want) });
+        for (let i = 0; i < 3; i++) {
+          await toggle.click();
+          want = !want;
+          await expect(page.getByTestId("left-nav").getByRole("link", { name: "Chat" })).toHaveCount(want ? 1 : 0);
+          expect(await state(page), `after toggle ${i + 1}`).toEqual({ open: want, expanded: String(want) });
+        }
+      });
+    }
+
+    test("a link click at lg leaves the docked nav as it was, and the attribute with it", async ({ page }) => {
+      await page.goto("/");
+      await page.waitForLoadState("networkidle");
+      await page.getByRole("button", { name: "Switch to operator mode" }).click();
+      await page.getByTestId("left-nav").getByRole("link", { name: "Library" }).click();
+      await expect(page.getByRole("heading", { name: "Library", level: 1 })).toBeVisible();
+      expect(await state(page)).toEqual({ open: true, expanded: "true" });
+    });
+  });
+});
