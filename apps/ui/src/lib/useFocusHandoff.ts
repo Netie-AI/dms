@@ -14,6 +14,18 @@ function laidOut(el: Element): boolean {
 }
 
 /**
+ * `Element.checkVisibility` is missing before Safari 17.4 (iOS 17.4). Calling it there throws inside
+ * the hand-off's animation frame and focus stays on <body>, so fall back to the computed
+ * `visibility` it would read. That fallback does not see a closed <details> or content-visibility;
+ * `laidOut` is the only guard for those on an old Safari.
+ */
+function painted(el: Element): boolean {
+  return typeof el.checkVisibility === "function"
+    ? el.checkVisibility({ visibilityProperty: true, contentVisibilityAuto: true })
+    : getComputedStyle(el).visibility === "visible";
+}
+
+/**
  * A control a person could be handed focus on: laid out, painted (not skipped by a closed
  * <details> or content-visibility, not visibility:hidden), not disabled, and not inside anything
  * inert, aria-hidden or hidden. Focus is never given to a node that fails this, so a hand-off can
@@ -21,7 +33,7 @@ function laidOut(el: Element): boolean {
  */
 function usable(el: Element): el is Focusable {
   if (!isFocusable(el) || el.tabIndex < 0 || !laidOut(el)) return false;
-  if (!el.checkVisibility({ visibilityProperty: true, contentVisibilityAuto: true })) return false;
+  if (!painted(el)) return false;
   if ((el as HTMLButtonElement).disabled) return false;
   return !el.closest('[inert], [aria-hidden="true"], [hidden]');
 }
