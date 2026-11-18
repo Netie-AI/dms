@@ -75,7 +75,34 @@ const audit = (): Fail[] => {
     const need = large ? 3 : 4.5;
     if (ratio < need) out.push({ text: text.slice(0, 40), ratio: Math.round(ratio * 100) / 100, need, tag: el.tagName.toLowerCase() });
   }
+  // Placeholders are not text nodes. An empty enabled field shows its placeholder in ::placeholder.
+  for (const f of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[placeholder], textarea[placeholder]")) {
+    if (f.disabled || f.value || !f.getClientRects().length || f.closest('[inert],[aria-hidden="true"]')) continue;
+    const ph = getComputedStyle(f, "::placeholder");
+    // Tailwind's default is color-mix(...), which the rgb() parser cannot read: rasterise it.
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 1;
+    const g = cv.getContext("2d", { willReadFrequently: true })!;
+    g.fillStyle = ph.color;
+    g.fillRect(0, 0, 1, 1);
+    const px = g.getImageData(0, 0, 1, 1).data;
+    const fg0: C = { r: px[0], g: px[1], b: px[2], a: px[3] / 255 };
+    if (fg0.a === 0) continue;
+    const bg = bgOf(f);
+    const fg = over({ ...fg0, a: fg0.a * Number(ph.opacity || 1) }, bg);
+    const [a, b] = [lum(fg), lum(bg)].sort((x, y) => y - x);
+    const ratio = (a + 0.05) / (b + 0.05);
+    if (ratio < 4.5) out.push({ text: `placeholder: ${f.placeholder.slice(0, 28)}`, ratio: Math.round(ratio * 100) / 100, need: 4.5, tag: f.tagName.toLowerCase() });
+  }
   return out;
+};
+
+/** Runs in the page. How many text elements the audit looked at: an empty page must not pass. */
+const audited = (): number => {
+  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  let n = 0;
+  for (let t = w.nextNode(); t; t = w.nextNode()) if ((t.textContent ?? "").trim() && t.parentElement?.getClientRects().length) n++;
+  return n;
 };
 
 async function open(page: Page, route: string, mode: "cream" | "graphite") {
@@ -94,6 +121,8 @@ for (const mode of ["cream", "graphite"] as const) {
       await open(page, route, mode);
       // Polled: the mode switch fades colours in over a few frames, and a frame mid-fade is not a fail.
       await expect.poll(() => page.evaluate(audit), { timeout: 4000 }).toEqual([]);
+      // A route that renders nothing (a wrong path, a crash) must not pass vacuously.
+      expect(await page.evaluate(audited), "text elements on the page").toBeGreaterThanOrEqual(8);
     });
   }
 }
@@ -111,8 +140,63 @@ test("the audit itself can fail: a low-contrast enabled paragraph is reported, a
     b.textContent = "disabled probe";
     b.style.cssText = "color:#555;background:#111;font-size:14px";
     document.body.append(b);
+    const e = document.createElement("button");
+    e.textContent = "enabled probe";
+    e.style.cssText = "color:#555;background:#111;font-size:14px";
+    document.body.append(e);
+    const i = document.createElement("input");
+    i.placeholder = "low placeholder probe";
+    i.style.cssText = "background:#111;color:#e5e5e5";
+    const st = document.createElement("style");
+    st.textContent = "input.ph-probe::placeholder{color:#555;opacity:1}";
+    i.className = "ph-probe";
+    document.head.append(st);
+    document.body.append(i);
   });
   const rows = await page.evaluate(audit);
   expect(rows.map((r) => r.text)).toContain("low contrast probe");
+  expect(rows.map((r) => r.text)).toContain("enabled probe");
+  expect(rows.map((r) => r.text)).toContain("placeholder: low placeholder probe");
   expect(rows.map((r) => r.text)).not.toContain("disabled probe");
 });
+
+/** The answer's chart with a bar, column or point selected: the selected row sits on accent-soft. */
+const CHARTS: { name: string; chart: Record<string, unknown> | null; rows: Record<string, unknown>[] | null }[] = [
+  { name: "ranked hbar", chart: null, rows: null },
+  {
+    name: "vertical bar",
+    chart: { kind: "bar", x: "sku", y: "revenue_myr", title: "Bars" },
+    rows: ["SKU-A", "SKU-B", "SKU-C"].map((sku, i) => ({ sku, revenue_myr: (3 - i) * 1000 })),
+  },
+  {
+    name: "line",
+    chart: { kind: "line", x: "day", y: "revenue_myr", title: "Daily" },
+    rows: [100, 250, 900].map((v, i) => ({ day: `2026-10-0${i + 1}`, revenue_myr: v })),
+  },
+];
+
+for (const mode of ["cream", "graphite"] as const) {
+  for (const c of CHARTS) {
+    test(`${mode} ${c.name} chart with an item selected: enabled text meets AA at 390x844`, async ({ page }) => {
+      if (c.chart) {
+        await page.route("**/v1/chat/ask", async (route) => {
+          const res = await route.fetch();
+          const body = await res.json();
+          body.rows = c.rows;
+          body.chart = c.chart;
+          await route.fulfill({ response: res, json: body });
+        });
+      }
+      await open(page, "/", mode);
+      await page.getByPlaceholder(/Ask about your data/).fill("Top 5 selling SKUs by revenue");
+      await page.getByRole("button", { name: "Ask", exact: true }).click();
+      const chart = page.getByTestId("answer-message").last().getByTestId("answer-chart").first();
+      await expect(chart).toBeVisible({ timeout: 20_000 });
+      await chart.scrollIntoViewIfNeeded();
+      const first = chart.getByRole("button").first();
+      await first.click();
+      await expect(first).toHaveAttribute("aria-pressed", "true");
+      await expect.poll(() => page.evaluate(audit), { timeout: 4000 }).toEqual([]);
+    });
+  }
+}

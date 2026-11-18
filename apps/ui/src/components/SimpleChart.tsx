@@ -186,7 +186,9 @@ export function SimpleChart({ chart, rows }: Props) {
                       style={useNeg ? { width: `${pct}%`, ...NEG_MARK } : { width: `${pct}%` }}
                     />
                   </span>
-                  <span className="text-right tabular-nums text-[var(--color-ink-muted)]">
+                  <span
+                    className={`text-right tabular-nums text-[var(--color-ink-muted)] ${on ? "max-lg:text-[var(--color-ink)]" : ""}`}
+                  >
                     {isLg || p.shown !== "no value" ? money(p.value) : p.shown}
                   </span>
                 </button>
@@ -271,7 +273,9 @@ export function SimpleChart({ chart, rows }: Props) {
                     </span>
                     <span
                       data-chart-label
-                      className="block h-6 w-full truncate px-0.5 text-center text-xs leading-6 text-[var(--color-ink-muted)]"
+                      className={`block h-6 w-full truncate px-0.5 text-center text-xs leading-6 text-[var(--color-ink-muted)] ${
+                        on ? "max-lg:text-[var(--color-ink)]" : ""
+                      }`}
                     >
                       {p.name}
                     </span>

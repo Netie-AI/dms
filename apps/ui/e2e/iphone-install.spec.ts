@@ -72,15 +72,25 @@ test("theme-color follows the mode", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
   await page.waitForLoadState("networkidle");
-  const meta = () => page.evaluate(() => document.querySelector('meta[name="theme-color"]')?.getAttribute("content") ?? null);
-  const panel = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--color-panel").trim());
+  // A minified production build writes "#111" for "#111111": compare as rgb, not as strings.
+  const rgb = (css: string | null) =>
+    page.evaluate((c) => {
+      const e = document.createElement("i");
+      e.style.color = c ?? "";
+      document.body.append(e);
+      const v = getComputedStyle(e).color;
+      e.remove();
+      return v;
+    }, css);
+  const meta = async () => rgb(await page.evaluate(() => document.querySelector('meta[name="theme-color"]')?.getAttribute("content") ?? null));
+  const panel = async () => rgb(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--color-panel").trim()));
   expect(await meta()).toBe(await panel());
-  expect(await meta()).toBe("#faf8f4");
+  expect(await meta()).toBe("rgb(250, 248, 244)");
   await page.getByRole("button", { name: "Switch to operator mode" }).click();
   await expect(page.getByRole("button", { name: "Switch to operator mode" })).toHaveCount(0);
-  expect(await panel()).toBe("#111111");
-  await expect.poll(meta).toBe("#111111");
+  expect(await panel()).toBe("rgb(17, 17, 17)");
+  await expect.poll(meta).toBe("rgb(17, 17, 17)");
   await page.reload();
   await page.waitForLoadState("networkidle");
-  await expect.poll(meta).toBe("#111111");
+  await expect.poll(meta).toBe("rgb(17, 17, 17)");
 });

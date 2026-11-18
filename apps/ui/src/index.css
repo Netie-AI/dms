@@ -168,3 +168,13 @@ body {
     gap: 0.375rem;
   }
 }
+
+/* Below lg a placeholder is the muted ink, not Tailwind's 50% of the text colour: that mix measured
+   3.12:1 in cream and 4.48:1 in graphite. Desktop keeps the default. */
+@media not all and (min-width: 64rem) {
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--color-ink-muted);
+    opacity: 1;
+  }
+}
