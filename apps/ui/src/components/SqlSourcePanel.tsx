@@ -241,7 +241,7 @@ export function SqlSourcePanel({
             type="submit"
             disabled={busy || !host.trim() || !database.trim() || !user.trim()}
             data-testid="sql-source-submit"
-            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white max-lg:text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-50"
           >
             {busy ? "Extracting…" : "Extract into bronze"}
           </button>

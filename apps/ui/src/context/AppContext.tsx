@@ -202,6 +202,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     document.documentElement.dataset.theme = productMode;
     window.localStorage.setItem("dms-theme", productMode);
+    // The browser chrome around the page (Safari's tab bar, an installed app's status area) takes
+    // its colour from this tag. Static in index.html it stayed cream in Operate mode.
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", getComputedStyle(document.documentElement).getPropertyValue("--color-panel").trim());
   }, [productMode]);
 
   useEffect(() => {

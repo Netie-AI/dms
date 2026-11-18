@@ -349,7 +349,7 @@ export function StudioPage() {
             title="Add CSV or Excel files"
             disabled={busy}
             onClick={() => fileInput.current?.click()}
-            className="flex h-10 w-10 items-center justify-center rounded-full max-lg:h-11 max-lg:w-11 bg-[var(--color-accent)] text-xl font-semibold leading-none text-white hover:opacity-90 disabled:opacity-50"
+            className="flex h-10 w-10 items-center justify-center rounded-full max-lg:h-11 max-lg:w-11 bg-[var(--color-accent)] text-xl font-semibold leading-none text-white max-lg:text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-50"
           >
             {busy ? "…" : "+"}
           </button>
@@ -404,7 +404,7 @@ export function StudioPage() {
           <p className="font-medium text-[var(--color-ink)]">
             Refuse / ABSTAIN demo: {BUYER_WALK_REFUSE}
           </p>
-          <p className="mt-1 text-[var(--color-ink-muted)]">{BUYER_WALK_REFUSE_WHY}</p>
+          <p className="mt-1 text-[var(--color-ink-muted)] max-lg:text-[var(--color-ink)]">{BUYER_WALK_REFUSE_WHY}</p>
           <button
             type="button"
             onClick={() => navigate("/", { state: { draftQuestion: BUYER_WALK_REFUSE } })}
@@ -451,7 +451,7 @@ export function StudioPage() {
           <button
             type="button"
             onClick={askAboutSelection}
-            className="border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white"
+            className="border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white max-lg:hover:text-[var(--color-on-accent)]"
           >
             Ask about these →
           </button>
@@ -596,7 +596,7 @@ export function StudioPage() {
             type="button"
             disabled={vqBusy || !vqQuestion.trim() || !vqSql.trim()}
             onClick={() => void registerCertified()}
-            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white max-lg:text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-50"
           >
             {vqBusy ? "Registering…" : "Register for this Space"}
           </button>

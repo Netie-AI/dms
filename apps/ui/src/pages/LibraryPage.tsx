@@ -101,12 +101,16 @@ function TreeRows({
               }`}
               style={{ paddingLeft: pad }}
             >
-              <span className="w-3 shrink-0 font-mono text-[10px] text-[var(--color-ink-muted)]">
+              <span
+                className={`w-3 shrink-0 font-mono text-[10px] text-[var(--color-ink-muted)] ${selected ? "max-lg:text-[var(--color-ink)]" : ""}`}
+              >
                 {isFolder ? (open ? "▾" : "▸") : "·"}
               </span>
               <span className="min-w-0 flex-1 truncate font-medium">{n.label}</span>
               {typeof n.meta?.row_count === "number" && (
-                <span className="tabular-nums text-[10px] text-[var(--color-ink-muted)]">
+                <span
+                  className={`tabular-nums text-[10px] text-[var(--color-ink-muted)] ${selected ? "max-lg:text-[var(--color-ink)]" : ""}`}
+                >
                   {n.meta.row_count}
                 </span>
               )}
