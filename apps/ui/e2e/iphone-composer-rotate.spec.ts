@@ -110,6 +110,46 @@ test("an empty composer stays one line through a rotation", async ({ page }) => 
   expect((await read(page)).h).toBe(one);
 });
 
+test("rotations raise no window error (a ResizeObserver loop is noise in every error tracker)", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as unknown as { __errs: string[] }).__errs = [];
+    window.addEventListener("error", (e) => (window as unknown as { __errs: string[] }).__errs.push(e.message));
+  });
+  await open(page, "cream");
+  await page.getByPlaceholder(/Ask/).fill(DRAFT);
+  for (const size of [LANDSCAPE, PORTRAIT, LANDSCAPE, PORTRAIT]) {
+    await page.setViewportSize(size);
+    await settle(page);
+  }
+  expect(await page.evaluate(() => (window as unknown as { __errs: string[] }).__errs)).toEqual([]);
+});
+
+test("the cap is reached: a very long draft at 320 wide is exactly 148px tall and scrolls inside", async ({ page }) => {
+  await open(page, "cream");
+  await page.setViewportSize(SMALL);
+  await page.getByPlaceholder(/Ask/).fill(DRAFT.repeat(4));
+  const s = await read(page);
+  expect(s.h).toBe(148);
+  expect(s.clipped, "past the cap the text scrolls inside the box").toBe(true);
+});
+
+test("at lg the composer is the person's: a dragged height survives a resize, and widening from a phone leaves no inline height", async ({ page }) => {
+  await open(page, "cream");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  const box = page.getByPlaceholder(/Ask/);
+  await box.fill(DRAFT);
+  await box.evaluate((el: HTMLTextAreaElement) => (el.style.height = "200px"));
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await settle(page);
+  expect(await box.evaluate((el: HTMLTextAreaElement) => el.style.height), "resize-y drag lost").toBe("200px");
+  await page.setViewportSize(PORTRAIT);
+  await settle(page);
+  expect(await box.evaluate((el: HTMLTextAreaElement) => el.style.height)).not.toBe("");
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await settle(page);
+  expect(await box.evaluate((el: HTMLTextAreaElement) => el.style.height), "phone height left at lg").toBe("");
+});
+
 test("a rotation does not move focus or lose the caret", async ({ page }) => {
   await open(page, "cream");
   const box = page.getByPlaceholder(/Ask/);

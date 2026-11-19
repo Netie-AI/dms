@@ -101,6 +101,10 @@ test("the page-level overscroll lock is a phone rule: desktop keeps the browser'
   await page.goto("/");
   await page.waitForLoadState("networkidle");
   expect(await overscroll(), "at lg a swipe-back or pull gesture is the browser's").toBe("auto");
+  await page.setViewportSize({ width: 1024, height: 800 });
+  expect(await overscroll(), "1024 is lg").toBe("auto");
+  await page.setViewportSize({ width: 1023, height: 800 });
+  expect(await overscroll(), "1023 is the last phone width").toBe("none");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await overscroll(), "below lg the shell scrolls its own panes").toBe("none");
 });

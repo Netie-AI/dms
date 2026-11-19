@@ -59,13 +59,20 @@ export function ChatPage() {
     const el = composerRef.current;
     if (!el || isLg || typeof ResizeObserver === "undefined") return;
     let width = el.clientWidth;
+    let raf = 0;
     const ro = new ResizeObserver(() => {
       if (el.clientWidth === width) return; // our own height change is not a reason to measure again
       width = el.clientWidth;
-      fitComposer(el, draftRef.current, true);
+      // Next frame: changing the observed element's height inside its own callback raises
+      // "ResizeObserver loop completed with undelivered notifications" on the window.
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => fitComposer(el, draftRef.current, true));
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      cancelAnimationFrame(raf);
+      ro.disconnect();
+    };
   }, [isLg, fitComposer]);
 
   useEffect(() => {
