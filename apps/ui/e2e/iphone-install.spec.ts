@@ -94,3 +94,13 @@ test("theme-color follows the mode", async ({ page }) => {
   await page.waitForLoadState("networkidle");
   await expect.poll(meta).toBe("rgb(17, 17, 17)");
 });
+
+test("the page-level overscroll lock is a phone rule: desktop keeps the browser's own gesture", async ({ page }) => {
+  const overscroll = () => page.evaluate(() => getComputedStyle(document.body).overscrollBehaviorY);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/");
+  await page.waitForLoadState("networkidle");
+  expect(await overscroll(), "at lg a swipe-back or pull gesture is the browser's").toBe("auto");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await overscroll(), "below lg the shell scrolls its own panes").toBe("none");
+});

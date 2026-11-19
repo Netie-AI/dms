@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
 import { InstallHint } from "@/components/InstallHint";
@@ -42,13 +42,31 @@ export function ChatPage() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Phone composer: one line until the text needs more, capped at about five.
-  useEffect(() => {
-    const el = composerRef.current;
-    if (!el) return;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const fitComposer = useCallback((el: HTMLTextAreaElement, text: string, phone: boolean) => {
     el.style.height = "";
     // Empty: stay one line even when the placeholder is wider than the field.
-    if (!isLg && draft) el.style.height = `${Math.min(el.scrollHeight + 2, 148)}px`;
-  }, [draft, isLg, asking]); // `asking` swaps the placeholder, which can wrap
+    if (phone && text) el.style.height = `${Math.min(el.scrollHeight + 2, 148)}px`;
+  }, []);
+  useEffect(() => {
+    const el = composerRef.current;
+    if (el) fitComposer(el, draft, !isLg);
+  }, [draft, isLg, asking, fitComposer]); // `asking` swaps the placeholder, which can wrap
+  // A rotation changes the width without changing the draft: the same text wraps to a different
+  // number of lines, so the height measured for the old width is wrong (clipped, or too tall).
+  useEffect(() => {
+    const el = composerRef.current;
+    if (!el || isLg || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth === width) return; // our own height change is not a reason to measure again
+      width = el.clientWidth;
+      fitComposer(el, draftRef.current, true);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [isLg, fitComposer]);
 
   useEffect(() => {
     // Phone: a finished answer is read from its top (badge, then the figure).

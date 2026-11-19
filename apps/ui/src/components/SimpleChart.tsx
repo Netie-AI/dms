@@ -220,7 +220,13 @@ export function SimpleChart({ chart, rows }: Props) {
             data-testid="chart-scroll"
             className={`overflow-x-auto overscroll-x-contain ${isLine ? "pt-2" : ""}`}
           >
-            <div className="relative flex min-w-full">
+            {/* Past what fits, the columns (3rem each at least) overflow the box. A line's svg is as wide
+                as this row, so the row must be as wide as the columns or the polyline is squeezed into
+                the first screenful and misses its own dots. */}
+            <div
+              className="relative flex min-w-full"
+              style={isLine ? { minWidth: `max(100%, ${count * 3}rem)` } : undefined}
+            >
               {isLine && count > 1 && (
                 <svg
                   aria-hidden="true"
