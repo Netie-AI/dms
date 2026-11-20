@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
+import "./lib/tapPad";
 
 // Production only: in dev a cached shell fights Vite's module reloads.
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
