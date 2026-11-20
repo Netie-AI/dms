@@ -61,6 +61,7 @@ WINDOW = "window_value_under_aggregate"
 COLLECTION = "collection_under_function"
 SET_OP = "set_operation_under_aggregate"
 GENERATOR = "row_generator_under_aggregate"
+SELF_JOIN = "self_join_under_aggregate"
 
 #: The issue's Problem table, row by row: name -> (sql, the figure it returns,
 #: the rule that refuses it). The true figure is 107 in every row.
@@ -68,21 +69,73 @@ ISSUE_ROWS: dict[str, tuple[str, int, str]] = {
     "r01_rollup": (_GROUPED.format("ROLLUP(school_id)"), 214, GROUPING),
     "r02_cube": (_GROUPED.format("CUBE(school_id)"), 214, GROUPING),
     "r03_cube_two_columns": (_GROUPED.format("CUBE(school_id, enrollment_id)"), 428, GROUPING),
-    "r04_grouping_sets_two_empty": (f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY GROUPING SETS ((), ()))", 214, GROUPING),
-    "r05_grouping_sets_three_empty": (f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY GROUPING SETS ((), (), ()))", 321, GROUPING),
-    "r06_grouping_sets_same_column_twice": (_GROUPED.format("GROUPING SETS ((school_id), (school_id))"), 214, GROUPING),
-    "r07_cte_rollup": (f"WITH c AS (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) SELECT SUM(t) AS total FROM c", 214, GROUPING),
-    "r08_unpivot_two_columns": (f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT (n FOR k IN (a, b))", 214, TURN),
-    "r09_unpivot_three_columns": (f"SELECT SUM(n) AS total FROM {_THREE} UNPIVOT (n FOR k IN (a, b, c))", 321, TURN),
-    "r10_list_concat": (f"SELECT list_sum(list_concat(list({N}), list({N}))) AS total FROM {T}", 214, COLLECTION),
-    "r11_list_pipe": (f"SELECT list_sum(list({N}) || list({N})) AS total FROM {T}", 214, COLLECTION),
+    "r04_grouping_sets_two_empty": (
+        f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY GROUPING SETS ((), ()))",
+        214,
+        GROUPING,
+    ),
+    "r05_grouping_sets_three_empty": (
+        f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY GROUPING SETS ((), (), ()))",
+        321,
+        GROUPING,
+    ),
+    "r06_grouping_sets_same_column_twice": (
+        _GROUPED.format("GROUPING SETS ((school_id), (school_id))"),
+        214,
+        GROUPING,
+    ),
+    "r07_cte_rollup": (
+        f"WITH c AS (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) SELECT SUM(t) AS total FROM c",
+        214,
+        GROUPING,
+    ),
+    "r08_unpivot_two_columns": (
+        f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT (n FOR k IN (a, b))",
+        214,
+        TURN,
+    ),
+    "r09_unpivot_three_columns": (
+        f"SELECT SUM(n) AS total FROM {_THREE} UNPIVOT (n FOR k IN (a, b, c))",
+        321,
+        TURN,
+    ),
+    "r10_list_concat": (
+        f"SELECT list_sum(list_concat(list({N}), list({N}))) AS total FROM {T}",
+        214,
+        COLLECTION,
+    ),
+    "r11_list_pipe": (
+        f"SELECT list_sum(list({N}) || list({N})) AS total FROM {T}",
+        214,
+        COLLECTION,
+    ),
     "r12_window_total_summed_per_row": (f"SELECT SUM(w) AS total FROM {_W}", 428, WINDOW),
-    "r13_rollup_same_column_twice": (_GROUPED.format("ROLLUP(school_id, school_id)"), 321, GROUPING),
-    "r14_unpivot_columns_star": (f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT (n FOR k IN (COLUMNS(*)))", 214, TURN),
-    "r14_unpivot_statement_on_columns_star": (f"SELECT SUM(n) AS total FROM (UNPIVOT {_TWO} ON COLUMNS(*) INTO NAME k VALUE n)", 214, TURN),
-    "r15_unpivot_include_nulls": (f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT INCLUDE NULLS (n FOR k IN (a, b))", 214, TURN),
+    "r13_rollup_same_column_twice": (
+        _GROUPED.format("ROLLUP(school_id, school_id)"),
+        321,
+        GROUPING,
+    ),
+    "r14_unpivot_columns_star": (
+        f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT (n FOR k IN (COLUMNS(*)))",
+        214,
+        TURN,
+    ),
+    "r14_unpivot_statement_on_columns_star": (
+        f"SELECT SUM(n) AS total FROM (UNPIVOT {_TWO} ON COLUMNS(*) INTO NAME k VALUE n)",
+        214,
+        TURN,
+    ),
+    "r15_unpivot_include_nulls": (
+        f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT INCLUDE NULLS (n FOR k IN (a, b))",
+        214,
+        TURN,
+    ),
     # The issue's (students, students) pairs do not bind in DuckDB 2.0.0 (sum(VARCHAR)).
-    "r16_unpivot_paired": (f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT ((n, m) FOR k IN ((a, b), (b, a)))", 214, TURN),
+    "r16_unpivot_paired": (
+        f"SELECT SUM(n) AS total FROM {_TWO} UNPIVOT ((n, m) FOR k IN ((a, b), (b, a)))",
+        214,
+        TURN,
+    ),
 }
 
 COUNT_Q = "How many enrollments are there?"
@@ -91,86 +144,572 @@ COUNT_Q = "How many enrollments are there?"
 #: The window rows try every way a window value can change its name on the
 #: way up. Rule 3 denies by default, so a name it cannot follow refuses.
 MORE_SHAPES: dict[str, tuple[str, str, int, int, str]] = {
-    "window_renamed_by_a_column_list": (Q, f"SELECT SUM(c) AS total FROM {_W} AS q(c)", 428, 107, WINDOW),
-    "window_by_position": (Q, f"SELECT SUM(#1) AS total FROM (SELECT SUM({N}) OVER () FROM {T})", 428, 107, WINDOW),
+    "window_renamed_by_a_column_list": (
+        Q,
+        f"SELECT SUM(c) AS total FROM {_W} AS q(c)",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_by_position": (
+        Q,
+        f"SELECT SUM(#1) AS total FROM (SELECT SUM({N}) OVER () FROM {T})",
+        428,
+        107,
+        WINDOW,
+    ),
     "window_by_columns_star": (Q, f"SELECT SUM(COLUMNS(*)) AS total FROM {_W}", 428, 107, WINDOW),
     "window_qualified": (Q, f"SELECT SUM(q.w) AS total FROM {_W} q", 428, 107, WINDOW),
-    "window_in_a_struct_field": (Q, f"SELECT SUM(s.w) AS total FROM (SELECT {{'w': SUM({N}) OVER ()}} AS s FROM {T})", 428, 107, WINDOW),
-    "window_through_a_whole_row": (Q, f"SELECT SUM(q.w) AS total FROM (SELECT q FROM {_W} q)", 428, 107, WINDOW),
-    "window_by_its_generated_name": (Q, f'SELECT SUM("sum(CAST(students AS INTEGER)) OVER ()") AS total FROM (SELECT SUM({N}) OVER () FROM {T})', 428, 107, WINDOW),
-    "window_named_in_a_window_clause": (Q, f"SELECT SUM(w) AS total FROM (SELECT SUM({N}) OVER win AS w FROM {T} WINDOW win AS ())", 428, 107, WINDOW),
-    "window_through_a_star": (Q, f"SELECT SUM(w) AS total FROM (SELECT * FROM {_W})", 428, 107, WINDOW),
-    "window_through_star_rename": (Q, f"SELECT SUM(z) AS total FROM (SELECT * RENAME (w AS z) FROM {_W})", 428, 107, WINDOW),
-    "window_through_star_replace": (Q, f"SELECT SUM(students) AS total FROM (SELECT * REPLACE (SUM({N}) OVER () AS students) FROM {T})", 428, 107, WINDOW),
-    "window_through_a_columns_selector": (Q, f"SELECT SUM(w) AS total FROM (SELECT COLUMNS('w') FROM {_W})", 428, 107, WINDOW),
+    "window_in_a_struct_field": (
+        Q,
+        f"SELECT SUM(s.w) AS total FROM (SELECT {{'w': SUM({N}) OVER ()}} AS s FROM {T})",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_through_a_whole_row": (
+        Q,
+        f"SELECT SUM(q.w) AS total FROM (SELECT q FROM {_W} q)",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_by_its_generated_name": (
+        Q,
+        f'SELECT SUM("sum(CAST(students AS INTEGER)) OVER ()") AS total FROM (SELECT SUM({N}) OVER () FROM {T})',
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_named_in_a_window_clause": (
+        Q,
+        f"SELECT SUM(w) AS total FROM (SELECT SUM({N}) OVER win AS w FROM {T} WINDOW win AS ())",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_through_a_star": (
+        Q,
+        f"SELECT SUM(w) AS total FROM (SELECT * FROM {_W})",
+        428,
+        107,
+        WINDOW,
+    ),
+    # Unnamed in the inner SELECT, then through a star: only the carried kind knows (M09).
+    "window_unnamed_through_a_star_then_by_generated_name": (
+        Q,
+        f'SELECT SUM("sum(CAST(students AS INTEGER)) OVER ()") AS total FROM (SELECT * FROM (SELECT SUM({N}) OVER () FROM {T}))',
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_through_star_rename": (
+        Q,
+        f"SELECT SUM(z) AS total FROM (SELECT * RENAME (w AS z) FROM {_W})",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_through_star_replace": (
+        Q,
+        f"SELECT SUM(students) AS total FROM (SELECT * REPLACE (SUM({N}) OVER () AS students) FROM {T})",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_through_a_columns_selector": (
+        Q,
+        f"SELECT SUM(w) AS total FROM (SELECT COLUMNS('w') FROM {_W})",
+        428,
+        107,
+        WINDOW,
+    ),
     "window_through_from_first": (Q, f"SELECT SUM(w) AS total FROM (FROM {_W})", 428, 107, WINDOW),
-    "window_through_a_correlated_scalar": (Q, f"SELECT (SELECT SUM(q.w)) AS total FROM {_W} q", 428, 107, WINDOW),
-    "window_through_a_lateral_alias": (Q, f"SELECT SUM(v) AS total FROM (SELECT SUM({N}) OVER () AS w, w * 1 AS v FROM {T})", 428, 107, WINDOW),
-    "window_through_a_cte_column_list": (Q, f"WITH c(x) AS (SELECT SUM({N}) OVER () FROM {T}) SELECT SUM(x) AS total FROM c", 428, 107, WINDOW),
-    "window_of_a_window": (Q, f"SELECT DISTINCT SUM(w) OVER () AS total FROM {_W}", 428, 107, WINDOW),
-    "window_running_total_summed": (Q, f"SELECT SUM(r) AS total FROM (SELECT SUM({N}) OVER (ORDER BY enrollment_id) AS r FROM {T})", 287, 107, WINDOW),
-    "window_lag_added_per_row": (Q, f"SELECT SUM(x) AS total FROM (SELECT {N} + LAG({N}, 1, 0) OVER (ORDER BY enrollment_id) AS x FROM {T})", 202, 107, WINDOW),
-    "window_over_rollup_in_one_select": (Q, f"SELECT DISTINCT SUM(SUM({N})) OVER () AS total FROM {T} GROUP BY ROLLUP(school_id)", 214, 107, GROUPING),
-    "rollup_under_an_untyped_aggregate": (Q, f"SELECT fsum(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id))", 214, 107, GROUPING),
-    "rollup_through_a_filtering_select": (Q, f"SELECT SUM(t) AS total FROM (SELECT t FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY CUBE(school_id)) WHERE t > 0)", 214, 107, GROUPING),
-    "grouping_sets_beside_a_plain_key": (Q, f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY school_id, GROUPING SETS ((enrollment_id), ()))", 214, 107, GROUPING),
-    "rollup_cte_in_a_scalar_subquery": (Q, f"WITH c AS (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) SELECT (SELECT SUM(t) FROM c) AS total", 214, 107, GROUPING),
-    "rollup_rows_counted": ("How many schools have enrollments?", f"SELECT COUNT(*) AS total FROM (SELECT school_id FROM {T} GROUP BY ROLLUP(school_id))", 5, 4, GROUPING),
-    "rollup_total_row_taken_as_the_largest": ("What is the largest total for one school?", f"SELECT MAX(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id))", 107, 40, GROUPING),
-    "unpivot_rows_counted": (COUNT_Q, f"SELECT COUNT(*) AS total FROM {_TWO} UNPIVOT (n FOR k IN (a, b))", 8, 4, TURN),
-    "unpivot_through_a_cte": (Q, f"WITH u AS (SELECT * FROM {_TWO} UNPIVOT (n FOR k IN (a, b))) SELECT SUM(n) AS total FROM u", 214, 107, TURN),
-    "list_concat_counted": (COUNT_Q, f"SELECT len(list({N}) || list({N})) AS total FROM {T}", 8, 4, COLLECTION),
-    "list_concat_counted_typed_functions": (COUNT_Q, f"SELECT array_length(array_concat(list({N}), list({N}))) AS total FROM {T}", 8, 4, COLLECTION),
-    "array_agg_concat_counted": (COUNT_Q, f"SELECT len(array_agg({N}) || array_agg({N})) AS total FROM {T}", 8, 4, COLLECTION),
-    "list_from_a_derived_table": (COUNT_Q, f"SELECT len(l || l) AS total FROM (SELECT list({N}) AS l FROM {T})", 8, 4, COLLECTION),
-    "list_through_a_lateral_alias": (COUNT_Q, f"SELECT list({N}) AS l, len(l || l) AS total FROM {T}", 8, 4, COLLECTION),
-    "union_all_summed": (Q, f"SELECT SUM(n) AS total FROM (SELECT {N} AS n FROM {T} UNION ALL SELECT {N} FROM {T})", 214, 107, SET_OP),
-    "unnest_pair_summed": (Q, f"SELECT SUM(n) AS total FROM (SELECT UNNEST([{N}, {N}]) AS n FROM {T})", 214, 107, GENERATOR),
-    # A LATERAL subquery that reads no relation is followed, not trusted (verifier fix).
-    "window_through_a_lateral": (Q, f"SELECT SUM(s.v) AS total FROM {_W} q, LATERAL (SELECT q.w AS v) s", 428, 107, WINDOW),
-    "lateral_union_summed": (Q, f"SELECT SUM({N}) AS total FROM {T} i, LATERAL (SELECT 1 AS k UNION ALL SELECT 2) s", 214, 107, SET_OP),
-    "lateral_unnest_summed": (Q, f"SELECT SUM({N}) AS total FROM {T} i, LATERAL (SELECT UNNEST([1, 2]) AS k) s", 214, 107, GENERATOR),
+    "window_through_a_correlated_scalar": (
+        Q,
+        f"SELECT (SELECT SUM(q.w)) AS total FROM {_W} q",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_through_a_lateral_alias": (
+        Q,
+        f"SELECT SUM(v) AS total FROM (SELECT SUM({N}) OVER () AS w, w * 1 AS v FROM {T})",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_through_a_cte_column_list": (
+        Q,
+        f"WITH c(x) AS (SELECT SUM({N}) OVER () FROM {T}) SELECT SUM(x) AS total FROM c",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_of_a_window": (
+        Q,
+        f"SELECT DISTINCT SUM(w) OVER () AS total FROM {_W}",
+        428,
+        107,
+        WINDOW,
+    ),
+    "window_running_total_summed": (
+        Q,
+        f"SELECT SUM(r) AS total FROM (SELECT SUM({N}) OVER (ORDER BY enrollment_id) AS r FROM {T})",
+        287,
+        107,
+        WINDOW,
+    ),
+    "window_lag_added_per_row": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} + LAG({N}, 1, 0) OVER (ORDER BY enrollment_id) AS x FROM {T})",
+        202,
+        107,
+        WINDOW,
+    ),
+    "window_over_rollup_in_one_select": (
+        Q,
+        f"SELECT DISTINCT SUM(SUM({N})) OVER () AS total FROM {T} GROUP BY ROLLUP(school_id)",
+        214,
+        107,
+        GROUPING,
+    ),
+    "rollup_under_an_untyped_aggregate": (
+        Q,
+        f"SELECT fsum(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id))",
+        214,
+        107,
+        GROUPING,
+    ),
+    "rollup_through_a_filtering_select": (
+        Q,
+        f"SELECT SUM(t) AS total FROM (SELECT t FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY CUBE(school_id)) WHERE t > 0)",
+        214,
+        107,
+        GROUPING,
+    ),
+    "grouping_sets_beside_a_plain_key": (
+        Q,
+        f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY school_id, GROUPING SETS ((enrollment_id), ()))",
+        214,
+        107,
+        GROUPING,
+    ),
+    "rollup_cte_in_a_scalar_subquery": (
+        Q,
+        f"WITH c AS (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) SELECT (SELECT SUM(t) FROM c) AS total",
+        214,
+        107,
+        GROUPING,
+    ),
+    "rollup_rows_counted": (
+        "How many schools have enrollments?",
+        f"SELECT COUNT(*) AS total FROM (SELECT school_id FROM {T} GROUP BY ROLLUP(school_id))",
+        5,
+        4,
+        GROUPING,
+    ),
+    "rollup_total_row_taken_as_the_largest": (
+        "What is the largest total for one school?",
+        f"SELECT MAX(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id))",
+        107,
+        40,
+        GROUPING,
+    ),
+    "unpivot_rows_counted": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM {_TWO} UNPIVOT (n FOR k IN (a, b))",
+        8,
+        4,
+        TURN,
+    ),
+    "unpivot_through_a_cte": (
+        Q,
+        f"WITH u AS (SELECT * FROM {_TWO} UNPIVOT (n FOR k IN (a, b))) SELECT SUM(n) AS total FROM u",
+        214,
+        107,
+        TURN,
+    ),
+    # Adversary round (windows and lists): a string is a collection once split.
+    "string_agg_doubled_and_split": (
+        COUNT_Q,
+        f"SELECT len(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "string_agg_through_a_cte": (
+        COUNT_Q,
+        f"WITH s AS (SELECT string_agg(students, ',') AS j FROM {T}) SELECT len(string_split(j || ',' || j, ',')) AS total FROM s",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "listagg_concat_ws": (
+        COUNT_Q,
+        f"SELECT len(string_split(concat_ws(',', listagg(students, ','), listagg(students, ',')), ',')) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "scalar_subquery_summed_per_row": (
+        Q,
+        f"SELECT SUM((SELECT SUM({N}) FROM {T})) AS total FROM {T}",
+        428,
+        107,
+        WINDOW,
+    ),
+    # Adversary round (grouping sets): SUMMARIZE aggregates its whole input.
+    "summarize_over_a_rollup": (
+        Q,
+        f"SELECT CAST(avg AS DOUBLE) * count AS total FROM (SUMMARIZE SELECT t FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)))",
+        214,
+        107,
+        GROUPING,
+    ),
+    # Adversary round (doors): a row multiplier listed beside the value.
+    "unlist_listed_beside_the_value": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM (SELECT {N} AS x, unlist([1, 2]) AS g FROM {T})",
+        8,
+        4,
+        GENERATOR,
+    ),
+    "generate_subscripts_listed_beside_the_value": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} AS x, generate_subscripts([1, 2], 1) AS g FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
+    "list_concat_counted": (
+        COUNT_Q,
+        f"SELECT len(list({N}) || list({N})) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "list_concat_counted_typed_functions": (
+        COUNT_Q,
+        f"SELECT array_length(array_concat(list({N}), list({N}))) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "array_agg_concat_counted": (
+        COUNT_Q,
+        f"SELECT len(array_agg({N}) || array_agg({N})) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "list_from_a_derived_table": (
+        COUNT_Q,
+        f"SELECT len(l || l) AS total FROM (SELECT list({N}) AS l FROM {T})",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "list_through_a_lateral_alias": (
+        COUNT_Q,
+        f"SELECT list({N}) AS l, len(l || l) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "union_all_summed": (
+        Q,
+        f"SELECT SUM(n) AS total FROM (SELECT {N} AS n FROM {T} UNION ALL SELECT {N} FROM {T})",
+        214,
+        107,
+        SET_OP,
+    ),
+    "unnest_pair_summed": (
+        Q,
+        f"SELECT SUM(n) AS total FROM (SELECT UNNEST([{N}, {N}]) AS n FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
 }
+
+_R = f"SELECT 'x' AS k, SUM({N}) AS s FROM {T} GROUP BY ROLLUP(school_id)"
+#: Adversary round (step 7). Four runs on Sonnet at high effort, each with its own lens and
+#: none the author of the check, wrote statements to get a wrong figure past it. These are
+#: the ones that did on the first build, each now refused. name -> same shape as MORE_SHAPES.
+ADVERSARY_SHAPES: dict[str, tuple[str, str, int | float, int | float, str]] = {
+    # Lens A: an aggregate written inside a PIVOT clause was never inspected.
+    "pivot_clause_over_rollup": (
+        Q,
+        f"SELECT * FROM ({_R}) PIVOT (SUM(s) FOR k IN ('x'))",
+        214,
+        107,
+        GROUPING,
+    ),
+    "pivot_clause_over_rollup_cte": (
+        Q,
+        f"WITH r AS ({_R}) SELECT * FROM r PIVOT (SUM(s) FOR k IN ('x'))",
+        214,
+        107,
+        GROUPING,
+    ),
+    "pivot_statement_using_over_rollup": (Q, f"PIVOT ({_R}) ON k USING SUM(s)", 214, 107, GROUPING),
+    "pivot_clause_over_union": (
+        Q,
+        f"SELECT * FROM (SELECT 'x' AS k, {N} AS s FROM {T} UNION ALL SELECT 'x', {N} FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))",
+        214,
+        107,
+        SET_OP,
+    ),
+    "pivot_clause_over_window": (
+        Q,
+        f"SELECT * FROM (SELECT 'x' AS k, SUM({N}) OVER () AS s FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))",
+        428,
+        107,
+        WINDOW,
+    ),
+    "pivot_clause_counts_unpivoted_rows": (
+        COUNT_Q,
+        f"SELECT * FROM (SELECT 'x' AS k, v FROM (UNPIVOT (SELECT {N} a, {N} b FROM {T}) ON a, b INTO NAME n VALUE v)) PIVOT (COUNT(v) FOR k IN ('x'))",
+        8,
+        4,
+        TURN,
+    ),
+    # Lens B: collections sqlglot does not type, list forms of scalar aggregates, a
+    # collection or a window value behind a scalar subquery, a renamed duplicate column.
+    "histogram_keys_concatenated": (
+        Q,
+        f"SELECT list_sum(map_keys(histogram({N})) || map_keys(histogram({N}))) AS total FROM {T}",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "quantile_list_concatenated": (
+        Q,
+        f"SELECT list_sum(list_concat(quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]), quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]))) AS total FROM {T}",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "collection_in_a_scalar_subquery": (
+        Q,
+        f"SELECT list_sum((SELECT list({N}) FROM {T}) || (SELECT list({N}) FROM {T})) AS total",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "scalar_subquery_as_sum_argument": (
+        Q,
+        f"SELECT SUM((SELECT SUM({N}) FROM {T})) AS total FROM {T}",
+        428,
+        107,
+        WINDOW,
+    ),
+    "scalar_subquery_as_avg_argument": (
+        "What is the average per enrollment?",
+        f"SELECT AVG((SELECT SUM({N}) FROM {T})) AS total FROM {T}",
+        107.0,
+        26.75,
+        WINDOW,
+    ),
+    "duplicate_output_name_renamed": (
+        Q,
+        f"SELECT SUM(c_1) AS total FROM (SELECT {N} AS c, SUM({N}) OVER () AS c FROM {T})",
+        428,
+        107,
+        WINDOW,
+    ),
+    # Lens C: row generators that are not UNNEST in a FROM, and a table read twice.
+    "generate_subscripts_in_a_projection": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} AS x, generate_subscripts([1, 2], 1) AS g FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
+    "method_unnest_in_a_projection": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT [{N}, {N}].unnest() AS x FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
+    "schema_qualified_unnest_of_range": (
+        Q,
+        f"SELECT SUM({N}) AS total FROM (SELECT students, main.unnest(range(2)) AS k FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
+    "self_join_on_true": (
+        Q,
+        f"SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM {T} a JOIN {T} b ON true",
+        428,
+        107,
+        SELF_JOIN,
+    ),
+    "self_cross_join_counted": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM {T} a CROSS JOIN {T} b",
+        16,
+        4,
+        SELF_JOIN,
+    ),
+    "table_cross_joined_to_its_own_sum": (
+        Q,
+        f"WITH tot AS (SELECT SUM({N}) AS t FROM {T}) SELECT SUM(t) AS total FROM {T} CROSS JOIN tot",
+        428,
+        107,
+        SELF_JOIN,
+    ),
+    "two_derived_tables_over_one_table": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} AS x FROM {T}) t1, (SELECT school_id FROM {T}) t2",
+        428,
+        107,
+        SELF_JOIN,
+    ),
+    # A collection encoded as text and turned back into rows: string_agg collects.
+    "string_agg_concatenated_then_unnested": (
+        Q,
+        f"SELECT SUM(CAST(v AS INTEGER)) AS total FROM (SELECT UNNEST(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS v FROM {T})",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "cte_read_twice_and_summed": (
+        Q,
+        f"WITH c AS (SELECT {N} AS x FROM {T}) SELECT SUM(a.x) AS total FROM c a, c b",
+        428,
+        107,
+        SELF_JOIN,
+    ),
+}
+MORE_SHAPES.update(ADVERSARY_SHAPES)
 
 LIST_Q = "List the enrollments"
 #: Clause 4. Correct one-table statements: name -> (question, sql). Each
 #: answers exactly as on the parent commit (this test passes there too).
 CORRECT: dict[str, tuple[str, str]] = {
     "plain_sum": (Q, TRUE_SQL),
+    # Found by the full suite (test_grant_struct_02): sqlglot files a LATERAL
+    # subquery under UDTF and reads ``TABLE t`` as an alias. Both are one read.
+    "lateral_subquery_of_one_row": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM {T} i, LATERAL (SELECT 1 AS one) s",
+    ),
+    "table_shorthand_in_a_cte": (COUNT_Q, f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS total FROM c"),
     "plain_count": (COUNT_Q, f"SELECT COUNT(*) AS total FROM {T}"),
     "plain_avg": (Q, f"SELECT AVG({N}) AS total FROM {T}"),
     "plain_min": (Q, f"SELECT MIN({N}) AS total FROM {T}"),
     "plain_max": (Q, f"SELECT MAX({N}) AS total FROM {T}"),
-    "one_group_by": (LIST_Q, f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY school_id ORDER BY school_id"),
-    "outer_sum_over_one_group_by": (Q, f"SELECT SUM(t) AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id)"),
-    "outer_avg_over_one_group_by": (Q, f"SELECT AVG(t) AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id)"),
-    "rollup_listing_with_its_total_row": (LIST_Q, f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id) ORDER BY school_id"),
-    "rollup_listing_through_a_select": (LIST_Q, f"SELECT COALESCE(school_id, 'all') AS school, t AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) ORDER BY 1"),
+    "one_group_by": (
+        LIST_Q,
+        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY school_id ORDER BY school_id",
+    ),
+    "outer_sum_over_one_group_by": (
+        Q,
+        f"SELECT SUM(t) AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id)",
+    ),
+    "outer_avg_over_one_group_by": (
+        Q,
+        f"SELECT AVG(t) AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id)",
+    ),
+    "rollup_listing_with_its_total_row": (
+        LIST_Q,
+        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id) ORDER BY school_id",
+    ),
+    "rollup_listing_through_a_select": (
+        LIST_Q,
+        f"SELECT COALESCE(school_id, 'all') AS school, t AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) ORDER BY 1",
+    ),
     "filter": (Q, f"SELECT SUM({N}) AS total FROM {T} WHERE school_id <> '9'"),
     "count_distinct": (Q, f"SELECT COUNT(DISTINCT school_id) AS total FROM {T}"),
     "select_distinct": (LIST_Q, f"SELECT DISTINCT school_id FROM {T} ORDER BY school_id"),
-    "having": (LIST_Q, f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY school_id HAVING SUM({N}) > 20 ORDER BY school_id"),
-    "window_total_listed": (LIST_Q, f"SELECT enrollment_id, SUM({N}) OVER () AS total FROM {T} ORDER BY enrollment_id"),
-    "share_of_total_window_over_groups": (LIST_Q, f"SELECT school_id, t * 100 / SUM(t) OVER () AS pct FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id) ORDER BY school_id"),
-    "sum_after_row_number_filter": (Q, f"SELECT SUM(n) AS total FROM (SELECT {N} AS n, ROW_NUMBER() OVER (PARTITION BY school_id ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn = 1"),
-    "sum_after_row_number_filter_star": (Q, f"SELECT SUM({N}) AS total FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY school_id ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn = 1"),
-    "sum_after_row_number_filter_star_exclude": (Q, f"SELECT SUM({N}) AS total FROM (SELECT * EXCLUDE (school_id), ROW_NUMBER() OVER (ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn <= 4"),
-    "qualify": (LIST_Q, f"SELECT enrollment_id, students FROM {T} QUALIFY ROW_NUMBER() OVER (ORDER BY {N} DESC) = 1"),
-    "collections_listed": (LIST_Q, f"SELECT school_id, list(enrollment_id) AS ids, string_agg(enrollment_id, ',') AS joined FROM {T} GROUP BY school_id ORDER BY school_id"),
-    "unpivot_listing": (LIST_Q, f"SELECT * FROM (SELECT enrollment_id, {N} AS a, {N} AS b FROM {T}) UNPIVOT (n FOR k IN (a, b)) ORDER BY enrollment_id, k"),
+    "having": (
+        LIST_Q,
+        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY school_id HAVING SUM({N}) > 20 ORDER BY school_id",
+    ),
+    "window_total_listed": (
+        LIST_Q,
+        f"SELECT enrollment_id, SUM({N}) OVER () AS total FROM {T} ORDER BY enrollment_id",
+    ),
+    "share_of_total_window_over_groups": (
+        LIST_Q,
+        f"SELECT school_id, t * 100 / SUM(t) OVER () AS pct FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id) ORDER BY school_id",
+    ),
+    "sum_after_row_number_filter": (
+        Q,
+        f"SELECT SUM(n) AS total FROM (SELECT {N} AS n, ROW_NUMBER() OVER (PARTITION BY school_id ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn = 1",
+    ),
+    "sum_after_row_number_filter_star": (
+        Q,
+        f"SELECT SUM({N}) AS total FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY school_id ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn = 1",
+    ),
+    "sum_after_row_number_filter_star_exclude": (
+        Q,
+        f"SELECT SUM({N}) AS total FROM (SELECT * EXCLUDE (school_id), ROW_NUMBER() OVER (ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn <= 4",
+    ),
+    "qualify": (
+        LIST_Q,
+        f"SELECT enrollment_id, students FROM {T} QUALIFY ROW_NUMBER() OVER (ORDER BY {N} DESC) = 1",
+    ),
+    "collections_listed": (
+        LIST_Q,
+        f"SELECT school_id, list(enrollment_id) AS ids, string_agg(enrollment_id, ',') AS joined FROM {T} GROUP BY school_id ORDER BY school_id",
+    ),
+    "unpivot_listing": (
+        LIST_Q,
+        f"SELECT * FROM (SELECT enrollment_id, {N} AS a, {N} AS b FROM {T}) UNPIVOT (n FOR k IN (a, b)) ORDER BY enrollment_id, k",
+    ),
 }
 
 #: The price of the rule, pinned so it is never silent (clause 4): correct
 #: statements that answered on the parent and abstain now.
 #: name -> (question, sql, the correct figure, the rule that refuses it).
 NEWLY_ABSTAIN: dict[str, tuple[str, str, Any, str]] = {
-    "max_of_a_running_total": (Q, f"SELECT MAX(r) AS total FROM (SELECT SUM({N}) OVER (ORDER BY enrollment_id) AS r FROM {T})", 107, WINDOW),
-    "sum_of_window_shares": (Q, f"SELECT SUM(share) AS total FROM (SELECT {N} * 100 / SUM({N}) OVER () AS share FROM {T})", 100.0, WINDOW),
-    "sum_of_rollup_rows_without_the_total_row": (Q, f"SELECT SUM(t) AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) WHERE school_id IS NOT NULL", 107, GROUPING),
-    "one_grouping_set_spelled_as_grouping_sets": (Q, f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY GROUPING SETS ((school_id)))", 107, GROUPING),
-    "max_over_an_unpivot_of_one_column": (Q, f"SELECT MAX(CAST(v AS INTEGER)) AS total FROM (SELECT students FROM {T}) UNPIVOT (v FOR k IN (students))", 40, TURN),
-    "length_of_a_distinct_list": (Q, f"SELECT len(list(DISTINCT school_id)) AS total FROM {T}", 4, COLLECTION),
-    "first_element_of_a_sorted_list": (Q, f"SELECT list({N} ORDER BY {N} DESC)[1] AS total FROM {T}", 40, COLLECTION),
+    "max_of_a_running_total": (
+        Q,
+        f"SELECT MAX(r) AS total FROM (SELECT SUM({N}) OVER (ORDER BY enrollment_id) AS r FROM {T})",
+        107,
+        WINDOW,
+    ),
+    "sum_of_window_shares": (
+        Q,
+        f"SELECT SUM(share) AS total FROM (SELECT {N} * 100 / SUM({N}) OVER () AS share FROM {T})",
+        100.0,
+        WINDOW,
+    ),
+    "sum_of_rollup_rows_without_the_total_row": (
+        Q,
+        f"SELECT SUM(t) AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) WHERE school_id IS NOT NULL",
+        107,
+        GROUPING,
+    ),
+    "one_grouping_set_spelled_as_grouping_sets": (
+        Q,
+        f"SELECT SUM(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY GROUPING SETS ((school_id)))",
+        107,
+        GROUPING,
+    ),
+    "max_over_an_unpivot_of_one_column": (
+        Q,
+        f"SELECT MAX(CAST(v AS INTEGER)) AS total FROM (SELECT students FROM {T}) UNPIVOT (v FOR k IN (students))",
+        40,
+        TURN,
+    ),
+    "length_of_a_distinct_list": (
+        Q,
+        f"SELECT len(list(DISTINCT school_id)) AS total FROM {T}",
+        4,
+        COLLECTION,
+    ),
+    "first_element_of_a_sorted_list": (
+        Q,
+        f"SELECT list({N} ORDER BY {N} DESC)[1] AS total FROM {T}",
+        40,
+        COLLECTION,
+    ),
 }
 
 #: Clause 5. What the class rule cannot see: arithmetic the statement wrote.
@@ -180,8 +719,24 @@ OPEN: dict[str, tuple[str, int]] = {
     "sum_times_two": (f"SELECT SUM({N}) * 2 AS total FROM {T}", 214),
     "sum_of_a_value_added_to_itself": (f"SELECT SUM({N} + {N}) AS total FROM {T}", 214),
     "one_column_projected_twice_and_added": (f"SELECT SUM(a) + SUM(b) AS total FROM {_TWO}", 214),
-    "aggregate_alias_added_to_itself": (f"SELECT s + s AS total FROM (SELECT SUM({N}) AS s FROM {T})", 214),
-    "window_total_times_window_count_listed": (f"SELECT DISTINCT SUM({N}) OVER () * COUNT(*) OVER () AS total FROM {T}", 428),
+    "aggregate_alias_added_to_itself": (
+        f"SELECT s + s AS total FROM (SELECT SUM({N}) AS s FROM {T})",
+        214,
+    ),
+    "window_total_times_window_count_listed": (
+        f"SELECT DISTINCT SUM({N}) OVER () * COUNT(*) OVER () AS total FROM {T}",
+        428,
+    ),
+    # Adversary round: a pick among a ROLLUP's mixed rows (a choice, not a repeated value).
+    "rollup_listing_cut_to_its_smallest_row": (
+        f"SELECT SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id) ORDER BY total LIMIT 1",
+        12,
+    ),
+    "rollup_rows_cut_to_one_by_an_outer_select": (
+        f"SELECT t AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} "
+        "GROUP BY ROLLUP(school_id)) ORDER BY t LIMIT 1",
+        12,
+    ),
 }
 OPEN_REASON = (
     "open by name (dms#531 clause 5): scalar arithmetic the statement wrote. No operator "
@@ -257,7 +812,9 @@ def _join_why(rig: od._Space, sql: str) -> str | None:
     )
 
 
-def _assert_refused_by_the_rule(env: dict[str, Any], rig: od._Space, sql: str, why: str, figures: tuple[Any, ...]) -> None:
+def _assert_refused_by_the_rule(
+    env: dict[str, Any], rig: od._Space, sql: str, why: str, figures: tuple[Any, ...]
+) -> None:
     """The envelope abstains, and the class rule itself refuses ``sql`` for ``why``."""
     code = _assert_abstain_named(env, rig, figures)
     reason = repeated_input_reason(sql) or ""
@@ -323,8 +880,43 @@ def test_more_ways_to_repeat_a_value_abstain(
     question, sql, wrong, true, why = MORE_SHAPES[name]
     rig, env = _ask("generate", sql, tmp_path, monkeypatch, minter, question)
     rows = od._oracle(rig.lake, sql)
-    assert rows and rows[0]["total"] == wrong and wrong != true, rows
+    first = rows[0].get("total", next(iter(rows[0].values()))) if rows else None
+    assert first == wrong and wrong != true, rows
     _assert_refused_by_the_rule(env, rig, sql, why, (wrong,))
+
+
+SHADOWED_CTE: dict[str, tuple[str, int, str]] = {
+    "cte_shadowed_by_a_later_sibling": (
+        f"WITH c AS (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) SELECT SUM(t) AS total FROM (WITH d AS (SELECT t FROM c), c AS (SELECT 1 AS t) SELECT t FROM d)",
+        214,
+        GROUPING,
+    ),
+    "window_cte_shadowed_by_a_later_sibling": (
+        f"WITH c AS (SELECT SUM({N}) OVER () AS t FROM {T}) SELECT SUM(t) AS total FROM (WITH d AS (SELECT t FROM c), c AS (SELECT 1 AS t) SELECT t FROM d)",
+        428,
+        WINDOW,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(SHADOWED_CTE))
+def test_cte_shadowed_by_a_later_sibling_abstains_at_the_contract_door(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """Adversary round: a CTE sees only the CTEs written before it.
+
+    The inner ``c`` is the OUTER dirty one, not the later clean sibling. Served
+    428/214 at the contract door before the scope fix; the generate and loop
+    doors refused it by accident (``ungranted``), so only this door is asserted.
+    """
+    sql, wrong, why = SHADOWED_CTE[name]
+    rig, env = _ask("contract", sql, tmp_path, monkeypatch, minter)
+    assert od._oracle(rig.lake, sql) == [{"total": wrong}]
+    _assert_refused_by_the_rule(env, rig, sql, why, (wrong, TRUE))
 
 
 # --- the held Yes door ------------------------------------------------------------
@@ -333,9 +925,21 @@ _ORDER_N = "CAST(amount AS INTEGER)"
 #: Held SQL in a file Space (no ontology): name -> (sql, the figure it returns, the rule).
 #: The true total is 250 (``test_connect_ask_03.ONE_TABLE_TRUTH``).
 HELD_SHAPES: dict[str, tuple[str, int, str]] = {
-    "rollup": (f"SELECT SUM(t) AS total FROM (SELECT customer_id, SUM({_ORDER_N}) AS t FROM {ca.ORDERS} GROUP BY ROLLUP(customer_id))", 500, GROUPING),
-    "unpivot": (f"SELECT SUM(n) AS total FROM (SELECT {_ORDER_N} AS a, {_ORDER_N} AS b FROM {ca.ORDERS}) UNPIVOT (n FOR k IN (a, b))", 500, TURN),
-    "window_total": (f"SELECT SUM(w) AS total FROM (SELECT SUM({_ORDER_N}) OVER () AS w FROM {ca.ORDERS})", 1000, WINDOW),
+    "rollup": (
+        f"SELECT SUM(t) AS total FROM (SELECT customer_id, SUM({_ORDER_N}) AS t FROM {ca.ORDERS} GROUP BY ROLLUP(customer_id))",
+        500,
+        GROUPING,
+    ),
+    "unpivot": (
+        f"SELECT SUM(n) AS total FROM (SELECT {_ORDER_N} AS a, {_ORDER_N} AS b FROM {ca.ORDERS}) UNPIVOT (n FOR k IN (a, b))",
+        500,
+        TURN,
+    ),
+    "window_total": (
+        f"SELECT SUM(w) AS total FROM (SELECT SUM({_ORDER_N}) OVER () AS w FROM {ca.ORDERS})",
+        1000,
+        WINDOW,
+    ),
 }
 
 
@@ -464,7 +1068,9 @@ def test_refusal_feeds_the_retry_and_ends_in_reconfirm(
 # --- clause 4: correct statements ---------------------------------------------------
 
 
-def _assert_served(env: dict[str, Any], rig: od._Space, sql: str, door: str) -> list[dict[str, Any]]:
+def _assert_served(
+    env: dict[str, Any], rig: od._Space, sql: str, door: str
+) -> list[dict[str, Any]]:
     oracle = od._oracle(rig.lake, sql)
     assert oracle, sql
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
@@ -523,7 +1129,13 @@ def test_correct_figures_are_the_tables_figures(
         env = rig.ask(question, {"query_sql": sql, "plan_source": "ontology_plan"})
         assert env["badge"] == "L2_VALIDATED", (name, env.get("text"))
         assert env["rows"] == [{"total": figure}], (name, env["rows"])
-    rollup = rig.ask(LIST_Q, {"query_sql": CORRECT["rollup_listing_with_its_total_row"][1], "plan_source": "ontology_plan"})
+    rollup = rig.ask(
+        LIST_Q,
+        {
+            "query_sql": CORRECT["rollup_listing_with_its_total_row"][1],
+            "plan_source": "ontology_plan",
+        },
+    )
     # A ROLLUP listing keeps its total row: four schools and the 107.
     assert sorted(r["total"] for r in rollup["rows"]) == sorted([*students, TRUE])
 
@@ -553,15 +1165,30 @@ def test_correct_statements_that_now_abstain_are_named(
 #: #529's function rule decides some of them today (``unproven_function``);
 #: this guard must not change a single outcome. name -> (question, sql).
 UNTYPED: dict[str, tuple[str, str]] = {
-    "date_part_in_a_filter": (Q, f"SELECT SUM({N}) AS total FROM {T} WHERE date_part('year', DATE '2024-05-01') = 2024"),
-    "dayname_in_a_filter": (Q, f"SELECT SUM({N}) AS total FROM {T} WHERE dayname(DATE '2024-05-01') = 'Wednesday'"),
-    "date_part_in_a_projection": (Q, f"SELECT SUM({N}) AS total, date_part('year', DATE '2024-05-01') AS y FROM {T}"),
+    "date_part_in_a_filter": (
+        Q,
+        f"SELECT SUM({N}) AS total FROM {T} WHERE date_part('year', DATE '2024-05-01') = 2024",
+    ),
+    "dayname_in_a_filter": (
+        Q,
+        f"SELECT SUM({N}) AS total FROM {T} WHERE dayname(DATE '2024-05-01') = 'Wednesday'",
+    ),
+    "date_part_in_a_projection": (
+        Q,
+        f"SELECT SUM({N}) AS total, date_part('year', DATE '2024-05-01') AS y FROM {T}",
+    ),
     "mean": (Q, f"SELECT mean({N}) AS total FROM {T}"),
     "product": (Q, f"SELECT product({N}) AS total FROM {T}"),
     "mode": (Q, f"SELECT mode({N}) AS total FROM {T}"),
     "geomean": (Q, f"SELECT geomean({N}) AS total FROM {T}"),
-    "hash_listed": (LIST_Q, f"SELECT enrollment_id, hash(school_id) AS h FROM {T} ORDER BY enrollment_id"),
-    "mean_of_one_group_by": (Q, f"SELECT mean(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY school_id)"),
+    "hash_listed": (
+        LIST_Q,
+        f"SELECT enrollment_id, hash(school_id) AS h FROM {T} ORDER BY enrollment_id",
+    ),
+    "mean_of_one_group_by": (
+        Q,
+        f"SELECT mean(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY school_id)",
+    ),
 }
 
 
@@ -661,6 +1288,18 @@ def test_open_rows_are_not_refused_by_the_rule() -> None:
 # --- the rule's own edges -----------------------------------------------------------
 
 
+def test_row_generator_as_a_from_source_refuses_on_its_own() -> None:
+    """The join rule refuses these first at the envelope; the guard must not rely on it (M07)."""
+    for sql in (
+        f"SELECT SUM(o.n) AS total FROM (SELECT {N} AS n FROM {T}) o, UNNEST([1, 2]) u(x)",
+        f"SELECT SUM(o.n) AS total FROM (SELECT {N} AS n FROM {T}) o CROSS JOIN (VALUES (1), (2)) v(x)",
+        f"SELECT SUM(o.n) AS total FROM (SELECT {N} AS n FROM {T}) o, range(3) r",
+    ):
+        assert (repeated_input_reason(sql) or "").startswith(
+            "repeated_input:row_generator_under_aggregate"
+        ), sql
+
+
 def test_statement_the_analysis_cannot_finish_refuses() -> None:
     assert repeated_input_reason("SELECT SUM(") == "repeated_input:parse"
     assert repeated_input_reason("SELECT 1; SELECT 2") == "repeated_input:statements"
@@ -677,7 +1316,24 @@ def test_rule_reads_positions_not_words() -> None:
     ):
         assert repeated_input_reason(sql) is None, sql
     # And no word is needed to refuse: GROUP BY ALL is one set, a comma of sets is not.
-    assert repeated_input_reason(f"SELECT SUM(t) FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ALL)") is None
+    assert (
+        repeated_input_reason(f"SELECT SUM(t) FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ALL)")
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT 1 AS one) s",
+        f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS n FROM c",
+    ],
+)
+def test_lateral_subquery_and_table_shorthand_are_one_read(sql: str) -> None:
+    """Found by the full suite (test_grant_struct_02, file Space): sqlglot files a
+    LATERAL subquery under UDTF and reads ``TABLE t`` as an alias. Neither
+    repeats a value, so the class rule must not refuse them."""
+    assert repeated_input_reason(sql) is None
 
 
 # --- a legitimate one-table total with a date filter still answers ------------------
@@ -736,7 +1392,7 @@ def test_one_row_lateral_and_table_form_are_one_read_for_the_guard() -> None:
     """test_grant_struct_02 serves these with exact rows; the guard must not refuse them.
 
     A LATERAL subquery that reads no relation adds no row, and ``TABLE t`` is
-    ``SELECT * FROM t``. A LATERAL that reads a relation is a join and still refuses.
+    ``SELECT * FROM t``. A LATERAL that reads another relation is a join: rule 16's.
     """
     for sql in (
         f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT 1 AS one) s",
@@ -750,5 +1406,29 @@ def test_one_row_lateral_and_table_form_are_one_read_for_the_guard() -> None:
     assert (repeated_input_reason(rollup) or "").startswith(f"repeated_input:{GROUPING}")
     # sqlglot cannot parse ``TABLE schema.t``: it refuses, fail closed.
     assert repeated_input_reason(f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS n FROM c") == "repeated_input:parse"
-    joined = f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT school_id FROM {od.SCHOOLS}) s"
-    assert (repeated_input_reason(joined) or "").startswith(f"repeated_input:{GENERATOR}")
+
+
+#: A LATERAL subquery passes on what the sources before it hold (integration
+#: verifier fix): name -> (sql, the figure DuckDB returns, the rule). Truth 107.
+LATERAL_SHAPES: dict[str, tuple[str, int, str]] = {
+    "window_value_passed_through_a_lateral": (f"SELECT SUM(s.v) AS total FROM {_W} q, LATERAL (SELECT q.w AS v) s", 428, WINDOW),
+    "window_value_computed_on_in_a_lateral": (f"SELECT SUM(s.v) AS total FROM {_W} q, LATERAL (SELECT q.w + 0 AS v) s", 428, WINDOW),
+    "lateral_union_summed": (f"SELECT SUM({N}) AS total FROM {T} i, LATERAL (SELECT 1 AS k UNION ALL SELECT 2) s", 214, SET_OP),
+    "lateral_unnest_summed": (f"SELECT SUM({N}) AS total FROM {T} i, LATERAL (SELECT UNNEST([1, 2]) AS k) s", 214, GENERATOR),
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(LATERAL_SHAPES))
+def test_lateral_shapes_abstain(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql, wrong, why = LATERAL_SHAPES[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter)
+    assert od._oracle(rig.lake, sql) == [{"total": wrong}] and wrong != TRUE
+    _assert_refused_by_the_rule(env, rig, sql, why, (wrong,))
