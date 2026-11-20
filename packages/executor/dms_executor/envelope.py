@@ -928,10 +928,6 @@ def _listed_records(
     return out
 
 
-def _label(cell: Any) -> str:
-    """A label cell as a ``k=v`` split reads it back: no edge space, no trailing , or ;."""
-    return str(cell).strip().rstrip(",;").strip()
-
 
 def _shows_cell(shown: str, cell: Any) -> bool:
     """``shown`` states this cell.
@@ -941,7 +937,7 @@ def _shows_cell(shown: str, cell: Any) -> bool:
     A unit after it is allowed (12.5 MYR, 4). Anything else: the same string.
     """
     if not _is_number(cell):
-        return _label(cell) == shown
+        return str(cell) == shown
     head = _LISTED_NUMBER.match(shown)
     if not head or re.match(r"[A-Za-z0-9_]|\.\d", shown[head.end() :]):
         return False
@@ -969,9 +965,15 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
     columns = sorted({str(col) for row in row_list for col in row})
     records = _listed_records(text, columns)
     # A bullet line the row writer printed for one of these rows states that row.
-    # Label cells can hold edge spaces, a trailing comma or "k=" text, which a
-    # k=v split cannot read back.
-    written = {row_line(row) for row in row_list}
+    # Label cells can hold edge spaces or a trailing comma, which a k=v split
+    # cannot read back. Labels are otherwise compared exactly: "MY" and "MY "
+    # are two groups. A cell that itself reads "col=" prints a second value
+    # for that column, so its line is read pair by pair instead.
+    written = {
+        row_line(row)
+        for row in row_list
+        if not any(f"{col}=" in str(cell) for cell in row.values() for col in columns)
+    }
     for listing, record, line in records if numeric else []:
         figures = [(col, shown) for col, shown in record if col in numeric]
         if not figures or (listing and line in written):
@@ -982,11 +984,11 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
             (col, shown)
             for col, shown in record
             if col not in numeric
-            and (listing or any(_label(r.get(col)) == shown for r in row_list))
+            and (listing or any(str(r.get(col)) == shown for r in row_list))
         ]
         if not any(
             all(col in row and _shows_cell(shown, row[col]) for col, shown in figures)
-            and all(_label(row.get(col)) == shown for col, shown in labels)
+            and all(str(row.get(col)) == shown for col, shown in labels)
             for row in row_list
         ):
             out.append("b: a listed row shows a figure its row does not hold")

@@ -815,7 +815,7 @@ def test_adversary_e14_takes_a_correct_rounding_and_refuses_a_wrong_one() -> Non
 
 @pytest.mark.parametrize(
     "label",
-    ["KL ", " Kuala Lumpur", "Acme Sdn Bhd,", "Penang;", "see total_cost_myr=0"],
+    ["KL ", " Kuala Lumpur", "Acme Sdn Bhd,", "Penang;"],
 )
 def test_verifier_a_padded_or_punctuated_label_does_not_withhold_a_correct_listing(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, label: str
@@ -864,3 +864,45 @@ def test_verifier_masking_a_long_text_stays_linear() -> None:
     elapsed = time.perf_counter() - started
     assert "5555 1000" not in got["text"]
     assert elapsed < 5.0, elapsed
+
+
+@pytest.mark.parametrize(
+    ("answer", "rows"),
+    [
+        (
+            "Found 2 row(s).\n  - country=MY, orders=8\n  - country=MY , orders=7",
+            [{"country": "MY", "orders": 7}, {"country": "MY ", "orders": 8}],
+        ),
+        (
+            "country=MY, total_spend_myr=1610511.05",
+            [
+                {"country": "MY", "total_spend_myr": 12.5},
+                {"country": "MY,", "total_spend_myr": 1610511.05},
+            ],
+        ),
+    ],
+)
+def test_verifier_a_figure_under_a_near_twin_label_is_withheld(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Two groups that differ by an edge space or a comma are two groups. A figure
+    from one shown under the other is a wrong figure."""
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert env["rows"] == [] and env["values"] == []
+
+
+def test_verifier_a_label_that_reads_as_a_figure_is_withheld(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label cell holding "total_cost_myr=999" prints a second figure for the row."""
+    rows = [{"location_code": "x, total_cost_myr=999", "total_cost_myr": 12.5}]
+    env = _ask_l1(warehouse, minter, monkeypatch, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert "999" not in env["text"]

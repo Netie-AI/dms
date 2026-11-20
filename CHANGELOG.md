@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-20 - FIG-FIDELITY-01 (#508): verifier rounds
+
+- **Verifier.** An Opus verifier that did not build the fix returned PASS WITH NITS twice. Fixed from its findings, each with a test that failed first: a padded or punctuated label (`"KL "`, `"Acme Sdn Bhd,"`) no longer withholds a correct listing (a bullet line equal to the row writer's own line states that row); a figure under a near-twin label (`"MY"` vs `"MY "`) is withheld; a label cell reading `col=` is read pair by pair and withheld; `rate=1e9999999` abstains instead of a 5xx; a mask that touches a decimal (`212.5551234`) is counted and the answer withheld; masking a long text is linear again (16000 phone shapes 0.08 s, was 38.7 s).
+- **Open, on main before this branch.** An integer the mask replaces whole (`5552345678` as a derived sum) is served as a mask token; E14 does not read `k = v`, `k: v` or numbered listings; a noisy float sent as a string is masked and served. Reported for routing.
+
 ## 2026-11-20 - FIG-FIDELITY-01 (#508, P0): a served figure is the figure the query returned (E14)
 
 - **Defect.** Live run 2026-11-06 (Warehouse Ops, "Show shipment cost by destination"): the rows held `1610511.0500000012`, the text showed `total_cost_myr=1610511.DMSMASK_phone_01` under `L1_GOVERNED_METRIC`, said "Found 20 row(s)" while listing 12, and `assert_envelope_valid` passed it. The PII text scanner read the float's fraction as a phone number.
