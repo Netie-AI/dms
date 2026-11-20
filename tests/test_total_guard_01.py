@@ -100,6 +100,8 @@ MORE_SHAPES: dict[str, tuple[str, str, int, int, str]] = {
     "window_by_its_generated_name": (Q, f'SELECT SUM("sum(CAST(students AS INTEGER)) OVER ()") AS total FROM (SELECT SUM({N}) OVER () FROM {T})', 428, 107, WINDOW),
     "window_named_in_a_window_clause": (Q, f"SELECT SUM(w) AS total FROM (SELECT SUM({N}) OVER win AS w FROM {T} WINDOW win AS ())", 428, 107, WINDOW),
     "window_through_a_star": (Q, f"SELECT SUM(w) AS total FROM (SELECT * FROM {_W})", 428, 107, WINDOW),
+    # Unnamed in the inner SELECT, then through a star: only the carried kind knows (M09).
+    "window_unnamed_through_a_star_then_by_generated_name": (Q, f'SELECT SUM("sum(CAST(students AS INTEGER)) OVER ()") AS total FROM (SELECT * FROM (SELECT SUM({N}) OVER () FROM {T}))', 428, 107, WINDOW),
     "window_through_star_rename": (Q, f"SELECT SUM(z) AS total FROM (SELECT * RENAME (w AS z) FROM {_W})", 428, 107, WINDOW),
     "window_through_star_replace": (Q, f"SELECT SUM(students) AS total FROM (SELECT * REPLACE (SUM({N}) OVER () AS students) FROM {T})", 428, 107, WINDOW),
     "window_through_a_columns_selector": (Q, f"SELECT SUM(w) AS total FROM (SELECT COLUMNS('w') FROM {_W})", 428, 107, WINDOW),
@@ -655,6 +657,18 @@ def test_open_rows_are_not_refused_by_the_rule() -> None:
 
 
 # --- the rule's own edges -----------------------------------------------------------
+
+
+def test_row_generator_as_a_from_source_refuses_on_its_own() -> None:
+    """The join rule refuses these first at the envelope; the guard must not rely on it (M07)."""
+    for sql in (
+        f"SELECT SUM(o.n) AS total FROM (SELECT {N} AS n FROM {T}) o, UNNEST([1, 2]) u(x)",
+        f"SELECT SUM(o.n) AS total FROM (SELECT {N} AS n FROM {T}) o CROSS JOIN (VALUES (1), (2)) v(x)",
+        f"SELECT SUM(o.n) AS total FROM (SELECT {N} AS n FROM {T}) o, range(3) r",
+    ):
+        assert (repeated_input_reason(sql) or "").startswith(
+            "repeated_input:row_generator_under_aggregate"
+        ), sql
 
 
 def test_statement_the_analysis_cannot_finish_refuses() -> None:
