@@ -552,8 +552,13 @@ test.describe("ONTO-PROFILE-03 steward review, 390px", () => {
   test("a slow Measure never overwrites a status the API already confirmed", async ({ page }) => {
     await page.goto(`/spaces/${spaceId}/ontology-review`);
     await expect(page.getByTestId("onto-review-item").first()).toBeVisible();
-    // Reset to a known item: reject the first key that is not already rejected.
-    const target = page.locator('[data-testid="onto-review-item"][data-kind="key"][data-status="proposed"]').first();
+    // Pick an item the API will accept.
+    // A key of a table that has no approved key yet, so the API will not refuse the approval with a 409.
+    const target = page
+      .locator('[data-testid="onto-review-table"]')
+      .filter({ hasNot: page.locator('[data-kind="key"][data-status="approved"]') })
+      .locator('[data-testid="onto-review-item"][data-kind="key"][data-status="proposed"]')
+      .first();
     const id = await target.getAttribute("data-item-id");
     let release: () => void = () => {};
     const held = new Promise<void>((resolve) => (release = resolve));
