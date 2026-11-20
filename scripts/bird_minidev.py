@@ -670,6 +670,7 @@ def score_cases(
                 "exclusion": found.reason,
                 "exclusion_detail": found.detail,
                 "excluded_columns": list(found.columns),
+                "excluded_tables": list(found.tables),
             }
             unasked = served_from_response(None)
             for key in ("provider", "model", "plan_origin", *SETUP_FIELD_KEYS):

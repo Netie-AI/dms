@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import re
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -46,7 +47,13 @@ UNPARSED = "(unparsed)"
 EXCLUDED_TABLE = "excluded_table:"
 EXCLUDED_COLUMN = "excluded_column:"
 NOT_COMPARABLE = "new measure; not comparable with 73/75"
-_HEX = frozenset("0123456789abcdef")
+# dms#304: the scan this allowlist is cut from. Pinned here, not read from the
+# file it polices: an edited file cannot raise the count, drop a held table or
+# name another scan. The sha256 is the one scripts/pii_mask_check.py pins.
+SCAN_FILE = "pii_counts.csv"
+SCAN_SHA256 = "878f664d1d920bee99b3859285dd669b86edc16945288a5251c2fa66fae0c330"
+SCAN_ZERO_HIT_TABLES = 31
+HELD_TABLES = frozenset({"trans", "yearmonth"})
 # serve_gap codes that share the ``ungranted:`` prefix but name no table.
 _NO_TABLE = frozenset({"file", "unparsed"})
 
@@ -74,6 +81,7 @@ class Exclusion:
     reason: str
     detail: str
     columns: tuple[str, ...] = ()
+    tables: tuple[str, ...] = ()
 
 
 def _name_ok(name: str) -> bool:
@@ -151,14 +159,18 @@ def load_table_allowlist(
     scan = data.get("scan")
     if not isinstance(scan, dict):
         raise AllowlistError("allowlist needs a scan block")
+    if scan.get("file") != SCAN_FILE:
+        raise AllowlistError(f"scan.file must be {SCAN_FILE}")
     sha = scan.get("sha256")
-    if not isinstance(sha, str) or len(sha) != 64 or not set(sha) <= _HEX:
-        raise AllowlistError("scan.sha256 must be the 64-hex sha256 of the scan file")
+    if sha != SCAN_SHA256:
+        raise AllowlistError(f"scan.sha256 must be {SCAN_SHA256}, the scan this is cut from")
     zero_hit = scan.get("zero_hit_tables")
-    if isinstance(zero_hit, bool) or not isinstance(zero_hit, int) or zero_hit < 0:
-        raise AllowlistError("scan.zero_hit_tables must be a count")
+    if isinstance(zero_hit, bool) or zero_hit != SCAN_ZERO_HIT_TABLES:
+        raise AllowlistError(f"scan.zero_hit_tables must be {SCAN_ZERO_HIT_TABLES} (the scan)")
     tables = _stems(data.get("tables"), "tables")
     held = _stems(data.get("held"), "held")
+    if held != HELD_TABLES:
+        raise AllowlistError(f"held must be exactly {sorted(HELD_TABLES)}")
     flagged = flagged_tables(flagged_csv)
     if len(tables) > zero_hit:
         raise AllowlistError(
@@ -238,6 +250,19 @@ def _parse(sql: str, dialect: str) -> Any:
     from sqlglot import parse_one
 
     return parse_one(sql, read=sqlglot_dialect(dialect))
+
+
+def _unlisted_tables(tree: Any, allowlist: TableAllowlist) -> tuple[str, ...]:
+    """Every table the statement reads that is not listed. CTE names are not tables."""
+    from sqlglot import exp
+
+    ctes = {_fold(cte.alias_or_name) for cte in tree.find_all(exp.CTE)}
+    names = set()
+    for table in tree.find_all(exp.Table):
+        stem = _table_stem(table)
+        if stem and stem not in ctes and stem not in allowlist.tables:
+            names.add(stem if _plain(stem) else UNPARSED)
+    return tuple(sorted(names))
 
 
 def _unmodelled(tree: Any) -> str:
@@ -345,10 +370,12 @@ def classify(sql: str, allowlist: TableAllowlist, *, dialect: str) -> Exclusion 
     except Exception as exc:  # noqa: BLE001
         return Exclusion(EXCLUDED_TABLE + UNPARSED, f"checker_error:{type(exc).__name__}")
     columns: tuple[str, ...] = ()
+    unlisted: tuple[str, ...] = ()
     try:
         tree = _parse(text, dialect)
         opaque = _unmodelled(tree)
         columns = _column_hits(tree, allowlist)
+        unlisted = _unlisted_tables(tree, allowlist)
     except Exception as exc:  # noqa: BLE001
         if not gap:
             return Exclusion(EXCLUDED_TABLE + UNPARSED, f"shape_check_error:{type(exc).__name__}")
@@ -358,8 +385,9 @@ def classify(sql: str, allowlist: TableAllowlist, *, dialect: str) -> Exclusion 
         # A name that is not a plain identifier, or that is a listed table read
         # from another schema, is not printed as if it were that table.
         if _plain(name) and name not in _NO_TABLE and name.casefold() not in allowlist.tables:
-            return Exclusion(EXCLUDED_TABLE + name, gap, columns)
-        return Exclusion(EXCLUDED_TABLE + UNPARSED, gap, columns)
+            tables = tuple(sorted({name.casefold(), *unlisted}))
+            return Exclusion(EXCLUDED_TABLE + name, gap, columns, tables)
+        return Exclusion(EXCLUDED_TABLE + UNPARSED, gap, columns, unlisted or (UNPARSED,))
     if opaque:
         return Exclusion(EXCLUDED_TABLE + UNPARSED, f"unmodelled_function:{opaque}", columns)
     if columns:
@@ -371,20 +399,26 @@ def exclusion_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """n both ways and the excluded counts by table and by column."""
     by_table: Counter[str] = Counter()
     by_column: Counter[str] = Counter()
-    excluded = 0
+    excluded = gold_error = 0
     for row in rows:
         reason = str(row.get("exclusion") or "")
         if not reason:
+            # The main score line drops a gold error from n. So does this one.
+            gold_error += str(row.get("verdict") or "") == "GOLD_ERROR"
             continue
         excluded += 1
         if reason.startswith(EXCLUDED_TABLE):
-            by_table[reason[len(EXCLUDED_TABLE) :]] += 1
+            # Every unlisted table the question reads is counted; the label
+            # names one. A row from before ``excluded_tables`` counts its label.
+            for table in row.get("excluded_tables") or [reason[len(EXCLUDED_TABLE) :]]:
+                by_table[str(table)] += 1
         for column in row.get("excluded_columns") or []:
             by_column[str(column)] += 1
     return {
         "n": len(rows),
-        "n_without_excluded": len(rows) - excluded,
+        "n_without_excluded": len(rows) - excluded - gold_error,
         "excluded": excluded,
+        "gold_error": gold_error,
         "excluded_by_table": dict(sorted(by_table.items())),
         "excluded_by_column": dict(sorted(by_column.items())),
     }
@@ -399,7 +433,8 @@ def allowlist_lines(meta: Mapping[str, Any], counts: Mapping[str, Any]) -> list[
         f"table_allowlist tables={meta['tables_listed']} of {meta['zero_hit_tables']} "
         f"zero-hit scan tables. scan sha256={meta['scan_sha256']}",
         f"n={counts['n']} n_without_excluded={counts['n_without_excluded']} "
-        f"excluded={counts['excluded']} (named ABSTAIN, no model call, never OK)",
+        f"excluded={counts['excluded']} (named ABSTAIN, no model call, never OK) "
+        f"gold_error={counts.get('gold_error', 0)} (not scored)",
     ]
     if meta["tables_listed"] < meta["zero_hit_tables"]:
         lines.append(
@@ -421,7 +456,9 @@ def _tokens(name: str) -> list[str] | None:
     if not text.isascii():
         return None
     pieces = "".join(ch if ch.isalnum() or ch == "_" else " " for ch in text).split()
-    return pieces
+    # schools2, users__1_, post_history: the same table under a copy's name.
+    parts = [p for piece in pieces for p in re.split(r"[_0-9]+", piece) if p]
+    return pieces + parts + ["".join(parts)]
 
 
 def flagged_grant_names(names: Iterable[Any], flagged: Iterable[str]) -> list[str]:
@@ -444,15 +481,45 @@ def flagged_grant_names(names: Iterable[Any], flagged: Iterable[str]) -> list[st
     return hits
 
 
+def _grant_stem(label: str) -> str | None:
+    """The listed-table stem a granted name is, or None.
+
+    Only ``bronze.public_<t>``, ``public_<t>`` and ``<t>`` (any case, quotes
+    dropped) name a table. Anything else, a collision suffix
+    (``public_users_1a2b3c4d``), a view or copy (``schools_view``) or another
+    schema, is not shown to be a listed table and so cannot pass.
+    """
+    text = _fold(label).replace('"', "").replace("`", "")
+    if text.startswith("bronze."):
+        text = text[len("bronze.") :]
+    if text.startswith("public_"):
+        text = text[len("public_") :]
+    return text if _plain(text) else None
+
+
 def grant_preflight(status: str, names: Sequence[Any], allowlist: TableAllowlist) -> str | None:
-    """None when the Space's tables were read and none is flagged."""
+    """None when the Space's tables were read and every one is a listed table.
+
+    Fail closed (dms#304 acceptance 4): the generate context samples values from
+    any granted table whose name matches words in the question, and DMS itself
+    renames a bronze table on a name collision. A blocklist of flagged names
+    cannot see every spelling, so a grant passes only when it is on the list.
+    """
     if not isinstance(names, (list, tuple)):
         return "the Space's table names are not a list, so no flagged grant can be ruled out"
     if status != "ok":
         return "the Space's table names could not be read, so no flagged grant can be ruled out"
+    labels = [str(raw or "").strip() for raw in names]
+    if not any(labels):
+        return "the Space lists no table, so no flagged grant can be ruled out"
     hits = flagged_grant_names(names, allowlist.flagged)
     if hits:
         return "flagged table grantable on this Space: " + ", ".join(sorted(hits))
+    unlisted = sorted(
+        label for label in labels if label and _grant_stem(label) not in allowlist.tables
+    )
+    if unlisted:
+        return "table grantable on this Space is not on the table allowlist: " + ", ".join(unlisted)
     return None
 
 

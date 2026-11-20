@@ -225,6 +225,7 @@ def excluded_row(
         "exclusion": found.reason,
         "exclusion_detail": found.detail,
         "excluded_columns": list(found.columns),
+        "excluded_tables": list(found.tables),
         "rows": 0,
         "expect": str(case.get("expect") or "answered"),
     }
