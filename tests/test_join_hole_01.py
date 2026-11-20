@@ -394,3 +394,63 @@ def test_exists_over_the_verified_link_still_answers(
     text = str(env.get("text") or "")
     assert ("The total is 3." if door == "contract" else "school_count=3") in text, text
     assert _why(rig, CORRELATED_EXISTS) is None
+
+
+# --- routed by the parent orchestrator, 2026-11-20 (#527 class, P0) -------------------
+
+#: name -> (question, sql, the figure DuckDB returns, the truth). Each read a
+#: second table in a position the allowlist did not inspect, and was served.
+ROUTED_HOLES: dict[str, tuple[str, str, Any, Any]] = {
+    # A subquery in OFFSET inside an allowed same-column threshold: never checked.
+    "offset_subquery_reads_a_second_table": (
+        "What is the total of the school ids?",
+        f"SELECT SUM(CAST(school_id AS INTEGER)) AS t FROM {S} WHERE school_id <= (SELECT MAX(school_id) FROM {S} OFFSET (SELECT COUNT(*) FROM {E}))",
+        None,
+        10,
+    ),
+    "limit_subquery_reads_a_second_table": (
+        "What is the total of the school ids?",
+        f"SELECT SUM(CAST(school_id AS INTEGER)) AS t FROM {S} WHERE school_id <= (SELECT MAX(school_id) FROM {S} LIMIT (SELECT COUNT(*) - 4 FROM {E}))",
+        None,
+        10,
+    ),
+    # COLUMNS() names the parent column without a Column node: the fan trap missed it.
+    "columns_selector_counts_the_parent": (
+        "How many districts have schools?",
+        f"SELECT COUNT(COLUMNS('^name$')) AS t FROM {D} d JOIN {S} s ON s.district_id = d.district_id",
+        4,
+        2,
+    ),
+    # The orchestrator's exact SQL for the uncorrelated EXISTS (c634dcb).
+    "exists_uncorrelated_exact": (
+        Q,
+        f"SELECT SUM(CAST(e.students AS INTEGER)) AS t FROM {E} e WHERE EXISTS (SELECT 1 FROM {S} s WHERE s.name = 'Alder')",
+        107,
+        30,
+    ),
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(ROUTED_HOLES))
+def test_routed_join_holes_abstain(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    question, sql, wrong, true = ROUTED_HOLES[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, question)
+    # The danger is real: the statement runs and its figure is not the truth.
+    assert od._oracle(rig.lake, sql) == [{"t": wrong}] and wrong != true
+    text = od._assert_abstain(env, "")
+    # The generate door refuses a statement citing enrollments one gate earlier:
+    # its link to schools is broken in this fixture (ontology_unverified). The
+    # loop and contract doors reach the join rule, and those served on the parent.
+    assert "unverified_join" in text or "ontology_unverified" in text, text
+    if wrong is not None:
+        assert f"t={wrong}" not in text and f"The total is {wrong}" not in text, text
+    assert rig.cortex.executed == [], "refused SQL reached Cortex submit"
+    assert (_why(rig, sql) or "").startswith("unverified_join:")

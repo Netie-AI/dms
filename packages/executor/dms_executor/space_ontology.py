@@ -959,6 +959,9 @@ class _JoinRule:
             or _top_queries(sub.args.get("where") or exp.Null())
             or any(_top_queries(p) for p in sub.expressions)
             or sub.find(exp.Window)
+            # Any SELECT nested anywhere in it (OFFSET, LIMIT, ORDER BY, a
+            # function argument) is a relation read nothing here checks.
+            or any(q is not sub for q in sub.find_all(exp.Select))
         ):
             raise _Refuse("subquery_shape")
         return sub, inner
@@ -1050,6 +1053,10 @@ class _JoinRule:
             raise _Refuse("set_operation")
         if root_expr.find(exp.With):
             raise _Refuse("cte_over_join")
+        if root_expr.find(exp.Columns, exp.PositionalColumn):
+            # COLUMNS(...) and #n name columns without a Column node, so neither
+            # the link check nor the fan trap can place them over a join.
+            raise _Refuse("unplaced_column")
         root = self.scope_of.get(id(root_expr))
         if root is None:
             raise _Refuse("scope")
