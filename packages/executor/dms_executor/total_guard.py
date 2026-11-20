@@ -448,7 +448,7 @@ class _Guard:
         return ""
 
 
-def repeated_input_reason(sql: str, dialect: str = SERVING_DIALECT) -> str | None:
+def repeated_input_reason(sql: str, dialect: str | None = SERVING_DIALECT) -> str | None:
     """``repeated_input:<why>`` when an aggregate can read one input value twice.
 
     None when every aggregate in ``sql`` reads rows that were only filtered,
@@ -456,7 +456,8 @@ def repeated_input_reason(sql: str, dialect: str = SERVING_DIALECT) -> str | Non
     and for what it cannot see.
     """
     try:
-        roots = [r for r in sqlglot.parse(sql, read=dialect) if r is not None]
+        # The statement runs on the serving engine: no dialect means its dialect.
+        roots = [r for r in sqlglot.parse(sql, read=dialect or SERVING_DIALECT) if r is not None]
     except Exception:  # noqa: BLE001
         return f"{REASON_REPEATED_INPUT}:parse"
     if len(roots) != 1:

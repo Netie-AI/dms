@@ -2,6 +2,19 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-20 - TOTAL-GUARD-01 (P0, #531): no input value may reach an aggregate twice
+
+- **Defect.** One read of one table passed rule 16's join allowlist and could still multiply its own rows before an aggregate: `SUM` over a `ROLLUP`, `CUBE` or `GROUPING SETS`, over an `UNPIVOT`, over a window total, or `list_sum(list(x) || list(x))`. `POST /v1/chat/ask` served 214, 321 or 428 for a true 107 as `L2_VALIDATED` through the first generate, the extract loop and the contract ask. Re-measured on DuckDB 1.5.6: all 17 rows of the issue table return the issue's figures; 14 pass the join rule, 3 (`list_sum` twice, `UNPIVOT ... ON COLUMNS(*)`) abstain under it first.
+- **Fix.** `dms_executor/total_guard.py`, a structural class rule read off positions in the parsed statement, never words: more than one grouping set, a PIVOT or UNPIVOT, a set operation, a row generator or a recursive CTE may be listed, never aggregated; a window or scalar-subquery value is never an aggregate's argument; a collection an aggregate built (`list`, `array_agg`, any aggregate outside a fixed scalar list) is never an operand. An untyped function (`mean`, `product`, `mode`, `fsum`) is treated as an aggregate position. Called last at the four doors (generate, extract loop as a checker reason that feeds the retry, contract ask, held Yes), so it refuses only what would otherwise be served. Reason `repeated_input:<why> (<hint>)`.
+- **Tests.** `tests/test_total_guard_01.py`: 17 issue rows x 3 doors, 35 more shapes, the held Yes door, 22 correct statements still answering, two typed date-filtered one-table SUMs answering on the file Space, the ladder ending in the reconfirm block. 9 mutations (guard off, each door hook removed, each of the four rules off) each turn the file red.
+- **Open by name (xfail strict).** Scalar arithmetic the statement wrote: `SUM(x) + SUM(x)`, `SUM(x) * 2`, `SUM(x + x)`, one column projected twice and added, an aggregate alias added to itself, a window total times a window count. `SUM(list_sum([x, x]))` is refused today only by #529's function rule.
+- **Now abstains (named).** `MAX` of a running total, a `SUM` of window shares, the `ROLLUP` rows summed without the total row, one grouping set spelled as `GROUPING SETS`, `MAX` over a one-column `UNPIVOT`, `len(list(DISTINCT x))`, the first element of a sorted list, and a function over one list (`list_sum(list(x))`).
+
+## 2026-11-20 - JOIN-HOLE-01 (P0, #527): an EXISTS over a second table must name a verified link
+
+- **Defect.** An uncorrelated `EXISTS` or `NOT EXISTS` over a second table passed rule 16's allowlist: every inner conjunct read only the inner table, so no link was checked. "How many schools are in the North district?" with `WHERE EXISTS (SELECT 1 FROM districts d WHERE d.name = 'North')` served `L2_VALIDATED` 4 (true 3) through the generate, extract-loop and contract doors.
+- **Fix, a narrowing only.** An `EXISTS` subquery needs at least one conjunct tying it to the outer row through a verified link, else `unverified_join:uncorrelated_subquery`. No shape is newly allowed. 15 envelope tests red on the parent, green now; the correlated `EXISTS` over the verified link still answers 3 on all three doors.
+
 ## 2026-11-13 - DuckDB pinned below 2 (F-TBD-28, repo infrastructure)
 
 - **Defect.** DMS allowed any DuckDB from 1.0 up, and a fresh install now resolves to 2.0.0, which writes storage version 69. The Cortex engine pins `duckdb>=1.1,<2`; its 1.x refuses the serving warehouse file DMS wrote ("we can only read versions between 64 and 68"), so every ask that reaches Cortex's execution fails with "the model step failed (IOException)".
