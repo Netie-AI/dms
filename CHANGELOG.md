@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-20 - FIG-FIDELITY-01 (#508, P0): a served figure is the figure the query returned (E14)
+
+- **Defect.** Live run 2026-11-06 (Warehouse Ops, "Show shipment cost by destination"): the rows held `1610511.0500000012`, the text showed `total_cost_myr=1610511.DMSMASK_phone_01` under `L1_GOVERNED_METRIC`, said "Found 20 row(s)" while listing 12, and `assert_envelope_valid` passed it. The PII text scanner read the float's fraction as a phone number.
+- **Listing.** One writer, `dms_executor/row_listing.py`, for the five "Found N row(s)" renderers (L1 pack, verified query, generated L2, two bronze sheet paths). A float prints at 15 significant digits when that drops float noise (`1610511.05`). A cut listing says `Showing 12 of 20.`
+- **E14.** `assert_envelope_valid` fails a non-abstain envelope when (a) a mask token sits inside a number, (b) a listed `k=v` value of a numeric column is not a cell of that column (bare integers included, which E4 never read), or (c) "Found N row(s)" is not `len(rows)` or a cut listing does not say so. `build_answer_envelope` withholds the answer (ABSTAIN, no rows, no values) on any E14 clause, and when the masker rewrote a figure the result holds (`figure_hits`).
+- **Masking.** Unchanged from main: masked text is byte-identical to `ebe65cc` on 120000 generated texts. A mask that rewrites a figure is counted, never undone (#318 widen-only). The unmask variant (PR-a in #508) is not on this branch; it needs the founder's yes.
+- **Cost.** A figure whose digits still read as a phone or card after rounding (`234567.8901`, `12.3456789012`, `4111.111111111111`), and Cortex prose that prints the raw float, now abstain instead of serving.
+- **Tests.** `tests/test_fig_fidelity_01.py`, through `POST /v1/chat/ask` and `assert_envelope_valid`. Mutations (unmask re-added, rewrites not counted, E14 demotion off, E14 validator off, cut line off) each turn tests red. No test on main edited, no skip or xfail.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
