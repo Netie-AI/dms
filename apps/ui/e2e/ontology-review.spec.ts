@@ -29,7 +29,7 @@ import { expect, test, type APIRequestContext, type Locator, type Page } from "@
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURES = path.join(HERE, "fixtures", "onto-profile-retail");
 const SHOTS = path.join(HERE, "..", "test-results", "onto-review");
-const FILES = ["customers.csv", "products.csv", "orders.csv", "order_items.csv", "shipments.csv"];
+const FILES = ["customers.csv", "products.csv", "orders.csv", "order_items.csv", "shipments.csv", "audits.csv"];
 const API = process.env.DMS_E2E_API_URL ?? "http://127.0.0.1:8090";
 const NON_STEWARD_API = process.env.DMS_E2E_NON_STEWARD_API_URL ?? "";
 
@@ -75,7 +75,11 @@ function keyItem(items: Item[], file: string, column: string): Item {
   return found[0];
 }
 
-/** Every cell value of the uploaded files, minus plain integers and names. */
+/**
+ * Every cell value of the uploaded files, minus column names and short integers.
+ * An all-digit value of 6 or more digits IS kept: audits.csv carries distinctive
+ * ids (730101.., 884400117..) so a numeric value on the page cannot hide as a count.
+ */
 function cellValues(): string[] {
   const values = new Set<string>();
   const names = new Set<string>();
@@ -84,12 +88,12 @@ function cellValues(): string[] {
     for (const col of header.split(",")) names.add(col);
     for (const line of lines) for (const cell of line.split(",")) values.add(cell);
   }
-  return [...values].filter((v) => !names.has(v) && !/^\d+$/.test(v));
+  return [...values].filter((v) => !names.has(v) && !(/^\d+$/.test(v) && v.length < 6));
 }
 
 /**
  * No cell value in the visible text, an aria-label or a title of the review page.
- * Plain integers are left out of the list: a quantity "3" cannot be told from a count.
+ * Integers under 6 digits are left out of the list: a quantity "3" cannot be told from a count.
  */
 async function expectNoCellValue(page: Page): Promise<void> {
   const root = page.getByTestId("onto-review-page");
@@ -102,6 +106,9 @@ async function expectNoCellValue(page: Page): Promise<void> {
   expect(text).not.toMatch(/verif|certif/i);
   const values = cellValues();
   expect(values.length).toBeGreaterThan(800);
+  // The check sees numeric values: if these were dropped again, a leaked id would pass.
+  expect(values).toContain("730101");
+  expect(values).toContain("884400117");
   const leaked = values.filter((v) => new RegExp(`(^|[^\\w])${escapeRe(v)}($|[^\\w])`).test(text));
   expect(leaked).toEqual([]);
 }
@@ -232,7 +239,7 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     await expect(itemsTable.getByTestId("onto-review-observation").first()).toContainText(
       `${table["order_items.csv"]} has no column that identifies a row`,
     );
-    await expect(page.getByTestId("onto-review-table")).toHaveCount(5);
+    await expect(page.getByTestId("onto-review-table")).toHaveCount(6);
 
     // Every stated bound: one line per leaf of the API's `bounds`.
     const bounds = page.getByTestId("onto-review-bounds").locator("li");
@@ -360,7 +367,9 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     );
     await row(page, orderId.id).getByTestId("onto-review-approve").click();
     await expect(row(page, orderId.id)).toHaveAttribute("data-status", "approved");
-    await expect(row(page, shipLink!.id).getByTestId("onto-review-link-usability")).toHaveCount(0);
+    await expect(row(page, shipLink!.id).getByTestId("onto-review-link-usability")).toHaveText(
+      "Both keys are approved. This link itself is not approved yet, so it is not used.",
+    );
     // The link itself is still only proposed: approving its keys approved nothing else.
     await expect(row(page, shipLink!.id)).toHaveAttribute("data-status", "proposed");
 
@@ -539,6 +548,36 @@ test.describe("ONTO-PROFILE-03 steward review, 390px", () => {
       await shot(page, `review-390-${mode}.png`);
     });
   }
+
+  test("a slow Measure never overwrites a status the API already confirmed", async ({ page }) => {
+    await page.goto(`/spaces/${spaceId}/ontology-review`);
+    await expect(page.getByTestId("onto-review-item").first()).toBeVisible();
+    // Reset to a known item: reject the first key that is not already rejected.
+    const target = page.locator('[data-testid="onto-review-item"][data-kind="key"][data-status="proposed"]').first();
+    const id = await target.getAttribute("data-item-id");
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/v1/ontology/data/profile**", async (route) => {
+      await held;
+      await route.continue(); // unchanged, to the real API
+    });
+    const answered = page.waitForResponse((r) => r.url().includes("/v1/ontology/data/profile"));
+    await page.getByRole("button", { name: "Measure this Space" }).click();
+    // While Measure is held no press can start: the confirmed status cannot be raced.
+    await expect(row(page, id!).getByTestId("onto-review-approve")).toBeDisabled();
+    await expect(row(page, id!).getByTestId("onto-review-reject")).toBeDisabled();
+    release();
+    expect((await answered).status()).toBe(200);
+    await expect(page.getByRole("button", { name: "Measure this Space" })).toBeEnabled();
+    // Now approve; a later Measure keeps what the API confirmed.
+    await row(page, id!).getByTestId("onto-review-approve").click();
+    await expect(row(page, id!)).toHaveAttribute("data-status", "approved");
+    await page.unroute("**/v1/ontology/data/profile**");
+    await page.getByRole("button", { name: "Measure this Space" }).click();
+    await expect(page.getByRole("button", { name: "Measure this Space" })).toBeEnabled();
+    await expect(row(page, id!)).toHaveAttribute("data-status", "approved");
+    await expectNoCellValue(page);
+  });
 
   test("1280px graphite screenshot of the same state", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });

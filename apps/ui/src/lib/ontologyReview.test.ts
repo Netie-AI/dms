@@ -295,8 +295,9 @@ describe("bounds", () => {
       link_search: { new_count: 3 },
     });
     expect(lines).toContain("new_cap: 7");
-    expect(lines).toContain("pair search new_rule: x");
-    expect(lines).toContain("t extra_note: y");
+    const said = "stated by the API, and this page has no words for it yet";
+    expect(lines).toContain(`pair search new_rule: ${said}`);
+    expect(lines).toContain(`t extra_note: ${said}`);
     expect(lines).toContain("link search new_count: 3");
   });
 
@@ -354,7 +355,9 @@ describe("link usability", () => {
       SHIP_LINK,
     ];
     expect(linkUsability(SHIP_LINK, both).usable).toBe(true);
-    expect(linkUsabilitySentence(SHIP_LINK, both)).toBeNull();
+    // The link itself is still proposed: it is not used, and the page says so.
+    expect(linkUsabilitySentence(SHIP_LINK, both)).toContain("not approved yet");
+    expect(linkUsabilitySentence({ ...SHIP_LINK, status: "approved" }, both)).toBeNull();
   });
 
   it("does not count a different approved key of the parent table", () => {
