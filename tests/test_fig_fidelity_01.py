@@ -547,3 +547,119 @@ def test_no_renderer_builds_its_own_listing() -> None:
         p.name for p in root.glob("*.py") if "row(s)" in p.read_text(encoding="utf-8")
     )
     assert owners == ["row_listing.py"], owners
+
+
+# --- adversary round (three Sonnet attackers, none of them the author) ----------
+
+_COUNTRY = [{"country": "MY", "total_spend_myr": 1610511.05}]
+
+WITHHELD = {
+    # number formats: a figure within the old 1e-4 tolerance is still a wrong figure
+    "off_by_111": ("country=MY, total_spend_myr=1610400.05", _COUNTRY),
+    "sign_flipped": ("country=MY, rate=-0.004", [{"country": "MY", "rate": 0.004}]),
+    "tiny_wrong": ("country=MY, rate=0.009", [{"country": "MY", "rate": 0.004}]),
+    "label_names_no_row": ("Found 1 row(s).\n  - country=TH, total_spend_myr=1610511.05", _COUNTRY),
+    "cut_of_wrong_total": (
+        "Found 1 row(s). Showing 1 of 99.\n  - country=MY, total_spend_myr=1610511.05",
+        _COUNTRY,
+    ),
+    "phone_with_a_decimal_tail": ("Call 0123456789.5 now", [{"country": "MY", "v": 123456789.5}]),
+    # adjacency: a phone match that takes a figure with it
+    "phone_swallows_a_count": (
+        "Contact 0123456789 7 shipments delayed",
+        [{"country": "MY", "delayed": 7}],
+    ),
+    "phone_cuts_a_grouped_count": (
+        "Contact 0123456789 1,234 shipments delayed",
+        [{"country": "MY", "delayed": 1234}],
+    ),
+    # a figure that is also the last group of a phone cannot be told apart: fails closed
+    "phone_ends_in_a_figure_of_the_rows": (
+        "MY has 6789 orders, contact +60 12-345 6789.",
+        [{"country": "MY", "orders": 6789}],
+    ),
+    "phone_runs_into_a_figure": (
+        "Total 1425139.6393028127 for 9123 4567-1425139.6393028127",
+        [{"country": "MY", "v": 1425139.6393028127}],
+    ),
+}
+
+SERVED = {
+    # ordinary prose that names a column must not be read as a broken listing
+    "column_in_brackets": ("Share is 12.5% (n=4).", [{"share": 12.5, "n": 4}]),
+    "value_with_a_unit": ("average=12.5 MYR over the period", [{"average": 12.5}]),
+    "two_values_with_units": ("qty=12 units, price=1.5", [{"qty": 12, "price": 1.5}]),
+    "reworded_label": ("country=MY (largest), orders=7", [{"country": "MY", "orders": 7}]),
+    "two_rows_on_one_line": (
+        "country=MY, orders=7; country=SG, orders=3",
+        [{"country": "MY", "orders": 7}, {"country": "SG", "orders": 3}],
+    ),
+    "phone_beside_a_figure": (
+        "Total for MY is 1610511.05, contact +60 12-345 6789.",
+        [{"country": "MY", "total_spend_myr": 1610511.05, "orders": 12}],
+    ),
+    "insights_bullets_under_a_listing": (
+        "Found 2 row(s).\n  \u00b7 country=MY, orders=7\n  \u00b7 country=SG, orders=3\n\n"
+        "Insights:\n- MY is the largest",
+        [{"country": "MY", "orders": 7}, {"country": "SG", "orders": 3}],
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(WITHHELD))
+def test_adversary_a_figure_the_rows_do_not_hold_is_withheld(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    answer, rows = WITHHELD[name]
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert env["rows"] == [] and env["values"] == []
+    assert not re.search(r"\d{4}", env["text"]), env["text"]
+
+
+@pytest.mark.parametrize("name", sorted(SERVED))
+def test_adversary_a_correct_answer_is_still_served(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    answer, rows = SERVED[name]
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert env["rows"] == rows
+    assert "345 6789" not in env["text"]
+    kept = re.sub(r"\+60 12-345 6789", "DMSMASK_phone_01", answer)
+    assert env["text"] == kept, env["text"]
+
+
+def test_adversary_a_leading_zero_literal_is_a_phone_not_a_figure() -> None:
+    rows = [{"a": 123456789.5}]
+    for text in ("Call 0123456789.5 now", "+0123456789.5", "ref 1,0123456789.5"):
+        assert "0123456789" not in mask_payload(text=text, rows=rows)["text"]
+
+
+def test_adversary_a_nan_cell_does_not_withhold_a_correct_listing() -> None:
+    """AVG over an empty group. The listing shows nan, and the row holds nan."""
+    from dms_executor.row_listing import found_rows_text
+
+    rows = [{"loc": "A", "m": 1.5, "avg": float("nan")}, {"loc": "B", "m": 2.5, "avg": 4.0}]
+    assert figure_fidelity_violations(found_rows_text(rows), rows) == []
+    assert figure_fidelity_violations("Found 2 row(s).\n  - loc=A, m=1.5, avg=4", rows)
+
+
+def test_adversary_a_figure_with_no_float_noise_keeps_every_digit() -> None:
+    from dms_executor.row_listing import cell_text
+
+    assert cell_text(12345678901234.56) == "12345678901234.56"
+    assert cell_text(1610511.0500000012) == "1610511.05"
+    assert cell_text(0.30000000000000004) == "0.3"
+    assert cell_text(38.9876) == "38.9876"
+
+
+def test_adversary_e14_takes_a_correct_rounding_and_refuses_a_wrong_one() -> None:
+    """E14 alone. E4 has its own, older tolerance for a decimal in prose."""
+    rows = [{"on_time_pct": 38.9876}]
+    for shown in ("39.0", "39", "38.99%", "38.9876 pct"):
+        assert figure_fidelity_violations(f"on_time_pct={shown}", rows) == [], shown
+    for shown in ("39.1", "38.98", "38", "3.9e1x", "RM 39"):
+        assert figure_fidelity_violations(f"on_time_pct={shown}", rows), shown

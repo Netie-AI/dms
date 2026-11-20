@@ -10,17 +10,11 @@ include / exclude / unsure on every envelope; missing or COMPLETE is illegal.
 from __future__ import annotations
 
 import re
-from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from dms_core.pii import (
-    fail_closed_mask_payload,
-    mask_unknown_keys,
-    stated_figures,
-    visible_figures,
-)
+from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor import executed_trace
 from dms_executor.bronze import stamp_contributing_source_watermarks
@@ -893,46 +887,63 @@ _LISTED_NUMBER = re.compile(
     r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?"
 )
 _FOUND_ROWS = re.compile(r"\bFound (\d+) row\(s\)")
-_LISTED_LINE = re.compile(r"^\s*- \S", re.M)
+_LISTED_LINE = re.compile(r"^\s*[-*\u00b7\u2022] \S")
+_SHOWING = re.compile(r"\bShowing (\d+) of (\d+)\b")
 
 
 def _is_number(cell: Any) -> bool:
-    return isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool)
+    if isinstance(cell, bool) or not isinstance(cell, (int, float, Decimal)):
+        return False
+    return not isinstance(cell, float) or cell == cell and abs(cell) != float("inf")
 
 
-def _listed_records(text: str, columns: list[str]) -> list[list[tuple[str, str]]]:
-    """``column=value`` pairs in the text, grouped into one record per listed row.
+def _listed_records(
+    text: str, columns: list[str]
+) -> list[tuple[bool, list[tuple[str, str]]]]:
+    """``column=value`` pairs in the text, one record per listed row.
 
-    Row columns only. A record ends at the line end, or where a column repeats.
+    Row columns only. The flag is True for a bullet line, the form the row
+    writer prints: that line is one record. In prose a record also ends where a
+    column repeats.
     """
     if not columns:
         return []
     names = "|".join(re.escape(c) for c in sorted(columns, key=len, reverse=True))
     key = re.compile(rf"(?<![A-Za-z0-9_.])({names})=")
-    out: list[list[tuple[str, str]]] = []
+    out: list[tuple[bool, list[tuple[str, str]]]] = []
     for line in text.splitlines():
+        listing = bool(_LISTED_LINE.match(line))
         record: list[tuple[str, str]] = []
         hits = list(key.finditer(line))
         for i, hit in enumerate(hits):
             end = hits[i + 1].start() if i + 1 < len(hits) else len(line)
             shown = line[hit.end() : end].strip().rstrip(",;").strip()
-            if any(col == hit.group(1) for col, _ in record):
-                out.append(record)
+            if not listing and any(col == hit.group(1) for col, _ in record):
+                out.append((listing, record))
                 record = []
             record.append((hit.group(1), shown))
         if record:
-            out.append(record)
+            out.append((listing, record))
     return out
 
 
 def _shows_cell(shown: str, cell: Any) -> bool:
-    """The text ``shown`` is this cell: a number within ``_close``, else the same string."""
+    """``shown`` states this cell.
+
+    A number: the leading literal is the cell rounded to the literal's own
+    decimals, so 1610511.05 states 1610511.0500000012 and 1610400.05 does not.
+    A unit after it is allowed (12.5 MYR, 4). Anything else: the same string.
+    """
     if not _is_number(cell):
         return str(cell) == shown
-    literal = shown if _LISTED_NUMBER.fullmatch(shown) else shown.rstrip(".")
-    if not _LISTED_NUMBER.fullmatch(literal):
+    head = _LISTED_NUMBER.match(shown)
+    if not head or re.match(r"[A-Za-z0-9_]|\.\d", shown[head.end() :]):
         return False
-    return _close(float(literal.replace(",", "")), float(cell))
+    literal = Decimal(head.group(0).replace(",", ""))
+    exponent = literal.as_tuple().exponent
+    assert isinstance(exponent, int)
+    have = cell if isinstance(cell, Decimal) else Decimal(repr(cell))
+    return abs(literal - have) <= Decimal(5).scaleb(exponent - 1)
 
 
 def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> list[str]:
@@ -946,16 +957,18 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
     for row in row_list:
         numeric.update(str(col) for col, cell in row.items() if _is_number(cell))
     columns = sorted({str(col) for row in row_list for col in row})
-    for record in _listed_records(text, columns) if numeric else []:
+    records = _listed_records(text, columns)
+    for listing, record in records if numeric else []:
         figures = [(col, shown) for col, shown in record if col in numeric]
         if not figures:
             continue
-        # A text column narrows the rows only when it names one: a masked or
-        # reworded label must not fail a listing whose figures are right.
+        # On a listing line every label is the row's own. In prose a label may
+        # be reworded, so it narrows the rows only when it names one.
         labels = [
             (col, shown)
             for col, shown in record
-            if col not in numeric and any(str(r.get(col)) == shown for r in row_list)
+            if col not in numeric
+            and (listing or any(str(r.get(col)) == shown for r in row_list))
         ]
         if not any(
             all(col in row and _shows_cell(shown, row[col]) for col, shown in figures)
@@ -966,12 +979,15 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
             break
     found = _FOUND_ROWS.search(text)
     if found:
-        listed = len(_LISTED_LINE.findall(text))
+        # A listing line is a bullet that names a row column. An "Insights:"
+        # bullet under the listing is not a row.
+        listed = sum(1 for is_listing, _ in records if is_listing)
+        cut = _SHOWING.search(text)
         if int(found.group(1)) != len(row_list):
             out.append("c: the stated row count is not the row count")
-        elif 0 < listed < len(row_list) and not re.search(
-            rf"\bof {len(row_list)}\b", text
-        ):
+        elif cut and (int(cut.group(1)), int(cut.group(2))) != (listed, len(row_list)):
+            out.append("c: the stated cut is not the listing")
+        elif 0 < listed < len(row_list) and not cut:
             out.append("c: the listing is cut and does not say so")
     return out
 
@@ -1760,7 +1776,6 @@ def build_answer_envelope(
         sql_used=sql_used,
         column_sources=column_sources,
     )
-    unmasked_text = text or ""
     text = masked["text"]
     rows_out = masked["rows"]
     values_out = masked["values"]
@@ -1774,12 +1789,8 @@ def build_answer_envelope(
     # longer match ran into) is withheld here, never shown as a mask. Before
     # E4, so the reason names what happened.
     if not abstained:
-        readable = visible_figures(rows_out, values_out)
-        rewritten = Counter(stated_figures(unmasked_text, readable)) - Counter(
-            stated_figures(text or "", readable)
-        )
         broken = figure_fidelity_violations(text or "", rows_out)
-        if rewritten:
+        if masked.get("figure_hits"):
             broken.insert(0, "the mask rewrote a figure the result holds")
         if broken:
             badge_out = "ABSTAIN"

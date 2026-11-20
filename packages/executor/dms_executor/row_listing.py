@@ -18,9 +18,14 @@ LISTING_CAP = 12
 
 
 def cell_text(value: object) -> str:
-    """A cell as the answer text shows it. 15 significant digits drop float noise."""
+    """A cell as the answer text shows it, without float noise.
+
+    1610511.0500000012 prints as 1610511.05: at 15 significant digits the tail
+    collapses. 12345678901234.56 has no tail to collapse, and keeps its cents.
+    """
     if isinstance(value, float) and math.isfinite(value) and not value.is_integer():
-        return format(value, ".15g")
+        exact, short = repr(value), format(value, ".15g")
+        return short if len(exact) - len(short) >= 3 else exact
     return str(value)
 
 
