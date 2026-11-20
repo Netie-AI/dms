@@ -712,6 +712,40 @@ def test_more_ways_to_repeat_a_value_abstain(
     _assert_refused_by_the_rule(env, rig, sql, why, (wrong,))
 
 
+SHADOWED_CTE: dict[str, tuple[str, int, str]] = {
+    "cte_shadowed_by_a_later_sibling": (
+        f"WITH c AS (SELECT SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) SELECT SUM(t) AS total FROM (WITH d AS (SELECT t FROM c), c AS (SELECT 1 AS t) SELECT t FROM d)",
+        214,
+        GROUPING,
+    ),
+    "window_cte_shadowed_by_a_later_sibling": (
+        f"WITH c AS (SELECT SUM({N}) OVER () AS t FROM {T}) SELECT SUM(t) AS total FROM (WITH d AS (SELECT t FROM c), c AS (SELECT 1 AS t) SELECT t FROM d)",
+        428,
+        WINDOW,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(SHADOWED_CTE))
+def test_cte_shadowed_by_a_later_sibling_abstains_at_the_contract_door(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """Adversary round: a CTE sees only the CTEs written before it.
+
+    The inner ``c`` is the OUTER dirty one, not the later clean sibling. Served
+    428/214 at the contract door before the scope fix; the generate and loop
+    doors refused it by accident (``ungranted``), so only this door is asserted.
+    """
+    sql, wrong, why = SHADOWED_CTE[name]
+    rig, env = _ask("contract", sql, tmp_path, monkeypatch, minter)
+    assert od._oracle(rig.lake, sql) == [{"total": wrong}]
+    _assert_refused_by_the_rule(env, rig, sql, why, (wrong, TRUE))
+
+
 # --- the held Yes door ------------------------------------------------------------
 
 _ORDER_N = "CAST(amount AS INTEGER)"
