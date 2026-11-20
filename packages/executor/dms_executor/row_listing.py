@@ -29,6 +29,11 @@ def cell_text(value: object) -> str:
     return str(value)
 
 
+def row_line(row: Mapping[str, Any]) -> str:
+    """One listed row, exactly as the listing prints it."""
+    return "  - " + ", ".join(f"{k}={cell_text(v)}" for k, v in row.items())
+
+
 def found_rows_text(
     rows: Sequence[Mapping[str, Any]], *, cap: int | None = LISTING_CAP
 ) -> str:
@@ -38,7 +43,5 @@ def found_rows_text(
     if len(shown) < len(rows):
         text += f" Showing {len(shown)} of {len(rows)}."
     if shown:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={cell_text(v)}" for k, v in row.items()) for row in shown
-        )
+        text += "\n" + "\n".join(row_line(row) for row in shown)
     return text

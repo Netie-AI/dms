@@ -459,12 +459,15 @@ def test_a4_the_figure_shield_never_uncovers_a_person_value(text: str, taken: st
 
 
 def test_a4_a_figure_the_rows_show_is_still_masked_and_counted() -> None:
-    """Masking never narrows for a figure. A rewrite of the row's own number is counted."""
+    """Masking never narrows for a figure. A mask inside any decimal is counted:
+    no person value is written with a decimal point, so that mask rewrote a figure."""
     rows = [{"k": 5.01}]
     other = mask_payload(text="x 5.0123456789", rows=rows)
-    assert "0123456789" not in other["text"] and other["figure_hits"] == 0
+    assert "0123456789" not in other["text"] and other["figure_hits"] == 1
     other = mask_payload(text="x 7.0355550101", rows=rows)
-    assert "0355550101" not in other["text"] and other["figure_hits"] == 0
+    assert "0355550101" not in other["text"] and other["figure_hits"] == 1
+    phone = mask_payload(text="call 03-5555 0101 now", rows=rows)
+    assert "5555 0101" not in phone["text"] and phone["figure_hits"] == 0
     own = mask_payload(text="x 7.0355550101", rows=[{"k": 7.0355550101}])
     assert "0355550101" not in own["text"], own["text"]
     assert own["figure_hits"] == 1 and own["rows"] == [{"k": 7.0355550101}]
@@ -805,3 +808,59 @@ def test_adversary_e14_takes_a_correct_rounding_and_refuses_a_wrong_one() -> Non
         assert figure_fidelity_violations(f"on_time_pct={shown}", rows) == [], shown
     for shown in ("39.1", "38.98", "38", "3.9e1x", "RM 39"):
         assert figure_fidelity_violations(f"on_time_pct={shown}", rows), shown
+
+
+# --- verifier round (Opus, 2026-11-20): what the fix itself broke -----------------
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["KL ", " Kuala Lumpur", "Acme Sdn Bhd,", "Penang;", "see total_cost_myr=0"],
+)
+def test_verifier_a_padded_or_punctuated_label_does_not_withhold_a_correct_listing(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, label: str
+) -> None:
+    """Rule 12: labels carry the source's own spacing. E14 must not read that as a wrong figure."""
+    rows = [{"location_code": label, "total_cost_myr": 12.5}]
+    env = _ask_l1(warehouse, minter, monkeypatch, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert env["rows"] == rows
+    assert "total_cost_myr=12.5" in env["text"], env["text"]
+
+
+def test_verifier_a_huge_exponent_is_withheld_not_a_server_error(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [{"country": "MY", "rate": 0.004}]
+    env = _ask_prose(warehouse, minter, monkeypatch, "country=MY, rate=1e9999999", rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert env["rows"] == [] and "1e9999999" not in env["text"]
+
+
+def test_verifier_a_decimal_the_mask_replaces_whole_is_withheld(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """212.5551234 reads as a NANP phone end to end. A figure in no row, masked whole,
+    must not reach the reader as a mask token under a green badge."""
+    rows = [{"country": "MY", "total_spend_myr": 12.5}]
+    env = _ask_prose(
+        warehouse, minter, monkeypatch, "Average cost for MY is 212.5551234 per unit.", rows
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert "DMSMASK_" not in env["text"] and "5551234" not in env["text"], env["text"]
+    assert env["rows"] == [] and env["values"] == []
+
+
+def test_verifier_masking_a_long_text_stays_linear() -> None:
+    """The figure check ran a regex over the whole text once per mask: 38.7 s here."""
+    import time
+
+    text = " ".join(f"call 03-5555 {1000 + i % 9000:04d} paid 12.5" for i in range(16_000))
+    started = time.perf_counter()
+    got = mask_payload(text=text, rows=[{"k": 12.5}])
+    elapsed = time.perf_counter() - started
+    assert "5555 1000" not in got["text"]
+    assert elapsed < 5.0, elapsed

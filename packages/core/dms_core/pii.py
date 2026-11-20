@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 import re
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -677,24 +677,32 @@ def renders_figure(literal: str, figures: Sequence[Decimal]) -> bool:
 
 
 def _rewrites_figure(
-    match: re.Match[str], figures: Sequence[Decimal], rx: re.Pattern[str]
+    match: re.Match[str],
+    figures: Sequence[Decimal],
+    rx: re.Pattern[str],
+    literals: Sequence[re.Match[str]],
+    ends: Sequence[int],
 ) -> bool:
-    """True when masking this digit match rewrites a figure the payload leaves readable.
+    """True when masking this digit match rewrites a figure.
 
-    The match lies inside a literal that renders a readable figure, or it cuts
-    a figure in two, or it ends in a figure it did not need (``0123456789 7``:
-    the phone matches without the 7). The match is still masked: masking never
-    narrows (dms#318). The caller withholds the answer (E14), so a corrupted
-    figure is never served.
+    The match touches a decimal number (no phone, IC, account or card is
+    written with one), or it lies inside a literal that renders a readable
+    figure, or it cuts a figure in two, or it ends in a figure it did not need
+    (``0123456789 7``: the phone matches without the 7). The match is still
+    masked: masking never narrows (dms#318). The caller withholds the answer
+    (E14), so a corrupted figure is never served.
+
+    ``literals`` are ``NUMBER_LITERAL`` matches over ``match.string`` and
+    ``ends`` their end offsets, computed once per text so a long text stays
+    linear.
     """
-    if not figures:
-        return False
     inside: list[re.Match[str]] = []
-    for hit in NUMBER_LITERAL.finditer(match.string):
-        if hit.end() <= match.start():
-            continue
+    for at in range(bisect_right(ends, match.start()), len(literals)):
+        hit = literals[at]
         if hit.start() >= match.end():
             break
+        if "." in hit.group(0):
+            return True
         if not renders_figure(hit.group(0), figures):
             continue
         if hit.start() <= match.start() and match.end() <= hit.end():
@@ -993,9 +1001,14 @@ def _scan_text(text: str, masker: Masker, figures: Sequence[Decimal] = ()) -> st
 
     out = _EMAIL_FIND.sub(_sub_email, out)
 
+    spans: dict[str, Any] = {}
+
     def _token(kind: str, match: re.Match[str], rx: re.Pattern[str]) -> str:
-        """Mask the match. A mask that rewrites a readable figure is counted."""
-        if _rewrites_figure(match, figures, rx):
+        """Mask the match. A mask that rewrites a figure is counted."""
+        if spans.get("text") is not match.string:
+            literals = list(NUMBER_LITERAL.finditer(match.string))
+            spans.update(text=match.string, literals=literals, ends=[h.end() for h in literals])
+        if _rewrites_figure(match, figures, rx, spans["literals"], spans["ends"]):
             masker.figure_hits += 1
         return masker.token(kind, match.group(0))
 

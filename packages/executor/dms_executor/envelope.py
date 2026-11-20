@@ -19,6 +19,7 @@ from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 from dms_executor import executed_trace
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
+from dms_executor.row_listing import row_line
 
 ALLOWED_BADGES = frozenset(
     {
@@ -899,8 +900,8 @@ def _is_number(cell: Any) -> bool:
 
 def _listed_records(
     text: str, columns: list[str]
-) -> list[tuple[bool, list[tuple[str, str]]]]:
-    """``column=value`` pairs in the text, one record per listed row.
+) -> list[tuple[bool, list[tuple[str, str]], str]]:
+    """``column=value`` pairs in the text, one record per listed row, with its line.
 
     Row columns only. The flag is True for a bullet line, the form the row
     writer prints: that line is one record. In prose a record also ends where a
@@ -910,7 +911,7 @@ def _listed_records(
         return []
     names = "|".join(re.escape(c) for c in sorted(columns, key=len, reverse=True))
     key = re.compile(rf"(?<![A-Za-z0-9_.])({names})=")
-    out: list[tuple[bool, list[tuple[str, str]]]] = []
+    out: list[tuple[bool, list[tuple[str, str]], str]] = []
     for line in text.splitlines():
         listing = bool(_LISTED_LINE.match(line))
         record: list[tuple[str, str]] = []
@@ -919,12 +920,17 @@ def _listed_records(
             end = hits[i + 1].start() if i + 1 < len(hits) else len(line)
             shown = line[hit.end() : end].strip().rstrip(",;").strip()
             if not listing and any(col == hit.group(1) for col, _ in record):
-                out.append((listing, record))
+                out.append((listing, record, line))
                 record = []
             record.append((hit.group(1), shown))
         if record:
-            out.append((listing, record))
+            out.append((listing, record, line))
     return out
+
+
+def _label(cell: Any) -> str:
+    """A label cell as a ``k=v`` split reads it back: no edge space, no trailing , or ;."""
+    return str(cell).strip().rstrip(",;").strip()
 
 
 def _shows_cell(shown: str, cell: Any) -> bool:
@@ -935,15 +941,19 @@ def _shows_cell(shown: str, cell: Any) -> bool:
     A unit after it is allowed (12.5 MYR, 4). Anything else: the same string.
     """
     if not _is_number(cell):
-        return str(cell) == shown
+        return _label(cell) == shown
     head = _LISTED_NUMBER.match(shown)
     if not head or re.match(r"[A-Za-z0-9_]|\.\d", shown[head.end() :]):
         return False
-    literal = Decimal(head.group(0).replace(",", ""))
-    exponent = literal.as_tuple().exponent
-    assert isinstance(exponent, int)
-    have = cell if isinstance(cell, Decimal) else Decimal(repr(cell))
-    return abs(literal - have) <= Decimal(5).scaleb(exponent - 1)
+    try:
+        literal = Decimal(head.group(0).replace(",", ""))
+        exponent = literal.as_tuple().exponent
+        assert isinstance(exponent, int)
+        have = cell if isinstance(cell, Decimal) else Decimal(repr(cell))
+        return abs(literal - have) <= Decimal(5).scaleb(exponent - 1)
+    except ArithmeticError:
+        # 1e9999999 overflows the context. A figure we cannot compare is not shown.
+        return False
 
 
 def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> list[str]:
@@ -958,9 +968,13 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
         numeric.update(str(col) for col, cell in row.items() if _is_number(cell))
     columns = sorted({str(col) for row in row_list for col in row})
     records = _listed_records(text, columns)
-    for listing, record in records if numeric else []:
+    # A bullet line the row writer printed for one of these rows states that row.
+    # Label cells can hold edge spaces, a trailing comma or "k=" text, which a
+    # k=v split cannot read back.
+    written = {row_line(row) for row in row_list}
+    for listing, record, line in records if numeric else []:
         figures = [(col, shown) for col, shown in record if col in numeric]
-        if not figures:
+        if not figures or (listing and line in written):
             continue
         # On a listing line every label is the row's own. In prose a label may
         # be reworded, so it narrows the rows only when it names one.
@@ -968,11 +982,11 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
             (col, shown)
             for col, shown in record
             if col not in numeric
-            and (listing or any(str(r.get(col)) == shown for r in row_list))
+            and (listing or any(_label(r.get(col)) == shown for r in row_list))
         ]
         if not any(
             all(col in row and _shows_cell(shown, row[col]) for col, shown in figures)
-            and all(str(row.get(col)) == shown for col, shown in labels)
+            and all(_label(row.get(col)) == shown for col, shown in labels)
             for row in row_list
         ):
             out.append("b: a listed row shows a figure its row does not hold")
@@ -981,7 +995,7 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
     if found:
         # A listing line is a bullet that names a row column. An "Insights:"
         # bullet under the listing is not a row.
-        listed = sum(1 for is_listing, _ in records if is_listing)
+        listed = sum(1 for is_listing, _, _ in records if is_listing)
         cut = _SHOWING.search(text)
         if int(found.group(1)) != len(row_list):
             out.append("c: the stated row count is not the row count")
