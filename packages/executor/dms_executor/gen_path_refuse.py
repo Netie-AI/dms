@@ -62,6 +62,8 @@ GAP_REASONS = frozenset(
         "no_sql",
         "multi_statement",
         "warehouse_missing",
+        # TOTAL-GUARD-01 (dms#531): an aggregate that can read one value twice.
+        "repeated_input",
     }
 )
 
