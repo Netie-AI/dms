@@ -97,6 +97,7 @@ from dms_executor.envelope import (
 )
 from dms_executor.generative_ask import (
     maybe_generative_ask,
+    no_ontology_join_reason,
     path_miss_envelope,
     untyped_numeric_reason,
     with_served_attribution,
@@ -147,6 +148,7 @@ from dms_executor.name_echo import (
     note_turn_grants,
     turn_grants,
 )
+from dms_executor.onto_profile import profile_space
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
@@ -1248,9 +1250,28 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
-        from dms_executor.ontology import Ontology, onto_from_data_enabled
+        from dms_executor.ontology import onto_from_data_enabled
 
-        data_onto = Ontology.from_store() if onto_from_data_enabled() else None
+        data_onto = None
+        if onto_from_data_enabled():
+            # ONTO-SCOPE-01: the ontology of the asking Space. Its derived
+            # ontology wins alone; otherwise the items approved for it. Never
+            # every approved item of the install.
+            from dms_executor.onto_scope import ask_ontology
+
+            try:
+                data_onto = ask_ontology(space_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ontology items unreadable for %s: %s", space_id, exc)
+                env = path_miss_envelope(
+                    question,
+                    f"{REASON_STORE_UNAVAILABLE}: the ontology store could not "
+                    "be read, so no join can be checked",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         space_onto = None
         if data_onto is None and allow_gen and not is_demo_space(space_id):
             # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
@@ -1454,6 +1475,22 @@ class Executor:
             # Its SQL answers only if it passes the same rule generation does.
             join_why = check_sql_against_space(
                 sql_used, space_onto, self._warehouse or warehouse_path(), readable
+            )
+            if join_why:
+                env = path_miss_envelope(
+                    question, join_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
+        elif sql_used and not getattr(resp, "abstained", False):
+            # CONNECT-ASK-03: no ontology is zero verified links, not no rule.
+            # With DMS_ONTO_FROM_DATA=1 this guard has no Space ontology
+            # either, so a non-demo Space fails closed here.
+            join_why = no_ontology_join_reason(
+                sql_used,
+                space_id=space_id,
+                warehouse=self._warehouse or warehouse_path(),
+                grantable=readable,
             )
             if join_why:
                 env = path_miss_envelope(
@@ -1722,6 +1759,19 @@ class Executor:
         )
         if gap or why:
             return abstain(gap or why or "ungranted")
+        if not is_demo_space(space_id):
+            # CONNECT-ASK-03: a Yes is not a verified link. Held SQL in a Space
+            # with no ontology meets the same join rule as generated SQL.
+            try:
+                held_onto = load_space_ontology(space_id)
+            except Exception:  # noqa: BLE001 - a store we cannot read proves no join
+                return abstain("unverified_join:check_unavailable")
+            if held_onto is None:
+                join_why = no_ontology_join_reason(
+                    sql, space_id=space_id, warehouse=self._warehouse, grantable=grantable
+                )
+                if join_why:
+                    return abstain(join_why)
         warehouse = self._warehouse
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")
@@ -2112,6 +2162,7 @@ __all__ = [
     "warehouse_path",
     "serving_sync_state",
     "infer_contract",
+    "profile_space",
     "intersect_space_grants",
     "get_serving_engine",
     "hide_echo",

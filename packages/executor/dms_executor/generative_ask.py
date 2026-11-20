@@ -19,7 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -454,8 +454,42 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
-def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:
+def no_ontology_join_reason(
+    sql: str,
+    *,
+    space_id: str | None,
+    warehouse: Path | None,
+    grantable: Iterable[str],
+) -> str | None:
+    """CONNECT-ASK-03: the Space join rule for a Space that has no ontology.
+
+    A demo Space (seeded, or no Space id) is not gated here and returns None.
+    Any other Space with no verified ontology has zero verified links, so the
+    same allowlist decides with an empty ``Ontology()``: one table reference
+    passes, anything reading a second table (or a table function) refuses.
+    The refusal is always ``unverified_join:no_ontology``. A lake that cannot
+    be read is ``unverified_join:check_unavailable``. Never a second analyser.
+    """
+    from dms_executor.demo_grants import is_demo_space
+
+    if is_demo_space(space_id):
+        return None
+    empty = Ontology()
+    try:
+        cols = relation_columns(empty, warehouse, sorted(grantable))
+        refused = unverified_join_reason(sql, empty, [], columns_of=cols)
+    except Exception:  # noqa: BLE001 - a check that cannot finish proves no join
+        return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+    return f"{REASON_UNVERIFIED_JOIN}:no_ontology" if refused else None
+
+
+def load_verified_ontology(
+    warehouse: Path | None, onto: Ontology | None = None, *, space_id: str | None = None
+) -> Ontology | None:
     """Verify against the lake. Failed subjects stay marked; the rest can answer.
+
+    With ``DMS_ONTO_FROM_DATA`` and no caller ontology, the ontology is the
+    asking Space's (ONTO-SCOPE-01), never every approved item of the install.
 
     A caller-declared ontology that fails verify is returned with those
     subjects marked (A2-06). The default demo ontology (``onto is None``)
@@ -471,7 +505,9 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
         target = onto
         declared = True
     elif onto_from_data_enabled():
-        target = Ontology.from_store()
+        from dms_executor.onto_scope import ask_ontology
+
+        target = ask_ontology(space_id)
         declared = True
     else:
         target = demo_ontology(Path(warehouse))
@@ -1602,6 +1638,13 @@ def _run_extract_loop(
             )
             if join_why:
                 return join_why
+        else:
+            # CONNECT-ASK-03: no ontology is zero verified links, not no rule.
+            join_why = no_ontology_join_reason(
+                sql, space_id=space_id, warehouse=warehouse, grantable=grantable
+            )
+            if join_why:
+                return join_why
         why = validate_compiled_sql(
             sql, grantable=grantable, warehouse=warehouse, dialect=dialect
         )
@@ -2108,7 +2151,7 @@ def maybe_generative_ask(
     declared_violations: list[Violation] = []
     verify_cache_missing = False
     if onto is None:
-        onto = load_verified_ontology(lake)
+        onto = load_verified_ontology(lake, space_id=space_id)
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:
@@ -2586,6 +2629,11 @@ def maybe_generative_ask(
                 join_why = unverified_join_reason(
                     sql, space_onto, declared_violations, columns_of=cols
                 )
+        else:
+            # CONNECT-ASK-03: no ontology is zero verified links, not no rule.
+            join_why = no_ontology_join_reason(
+                sql, space_id=space_id, warehouse=lake, grantable=allowed
+            )
         if join_why:
             # No guessed joins: on a Space with a derived ontology, generated
             # SQL may join two relations only over a link the source declared
