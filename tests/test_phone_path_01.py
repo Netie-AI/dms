@@ -95,7 +95,12 @@ def _answer() -> dict[str, Any]:
         audit_id="ans_1",
         rows=[{"total_qty": 66}],
         audit_receipt={
-            "include": {"status": "rows", "row_count": 1, "rows": [{"total_qty": 66}], "why": "1 row"},
+            "include": {
+                "status": "rows",
+                "row_count": 1,
+                "rows": [{"total_qty": 66}],
+                "why": "1 row",
+            },
             "exclude": {"status": "na", "reasons": [], "why": "no filter"},
             "unsure": {"status": "none", "abstained": False, "why": "answered"},
         },
@@ -202,12 +207,16 @@ def test_picker_does_not_offer_tsv() -> None:
 def test_every_kind_the_picker_offers_is_ingested(client: Any) -> None:
     for kind in _offered_kinds():
         name, data = _payload(kind)
-        r = client.post("/v1/studio/ingest", files={"file": (name, data, "application/octet-stream")})
+        r = client.post(
+            "/v1/studio/ingest", files={"file": (name, data, "application/octet-stream")}
+        )
         assert r.status_code == 200, f"{kind}: {r.status_code} {r.text}"
         body = r.json()
         assert body["ingested"] >= 1, f"{kind} is offered by the picker and not ingested: {body}"
         landed = [f for f in body["files"] if f["ingested"]]
-        assert landed and all(f["table"] for f in landed), f"{kind}: no table on the receipt: {body}"
+        assert landed and all(f["table"] for f in landed), (
+            f"{kind}: no table on the receipt: {body}"
+        )
 
 
 TSV = b"sku\tqty\tregion\nA\t11\tNorth\nB\t22\tSouth\n"
@@ -216,8 +225,12 @@ TSV_WITH_COMMAS = b"sku,code\tqty,kg\tregion,zone\nA,1\t11,0\tNorth,1\nB,2\t22,0
 
 
 @pytest.mark.parametrize("data", [TSV, TSV_WITH_COMMAS], ids=["plain", "commas-in-cells"])
-def test_tsv_through_the_ingest_route_is_not_ingested_and_says_why(client: Any, data: bytes) -> None:
-    r = client.post("/v1/studio/ingest", files={"file": ("e2e_kind.tsv", data, "text/tab-separated-values")})
+def test_tsv_through_the_ingest_route_is_not_ingested_and_says_why(
+    client: Any, data: bytes
+) -> None:
+    r = client.post(
+        "/v1/studio/ingest", files={"file": ("e2e_kind.tsv", data, "text/tab-separated-values")}
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ingested"] == 0
