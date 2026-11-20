@@ -1,0 +1,34 @@
+# BIRD-ALLOWLIST-01 (dms#304). Fail-closed table allowlist for BIRD scoring.
+# Table and column NAMES only. Never a value, never a row, never a count.
+#
+# Source of truth: the DevOps counts-only scan `pii_counts.csv` (sha256 below),
+# held by Platform. `tables` lists zero-hit v5 `bronze.public_*` tables from
+# that scan and nothing else. It is never widened to raise n: the loader
+# refuses more than `zero_hit_tables` entries, any entry that the scan flagged
+# (tests/fixtures/pii_hold/flagged_columns.csv), and any held table.
+#
+# OPEN (dms#304 acceptance 1): the scan file is not in this repository, so the
+# 31 zero-hit table names are not listed yet. Until Platform supplies them from
+# the scan, `tables` is empty and every BIRD question is labelled
+# `excluded_table:<table>`. That is the fail-closed state, not a score.
+#
+# A question whose gold SQL reads a table not listed here is a named ABSTAIN
+# `excluded_table:<table>`: zero rows, no model call, still counted in n.
+# A question that reads a column under `excluded_columns` is a named ABSTAIN
+# `excluded_column:<table>.<column>`. Entries are `bronze.public_<table>` and
+# `bronze.public_<table>.<column>`, lower case.
+
+measure: bird_allowlist_v1
+
+scan:
+  file: pii_counts.csv
+  sha256: 878f664d1d920bee99b3859285dd669b86edc16945288a5251c2fa66fae0c330
+  zero_hit_tables: 31
+
+tables: []
+
+held:
+  - bronze.public_trans
+  - bronze.public_yearmonth
+
+excluded_columns: []

@@ -46,6 +46,16 @@ if str(SCRIPTS) not in sys.path:
 if str(_EXECUTOR) not in sys.path:
     sys.path.insert(0, str(_EXECUTOR))
 
+from bird_allowlist import (  # noqa: E402
+    AllowlistError,
+    TableAllowlist,
+    allowlist_lines,
+    allowlist_meta,
+    classify,
+    exclusion_counts,
+    grant_preflight,
+    load_table_allowlist,
+)
 from score_bound import bound_line, bound_pct, zero_wrong_summary_bounded  # noqa: E402
 
 SYNTHETIC = ROOT / "tests" / "fixtures" / "bird_minidev" / "synthetic.json"
@@ -637,10 +647,35 @@ def score_cases(
     ask_fn: AskFn,
     gold_fn: GoldFn,
     with_evidence: bool = False,
+    allowlist: TableAllowlist | None = None,
+    dialect: str = "postgres",
 ) -> list[dict[str, Any]]:
+    """With an allowlist, a question it excludes is a named ABSTAIN that stays
+    in n: no ask, no gold run, zero rows (dms#304)."""
     rows: list[dict[str, Any]] = []
     for item in questions:
         sql = gold_sql_of(item)
+        found = classify(sql, allowlist, dialect=dialect) if allowlist is not None else None
+        if found is not None:
+            out: dict[str, Any] = {
+                "id": item.get("question_id", item.get("id")),
+                "db_id": item.get("db_id"),
+                "difficulty": item.get("difficulty") or "unknown",
+                "verdict": "ABSTAIN",
+                "badge": "ABSTAIN",
+                "gold_rows": 0,
+                "got_rows": 0,
+                "gold_error": None,
+                "reason": found.reason,
+                "exclusion": found.reason,
+                "exclusion_detail": found.detail,
+                "excluded_columns": list(found.columns),
+            }
+            unasked = served_from_response(None)
+            for key in ("provider", "model", "plan_origin", *SETUP_FIELD_KEYS):
+                out[key] = unasked[key]
+            rows.append(out)
+            continue
         gold_rows, gold_err = gold_fn(sql)
         env = ask_fn(asked_text(item, with_evidence=with_evidence))
         served = served_from_response(env)
@@ -710,6 +745,7 @@ def summarize(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     summary["served_local"] = served_local_counts(rows)
     summary["setup_mix"] = setup_mix(rows)
     summary["plan_origin"] = plan_origin_counts(rows)
+    summary["exclusions"] = exclusion_counts(rows)
     return summary
 
 
@@ -727,6 +763,12 @@ def print_summary(summary: Mapping[str, Any], *, limit: int | None, total: int) 
     )
     print(f"EX on answered={ex_s} abstain rate={abs_txt}")
     print(f"  {bound_line(answered)}")
+    counts = summary.get("exclusions") or {}
+    if counts.get("excluded"):
+        print(
+            f"allowlist: n={counts['n']} n_without_excluded={counts['n_without_excluded']} "
+            f"excluded={counts['excluded']} (named ABSTAIN, in n, never RIGHT)"
+        )
     if limit is not None:
         print(f"limit={limit} of {total} (smoke, not a Mini-Dev score)")
     print("per db_id:")
@@ -784,6 +826,13 @@ def write_minidev_artifact(report: Mapping[str, Any], env: Mapping[str, str] | N
     return path
 
 
+def _allowlist_key(report: Mapping[str, Any]) -> list[Any]:
+    block = report.get("allowlist")
+    if not isinstance(block, Mapping):
+        return [False, None]
+    return [bool(block.get("applied")), block.get("id")]
+
+
 def compare_runs(
     left: Mapping[str, Any],
     right: Mapping[str, Any],
@@ -794,6 +843,25 @@ def compare_runs(
     fa = left.get("setup_fingerprint")
     fb = right.get("setup_fingerprint")
     same = bool(fa) and bool(fb) and fa == fb
+    # dms#304: a run under the table allowlist and a run without it (or under a
+    # different list) did not ask the same questions.
+    la = _allowlist_key(left)
+    ra = _allowlist_key(right)
+    if la != ra and not force:
+        return EXIT_CONFIG, {
+            "kind": "dms.score_bird_minidev.compare",
+            "refused": True,
+            "reason": "allowlist_mismatch",
+            "left": la,
+            "right": ra,
+            "note": (
+                "Refuse to compare Mini-Dev runs scored under different table "
+                "allowlists (or one with and one without). Excluded questions "
+                "were never asked. Pass --force-cross-setup to label a "
+                "cross-setup comparison."
+            ),
+        }
+    same = same and la == ra
     if not same and not force:
         return EXIT_CONFIG, {
             "kind": "dms.score_bird_minidev.compare",
@@ -1089,6 +1157,8 @@ def run_minidev(
     env: Mapping[str, str] | None = None,
     started: str | None = None,
     write: bool = True,
+    allowlist: TableAllowlist | None = None,
+    dialect: str = "postgres",
 ) -> tuple[int, dict[str, Any] | None, str | None]:
     """Score Mini-Dev. On freeze/store failure returns CONFIG and no report."""
     env = env or os.environ
@@ -1103,7 +1173,12 @@ def run_minidev(
     if limit is not None:
         sliced = sliced[: max(limit, 0)]
     cases = score_cases(
-        sliced, ask_fn=ask_fn, gold_fn=gold_fn, with_evidence=with_evidence
+        sliced,
+        ask_fn=ask_fn,
+        gold_fn=gold_fn,
+        with_evidence=with_evidence,
+        allowlist=allowlist,
+        dialect=dialect,
     )
     summary = summarize(cases)
     mix = summary["served_mix"]
@@ -1161,6 +1236,7 @@ def run_minidev(
         "setup_mix": setup_mix_counts,
         "plan_origin": origin_counts,
         "summary": summary,
+        "allowlist": {**allowlist_meta(allowlist), **summary["exclusions"]},
         "cases": cases,
         "note": (
             "MEASURED baseline harness. Not PASS. Not COMPLETE. "
@@ -1211,6 +1287,13 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
         print("VERDICT: CONFIG")
         return EXIT_CONFIG
 
+    try:
+        allowlist = load_table_allowlist()
+    except AllowlistError as exc:
+        print(f"CONFIG: table allowlist unusable: {exc}")
+        print("VERDICT: CONFIG")
+        return EXIT_CONFIG
+
     cortex = bool(args.live) and not bool(args.offline)
     if not args.live and not args.offline:
         print(
@@ -1222,21 +1305,25 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
 
     if cortex:
         try:
-            from score_bird import _ask_live, live_url
+            import score_bird
 
-            url = live_url(dict(env), args.url)
+            url = score_bird.live_url(dict(env), args.url)
         except ValueError as exc:
             print(f"CONFIG: {exc}")
             print("VERDICT: CONFIG")
             return EXIT_CONFIG
-        space = (args.space or env.get("BIRD_SPACE_ID") or "").strip()
-        if not space:
-            from score_bird import BIRD_SPACE
-
-            space = BIRD_SPACE
+        space = (args.space or env.get("BIRD_SPACE_ID") or "").strip() or score_bird.BIRD_SPACE
+        # dms#304: before any ask. The generate context samples values from any
+        # granted table the question names, so a flagged grant blocks the run.
+        status, names = score_bird.fetch_bronze(url, space, args.timeout)
+        blocked = grant_preflight(status, names, allowlist)
+        if blocked:
+            print(f"preflight\tBLOCKED\t{blocked}")
+            print("VERDICT: BLOCKED before any ask. No question was sent. Not COMPLETE.")
+            return EXIT_BLOCKED
 
         def ask_fn(question: str) -> dict[str, Any]:
-            return _ask_live(url, question, space, args.timeout)
+            return score_bird._ask_live(url, question, space, args.timeout)
 
         try:
             gold_fn = pg_gold_fn(pg_connect_from_env(env))
@@ -1267,6 +1354,8 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
         env=env,
         started=started,
         write=True,
+        allowlist=allowlist,
+        dialect="postgres" if cortex else "duckdb",
     )
     if err:
         print(err)
@@ -1274,12 +1363,22 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
         return code
     assert report is not None
     print_summary(report["summary"], limit=limit, total=int(data_meta.get("n") or 0))
+    for line in allowlist_lines(report["allowlist"], report["allowlist"]):
+        print(line)
     print(f"sha={report['sha']} data_bytes={report['data_bytes']}")
     print(f"setup_fingerprint={report['setup_fingerprint']}")
     wrong = int(report["summary"]["wrong"])
     if wrong:
         print("MEASURED: WRONG>0. Not PASS. First run is baseline.")
         return EXIT_FAIL
+    scored = int(report["summary"]["n"]) - int(report["allowlist"]["excluded"])
+    if scored <= 0:
+        print(
+            f"VERDICT: NOT SCORED. scored=0 excluded={report['allowlist']['excluded']} "
+            f"GOLD_ERROR={report['summary']['gold_error']}. No question outside the "
+            "table allowlist's exclusions was judged. Not PASS. Not COMPLETE."
+        )
+        return EXIT_BLOCKED
     print("MEASURED: WRONG=0. Not PASS. Not COMPLETE. Not a quoted Mini-Dev score.")
     print(f"  {bound_line(int(report['summary']['answered']))}")
     return EXIT_PASS
