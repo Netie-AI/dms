@@ -329,6 +329,43 @@ MORE_SHAPES: dict[str, tuple[str, str, int, int, str]] = {
         107,
         TURN,
     ),
+    # Adversary round (windows and lists): a string is a collection once split.
+    "string_agg_doubled_and_split": (
+        COUNT_Q,
+        f"SELECT len(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "string_agg_through_a_cte": (
+        COUNT_Q,
+        f"WITH s AS (SELECT string_agg(students, ',') AS j FROM {T}) SELECT len(string_split(j || ',' || j, ',')) AS total FROM s",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "listagg_concat_ws": (
+        COUNT_Q,
+        f"SELECT len(string_split(concat_ws(',', listagg(students, ','), listagg(students, ',')), ',')) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "scalar_subquery_summed_per_row": (
+        Q,
+        f"SELECT SUM((SELECT SUM({N}) FROM {T})) AS total FROM {T}",
+        428,
+        107,
+        WINDOW,
+    ),
+    # Adversary round (grouping sets): SUMMARIZE aggregates its whole input.
+    "summarize_over_a_rollup": (
+        Q,
+        f"SELECT CAST(avg AS DOUBLE) * count AS total FROM (SUMMARIZE SELECT t FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)))",
+        214,
+        107,
+        GROUPING,
+    ),
     "list_concat_counted": (
         COUNT_Q,
         f"SELECT len(list({N}) || list({N})) AS total FROM {T}",

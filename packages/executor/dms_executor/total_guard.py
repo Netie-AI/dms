@@ -122,7 +122,6 @@ _SCALAR_AGGS: tuple[type[exp.Expression], ...] = (
     exp.Corr,
     exp.CovarPop,
     exp.CovarSamp,
-    exp.GroupConcat,
     exp.Grouping,
     # Window-only functions sqlglot files under AggFunc.
     exp.Rank,
@@ -282,6 +281,12 @@ class _Guard:
                 left, right = self.query(node.this), self.query(node.expression)
                 kinds = [left.carried, right.carried, *left.cols.values(), *right.cols.values()]
                 rel = _Rel("set_operation", {}, _worst(*kinds))
+            elif isinstance(node, exp.Summarize):
+                # SUMMARIZE aggregates every column of its input.
+                inner = self.query(node.this)
+                if inner.repeats or _any(inner):
+                    raise _Refuse(f"{inner.repeats or 'window_value'}_under_aggregate")
+                rel = _Rel()
             elif isinstance(node, exp.Subquery):
                 rel = self.source(node)
             elif isinstance(node, exp.UDTF):
@@ -324,6 +329,14 @@ class _Guard:
         mine = [n for n in own if n.find_ancestor(exp.Select) is select]
         if repeats and any(_aggregates(n) for n in own):
             raise _Refuse(f"{repeats}_under_aggregate")
+        # Rule 3, same SELECT: a scalar subquery's value is read once per row of
+        # this SELECT when an aggregate takes it as an argument.
+        for node in mine:
+            if not _aggregates(node):
+                continue
+            scan = node.this if isinstance(node, exp.Window) else node
+            if isinstance(scan, exp.Expression) and scan.find(exp.Select) is not None:
+                raise _Refuse("window_value_under_aggregate")
         many = _many_grouping_sets(select)
         if many and any(isinstance(n, exp.Window) for n in own):
             raise _Refuse("grouping_sets_under_aggregate")
