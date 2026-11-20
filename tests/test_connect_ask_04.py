@@ -880,3 +880,39 @@ def test_demo_space_yes_is_the_parent_envelope(
         assert env["provenance"] == "yes:definition:undeclared_join"
     finally:
         reset_ontology_data_store()
+
+
+# --- adversary round (clause 11): three runs, none the author ------------------------
+#
+# Run 1, hostile join shapes: 124 shapes (JOIN_ATTACKS, R2/R3 refuse sets, join-hole
+#   shapes, WRONG_JOIN_SQL, BROKEN_SQL, ~35 variants) as genuine and forged holds,
+#   DMS_ONTO_FROM_DATA 0 and 1. None served. One shape (aliases swapped over the
+#   verified link, true figure 3) serves on the plain ask too: not a Yes bypass.
+# Run 2, grants at Yes: 19 cases (revoke per SQL shape, revoke all, tampered parked
+#   lists, token replay = 404). None served wrongly.
+# Run 3, door gates: 24 forged statements x def-validate on/off at Yes, waiver and
+#   contextvar leak checks. None served wrongly. One forged `SELECT ...;` with a
+#   trailing semicolon served through Cortex with a ledger entry: one read, the
+#   confirmed statement, served the same way by the generate door.
+# Open, not tested by any run: a token used by another caller (the confirm route takes
+#   only the token, no expiry in reconfirm.py), row-level predicates, concurrent Yes.
+
+
+@pytest.mark.parametrize("name", sorted(od.JOIN_ATTACKS))
+def test_adversary_join_attacks_as_held_sql_are_never_served(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    import dms_executor.reconfirm as rc
+
+    rig = _held_rig(tmp_path, monkeypatch, minter)
+    token = rig.park(VERIFIED_Q, VERIFIED_SQL)
+    with rc._LOCK:
+        rc._PENDING[token]["sql"] = od.JOIN_ATTACKS[name]
+    env = rig.yes(token)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (name, env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    assert rig.cortex.executed == [] and rig.ledger == []
