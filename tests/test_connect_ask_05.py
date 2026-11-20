@@ -344,3 +344,77 @@ def test_serving_error_reaches_the_ask_boundary(
     assert env["badge"] == "ABSTAIN" and env["abstained"] is True
     assert env["rows"] == [] and env["values"] == []
     assert exc.code in str(env.get("text") or "") + od._reasons(env), env  # type: ignore[attr-defined]
+
+
+# --- adversary round: other exception types, hostile exceptions ---------------------
+
+
+class _HostileStr(RuntimeError):
+    """An exception whose text cannot be rendered. The handler must not touch it."""
+
+    def __str__(self) -> str:
+        raise ValueError("str() of the exception was called")
+
+
+class _LeaseCapChild(ServingLeaseCap):
+    """A subclass keeps the lease code: it is still a lease error."""
+
+
+def _other_exceptions() -> dict[str, Any]:
+    import duckdb
+    import sqlglot.errors
+
+    return {
+        "key_error": lambda: KeyError(SECRET),
+        "recursion": lambda: RecursionError(SECRET),
+        "memory": lambda: MemoryError(SECRET),
+        "assertion": lambda: AssertionError(SECRET),
+        "sqlglot_parse": lambda: sqlglot.errors.ParseError(SECRET),
+        "duckdb": lambda: duckdb.Error(SECRET),
+        "hostile_str": lambda: _HostileStr(SECRET),
+    }
+
+
+_OTHER = _other_exceptions()
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(_OTHER))
+def test_any_other_exception_from_the_check_abstains(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    exc = _OTHER[name]()
+    rig = _rig(door, tmp_path, monkeypatch, minter)
+    _break_join_check(monkeypatch, exc)
+    with caplog.at_level(logging.WARNING):
+        r = _post(rig, door, monkeypatch)
+    _assert_check_unavailable(r, rig)
+    assert type(exc).__name__ in caplog.text, caplog.text
+    assert SECRET not in caplog.text, caplog.text
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_lease_error_subclass_keeps_the_lease_code(
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    exc = _LeaseCapChild(4, 0.25)
+    rig = _rig(door, tmp_path, monkeypatch, minter)
+    _break_join_check(monkeypatch, exc)
+    r = _post(rig, door, monkeypatch)
+    assert r.status_code == 200, (r.status_code, r.text)
+    env = r.json()
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["rows"] == [] and env["values"] == []
+    assert exc.code in str(env.get("text") or "") + od._reasons(env), env
+    assert CHECK_UNAVAILABLE not in r.text, r.text
+    assert rig.cortex.executed == []
