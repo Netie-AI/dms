@@ -308,11 +308,19 @@ class _Guard:
         if not isinstance(table.this, exp.Identifier) or table.db or table.catalog:
             return None
         name = table.name.lower()
+        inside: dict[int, int] = {}  # id(WITH) -> index of the CTE the walk came out of
         node: exp.Expression | None = table.parent
         while node is not None:
+            if isinstance(node, exp.CTE) and isinstance(node.parent, exp.With):
+                inside[id(node.parent)] = node.parent.expressions.index(node)
             with_ = _with_of(node)
             if with_ is not None:
-                for cte in with_.expressions:
+                # A CTE sees only the CTEs written before it (itself too when the
+                # WITH is RECURSIVE); the main body sees all of them.
+                limit = inside.get(id(with_), len(with_.expressions))
+                if with_.args.get("recursive") and limit < len(with_.expressions):
+                    limit += 1
+                for cte in with_.expressions[:limit]:
                     if isinstance(cte, exp.CTE) and cte.alias.lower() == name:
                         return cte
             node = node.parent
