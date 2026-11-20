@@ -701,6 +701,52 @@ def compile_ontology_proposal(
     )
 
 
+def profile_ontology_proposal(
+    *,
+    actor: str,
+    tenant_id: str,
+    space_id: str,
+) -> dict[str, Any]:
+    """ONTO-PROFILE-01: measure a file Space and store keys and links as proposed.
+
+    No model call. Counts, names and landed types only. Nothing stored here is
+    served: a profile item is read only through the Space-scoped item read.
+    A Space with no file-landed table stores nothing and says so.
+    """
+    from dms_core.control_plane.onto_data import (
+        PostgresOntologyDataStore,
+        ontology_data_store,
+    )
+
+    profile = dms_executor.profile_space(space_id)
+    # The canonical Space id: a legacy demo alias stores under the Space it names.
+    space_id = str(profile["space_id"])
+    measured = {
+        key: profile[key]
+        for key in ("tables", "skipped", "observations", "unkeyed_tables", "bounds")
+    }
+    if not profile["file_tables"]:
+        return {"status": "no_file_tables", "served": False, "space_id": space_id, **measured}
+    store = ontology_data_store()
+    stored = store.store_profile(
+        profile, created_by=actor, space_id=space_id, tenant_id=tenant_id
+    )
+    persisted = isinstance(store, PostgresOntologyDataStore)
+    return {
+        **stored,
+        "persisted": persisted,
+        **(
+            {}
+            if persisted
+            else {
+                "hint": "the item store is in memory (DMS_ONTO_PG is off): "
+                "these proposals are lost on restart"
+            }
+        ),
+        **measured,
+    }
+
+
 def engine_clock_fields() -> dict[str, str]:
     """Best-effort engine date for /health. Omitted when the warehouse is down."""
     try:
