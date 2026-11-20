@@ -20,12 +20,16 @@ from typing import Any
 
 import duckdb
 import pytest
+from dms_core.control_plane.onto_store import OntologyStore
 from dms_core.control_plane.onto_data import (
     ontology_data_store,
     reset_ontology_data_store,
     store_proposal,
 )
 from dms_executor.manifest import ManifestMinter
+from dms_executor.space_ontology import load_space_ontology, set_ontology_store
+
+import test_onto_derive_01 as od
 from test_onto_derive_01 import make_minter
 from test_onto_profile_01 import Rig, _csv, make_rig
 
@@ -42,6 +46,17 @@ def _reset_store() -> Iterator[None]:
     reset_ontology_data_store()
     yield
     reset_ontology_data_store()
+
+
+@pytest.fixture()
+def store() -> Iterator[OntologyStore]:
+    """A fresh derived-ontology store (ONTO-DERIVE-01), as in ``test_onto_derive_01``."""
+    fresh = OntologyStore()
+    prev = set_ontology_store(fresh)
+    try:
+        yield fresh
+    finally:
+        set_ontology_store(prev)
 
 
 @pytest.fixture()
@@ -235,3 +250,136 @@ def test_an_approved_link_that_fans_out_abstains(
     for row in wrong:
         assert f"n={row['n']}" not in text
     assert "paid" not in text and "open" not in text
+
+
+# --- clauses 2 and 3: an item governs the Space its version names, no other --------
+
+
+def two_spaces(rig: Rig) -> tuple[str, dict[str, str], str, dict[str, str]]:
+    """Space A and Space B, each with its own orders and shipments files."""
+    a = rig.new_space("Space A")
+    ta = rig.ingest(a, space_files("a"))
+    b = rig.new_space("Space B")
+    tb = rig.ingest(b, space_files("b"))
+    return a, ta, b, tb
+
+
+@pytest.mark.parametrize("door", ["first_generate", "extract_loop"])
+def test_an_item_approved_for_space_a_does_not_join_space_b_tables(
+    door: str, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clause 2. The label lies: the items are filed under A and name B's tables."""
+    if door == "extract_loop":
+        monkeypatch.setenv("DMS_CLOOP_B", "1")
+        monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    a, _ta, b, tb = two_spaces(rig)
+    sql = join_sql(tb["b_shipments.csv"], tb["b_orders.csv"])
+    assert oracle(rig.lake, sql) == JOIN_TRUTH  # the join is right; it is not B's to use
+
+    bare = rig.ask(b, JOIN_Q, gen(sql))
+    bare_text = assert_abstains(bare, "unverified_join", rig, 0)
+
+    approve_for(a, link_proposal(tb["b_shipments.csv"], tb["b_orders.csv"]))
+    env = rig.ask(b, JOIN_Q, gen(sql))
+    text = assert_abstains(env, "unverified_join", rig, 0)
+    # As with no approved item at all: the same refusal, word for word.
+    assert text == bare_text
+    assert reasons(env) == reasons(bare)
+
+
+def test_the_same_items_answer_the_space_they_were_approved_for(rig: Rig) -> None:
+    """Clause 3. A's items name A's tables and hold in the data: A's join answers."""
+    a, ta, b, tb = two_spaces(rig)
+    approve_for(a, link_proposal(ta["a_shipments.csv"], ta["a_orders.csv"]))
+    sql = join_sql(ta["a_shipments.csv"], ta["a_orders.csv"])
+    assert oracle(rig.lake, sql) == JOIN_TRUTH
+    env = rig.ask(a, JOIN_Q, gen(sql))
+    assert_serves(env, JOIN_TRUTH)
+    assert rig.cortex.executed == [sql]
+    # B asks the same shape over its own tables and has no item of its own.
+    env_b = rig.ask(b, JOIN_Q, gen(join_sql(tb["b_shipments.csv"], tb["b_orders.csv"])))
+    assert_abstains(env_b, "unverified_join", rig, 1)
+
+
+# --- clause 4: a SQL-source Space answers through its derived ontology alone -------
+
+# Every enrollment names school 1 or 2, and 1 and 2 are also district ids. So
+# enrollments.school_id -> districts.district_id measures many-to-one with no
+# orphan. The source never declared it, and it is meaningless: school 1 is not
+# district 1.
+CLEAN_ENROLL_ROWS = [["100", "1", "30"], ["101", "2", "25"], ["102", "1", "40"], ["103", "2", "12"]]
+UNDECLARED_Q = "How many enrollments per district?"
+UNDECLARED_SQL = (
+    f"SELECT d.name, COUNT(*) AS n FROM {od.ENROLL} e JOIN {od.DISTRICTS} d "
+    "ON e.school_id = d.district_id GROUP BY d.name ORDER BY d.name"
+)
+UNDECLARED_ROWS = [{"name": "North", "n": 2}, {"name": "South", "n": 2}]
+UNDECLARED_LINK = {
+    "status": "proposed",
+    "terms": [
+        {"name": od.ENROLL, "table": od.ENROLL, "key": ["enrollment_id"]},
+        {"name": od.DISTRICTS, "table": od.DISTRICTS, "key": ["district_id"]},
+    ],
+    "declared_fks": [
+        {
+            "source_table": od.ENROLL,
+            "source_column": "school_id",
+            "target_table": od.DISTRICTS,
+            "target_column": "district_id",
+        }
+    ],
+}
+
+
+def sql_space(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    enroll_rows: list[list[str]] | None = None,
+) -> od._Space:
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", "1")
+    space = od._space(tmp_path, monkeypatch, minter, enroll_rows=enroll_rows)
+    assert load_space_ontology(space.space_id) is not None
+    return space
+
+
+@pytest.mark.parametrize("named", ["this_space", "no_space", "another_space"])
+def test_a_sql_source_space_refuses_a_join_only_an_approved_item_offers(
+    named: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    """Clause 4. The derived ontology wins alone; an item is never merged into it."""
+    space = sql_space(tmp_path, monkeypatch, minter, CLEAN_ENROLL_ROWS)
+    assert oracle(space.lake, UNDECLARED_SQL) == UNDECLARED_ROWS
+    version_space = {
+        "this_space": space.space_id,
+        "no_space": None,
+        "another_space": "5c0be000-0000-4000-8000-000000000523",
+    }[named]
+    approve_for(version_space, UNDECLARED_LINK)
+    env = space.ask(UNDECLARED_Q, gen(UNDECLARED_SQL))
+    text = od._assert_abstain(env, "unverified_join")
+    assert "North" not in text and "South" not in text
+    assert space.cortex.executed == []
+
+
+def test_a_sql_source_space_still_answers_its_declared_join_under_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    """Clause 4, the other half: the flag no longer replaces the declared ontology.
+
+    Same envelope as with the flag unset
+    (``test_onto_derive_01::test_join_over_the_verified_link_answers_with_oracle_rows``).
+    """
+    space = sql_space(tmp_path, monkeypatch, minter)
+    assert oracle(space.lake, od.VERIFIED_SQL) == [{"school_count": 3}]
+    env = space.ask(od.VERIFIED_Q, gen(od.VERIFIED_SQL))
+    assert_serves(env, [{"school_count": 3}])
+    assert space.cortex.executed == [od.VERIFIED_SQL]
+    assert {c["ontology"]["source"] for c in space.cortex.insights} == {"space"}
+    # The declared link that is broken in the data still abstains, naming it.
+    env = space.ask(od.BROKEN_Q, gen(od.BROKEN_SQL))
+    od._assert_abstain(env, f"ontology_unverified: fk_orphans on {od.BROKEN_LINK}")
