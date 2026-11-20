@@ -226,6 +226,7 @@ def excluded_row(
         "exclusion_detail": found.detail,
         "excluded_columns": list(found.columns),
         "rows": 0,
+        "expect": str(case.get("expect") or "answered"),
     }
 
 
@@ -473,10 +474,15 @@ def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[st
         label = ""
         if isinstance(row, dict):
             label = str(row.get("table") or row.get("name") or "").strip()
-        elif row:
-            label = str(row).strip()
+        elif isinstance(row, str):
+            label = row.strip()
+        if not label:
+            # dms#304: a row with no readable name is not "no table". The
+            # grant preflight cannot rule out a flagged table it cannot read.
+            print("bronze\tBLOCKED\ta row has no table name: list not readable")
+            return "snapshot", []
         key = label.lower()
-        if not label or key in seen:
+        if key in seen:
             continue
         seen.add(key)
         names.append(label)
@@ -765,7 +771,16 @@ def live(
     no_oracle = exact_r["no_oracle"] + gen_r["no_oracle"]
     invalid = exact_r["invalid"] + gen_r["invalid"]
     allow_block = _allowlist_report(allowlist, live_cases)
-    none_scored = bool(allow_block["applied"]) and allow_block["n_without_excluded"] == 0
+    applied = bool(allow_block["applied"])
+    # Skips and excluded questions are not scored. Nothing scored is not a pass.
+    none_scored = applied and gen_r["n"] - allow_block["excluded"] <= 0
+    # A refuse trap that was not sent cannot show a WRONG. That is a skipped
+    # check, so the run is not a pass either.
+    traps_unsent = sum(
+        1 for row in live_cases if row.get("exclusion") and row.get("expect") in REFUSE
+    )
+    allow_block["refuse_traps_unsent"] = traps_unsent
+    none_scored = none_scored or traps_unsent > 0
     report = {
         "kind": "dms.score_bird",
         "pack": "bird_minidev",
@@ -804,8 +819,10 @@ def live(
         return EXIT_BLOCKED
     if none_scored:
         print(
-            "VERDICT: NOT SCORED. Every question is excluded by the table allowlist; "
-            "no question was sent. An excluded ABSTAIN is not a pass. Not COMPLETE."
+            f"VERDICT: NOT SCORED. scored={max(gen_r['n'] - allow_block['excluded'], 0)} "
+            f"excluded={allow_block['excluded']} refuse_traps_unsent={traps_unsent}. "
+            "An excluded ABSTAIN is not a pass and an unsent trap is a skipped check. "
+            "Not COMPLETE."
         )
         return EXIT_BLOCKED
     for line in pass_lines(exact_r["answered"], gen_r["answered"], leftover):

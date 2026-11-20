@@ -826,6 +826,13 @@ def write_minidev_artifact(report: Mapping[str, Any], env: Mapping[str, str] | N
     return path
 
 
+def _allowlist_key(report: Mapping[str, Any]) -> list[Any]:
+    block = report.get("allowlist")
+    if not isinstance(block, Mapping):
+        return [False, None]
+    return [bool(block.get("applied")), block.get("id")]
+
+
 def compare_runs(
     left: Mapping[str, Any],
     right: Mapping[str, Any],
@@ -836,6 +843,25 @@ def compare_runs(
     fa = left.get("setup_fingerprint")
     fb = right.get("setup_fingerprint")
     same = bool(fa) and bool(fb) and fa == fb
+    # dms#304: a run under the table allowlist and a run without it (or under a
+    # different list) did not ask the same questions.
+    la = _allowlist_key(left)
+    ra = _allowlist_key(right)
+    if la != ra and not force:
+        return EXIT_CONFIG, {
+            "kind": "dms.score_bird_minidev.compare",
+            "refused": True,
+            "reason": "allowlist_mismatch",
+            "left": la,
+            "right": ra,
+            "note": (
+                "Refuse to compare Mini-Dev runs scored under different table "
+                "allowlists (or one with and one without). Excluded questions "
+                "were never asked. Pass --force-cross-setup to label a "
+                "cross-setup comparison."
+            ),
+        }
+    same = same and la == ra
     if not same and not force:
         return EXIT_CONFIG, {
             "kind": "dms.score_bird_minidev.compare",
@@ -1345,10 +1371,12 @@ def run_minidev_cli(args: Any, env: Mapping[str, str]) -> int:
     if wrong:
         print("MEASURED: WRONG>0. Not PASS. First run is baseline.")
         return EXIT_FAIL
-    if report["allowlist"]["n_without_excluded"] == 0:
+    scored = int(report["summary"]["n"]) - int(report["allowlist"]["excluded"])
+    if scored <= 0:
         print(
-            "VERDICT: NOT SCORED. Every question is excluded by the table allowlist; "
-            "no question was sent. Not PASS. Not COMPLETE."
+            f"VERDICT: NOT SCORED. scored=0 excluded={report['allowlist']['excluded']} "
+            f"GOLD_ERROR={report['summary']['gold_error']}. No question outside the "
+            "table allowlist's exclusions was judged. Not PASS. Not COMPLETE."
         )
         return EXIT_BLOCKED
     print("MEASURED: WRONG=0. Not PASS. Not COMPLETE. Not a quoted Mini-Dev score.")

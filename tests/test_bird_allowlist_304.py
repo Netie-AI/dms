@@ -257,6 +257,8 @@ def test_loader_accepts_a_well_formed_file(tmp_path: Path) -> None:
         {"tables": ["gender"]},
         {"tables": ["bronze.public_Gender"]},
         {"tables": ["bronze.public_"]},
+        {"tables": ["bronze.public_public_schools"]},  # bare key would be the flagged table
+        {"tables": ["bronze.public_public_gender"]},
         {"tables": ["bronze.public_gender; drop"]},
         {"tables": "bronze.public_gender"},
         {"tables": [7]},
@@ -289,6 +291,23 @@ def test_loader_refuses_a_missing_file_and_a_scan_fixture_with_no_flagged_table(
         mod.load_table_allowlist(_write(tmp_path), flagged_csv=empty)
     with pytest.raises(mod.AllowlistError):
         mod.load_table_allowlist(_write(tmp_path), flagged_csv=tmp_path / "absent.csv")
+
+
+def test_loader_refuses_a_key_written_twice(tmp_path: Path) -> None:
+    mod = _mod()
+    text = _write(tmp_path).read_text(encoding="utf-8")
+    twice = tmp_path / "twice.yaml"
+    twice.write_text(text + "tables:\n- bronze.public_gender\n", encoding="utf-8")
+    with pytest.raises(mod.AllowlistError):
+        mod.load_table_allowlist(twice)
+    nested = tmp_path / "nested.yaml"
+    nested.write_text(
+        text.replace("zero_hit_tables: 2", "zero_hit_tables: 2\n  zero_hit_tables: 99"),
+        encoding="utf-8",
+    )
+    assert "zero_hit_tables: 99" in nested.read_text(encoding="utf-8")
+    with pytest.raises(mod.AllowlistError):
+        mod.load_table_allowlist(nested)
 
 
 def test_cli_unusable_allowlist_is_config_not_a_score(
@@ -344,9 +363,19 @@ def test_question_on_listed_tables_only_is_scored(sql: str) -> None:
         ("SELECT id FROM gender, LATERAL (SELECT id FROM posts) p", "excluded_table:posts"),
         ("SELECT id FROM gender NATURAL JOIN comments", "excluded_table:comments"),
         ("SELECT id FROM gender EXCEPT SELECT id FROM drivers", "excluded_table:drivers"),
-        ("SELECT id FROM other.gender", "excluded_table:gender"),
+        ("SELECT id FROM other.gender", "excluded_table:(unparsed)"),
         ("SELECT id FROM bronze.public_client", "excluded_table:public_client"),
-        ('SELECT id FROM "Gender"', "excluded_table:Gender"),
+        ('SELECT id FROM "Gender"', "excluded_table:(unparsed)"),
+        ('SELECT id FROM "cli ent"', "excluded_table:(unparsed)"),
+        (
+            "SELECT query_to_xml('select * from client', true, true, '') FROM gender",
+            "excluded_table:(unparsed)",
+        ),
+        ("SELECT table_to_xml('client', true, true, '') FROM gender", "excluded_table:(unparsed)"),
+        (
+            "SELECT id FROM gender WHERE cursor_to_xml('c', 1, true, true, '') IS NOT NULL",
+            "excluded_table:(unparsed)",
+        ),
         ("SELECT id FROM trans", "excluded_table:trans"),
         ("SELECT id FROM yearmonth", "excluded_table:yearmonth"),
         ("WITH gender AS (SELECT id FROM gender) SELECT id FROM client", "excluded_table:client"),
@@ -429,7 +458,13 @@ def test_listed_table_without_the_excluded_column_is_scored(sql: str) -> None:
         "SELECT x.full_name FROM (SELECT * FROM superhero) x",
         "WITH x AS (SELECT full_name FROM superhero) SELECT COUNT(*) FROM x",
         "SELECT s FROM superhero s",
-        "SELECT to_json(s) FROM superhero s",
+        "SELECT COUNT(s) FROM superhero s",
+        "SELECT nm FROM superhero AS t(id, nm)",
+        "SELECT t.b FROM superhero t(a, b)",
+        "SELECT x.nm FROM (SELECT nm FROM superhero AS t(id, nm)) x",
+        "SELECT j FROM (superhero a JOIN gender b ON true) AS j",
+        'SELECT U&"full\\005Fname" FROM superhero',
+        'SELECT "full name" FROM superhero',
         "SELECT id FROM bronze.public_superhero WHERE full_name IS NOT NULL",
     ],
 )
@@ -438,6 +473,40 @@ def test_question_reading_an_excluded_column_is_a_named_abstain(sql: str) -> Non
     assert found is not None, "scored a question that reads an excluded column"
     assert found.reason == "excluded_column:superhero.full_name"
     assert found.columns == ("superhero.full_name",)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT COLUMNS('full_name') FROM superhero",
+        "SELECT COLUMNS('^f') FROM superhero",
+        "SELECT COLUMNS(c -> c LIKE 'f%') FROM superhero",
+        "SELECT list_value(COLUMNS('full_name')) FROM superhero",
+        "SELECT #2 FROM superhero",
+        "SELECT id FROM superhero GROUP BY id, #2",
+        "SELECT nm FROM superhero AS t(id, nm)",
+    ],
+)
+def test_duckdb_column_read_without_naming_it_is_excluded(sql: str) -> None:
+    found = _mod().classify(sql, _allow(ALLOWED, COLS), dialect="duckdb")
+    assert found is not None, "scored a question that reads an excluded column"
+    assert found.columns == ("superhero.full_name",)
+
+
+def test_unmodelled_function_is_excluded_and_a_modelled_one_is_scored() -> None:
+    mod = _mod()
+    allow = _allow(ALLOWED, COLS)
+    found = mod.classify("SELECT to_json(s) FROM superhero s", allow, dialect="postgres")
+    assert found is not None and found.reason == "excluded_table:(unparsed)"
+    assert found.detail == "unmodelled_function:to_json"
+    assert found.columns == ("superhero.full_name",)
+    hidden = "SELECT query_to_xml('select full_name from superhero', true, true, '') FROM gender"
+    assert mod.classify(hidden, allow, dialect="postgres") is not None
+    scored = (
+        "SELECT ROUND(CAST(SUM(id) AS REAL) / COUNT(*), 2), SUBSTR(gender, 1, 1) "
+        "FROM gender GROUP BY gender"
+    )
+    assert mod.classify(scored, allow, dialect="postgres") is None
 
 
 def test_table_reason_wins_and_the_column_is_still_counted() -> None:
@@ -518,6 +587,53 @@ def test_preflight_blocks_when_the_tables_were_not_read(status: str) -> None:
     assert _mod().grant_preflight(status, ["bronze.public_gender"], _allow(ALLOWED))
 
 
+@pytest.mark.parametrize("names", ["bronze.public_schools", None, {"bronze.public_schools": 1}])
+def test_preflight_blocks_names_that_are_not_a_list(names: Any) -> None:
+    assert _mod().grant_preflight("ok", names, _allow(ALLOWED))
+
+
+class _Resp:
+    def __init__(self, body: Any) -> None:
+        self._body = body
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> Any:
+        return self._body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"tables": [{"table": "bronze.public_gender"}, {"table_name": "bronze.public_schools"}]},
+        {"tables": [{"relation": "bronze.public_schools"}]},
+        {"tables": [{"name": ""}]},
+        [["bronze.public_schools"]],
+        [7],
+    ],
+)
+def test_bronze_list_with_a_row_it_cannot_read_is_not_ok(
+    monkeypatch: pytest.MonkeyPatch, body: Any
+) -> None:
+    import httpx
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(body))
+    status, names = score_bird.fetch_bronze(URL, score_bird.BIRD_SPACE, 1.0)
+    assert status != "ok", "an unreadable row was treated as no table"
+    assert _mod().grant_preflight(status, names, _allow(ALLOWED))
+
+
+def test_bronze_list_it_can_read_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    body = {"tables": [{"table": "bronze.public_gender"}, {"name": "bronze.public_superhero"}]}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(body))
+    status, names = score_bird.fetch_bronze(URL, score_bird.BIRD_SPACE, 1.0)
+    assert (status, names) == ("ok", ["bronze.public_gender", "bronze.public_superhero"])
+    assert _mod().grant_preflight(status, names, _allow(ALLOWED)) is None
+
+
 def test_live_library_call_runs_the_preflight_without_an_allowlist(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -568,6 +684,32 @@ def test_live_scores_the_listed_question_and_abstains_the_unlisted_one(
     assert art["allowlist"]["n"] == 2 and art["allowlist"]["n_without_excluded"] == 1
     assert art["allowlist"]["excluded_by_table"] == {"client": 1}
     assert "n=2 n_without_excluded=1 excluded=1" in out
+
+
+def test_live_with_an_unsent_refuse_trap_is_not_a_pass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ungated, the green answer on the trap is WRONG. Gated, the trap is not
+    sent, so the run must not read as PASS."""
+    spy = _wire(monkeypatch, tmp_path, ("ok", ["bronze.public_gender"]), rows=[{"n": 3}])
+    data = yaml.safe_load(score_bird.DEFAULT_PACK.read_text(encoding="utf-8"))
+    keep = {"gender_row_count", "trap_75_tables"}
+    data["questions"] = [c for c in data["questions"] if c["id"] in keep]
+    data["questions"][0]["gold_sql"] = "SELECT COUNT(*) AS n FROM gender"
+    path = tmp_path / "trap.yaml"
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    real = score_bird.load_bird
+    monkeypatch.setattr(score_bird, "load_bird", lambda *a, **k: real(path))
+    oracle = _oracle(tmp_path)
+    assert score_bird.live(URL, 1.0, score_bird.BIRD_SPACE, oracle) == score_bird.EXIT_FAIL
+    assert len(spy.asked) == 2
+    capsys.readouterr()
+    rc = score_bird.live(URL, 1.0, score_bird.BIRD_SPACE, oracle, _allow({"gender"}))
+    out = capsys.readouterr().out
+    assert rc == EXIT_BLOCKED, out
+    assert "PASS" not in out and "refuse_traps_unsent=1" in out
+    art = json.loads((tmp_path / "art" / "score_bird.json").read_text(encoding="utf-8"))
+    assert art["passed"] is False and art["allowlist"]["refuse_traps_unsent"] == 1
 
 
 def test_live_without_an_allowlist_says_so_in_the_artifact(
@@ -663,6 +805,44 @@ def test_minidev_total_n_stays_500(tmp_path: Path) -> None:
     assert summary["exclusions"]["n_without_excluded"] == 100
     assert summary["right"] == 100 and summary["abstain"] == 400 and len(spy.asked) == 100
     assert sum(row["n"] for row in summary["by_db_id"].values()) == 500
+
+
+def test_compare_refuses_runs_under_different_allowlists(tmp_path: Path) -> None:
+    """Always-wrong asks: gating hides two of three WRONGs. Not an improvement."""
+    questions = _questions([Q_OK, Q_TABLE, Q_BOTH])
+    ungated = _run(questions, _Spy(rows=[{"n": 99}]), tmp_path)
+    gated = _run(questions, _Spy(rows=[{"n": 99}]), tmp_path, allowlist=_allow({"widgets"}))
+    wider = _run(questions, _Spy(rows=[{"n": 99}]), tmp_path, allowlist=_allow({"widgets", "x"}))
+    assert ungated["summary"]["wrong"] == 3 and gated["summary"]["wrong"] == 1
+    assert ungated["setup_fingerprint"] == gated["setup_fingerprint"]
+    for left, right in ((ungated, gated), (gated, wider)):
+        code, body = bird_minidev.compare_runs(left, right, force=False)
+        assert code == EXIT_CONFIG and body["refused"] is True
+        assert body["reason"] == "allowlist_mismatch"
+        code, body = bird_minidev.compare_runs(left, right, force=True)
+        assert code == EXIT_PASS and body["comparison"] == "cross-setup"
+    code, body = bird_minidev.compare_runs(gated, gated, force=False)
+    assert code == EXIT_PASS and body["comparison"] == "same-setup"
+
+
+def test_cli_minidev_only_gold_errors_left_is_not_measured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One listed question whose gold SQL cannot run, the rest excluded: nothing
+    was judged, so the run is NOT SCORED, not MEASURED: WRONG=0."""
+    mod = _mod()
+    spy = _wire(monkeypatch, tmp_path, ("ok", ["bronze.public_gender"]), rows=[{"n": 2}])
+    _minidev_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(bird_minidev, "load_table_allowlist", lambda: _allow({"widgets"}))
+    rc = score_bird.main(["--minidev", str(SYNTHETIC), "--live", "--limit", "4", "--url", URL])
+    out = capsys.readouterr().out
+    assert len(spy.asked) == 3
+    art = json.loads((tmp_path / "art" / "score_bird_minidev.json").read_text(encoding="utf-8"))
+    assert art["summary"]["gold_error"] == 3 and art["summary"]["n"] == 1
+    assert art["allowlist"]["excluded"] == 1
+    assert rc == EXIT_BLOCKED, out
+    assert "VERDICT: NOT SCORED" in out and "MEASURED" not in out
+    assert mod.MEASURE in out
 
 
 def test_minidev_without_an_allowlist_is_labelled_not_applied(tmp_path: Path) -> None:

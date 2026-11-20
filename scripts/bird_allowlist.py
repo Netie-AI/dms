@@ -29,6 +29,7 @@ Flagged tables come from the committed scan counts
 from __future__ import annotations
 
 import csv
+import hashlib
 import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -87,6 +88,10 @@ def _stem(entry: Any, where: str) -> str:
     name = text[len(BRONZE_PREFIX) :] if text.startswith(BRONZE_PREFIX) else ""
     if not _name_ok(name):
         raise AllowlistError(f"{where}: {entry!r} is not a lower-case {BRONZE_PREFIX}<table> name")
+    if name.startswith("public_"):
+        # The bare grant key for this stem would be `public_<x>`, which is how
+        # the bronze table `<x>` itself is spelled. That could list a flagged table.
+        raise AllowlistError(f"{where}: {entry!r} repeats the public_ prefix")
     return name
 
 
@@ -124,7 +129,19 @@ def load_table_allowlist(
     try:
         import yaml
 
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        class _OneKeyEach(yaml.SafeLoader):
+            """A key written twice is refused: PyYAML would keep the last one."""
+
+        def _mapping(loader: Any, node: Any) -> dict[Any, Any]:
+            keys = [loader.construct_object(key, deep=True) for key, _ in node.value]
+            if len(keys) != len(set(keys)):
+                raise AllowlistError("allowlist repeats a key")
+            return dict(yaml.SafeLoader.construct_mapping(loader, node, deep=True))
+
+        _OneKeyEach.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping)
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_OneKeyEach)  # noqa: S506
+    except AllowlistError:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise AllowlistError(f"allowlist unreadable: {type(exc).__name__}: {exc}") from exc
     if not isinstance(data, dict):
@@ -181,8 +198,12 @@ def allowlist_meta(allowlist: TableAllowlist | None) -> dict[str, Any]:
     """What the report says about the allowlist. Names and counts only."""
     if allowlist is None:
         return {"applied": False, "note": "table allowlist not applied: not a BIRD measure"}
+    listed = sorted(allowlist.tables) + sorted(
+        ".".join(pair) for pair in allowlist.excluded_columns
+    )
     return {
         "applied": True,
+        "id": hashlib.sha256("\n".join(listed).encode()).hexdigest(),
         "measure": MEASURE,
         "comparable_with_73_75": False,
         "scan_sha256": allowlist.scan_sha256,
@@ -208,22 +229,47 @@ def _table_stem(table: Any) -> str:
     return name
 
 
-def _column_hits(sql: str, allowlist: TableAllowlist, dialect: str) -> tuple[str, ...]:
-    """Excluded columns the statement reads. Wide on purpose: a miss here would
-    score a question the scan excluded, an extra hit only abstains.
+def _plain(name: str) -> bool:
+    return bool(name) and name.isascii() and name.replace("_", "a").isalnum()
 
-    A column is read when the statement reads its table and names the column
-    anywhere (bare, through that table's alias, through a subquery alias, in
-    USING), or reads every column of the table: ``*``, ``alias.*``, a NATURAL
-    join, or the alias used as a whole-row value. Only a name qualified by
-    another real table's alias is left alone. ``COUNT(*)`` reads no column.
+
+def _parse(sql: str, dialect: str) -> Any:
+    from dms_executor.grant_struct import sqlglot_dialect
+    from sqlglot import parse_one
+
+    return parse_one(sql, read=sqlglot_dialect(dialect))
+
+
+def _unmodelled(tree: Any) -> str:
+    """Name of a function the parser has no type for, else empty.
+
+    Such a function is opaque: Postgres ``query_to_xml('select ...')`` and
+    ``table_to_xml('t', ...)`` read a table named inside a string, which no
+    relation check can see. A statement that calls one is not settled.
+    """
+    from sqlglot import exp
+
+    for node in tree.find_all(exp.Anonymous, exp.AnonymousAggFunc):
+        return str(node.name or "?")
+    return ""
+
+
+def _column_hits(tree: Any, allowlist: TableAllowlist) -> tuple[str, ...]:
+    """Excluded columns the statement reads, or cannot be shown not to read.
+
+    Wide on purpose: a miss would score a question the scan excluded, an extra
+    hit only abstains. For a statement that reads a table with an excluded
+    column, the column counts as read unless every name in the statement is a
+    plain identifier that is not that column (or is that name qualified by
+    another real table's alias), and the statement has no way to read a column
+    without naming it: ``*`` or ``alias.*`` (``COUNT(*)`` aside), ``COLUMNS()``,
+    a positional column, a NATURAL join, a column list on an alias
+    (``t(a, b)`` renames by position), or a relation alias used as a value.
     """
     if not allowlist.excluded_columns:
         return ()
-    from dms_executor.grant_struct import sqlglot_dialect
-    from sqlglot import exp, parse_one
+    from sqlglot import exp
 
-    tree = parse_one(sql, read=sqlglot_dialect(dialect))
     aliases: dict[str, set[str]] = {}
     read: set[str] = set()
     for table in tree.find_all(exp.Table):
@@ -231,17 +277,26 @@ def _column_hits(sql: str, allowlist: TableAllowlist, dialect: str) -> tuple[str
         read.add(stem)
         aliases.setdefault(_fold(table.alias_or_name), set()).add(stem)
         aliases.setdefault(_fold(table.name), set()).add(stem)
+    relation_names = set(aliases)
+    renamed = False
+    for alias in tree.find_all(exp.TableAlias):
+        relation_names.add(_fold(alias.name))
+        renamed = renamed or bool(alias.columns)
 
     def other_table(qualifier: Any, stem: str) -> bool:
         owners = aliases.get(_fold(qualifier))
         return bool(qualifier) and owners is not None and stem not in owners
 
-    natural = any(join.args.get("method") == "NATURAL" for join in tree.find_all(exp.Join))
+    unnamed = (
+        renamed
+        or any(join.args.get("method") == "NATURAL" for join in tree.find_all(exp.Join))
+        or any(True for _ in tree.find_all(exp.Columns, exp.PositionalColumn))
+    )
     hits: set[str] = set()
     for stem, column in sorted(allowlist.excluded_columns):
         if stem not in read:
             continue
-        hit = natural
+        hit = unnamed
         for star in tree.find_all(exp.Star):
             parent = star.parent
             if isinstance(parent, exp.Count):
@@ -255,8 +310,10 @@ def _column_hits(sql: str, allowlist: TableAllowlist, dialect: str) -> tuple[str
                 continue
             is_column = isinstance(parent, exp.Column) and parent.this is ident
             name = _fold(ident.name)
-            if is_column and not parent.table and stem in aliases.get(name, ()):
-                hit = True  # the alias as a whole-row value
+            if not _plain(name):
+                hit = True  # a spelling this cannot compare (escapes, symbols)
+            if is_column and not parent.table and name in relation_names:
+                hit = True  # a relation alias as a whole-row value
             if name != column:
                 continue
             if is_column and other_table(parent.table, stem):
@@ -287,17 +344,24 @@ def classify(sql: str, allowlist: TableAllowlist, *, dialect: str) -> Exclusion 
         gap = serve_gap(text, grantable=grantable, dialect=dialect, cite_missing=True)
     except Exception as exc:  # noqa: BLE001
         return Exclusion(EXCLUDED_TABLE + UNPARSED, f"checker_error:{type(exc).__name__}")
+    columns: tuple[str, ...] = ()
     try:
-        columns = _column_hits(text, allowlist, dialect)
+        tree = _parse(text, dialect)
+        opaque = _unmodelled(tree)
+        columns = _column_hits(tree, allowlist)
     except Exception as exc:  # noqa: BLE001
         if not gap:
-            return Exclusion(EXCLUDED_TABLE + UNPARSED, f"column_check_error:{type(exc).__name__}")
-        columns = ()
+            return Exclusion(EXCLUDED_TABLE + UNPARSED, f"shape_check_error:{type(exc).__name__}")
+        opaque = ""
     if gap:
         name = gap[len("ungranted:") :] if gap.startswith("ungranted:") else ""
-        if name and name not in _NO_TABLE:
+        # A name that is not a plain identifier, or that is a listed table read
+        # from another schema, is not printed as if it were that table.
+        if _plain(name) and name not in _NO_TABLE and name.casefold() not in allowlist.tables:
             return Exclusion(EXCLUDED_TABLE + name, gap, columns)
         return Exclusion(EXCLUDED_TABLE + UNPARSED, gap, columns)
+    if opaque:
+        return Exclusion(EXCLUDED_TABLE + UNPARSED, f"unmodelled_function:{opaque}", columns)
     if columns:
         return Exclusion(EXCLUDED_COLUMN + columns[0], "excluded_column", columns)
     return None
@@ -382,6 +446,8 @@ def flagged_grant_names(names: Iterable[Any], flagged: Iterable[str]) -> list[st
 
 def grant_preflight(status: str, names: Sequence[Any], allowlist: TableAllowlist) -> str | None:
     """None when the Space's tables were read and none is flagged."""
+    if not isinstance(names, (list, tuple)):
+        return "the Space's table names are not a list, so no flagged grant can be ruled out"
     if status != "ok":
         return "the Space's table names could not be read, so no flagged grant can be ruled out"
     hits = flagged_grant_names(names, allowlist.flagged)
@@ -402,6 +468,8 @@ def allowlist_self_check() -> list[str]:
         return [f"committed table_allowlist.yaml must load: {exc}"]
     if committed.tables & (committed.flagged | committed.held):
         errs.append("committed allowlist lists a flagged or held table")
+    if committed.held != {"trans", "yearmonth"} or committed.zero_hit_tables != 31:
+        errs.append("committed allowlist must hold trans and yearmonth and pin 31 zero-hit tables")
     plant = TableAllowlist(
         tables=frozenset({"gender", "superhero"}),
         held=frozenset({"trans"}),
@@ -430,6 +498,8 @@ def allowlist_self_check() -> list[str]:
         errs.append("an excluded column must be excluded_column:<table>.<column>")
     if label("SELECT id FROM superhero") is not None:
         errs.append("a listed table without the excluded column must be scored")
+    if label("SELECT query_to_xml('select 1 from client', true, true, '') FROM gender") is None:
+        errs.append("a function that can read a table named in a string must be excluded")
     both = classify(
         "SELECT s.full_name FROM superhero s JOIN client c ON 1 = 1", plant, dialect="postgres"
     )
