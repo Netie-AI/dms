@@ -126,6 +126,10 @@ MORE_SHAPES: dict[str, tuple[str, str, int, int, str]] = {
     "list_through_a_lateral_alias": (COUNT_Q, f"SELECT list({N}) AS l, len(l || l) AS total FROM {T}", 8, 4, COLLECTION),
     "union_all_summed": (Q, f"SELECT SUM(n) AS total FROM (SELECT {N} AS n FROM {T} UNION ALL SELECT {N} FROM {T})", 214, 107, SET_OP),
     "unnest_pair_summed": (Q, f"SELECT SUM(n) AS total FROM (SELECT UNNEST([{N}, {N}]) AS n FROM {T})", 214, 107, GENERATOR),
+    # A LATERAL subquery that reads no relation is followed, not trusted (verifier fix).
+    "window_through_a_lateral": (Q, f"SELECT SUM(s.v) AS total FROM {_W} q, LATERAL (SELECT q.w AS v) s", 428, 107, WINDOW),
+    "lateral_union_summed": (Q, f"SELECT SUM({N}) AS total FROM {T} i, LATERAL (SELECT 1 AS k UNION ALL SELECT 2) s", 214, 107, SET_OP),
+    "lateral_unnest_summed": (Q, f"SELECT SUM({N}) AS total FROM {T} i, LATERAL (SELECT UNNEST([1, 2]) AS k) s", 214, 107, GENERATOR),
 }
 
 LIST_Q = "List the enrollments"
@@ -726,3 +730,25 @@ def test_date_function_filter_is_not_the_guards_refusal() -> None:
         f"SELECT date_trunc('month', CAST(order_date AS DATE)) AS m, SUM({_AMT}) AS total FROM {ca.ORDERS} GROUP BY 1 ORDER BY 1",
     ):
         assert repeated_input_reason(sql) is None, sql
+
+
+def test_one_row_lateral_and_table_form_are_one_read_for_the_guard() -> None:
+    """test_grant_struct_02 serves these with exact rows; the guard must not refuse them.
+
+    A LATERAL subquery that reads no relation adds no row, and ``TABLE t`` is
+    ``SELECT * FROM t``. A LATERAL that reads a relation is a join and still refuses.
+    """
+    for sql in (
+        f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT 1 AS one) s",
+        f"SELECT COUNT(*) AS n FROM {T} i CROSS JOIN LATERAL (SELECT i.school_id) s",
+        f"SELECT SUM(s.v) AS total FROM {T} i, LATERAL (SELECT {N} AS v) s",
+        "WITH c AS (TABLE enrollments) SELECT COUNT(*) AS n FROM c",
+    ):
+        assert repeated_input_reason(sql) is None, sql
+    # The TABLE form is followed like any CTE body: a ROLLUP over it still refuses.
+    rollup = f"WITH c AS (TABLE enrollments) SELECT SUM(x) AS total FROM (SELECT SUM({N}) AS x FROM c GROUP BY ROLLUP(school_id))"
+    assert (repeated_input_reason(rollup) or "").startswith(f"repeated_input:{GROUPING}")
+    # sqlglot cannot parse ``TABLE schema.t``: it refuses, fail closed.
+    assert repeated_input_reason(f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS n FROM c") == "repeated_input:parse"
+    joined = f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT school_id FROM {od.SCHOOLS}) s"
+    assert (repeated_input_reason(joined) or "").startswith(f"repeated_input:{GENERATOR}")

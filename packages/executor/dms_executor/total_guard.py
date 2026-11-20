@@ -216,6 +216,17 @@ def _own(select: exp.Select) -> Iterator[exp.Expression]:
                 yield from item.walk()
 
 
+def _table_form(body: exp.Expression) -> bool:
+    """A CTE body written ``TABLE t``, as sqlglot parses it (a column TABLE AS t)."""
+    return (
+        isinstance(body, exp.Alias)
+        and isinstance(body.this, exp.Column)
+        and not body.this.table
+        and not body.this.this.quoted
+        and body.this.name.upper() == "TABLE"
+    )
+
+
 def _with_of(node: exp.Expression) -> exp.With | None:
     found = node.args.get("with") or node.args.get("with_")
     return found if isinstance(found, exp.With) else None
@@ -254,7 +265,11 @@ class _Guard:
             rel = _Rel(repeats="row_generator")
         elif isinstance(item, exp.Table):
             cte = self._cte(item)
-            if cte is not None:
+            if cte is not None and _table_form(cte.this):
+                # ``WITH c AS (TABLE t)``: one read of one base table. sqlglot
+                # parses the TABLE form as a column named TABLE aliased t.
+                rel = self._renamed(_Rel(), cte)
+            elif cte is not None:
                 rel = self._renamed(self.query(cte.this), cte)
             elif isinstance(item.this, exp.Identifier):
                 rel = _Rel()  # a base table
@@ -307,7 +322,32 @@ class _Guard:
         items += [j.this for j in select.args.get("joins") or []]
         items += list(select.args.get("laterals") or [])
         for item in items:
-            rel = self.source(item)
+            if (
+                isinstance(item, exp.Lateral)
+                and isinstance(item.this, exp.Subquery)
+                and not any(
+                    q.args.get("from") or q.args.get("from_") or q.args.get("joins")
+                    for q in item.this.find_all(exp.Select)
+                )
+            ):
+                # A LATERAL subquery that reads no relation: its own query decides
+                # whether it repeats rows (a UNION or UNNEST inside it does). It
+                # reads the sources before it, so each of its columns carries the
+                # worst kind those sources hold: a window value passed through it
+                # is still a window value. One that reads a relation is a join and
+                # stays refused as a row generator.
+                inner = self.query(item.this.this)
+                prior = _worst(*(_any(r) for r in rels))
+                rel = self._renamed(
+                    _Rel(
+                        inner.repeats,
+                        {k: _worst(v, prior) for k, v in inner.cols.items()},
+                        _worst(inner.carried, prior),
+                    ),
+                    item,
+                )
+            else:
+                rel = self.source(item)
             rels.append(rel)
             alias = str(item.alias_or_name or "").lower()
             if alias:
