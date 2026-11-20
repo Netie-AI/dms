@@ -439,31 +439,151 @@ _R = f"SELECT 'x' AS k, SUM({N}) AS s FROM {T} GROUP BY ROLLUP(school_id)"
 #: the ones that did on the first build, each now refused. name -> same shape as MORE_SHAPES.
 ADVERSARY_SHAPES: dict[str, tuple[str, str, int | float, int | float, str]] = {
     # Lens A: an aggregate written inside a PIVOT clause was never inspected.
-    "pivot_clause_over_rollup": (Q, f"SELECT * FROM ({_R}) PIVOT (SUM(s) FOR k IN ('x'))", 214, 107, GROUPING),
-    "pivot_clause_over_rollup_cte": (Q, f"WITH r AS ({_R}) SELECT * FROM r PIVOT (SUM(s) FOR k IN ('x'))", 214, 107, GROUPING),
+    "pivot_clause_over_rollup": (
+        Q,
+        f"SELECT * FROM ({_R}) PIVOT (SUM(s) FOR k IN ('x'))",
+        214,
+        107,
+        GROUPING,
+    ),
+    "pivot_clause_over_rollup_cte": (
+        Q,
+        f"WITH r AS ({_R}) SELECT * FROM r PIVOT (SUM(s) FOR k IN ('x'))",
+        214,
+        107,
+        GROUPING,
+    ),
     "pivot_statement_using_over_rollup": (Q, f"PIVOT ({_R}) ON k USING SUM(s)", 214, 107, GROUPING),
-    "pivot_clause_over_union": (Q, f"SELECT * FROM (SELECT 'x' AS k, {N} AS s FROM {T} UNION ALL SELECT 'x', {N} FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))", 214, 107, SET_OP),
-    "pivot_clause_over_window": (Q, f"SELECT * FROM (SELECT 'x' AS k, SUM({N}) OVER () AS s FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))", 428, 107, WINDOW),
-    "pivot_clause_counts_unpivoted_rows": (COUNT_Q, f"SELECT * FROM (SELECT 'x' AS k, v FROM (UNPIVOT (SELECT {N} a, {N} b FROM {T}) ON a, b INTO NAME n VALUE v)) PIVOT (COUNT(v) FOR k IN ('x'))", 8, 4, TURN),
+    "pivot_clause_over_union": (
+        Q,
+        f"SELECT * FROM (SELECT 'x' AS k, {N} AS s FROM {T} UNION ALL SELECT 'x', {N} FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))",
+        214,
+        107,
+        SET_OP,
+    ),
+    "pivot_clause_over_window": (
+        Q,
+        f"SELECT * FROM (SELECT 'x' AS k, SUM({N}) OVER () AS s FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))",
+        428,
+        107,
+        WINDOW,
+    ),
+    "pivot_clause_counts_unpivoted_rows": (
+        COUNT_Q,
+        f"SELECT * FROM (SELECT 'x' AS k, v FROM (UNPIVOT (SELECT {N} a, {N} b FROM {T}) ON a, b INTO NAME n VALUE v)) PIVOT (COUNT(v) FOR k IN ('x'))",
+        8,
+        4,
+        TURN,
+    ),
     # Lens B: collections sqlglot does not type, list forms of scalar aggregates, a
     # collection or a window value behind a scalar subquery, a renamed duplicate column.
-    "histogram_keys_concatenated": (Q, f"SELECT list_sum(map_keys(histogram({N})) || map_keys(histogram({N}))) AS total FROM {T}", 214, 107, COLLECTION),
-    "quantile_list_concatenated": (Q, f"SELECT list_sum(list_concat(quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]), quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]))) AS total FROM {T}", 214, 107, COLLECTION),
-    "collection_in_a_scalar_subquery": (Q, f"SELECT list_sum((SELECT list({N}) FROM {T}) || (SELECT list({N}) FROM {T})) AS total", 214, 107, COLLECTION),
-    "scalar_subquery_as_sum_argument": (Q, f"SELECT SUM((SELECT SUM({N}) FROM {T})) AS total FROM {T}", 428, 107, WINDOW),
-    "scalar_subquery_as_avg_argument": ("What is the average per enrollment?", f"SELECT AVG((SELECT SUM({N}) FROM {T})) AS total FROM {T}", 107.0, 26.75, WINDOW),
-    "duplicate_output_name_renamed": (Q, f"SELECT SUM(c_1) AS total FROM (SELECT {N} AS c, SUM({N}) OVER () AS c FROM {T})", 428, 107, WINDOW),
+    "histogram_keys_concatenated": (
+        Q,
+        f"SELECT list_sum(map_keys(histogram({N})) || map_keys(histogram({N}))) AS total FROM {T}",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "quantile_list_concatenated": (
+        Q,
+        f"SELECT list_sum(list_concat(quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]), quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]))) AS total FROM {T}",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "collection_in_a_scalar_subquery": (
+        Q,
+        f"SELECT list_sum((SELECT list({N}) FROM {T}) || (SELECT list({N}) FROM {T})) AS total",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "scalar_subquery_as_sum_argument": (
+        Q,
+        f"SELECT SUM((SELECT SUM({N}) FROM {T})) AS total FROM {T}",
+        428,
+        107,
+        WINDOW,
+    ),
+    "scalar_subquery_as_avg_argument": (
+        "What is the average per enrollment?",
+        f"SELECT AVG((SELECT SUM({N}) FROM {T})) AS total FROM {T}",
+        107.0,
+        26.75,
+        WINDOW,
+    ),
+    "duplicate_output_name_renamed": (
+        Q,
+        f"SELECT SUM(c_1) AS total FROM (SELECT {N} AS c, SUM({N}) OVER () AS c FROM {T})",
+        428,
+        107,
+        WINDOW,
+    ),
     # Lens C: row generators that are not UNNEST in a FROM, and a table read twice.
-    "generate_subscripts_in_a_projection": (Q, f"SELECT SUM(x) AS total FROM (SELECT {N} AS x, generate_subscripts([1, 2], 1) AS g FROM {T})", 214, 107, GENERATOR),
-    "method_unnest_in_a_projection": (Q, f"SELECT SUM(x) AS total FROM (SELECT [{N}, {N}].unnest() AS x FROM {T})", 214, 107, GENERATOR),
-    "schema_qualified_unnest_of_range": (Q, f"SELECT SUM({N}) AS total FROM (SELECT students, main.unnest(range(2)) AS k FROM {T})", 214, 107, GENERATOR),
-    "self_join_on_true": (Q, f"SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM {T} a JOIN {T} b ON true", 428, 107, SELF_JOIN),
-    "self_cross_join_counted": (COUNT_Q, f"SELECT COUNT(*) AS total FROM {T} a CROSS JOIN {T} b", 16, 4, SELF_JOIN),
-    "table_cross_joined_to_its_own_sum": (Q, f"WITH tot AS (SELECT SUM({N}) AS t FROM {T}) SELECT SUM(t) AS total FROM {T} CROSS JOIN tot", 428, 107, SELF_JOIN),
-    "two_derived_tables_over_one_table": (Q, f"SELECT SUM(x) AS total FROM (SELECT {N} AS x FROM {T}) t1, (SELECT school_id FROM {T}) t2", 428, 107, SELF_JOIN),
+    "generate_subscripts_in_a_projection": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} AS x, generate_subscripts([1, 2], 1) AS g FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
+    "method_unnest_in_a_projection": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT [{N}, {N}].unnest() AS x FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
+    "schema_qualified_unnest_of_range": (
+        Q,
+        f"SELECT SUM({N}) AS total FROM (SELECT students, main.unnest(range(2)) AS k FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
+    "self_join_on_true": (
+        Q,
+        f"SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM {T} a JOIN {T} b ON true",
+        428,
+        107,
+        SELF_JOIN,
+    ),
+    "self_cross_join_counted": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM {T} a CROSS JOIN {T} b",
+        16,
+        4,
+        SELF_JOIN,
+    ),
+    "table_cross_joined_to_its_own_sum": (
+        Q,
+        f"WITH tot AS (SELECT SUM({N}) AS t FROM {T}) SELECT SUM(t) AS total FROM {T} CROSS JOIN tot",
+        428,
+        107,
+        SELF_JOIN,
+    ),
+    "two_derived_tables_over_one_table": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} AS x FROM {T}) t1, (SELECT school_id FROM {T}) t2",
+        428,
+        107,
+        SELF_JOIN,
+    ),
     # A collection encoded as text and turned back into rows: string_agg collects.
-    "string_agg_concatenated_then_unnested": (Q, f"SELECT SUM(CAST(v AS INTEGER)) AS total FROM (SELECT UNNEST(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS v FROM {T})", 214, 107, COLLECTION),
-    "cte_read_twice_and_summed": (Q, f"WITH c AS (SELECT {N} AS x FROM {T}) SELECT SUM(a.x) AS total FROM c a, c b", 428, 107, SELF_JOIN),
+    "string_agg_concatenated_then_unnested": (
+        Q,
+        f"SELECT SUM(CAST(v AS INTEGER)) AS total FROM (SELECT UNNEST(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS v FROM {T})",
+        214,
+        107,
+        COLLECTION,
+    ),
+    "cte_read_twice_and_summed": (
+        Q,
+        f"WITH c AS (SELECT {N} AS x FROM {T}) SELECT SUM(a.x) AS total FROM c a, c b",
+        428,
+        107,
+        SELF_JOIN,
+    ),
 }
 MORE_SHAPES.update(ADVERSARY_SHAPES)
 
@@ -471,6 +591,7 @@ LIST_Q = "List the enrollments"
 #: Clause 4. Correct one-table statements: name -> (question, sql). Each
 #: answers exactly as on the parent commit (this test passes there too).
 CORRECT: dict[str, tuple[str, str]] = {
+    "plain_sum": (Q, TRUE_SQL),
     "plain_sum": (Q, TRUE_SQL),
     # Found by the full suite (test_grant_struct_02): sqlglot files a LATERAL
     # subquery under UDTF and reads ``TABLE t`` as an alias. Both are one read.
@@ -1200,3 +1321,17 @@ def test_rule_reads_positions_not_words() -> None:
         repeated_input_reason(f"SELECT SUM(t) FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ALL)")
         is None
     )
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT 1 AS one) s",
+        f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS n FROM c",
+    ],
+)
+def test_lateral_subquery_and_table_shorthand_are_one_read(sql: str) -> None:
+    """Found by the full suite (test_grant_struct_02, file Space): sqlglot files a
+    LATERAL subquery under UDTF and reads ``TABLE t`` as an alias. Neither
+    repeats a value, so the class rule must not refuse them."""
+    assert repeated_input_reason(sql) is None
