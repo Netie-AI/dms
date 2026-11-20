@@ -502,8 +502,13 @@ def join_check_unavailable(exc: Exception) -> str:
     return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
 
 
-def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:
+def load_verified_ontology(
+    warehouse: Path | None, onto: Ontology | None = None, *, space_id: str | None = None
+) -> Ontology | None:
     """Verify against the lake. Failed subjects stay marked; the rest can answer.
+
+    With ``DMS_ONTO_FROM_DATA`` and no caller ontology, the ontology is the
+    asking Space's (ONTO-SCOPE-01), never every approved item of the install.
 
     A caller-declared ontology that fails verify is returned with those
     subjects marked (A2-06). The default demo ontology (``onto is None``)
@@ -519,7 +524,9 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
         target = onto
         declared = True
     elif onto_from_data_enabled():
-        target = Ontology.from_store()
+        from dms_executor.onto_scope import ask_ontology
+
+        target = ask_ontology(space_id)
         declared = True
     else:
         target = demo_ontology(Path(warehouse))
@@ -2168,7 +2175,7 @@ def maybe_generative_ask(
     declared_violations: list[Violation] = []
     verify_cache_missing = False
     if onto is None:
-        onto = load_verified_ontology(lake)
+        onto = load_verified_ontology(lake, space_id=space_id)
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:

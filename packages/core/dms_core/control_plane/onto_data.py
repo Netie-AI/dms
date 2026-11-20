@@ -49,6 +49,17 @@ _PROFILE_ITEM_COLUMNS = (
     "i.id::text, i.tenant_id::text, i.version_id::text, i.kind, i.payload, i.status, "
     "i.source, i.provenance, i.created_by::text, i.approved_by, i.approval_ref, i.ts"
 )
+#: ONTO-SCOPE-01: approved items by the Space their version names. ``IS NOT
+#: DISTINCT FROM`` also matches a version that names no Space (NULL).
+_APPROVED_ITEMS_OF_SPACE = f"""
+    SELECT {_PROFILE_ITEM_COLUMNS}
+      FROM dms.ontology_items i
+      JOIN dms.ontology_versions v ON v.id = i.version_id
+     WHERE v.space_id IS NOT DISTINCT FROM %s::uuid
+       AND i.status = 'approved'
+       AND i.source <> '{PROFILE_SOURCE}'
+     ORDER BY i.ts, i.id
+"""
 _PROFILE_ITEMS_OF_SPACE = f"""
     SELECT {_PROFILE_ITEM_COLUMNS}
       FROM dms.ontology_items i
@@ -545,6 +556,26 @@ class OntologyDataStore:
         """Profile items of one Space, optionally one status. No other Space's."""
         rows = self._profile_rows(str(space_id or "").strip())
         return [_public_item(row) for row in rows if status is None or row.status == status]
+
+    def approved_items_of_space(self, space_id: str | None) -> list[dict[str, Any]]:
+        """Approved items whose version names ``space_id``. Never a profile item.
+
+        ``None`` reads the items whose version names no Space. An item whose
+        version is unknown belongs to no Space and to no named Space either.
+        """
+        want = None if space_id is None else str(space_id).strip()
+        if want == "":
+            return []
+        rows = []
+        for row in self._items.values():
+            if row.status != "approved" or row.source == PROFILE_SOURCE:
+                continue
+            version = self._versions.get(row.version_id)
+            named = None if version is None else version.space_id
+            if (named or None) == want:
+                rows.append(row)
+        rows.sort(key=lambda row: (row.ts, row.id))
+        return [_public_item(row) for row in rows]
 
     def _refuse_second_profile_key(self, rows: list[ItemRow]) -> None:
         """Raise before any change when ``rows`` would approve a second key."""
@@ -1066,6 +1097,29 @@ class PostgresOntologyDataStore:
             conn.close()
         rows = [_item_from_db(record) for record in fetched]
         return [_public_item(row) for row in rows if status is None or row.status == status]
+
+    def approved_items_of_space(self, space_id: str | None) -> list[dict[str, Any]]:
+        """Approved items whose version names ``space_id``. Never a profile item.
+
+        ``None`` reads the items whose version names no Space. An id that is
+        not a UUID names no stored Space, so it reads nothing (never the
+        no-Space items).
+        """
+        space = None if space_id is None else _uuid_text(space_id)
+        if space_id is not None and space is None:
+            return []
+        tenant = self._tenant(None)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            fetched = conn.execute(_APPROVED_ITEMS_OF_SPACE, (space,)).fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return [_public_item(_item_from_db(record)) for record in fetched]
 
     def _refuse_second_profile_key(
         self, conn: psycopg.Connection, where: str, params: tuple[Any, ...]
