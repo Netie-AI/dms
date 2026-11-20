@@ -592,13 +592,6 @@ LIST_Q = "List the enrollments"
 #: answers exactly as on the parent commit (this test passes there too).
 CORRECT: dict[str, tuple[str, str]] = {
     "plain_sum": (Q, TRUE_SQL),
-    # Found by the full suite (test_grant_struct_02): sqlglot files a LATERAL
-    # subquery under UDTF and reads ``TABLE t`` as an alias. Both are one read.
-    "lateral_subquery_of_one_row": (
-        COUNT_Q,
-        f"SELECT COUNT(*) AS total FROM {T} i, LATERAL (SELECT 1 AS one) s",
-    ),
-    "table_shorthand_in_a_cte": (COUNT_Q, f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS total FROM c"),
     "plain_count": (COUNT_Q, f"SELECT COUNT(*) AS total FROM {T}"),
     "plain_avg": (Q, f"SELECT AVG({N}) AS total FROM {T}"),
     "plain_min": (Q, f"SELECT MIN({N}) AS total FROM {T}"),
@@ -1326,13 +1319,17 @@ def test_rule_reads_positions_not_words() -> None:
     "sql",
     [
         f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT 1 AS one) s",
-        f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS n FROM c",
+        "WITH c AS (TABLE enrollments) SELECT COUNT(*) AS n FROM c",
     ],
 )
 def test_lateral_subquery_and_table_shorthand_are_one_read(sql: str) -> None:
     """Found by the full suite (test_grant_struct_02, file Space): sqlglot files a
     LATERAL subquery under UDTF and reads ``TABLE t`` as an alias. Neither
-    repeats a value, so the class rule must not refuse them."""
+    repeats a value, so the class rule must not refuse them. Asserted on the
+    guard: in the ontology Space the join rule refused both before the guard
+    existed (``row_generator``; ``TABLE schema.t`` does not parse in sqlglot),
+    and test_grant_struct_02 asserts the served rows in the Space where they
+    answer."""
     assert repeated_input_reason(sql) is None
 
 
