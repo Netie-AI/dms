@@ -1483,7 +1483,7 @@ class Executor:
         if sql_used and not getattr(resp, "abstained", False):
             # TOTAL-GUARD-01: the contract ask's SQL meets the same class rule
             # as generated SQL, last, so only a would-be serve is refused.
-            repeat_why = repeated_input_reason(sql_used, self.dialect)
+            repeat_why = repeated_input_reason(sql_used, self.dialect or SERVING_DIALECT)
             if repeat_why:
                 env = path_miss_envelope(
                     question, repeat_why, space_id=space_id, session_id=session_id
@@ -1766,7 +1766,7 @@ class Executor:
                     return abstain(join_why)
         # TOTAL-GUARD-01: a Yes is not a proof either. Held SQL meets the same
         # class rule as generated SQL before it runs.
-        repeat_why = repeated_input_reason(sql, self.dialect)
+        repeat_why = repeated_input_reason(sql, self.dialect or SERVING_DIALECT)
         if repeat_why:
             return abstain(repeat_why)
         warehouse = self._warehouse
