@@ -173,11 +173,15 @@ def reset_grain_transport(token: Token[Transport | None]) -> None:
     _TRANSPORT.reset(token)
 
 
-def approved_grain_names() -> tuple[str, ...]:
-    """Names from approved items only. Proposed and revoked are absent."""
-    from dms_executor.ontology import Ontology
+def approved_grain_names(space_id: str | None = None) -> tuple[str, ...]:
+    """Names from approved items only. Proposed and revoked are absent.
 
-    onto = Ontology.from_store()
+    ONTO-SCOPE-01: the items of ``space_id``. The callers inside
+    ``ontology.py`` pass no Space and so read as a demo Space does.
+    """
+    from dms_executor.onto_scope import space_item_ontology
+
+    onto = space_item_ontology(space_id)
     names: list[str] = []
     for name in (*onto.grain_aliases, *onto.missing_grains, *onto.objects):
         text = str(name or "").strip()
@@ -209,7 +213,7 @@ def map_question_to_grains(
         heard = thin_understand_question(question, examples)
     heard = dict(heard)
     question_text = str(heard.get("question") or "")
-    candidates = approved_grain_names()
+    candidates = approved_grain_names(space_id)
     transport = _TRANSPORT.get() or default_transport
     try:
         first = _one_reading(

@@ -55,7 +55,10 @@ def validate_generated_sql(
     """None when the flag is off. The caller executes only on ``pass``."""
     if not def_validate_enabled():
         return None
-    onto = Ontology.from_store()
+    from dms_executor.onto_scope import space_item_ontology
+
+    # ONTO-SCOPE-01: the asking Space's items, plus every pii item.
+    onto = space_item_ontology(space_id)
     meta = _meta(onto)
     provenance = _provenance(meta)
     parsed = _parse(sql)

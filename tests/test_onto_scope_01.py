@@ -20,16 +20,15 @@ from typing import Any
 
 import duckdb
 import pytest
-from dms_core.control_plane.onto_store import OntologyStore
+import test_onto_derive_01 as od
 from dms_core.control_plane.onto_data import (
     ontology_data_store,
     reset_ontology_data_store,
     store_proposal,
 )
+from dms_core.control_plane.onto_store import OntologyStore
 from dms_executor.manifest import ManifestMinter
 from dms_executor.space_ontology import load_space_ontology, set_ontology_store
-
-import test_onto_derive_01 as od
 from test_onto_derive_01 import make_minter
 from test_onto_profile_01 import Rig, _csv, make_rig
 
@@ -382,4 +381,433 @@ def test_a_sql_source_space_still_answers_its_declared_join_under_the_flag(
     assert {c["ontology"]["source"] for c in space.cortex.insights} == {"space"}
     # The declared link that is broken in the data still abstains, naming it.
     env = space.ask(od.BROKEN_Q, gen(od.BROKEN_SQL))
-    od._assert_abstain(env, f"ontology_unverified: fk_orphans on {od.BROKEN_LINK}")
+    od._assert_abstain(env, f"ontology_unverified: fk_intact on {od.BROKEN_LINK}")
+
+
+# --- clause 5: a measure or a grain of Space A is not offered in Space B ----------
+
+ORDERS_PER_STATUS = {"open": 2, "paid": 4}
+MEASURE_Q = "How many orders per status?"
+
+
+def measure_proposal(orders: str, *, measure: bool = True, grain: bool = True) -> dict[str, Any]:
+    """The orders key, with a declared measure and a grain alias on it."""
+    body: dict[str, Any] = {
+        "status": "proposed",
+        "terms": [{"name": orders, "table": orders, "key": ["order_id"]}],
+    }
+    if measure:
+        body["measures"] = [{"name": "order_count", "grain": orders, "expression": "COUNT(*)"}]
+    if grain:
+        body["grains"] = [{"name": "order", "object": orders}]
+    return body
+
+
+def plan(group_object: str) -> dict[str, Any]:
+    return {
+        "query_plan": {"measure": "order_count", "group_by": [[group_object, "status"]]},
+        "plan_source": "ontology_plan",
+    }
+
+
+def assert_measure_served(env: dict[str, Any], orders: str) -> None:
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert env["abstained"] is False
+    assert all(set(r) == {f"{orders}_status", "order_count"} for r in env["rows"]), env["rows"]
+    got = {r[f"{orders}_status"]: r["order_count"] for r in env["rows"]}
+    assert got == ORDERS_PER_STATUS, env["rows"]
+    assert "Found 2 row(s)." in str(env.get("text") or ""), env.get("text")
+
+
+def customer_view(env: dict[str, Any]) -> dict[str, Any]:
+    return {f: env.get(f) for f in ("badge", "abstained", "text", "rows", "values", "assumptions")}
+
+
+def test_a_measure_approved_for_space_a_is_not_offered_in_space_b(rig: Rig) -> None:
+    a, ta, b, tb = two_spaces(rig)
+    orders_b = tb["b_orders.csv"]
+    bare = rig.ask(b, MEASURE_Q, plan(orders_b))
+    assert_abstains(bare, "no_declared_measure", rig, 0)
+
+    approve_for(a, measure_proposal(orders_b))  # filed under A, about B's table
+    env = rig.ask(b, MEASURE_Q, plan(orders_b))
+    assert_abstains(env, "no_declared_measure", rig, 0)
+    assert "no_declared_measure: order_count" in reasons(env)
+    assert customer_view(env) == customer_view(bare)
+    # The same measure answers the Space it was approved for.
+    approve_for(a, measure_proposal(ta["a_orders.csv"]))
+    assert_measure_served(rig.ask(a, MEASURE_Q, plan(ta["a_orders.csv"])), ta["a_orders.csv"])
+
+
+def test_a_grain_approved_for_space_a_is_not_offered_in_space_b(rig: Rig) -> None:
+    a, _ta, b, tb = two_spaces(rig)
+    orders_b = tb["b_orders.csv"]
+    approve_for(b, measure_proposal(orders_b, grain=False))  # B's own key and measure
+    assert_measure_served(rig.ask(b, MEASURE_Q, plan(orders_b)), orders_b)
+    bare = rig.ask(b, MEASURE_Q, plan("order"))  # B has no grain named "order"
+    assert bare["badge"] == "ABSTAIN" and bare["rows"] == [] and bare["values"] == []
+
+    approve_for(a, measure_proposal(orders_b, measure=False))  # A's grain alias onto B's table
+    env = rig.ask(b, MEASURE_Q, plan("order"))
+    assert customer_view(env) == customer_view(bare)
+    # Control: the alias approved for B itself does resolve.
+    approve_for(b, measure_proposal(orders_b, measure=False))
+    assert_measure_served(rig.ask(b, MEASURE_Q, plan("order")), orders_b)
+
+
+# --- clause 6: a pii protection is install-wide ------------------------------------
+
+PII_Q = "List the customer of every order"
+
+
+def declared_orders(orders: str) -> dict[str, Any]:
+    """The orders key with ``customer_id`` and ``status`` declared as attributes."""
+    return {
+        "status": "proposed",
+        "terms": [
+            {
+                "name": orders,
+                "table": orders,
+                "key": ["order_id"],
+                "attributes": [{"source_column": "customer_id"}, {"source_column": "status"}],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize("named", ["another_space", "no_space", "this_space"])
+def test_a_pii_item_protects_its_table_whatever_space_its_version_names(
+    named: str, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+    a, _ta, b, tb = two_spaces(rig)
+    orders_b = tb["b_orders.csv"]
+    sql = f"SELECT customer_id FROM {orders_b} ORDER BY order_id"
+    approve_for(b, declared_orders(orders_b))
+    # Without the protection the column is served: the test is not vacuous.
+    assert_serves(rig.ask(b, PII_Q, gen(sql)), [{"customer_id": r[1]} for r in ORDER_ROWS])
+
+    pii = {
+        "status": "proposed",
+        "pii": [{"name": "customer_ref", "relation": orders_b, "column": "customer_id"}],
+    }
+    approve_for({"another_space": a, "no_space": None, "this_space": b}[named], pii)
+    env = rig.ask(b, PII_Q, gen(sql))
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert "pii" in str(env.get("text") or "") + reasons(env), (env.get("text"), reasons(env))
+    assert "C1" not in str(env.get("text") or "")
+    assert len(rig.cortex.executed) == 1  # only the control above ran
+    # A column the pii item does not name still answers.
+    ok = rig.ask(b, "List order status", gen(f"SELECT status FROM {orders_b} ORDER BY order_id"))
+    assert_serves(ok, [{"status": r[2]} for r in ORDER_ROWS])
+
+
+# --- clause 7: every reader on the ask path builds the ontology for the asking Space
+
+
+def test_def_validate_reads_the_asking_space_items_only(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reader ``def_validate.validate_generated_sql``. Fails on the parent by serving."""
+    monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+    a, _ta, b, tb = two_spaces(rig)
+    orders_b = tb["b_orders.csv"]
+    sql = f"SELECT COUNT(*) AS n FROM {orders_b}"
+    bare = rig.ask(b, "How many orders?", gen(sql))
+    assert bare["badge"] == "ABSTAIN" and bare["rows"] == [] and bare["values"] == []
+    assert "not_in_ontology" in str(bare.get("text") or "")
+
+    approve_for(a, declared_orders(orders_b))  # filed under A, about B's table
+    env = rig.ask(b, "How many orders?", gen(sql))
+    assert customer_view(env) == customer_view(bare)
+    assert rig.cortex.executed == []
+    # Control: the same item approved for B lets the count through.
+    approve_for(b, declared_orders(orders_b))
+    assert_serves(rig.ask(b, "How many orders?", gen(sql)), [{"n": 6}])
+
+
+def test_grain_ai_offers_the_asking_space_grains_only(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reader ``grain_ai.approved_grain_names`` through ``map_question_to_grains``."""
+    import json
+
+    import dms_executor.grain_ai as grain_ai
+
+    monkeypatch.setenv("DMS_GRAIN_AI", "1")
+    a, ta, b, tb = two_spaces(rig)
+    approve_for(a, measure_proposal(tb["b_orders.csv"]))  # grain "order", filed under A
+    sent: list[list[str]] = []
+
+    def _transport(body: dict[str, Any]) -> dict[str, Any]:
+        user = json.loads(body["messages"][1]["content"])
+        sent.append(list(user["candidates"]))
+        return {"grains": ["order"], "evidence": [], "confidence": 0.99, "reading": "orders"}
+
+    monkeypatch.setattr(grain_ai, "default_transport", _transport)
+    env = rig.ask(b, MEASURE_Q, plan(tb["b_orders.csv"]))
+    assert sent, "the grain reading was not reached from POST /v1/chat/ask"
+    assert all("order" not in names and tb["b_orders.csv"] not in names for names in sent), sent
+    assert env["badge"] == "ABSTAIN" and env["rows"] == [] and env["values"] == []
+    # Control: Space A is offered the grain its own version holds.
+    sent.clear()
+    rig.ask(a, MEASURE_Q, plan(ta["a_orders.csv"]))
+    assert sent and all("order" in names for names in sent), sent
+
+
+def test_load_verified_ontology_builds_for_the_asking_space(rig: Rig) -> None:
+    """Reader ``generative_ask.load_verified_ontology`` (the flag branch).
+
+    ``POST /v1/chat/ask`` cannot reach this branch under the flag: the executor
+    always hands ``maybe_generative_ask`` an ontology, so ``onto is None`` is
+    false there. It is asserted on the function itself.
+    """
+    import dms_executor.generative_ask as gen_mod
+
+    a, _ta, b, tb = two_spaces(rig)
+    approve_for(a, link_proposal(tb["b_shipments.csv"], tb["b_orders.csv"]))
+    for_b = gen_mod.load_verified_ontology(rig.lake, space_id=b)
+    assert for_b is not None and for_b.objects == {} and for_b.links == {}
+    for_a = gen_mod.load_verified_ontology(rig.lake, space_id=a)
+    assert for_a is not None and set(for_a.objects) == set(tb.values())
+
+
+def _contract_join(rig: Rig, monkeypatch: pytest.MonkeyPatch, sql: str) -> None:
+    from cortex_client.models import AskResponse
+
+    def _ask(req: Any) -> AskResponse:
+        rig.cortex.asks.append(req)
+        return AskResponse(
+            answer="There are 6 paid shipments and 2 open ones.",
+            abstained=False,
+            badge="generated",
+            route="generated",
+            sql_used=sql,
+            rows=list(JOIN_TRUTH),
+        )
+
+    monkeypatch.setattr(rig.cortex, "ask", _ask)
+
+
+@pytest.mark.parametrize("named", ["another_space", "this_space", "no_space"])
+def test_contract_ask_join_stays_fail_closed_under_the_flag(
+    named: str, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fifth reader (F-TBD-38). Unchanged by this ticket, and recorded.
+
+    Under the flag the contract-ask guard holds no ontology (dms#520, pinned by
+    ``test_connect_ask_03``), so a join in ``sql_used`` abstains whatever items
+    exist. No item of any Space can make this door serve a join.
+    """
+    a, _ta, b, tb = two_spaces(rig)
+    sql = join_sql(tb["b_shipments.csv"], tb["b_orders.csv"])
+    approve_for(
+        {"another_space": a, "this_space": b, "no_space": None}[named],
+        link_proposal(tb["b_shipments.csv"], tb["b_orders.csv"]),
+    )
+    _contract_join(rig, monkeypatch, sql)
+    env = rig.ask(b, JOIN_Q, {})
+    assert rig.cortex.asks, "the contract ask was not reached"
+    text = assert_abstains(env, "unverified_join", rig, 0)
+    assert "unverified_join:no_ontology" in reasons(env) + text
+    assert "paid" not in text
+
+
+# --- clause 8: AWAITS THE FOUNDER -------------------------------------------------
+
+
+def test_founder_question_what_does_an_approved_item_naming_no_space_govern(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """dms#523 clause 8, not answered. Today: every Space, as on the parent commit.
+
+    Option 1: demo Spaces only. Option 2: nothing until assigned. Option 3:
+    every Space granted the tables (today). The answer lives in one function,
+    ``onto_scope.unassigned_items_govern``. Whoever answers it changes that
+    function and this test, nothing else.
+    """
+    import dms_executor.onto_scope as onto_scope
+
+    _a, _ta, b, tb = two_spaces(rig)
+    sql = join_sql(tb["b_shipments.csv"], tb["b_orders.csv"])
+    approve_for(None, link_proposal(tb["b_shipments.csv"], tb["b_orders.csv"]))
+    assert onto_scope.unassigned_items_govern(b) is True
+    assert_serves(rig.ask(b, JOIN_Q, gen(sql)), JOIN_TRUTH)
+    # The one function decides: answer it "no" and the same ask abstains.
+    monkeypatch.setattr(onto_scope, "unassigned_items_govern", lambda _space: False)
+    assert_abstains(rig.ask(b, JOIN_Q, gen(sql)), "unverified_join", rig, 1)
+
+
+# --- clause 9: a demo Space is unchanged -------------------------------------------
+
+DEMO_Q = "How many suppliers per country?"
+DEMO_PLAN = {
+    "query_plan": {"measure": "supplier_total", "group_by": [["supplier", "country"]]},
+    "plan_source": "ontology_plan",
+}
+DEMO_BODY = {
+    "status": "proposed",
+    "terms": [{"name": "supplier", "table": "suppliers", "key": ["supplier_id"]}],
+    "measures": [{"name": "supplier_total", "grain": "supplier", "expression": "COUNT(*)"}],
+}
+DEMO_TRUTH = {"MY": 2, "SG": 1, "TH": 1}
+
+
+def ask_demo(rig: Rig) -> dict[str, Any]:
+    from dms_executor.envelope import assert_envelope_valid
+
+    rig.cortex.payload = dict(DEMO_PLAN)
+    r = rig.client.post("/v1/chat/ask", json={"question": DEMO_Q, "session_id": "ses_demo"})
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    return env
+
+
+@pytest.mark.parametrize("named", ["no_space", "a_customer_space"])
+def test_a_demo_space_reads_approved_items_as_on_the_parent(named: str, rig: Rig) -> None:
+    """Clause 9. Measured on the parent: a demo ask reads every approved item."""
+    counted = oracle(rig.lake, "SELECT country, COUNT(*) AS n FROM suppliers GROUP BY country")
+    assert {r["country"]: r["n"] for r in counted} == DEMO_TRUTH
+    bare = ask_demo(rig)
+    assert bare["badge"] == "ABSTAIN" and bare["rows"] == []
+    approve_for(None if named == "no_space" else rig.new_space("Customer"), DEMO_BODY)
+    env = ask_demo(rig)
+    assert env["badge"] == "L2_VALIDATED" and env["abstained"] is False
+    assert {r["supplier_country"]: r["supplier_total"] for r in env["rows"]} == DEMO_TRUTH
+    assert "Found 3 row(s)." in str(env.get("text") or "")
+
+
+# --- clause 10: flag unset ----------------------------------------------------------
+
+
+def flag_unset(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset the flag. The generate leg returns the payload whatever catalog it is sent
+    (the recording fake parses a Space catalog, and a flag-off file Space sends none)."""
+    monkeypatch.delenv("DMS_ONTO_FROM_DATA", raising=False)
+    monkeypatch.setattr(
+        rig.cortex, "compute_insights", lambda *_a, **_k: dict(rig.cortex.payload), raising=True
+    )
+
+
+@pytest.mark.parametrize("named", ["another_space", "this_space", "no_space"])
+def test_flag_unset_no_item_is_read_and_the_join_abstains_no_ontology(
+    named: str, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flag_unset(rig, monkeypatch)
+    a, _ta, b, tb = two_spaces(rig)
+    sql = join_sql(tb["b_shipments.csv"], tb["b_orders.csv"])
+    bare = rig.ask(b, JOIN_Q, gen(sql))
+    assert_abstains(bare, "unverified_join", rig, 0)
+    assert "unverified_join:no_ontology" in reasons(bare)
+    approve_for(
+        {"another_space": a, "this_space": b, "no_space": None}[named],
+        link_proposal(tb["b_shipments.csv"], tb["b_orders.csv"]),
+    )
+    env = rig.ask(b, JOIN_Q, gen(sql))
+    assert customer_view(env) == customer_view(bare)
+
+
+def test_flag_unset_def_validate_reads_as_on_the_parent(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Clause 10, recorded and not liked: with ``DMS_ONTO_FROM_DATA`` unset,
+    ``DMS_DEF_VALIDATE=1`` still reads every approved item, as on the parent.
+
+    Scoping it there is a behaviour change with the flag unset, which clause 10
+    forbids. It is listed as open in the PR.
+    """
+    flag_unset(rig, monkeypatch)
+    monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+    a, _ta, b, tb = two_spaces(rig)
+    approve_for(a, declared_orders(tb["b_orders.csv"]))
+    env = rig.ask(b, "How many orders?", gen(f"SELECT COUNT(*) AS n FROM {tb['b_orders.csv']}"))
+    assert_serves(env, [{"n": 6}])
+
+
+# --- clause 11: a profile item is still not read here ------------------------------
+
+
+def test_an_approved_profile_item_is_not_read_by_the_scoped_ontology(rig: Rig) -> None:
+    """dms#515 owns that read. The Space's own approved profile link changes nothing."""
+    a, ta, _b, _tb = two_spaces(rig)
+    sql = join_sql(ta["a_shipments.csv"], ta["a_orders.csv"])
+    bare = rig.ask(a, JOIN_Q, gen(sql))
+    assert_abstains(bare, "unverified_join", rig, 0)
+    body = rig.profile(a)
+    approved = [
+        i["id"]
+        for i in body["items"]
+        if rig.client.post(f"/v1/ontology/data/items/{i['id']}/approve").status_code == 200
+    ]
+    assert approved and any(i["kind"] == "link" for i in body["items"])
+    store = ontology_data_store()
+    assert store.space_profile_items(a, "approved")
+    assert store.approved_items_of_space(a) == []
+    assert customer_view(rig.ask(a, JOIN_Q, gen(sql))) == customer_view(bare)
+
+
+# --- clause 12: an item store that cannot be read ------------------------------------
+
+
+def _boom(*_a: Any, **_k: Any) -> Any:
+    raise RuntimeError("item store down: host db-7 password hunter2")
+
+
+@pytest.mark.parametrize("read", ["approved_items_of_space", "approved_items"])
+def test_an_unreadable_item_store_abstains_naming_it(
+    read: str, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a, ta, _b, _tb = two_spaces(rig)
+    approve_for(a, link_proposal(ta["a_shipments.csv"], ta["a_orders.csv"]))
+    sql = join_sql(ta["a_shipments.csv"], ta["a_orders.csv"])
+    assert_serves(rig.ask(a, JOIN_Q, gen(sql)), JOIN_TRUTH)
+    monkeypatch.setattr(ontology_data_store(), read, _boom)
+    for space_id, question, payload in ((a, JOIN_Q, gen(sql)), (None, DEMO_Q, dict(DEMO_PLAN))):
+        if space_id is None and read != "approved_items":
+            continue
+        if space_id is None:
+            env = ask_demo(rig)
+        else:
+            env = rig.ask(space_id, question, payload)
+        text = assert_abstains(env, "ontology_store_unavailable", rig, 1)
+        assert "hunter2" not in text and "db-7" not in text
+        assert "hunter2" not in reasons(env)
+
+
+def test_an_unreadable_derived_store_abstains_under_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, store: OntologyStore
+) -> None:
+    space = sql_space(tmp_path, monkeypatch, minter)
+    monkeypatch.setattr(store, "load_ontology", _boom, raising=False)
+    monkeypatch.setattr("dms_executor.onto_scope.load_space_ontology", _boom)
+    env = space.ask(od.VERIFIED_Q, gen(od.VERIFIED_SQL))
+    od._assert_abstain(env, "ontology_store_unavailable")
+    assert space.cortex.executed == []
+
+
+# --- the store read (memory). Postgres: tests/control_plane/test_onto_scope_01_pg.py -
+
+
+def test_store_reads_approved_items_by_the_space_their_version_names() -> None:
+    store = ontology_data_store()
+    body = link_proposal("bronze.s", "bronze.o")
+    for_a = {i["id"] for i in approve_for("space-a", body)}
+    for_b = {i["id"] for i in approve_for("space-b", body)}
+    for_none = {i["id"] for i in approve_for(None, body)}
+    proposed = store_proposal(body, created_by="steward", space_id="space-a")["items"]
+    revoked = approve_for("space-a", body)
+    for item in revoked:
+        store.revoke(item["id"], actor="steward")
+
+    def ids(space_id: str | None) -> set[str]:
+        return {str(i["id"]) for i in store.approved_items_of_space(space_id)}
+
+    assert ids("space-a") == for_a
+    assert ids("space-b") == for_b
+    assert ids(None) == for_none
+    assert ids("space-c") == set() and ids("") == set() and ids("  ") == set()
+    assert not ids("space-a") & {i["id"] for i in proposed}
+    assert {i["status"] for i in store.approved_items_of_space("space-a")} == {"approved"}
+    assert len(for_a) == 3 and not (for_a & for_b) and not (for_a & for_none)

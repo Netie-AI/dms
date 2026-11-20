@@ -1250,9 +1250,28 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
-        from dms_executor.ontology import Ontology, onto_from_data_enabled
+        from dms_executor.ontology import onto_from_data_enabled
 
-        data_onto = Ontology.from_store() if onto_from_data_enabled() else None
+        data_onto = None
+        if onto_from_data_enabled():
+            # ONTO-SCOPE-01: the ontology of the asking Space. Its derived
+            # ontology wins alone; otherwise the items approved for it. Never
+            # every approved item of the install.
+            from dms_executor.onto_scope import ask_ontology
+
+            try:
+                data_onto = ask_ontology(space_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ontology items unreadable for %s: %s", space_id, exc)
+                env = path_miss_envelope(
+                    question,
+                    f"{REASON_STORE_UNAVAILABLE}: the ontology store could not "
+                    "be read, so no join can be checked",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         space_onto = None
         if data_onto is None and allow_gen and not is_demo_space(space_id):
             # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
