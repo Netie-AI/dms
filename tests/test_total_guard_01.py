@@ -674,3 +674,55 @@ def test_rule_reads_positions_not_words() -> None:
         assert repeated_input_reason(sql) is None, sql
     # And no word is needed to refuse: GROUP BY ALL is one set, a comma of sets is not.
     assert repeated_input_reason(f"SELECT SUM(t) FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ALL)") is None
+
+
+# --- a legitimate one-table total with a date filter still answers ------------------
+
+_AMT = "CAST(amount AS INTEGER)"
+_FEB_ON = sum(a for (_o, _c, a), d in zip(ca.ORDER_ROWS, ca.ORDER_DATES, strict=True) if d >= "2026-02-01")
+_JANUARY = sum(a for (_o, _c, a), d in zip(ca.ORDER_ROWS, ca.ORDER_DATES, strict=True) if d[5:7] == "01")
+#: name -> (question, sql, the truth from the CSV constants). Typed date
+#: expressions only: an untyped one (``date_part``, ``dayname``) is refused today
+#: by #529's function rule, which is being narrowed; the guard itself passes it
+#: (``test_date_function_filter_is_not_the_guards_refusal``).
+DATE_FILTERED: dict[str, tuple[str, str, int]] = {
+    "date_literal_comparison": (
+        "What is the total order amount for orders dated 2026-02-01 or later?",
+        f"SELECT SUM({_AMT}) AS total FROM {ca.ORDERS} WHERE CAST(order_date AS DATE) >= DATE '2026-02-01'",
+        _FEB_ON,
+    ),
+    "extract_month": (
+        "What is the total order amount for the first month of 2026?",
+        f"SELECT SUM({_AMT}) AS total FROM {ca.ORDERS} WHERE EXTRACT(YEAR FROM CAST(order_date AS DATE)) = 2026 AND EXTRACT(MONTH FROM CAST(order_date AS DATE)) = 1",
+        _JANUARY,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(DATE_FILTERED))
+def test_one_table_sum_with_a_date_filter_still_answers(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    question, sql, truth = DATE_FILTERED[name]
+    assert truth not in (0, ca.ONE_TABLE_TRUTH)
+    assert repeated_input_reason(sql) is None
+    rig = ca._file_space(tmp_path, monkeypatch, minter)
+    env = rig.ask(question, ca._gen(sql))
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert env["abstained"] is False
+    assert env["rows"] == [{"total": truth}]
+    assert f"total={truth}" in str(env.get("text") or ""), env.get("text")
+    assert rig.cortex.executed == [sql]
+
+
+def test_date_function_filter_is_not_the_guards_refusal() -> None:
+    """``date_part`` in a filter or a listing is one value per row: the guard passes it."""
+    for sql in (
+        f"SELECT SUM({_AMT}) AS total FROM {ca.ORDERS} WHERE date_part('month', CAST(order_date AS DATE)) = 1",
+        f"SELECT order_id, dayname(CAST(order_date AS DATE)) AS weekday FROM {ca.ORDERS} ORDER BY order_id",
+        f"SELECT date_trunc('month', CAST(order_date AS DATE)) AS m, SUM({_AMT}) AS total FROM {ca.ORDERS} GROUP BY 1 ORDER BY 1",
+    ):
+        assert repeated_input_reason(sql) is None, sql
