@@ -1327,7 +1327,7 @@ def test_lateral_subquery_and_table_shorthand_are_one_read(sql: str) -> None:
     LATERAL subquery under UDTF and reads ``TABLE t`` as an alias. Neither
     repeats a value, so the class rule must not refuse them. Asserted on the
     guard: in the ontology Space the join rule refused both before the guard
-    existed (``row_generator``; ``TABLE schema.t`` does not parse in sqlglot),
+    existed (``derived_table_over_join``; ``TABLE schema.t`` does not parse),
     and test_grant_struct_02 asserts the served rows in the Space where they
     answer."""
     assert repeated_input_reason(sql) is None
