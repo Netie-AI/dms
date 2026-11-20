@@ -26,7 +26,7 @@ from cortex_client.models import AskRequest, AskResponse
 from cortex_contract.execution import QueryResult
 from dms_core.pii import mask_payload
 from dms_executor.demo_pack import SHIPMENT_COST_Q, SHIPMENT_COST_SQL, SPEND_BY_COUNTRY_SQL
-from dms_executor.envelope import assert_envelope_valid
+from dms_executor.envelope import assert_envelope_valid, figure_fidelity_violations
 from dms_executor.manifest import ManifestMinter
 from test_demo_pack_followup import (  # noqa: F401  (warehouse and minter are fixtures)
     FINANCE,
@@ -317,7 +317,7 @@ def test_cortex_found_count_that_is_not_the_row_count_is_withheld(
 # --- a figure the masker still takes is withheld, never shown as a mask --------
 
 
-@pytest.mark.parametrize("value", [5552345678, 60123456789.0, 900101145678])
+@pytest.mark.parametrize("value", [5552345678, 60123456789.0])
 def test_an_integer_figure_with_a_person_shape_is_withheld_not_corrupted(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, value: float
 ) -> None:
@@ -327,6 +327,19 @@ def test_an_integer_figure_with_a_person_shape_is_withheld_not_corrupted(
     assert str(int(value)) not in env["text"]
     assert env["abstained"] is True, env["text"]
     assert any("E14" in a for a in env["assumptions"]), env["assumptions"]
+
+
+def test_an_integer_the_rows_mask_too_is_served_with_one_token(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An IC-shaped integer is masked in the row and in the text alike. Not a corruption."""
+    rows = [{"location_code": "WH-A", "ref_total": 900101145678}]
+    env = _ask_l1(warehouse, minter, monkeypatch, rows)
+    assert_envelope_valid(env)
+    assert "900101145678" not in json.dumps(env)
+    assert env["abstained"] is False, env["text"]
+    token = env["rows"][0]["ref_total"]
+    assert token.startswith("DMSMASK_nric_") and f"ref_total={token}" in env["text"]
 
 
 def test_cortex_prose_integer_taken_by_the_masker_is_withheld(
@@ -422,15 +435,16 @@ def good(
     return env
 
 
-SHOWN = "total_cost_myr=1610511.05\n"
+SHOWN = "total_cost_myr=1610511.05,"
 MUTATIONS = {
-    "mask_in_fraction": (SHOWN, "total_cost_myr=1610511.DMSMASK_phone_01\n"),
-    "mask_before_fraction": (SHOWN, "total_cost_myr=DMSMASK_phone_01.05\n"),
-    "whole_figure_masked": (SHOWN, "total_cost_myr=DMSMASK_phone_01\n"),
-    "digits_swapped": (SHOWN, "total_cost_myr=1601511.05\n"),
-    "figure_truncated": (SHOWN, "total_cost_myr=161051\n"),
-    "bare_integer_changed": ("pallets=40,", "pallets=41,"),
-    "bare_integer_masked": ("pallets=40,", "pallets=DMSMASK_account_01,"),
+    "mask_in_fraction": (SHOWN, "total_cost_myr=1610511.DMSMASK_phone_01,"),
+    "mask_before_fraction": (SHOWN, "total_cost_myr=DMSMASK_phone_01.05,"),
+    "whole_figure_masked": (SHOWN, "total_cost_myr=DMSMASK_phone_01,"),
+    "digits_swapped": (SHOWN, "total_cost_myr=1601511.05,"),
+    "figure_truncated": (SHOWN, "total_cost_myr=161051,"),
+    "bare_integer_changed": ("pallets=40\n", "pallets=41\n"),
+    "bare_integer_of_another_row": ("pallets=40\n", "pallets=45\n"),
+    "bare_integer_masked": ("pallets=40\n", "pallets=DMSMASK_account_01\n"),
     "found_count_wrong": ("Found 20 row(s).", "Found 19 row(s)."),
     "cut_not_stated": (" Showing 12 of 20.", ""),
     "cut_states_wrong_total": ("Showing 12 of 20.", "Showing 12 of 12."),
@@ -442,13 +456,17 @@ def test_a5_e14_fails_when_a_rendered_figure_is_corrupted(good: dict[str, Any], 
     old, new = MUTATIONS[name]
     assert old in good["text"], (name, good["text"])
     bad = {**good, "text": good["text"].replace(old, new, 1)}
-    with pytest.raises(AssertionError, match="E14"):
+    assert figure_fidelity_violations(bad["text"], bad["rows"]), name
+    assert not figure_fidelity_violations(good["text"], good["rows"])
+    # E4 reads a decimal first and reports it. E14 alone reads integers, masks and counts.
+    code = "E4|E14" if name == "digits_swapped" else "E14"
+    with pytest.raises(AssertionError, match=code):
         assert_envelope_valid(bad)
 
 
 def test_a5_e14_passes_the_unmutated_envelope(good: dict[str, Any]) -> None:
     assert_envelope_valid(good)
-    assert "pallets=40, " in good["text"] or "pallets=40\n" in good["text"]
+    assert "total_cost_myr=1610511.05, pallets=40\n" in good["text"]
 
 
 def test_a5_e14_does_not_read_an_abstain(good: dict[str, Any]) -> None:

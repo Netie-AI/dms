@@ -31,9 +31,12 @@ dms#304's deny file. Upgrade: Cortex #268 NER at the FreeRoute choke.
 
 from __future__ import annotations
 
+import math
 import re
-from collections.abc import Mapping, Sequence
+from bisect import bisect_left
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 Kind = str
@@ -613,6 +616,107 @@ def column_is_pii(
         return True
 
 
+# FIG-FIDELITY-01 (dms#508). A number the answer states is not a person value.
+# A numeric literal in text: optional sign, digits or 3-digit comma groups, an
+# optional fraction. Not part of a word, a dotted run (1.2.3, Tel.0355550101)
+# or a longer number.
+NUMBER_LITERAL = re.compile(
+    r"(?<![A-Za-z0-9_.])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![A-Za-z0-9_]|\.\d)"
+)
+# An integer this short is a rank, a year or a phone group, not a figure to track.
+_STATED_INT_DIGITS = 5
+
+
+def _number_leaves(obj: Any) -> Iterator[Decimal]:
+    if isinstance(obj, Mapping):
+        for val in obj.values():
+            yield from _number_leaves(val)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            yield from _number_leaves(item)
+    elif isinstance(obj, bool):
+        return
+    elif isinstance(obj, int):
+        yield Decimal(obj)
+    elif isinstance(obj, float):
+        if math.isfinite(obj):
+            yield Decimal(repr(obj))
+    elif isinstance(obj, Decimal) and obj.is_finite():
+        yield obj
+
+
+def visible_figures(*parts: Any) -> list[Decimal]:
+    """Every number left readable in already-masked rows and values, sorted."""
+    return sorted(_number_leaves(parts))
+
+
+def _literal_value(literal: str) -> tuple[Decimal, int] | None:
+    raw = literal.replace(",", "").lstrip("+")
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        return None
+    return value, len(raw.partition(".")[2])
+
+
+def renders_figure(literal: str, figures: Sequence[Decimal]) -> bool:
+    """True when ``literal`` is one of ``figures`` rounded to the literal's own decimals.
+
+    ``1610511.05`` renders 1610511.0500000012. ``5.0123456789`` does not render
+    5.01. ``figures`` is sorted (``visible_figures``).
+    """
+    got = _literal_value(literal)
+    if got is None or not figures:
+        return False
+    value, places = got
+    tol = Decimal(5).scaleb(-(places + 1))
+    at = bisect_left(figures, value - tol)
+    return at < len(figures) and figures[at] <= value + tol
+
+
+def stated_figures(text: str, figures: Sequence[Decimal]) -> list[str]:
+    """Literals in ``text`` that render a visible figure and that a reader takes as one.
+
+    A non-integral number, or an integer of five digits or more. The envelope
+    compares this list before and after the mask: a literal that is gone was
+    rewritten by the masker, and that answer is withheld.
+    """
+    out: list[str] = []
+    for hit in NUMBER_LITERAL.finditer(text or ""):
+        literal = hit.group(0)
+        got = _literal_value(literal)
+        if got is None:
+            continue
+        value, _places = got
+        integral = value == value.to_integral_value()
+        if integral and sum(ch.isdigit() for ch in literal) < _STATED_INT_DIGITS:
+            continue
+        if renders_figure(literal, figures):
+            out.append(literal)
+    return out
+
+
+def _in_stated_figure(match: re.Match[str], figures: Sequence[Decimal]) -> bool:
+    """The match lies wholly inside a non-integral literal that renders a visible figure.
+
+    Such a number is already readable in the rows or values of the same payload,
+    and a phone, IC, account or card number is never non-integral. A match that
+    reaches outside the literal, or sits in an integer, is still masked.
+    """
+    if not figures:
+        return False
+    for hit in NUMBER_LITERAL.finditer(match.string):
+        if hit.end() < match.end():
+            continue
+        if hit.start() > match.start():
+            return False
+        got = _literal_value(hit.group(0))
+        if got is None or got[0] == got[0].to_integral_value():
+            return False
+        return renders_figure(hit.group(0), figures)
+    return False
+
+
 class Masker:
     """Stable tokens within one payload. Already-masked tokens pass through."""
 
@@ -881,7 +985,12 @@ def _apply_map(text: str, pairs: list[tuple[str, str]]) -> str:
     return out
 
 
-def _scan_text(text: str, masker: Masker) -> str:
+def _scan_text(text: str, masker: Masker, figures: Sequence[Decimal] = ()) -> str:
+    """Mask person values in free text.
+
+    ``figures`` are the numbers the same payload leaves readable. Digits inside
+    a non-integral literal that renders one of them are that figure, and stay.
+    """
     out = text
 
     def _sub_email(match: re.Match[str]) -> str:
@@ -890,6 +999,8 @@ def _scan_text(text: str, masker: Masker) -> str:
     out = _EMAIL_FIND.sub(_sub_email, out)
 
     def _sub_nric(match: re.Match[str]) -> str:
+        if _in_stated_figure(match, figures):
+            return match.group(0)
         if not _valid_yymmdd(match.group(1)):
             return match.group(0)
         return masker.token("nric", match.group(0))
@@ -897,6 +1008,8 @@ def _scan_text(text: str, masker: Masker) -> str:
     out = _NRIC_FIND.sub(_sub_nric, out)
 
     def _sub_phone(match: re.Match[str]) -> str:
+        if _in_stated_figure(match, figures):
+            return match.group(0)
         if not _phone_ok(match):
             return match.group(0)
         return masker.token("phone", match.group(0))
@@ -904,11 +1017,15 @@ def _scan_text(text: str, masker: Masker) -> str:
     out = _PHONE_FIND.sub(_sub_phone, out)
 
     def _sub_acct(match: re.Match[str]) -> str:
+        if _in_stated_figure(match, figures):
+            return match.group(0)
         return masker.token("account", match.group(0))
 
     out = _ACCOUNT_FIND.sub(_sub_acct, out)
 
     def _sub_run(match: re.Match[str]) -> str:
+        if _in_stated_figure(match, figures):
+            return match.group(0)
         digits = match.group(1)
         if len(digits) == 12 and _valid_yymmdd(digits[:6]):
             return masker.token("nric", match.group(0))
@@ -1017,11 +1134,16 @@ def mask_payload(
                 new_row[key] = val
         masked_rows.append(new_row)
 
-    def _mask_str(raw: str) -> str:
+    def _mask_str(raw: str, figures: Sequence[Decimal] = ()) -> str:
         mapped = _apply_map(raw, pairs)
-        return _scan_text(mapped, masker)
+        return _scan_text(mapped, masker, figures)
 
-    masked_text = _mask_str(text or "")
+    # FIG-FIDELITY-01: numbers this payload leaves readable. The dry walk of
+    # values uses its own Masker so token numbering is unchanged.
+    figures = visible_figures(
+        masked_rows, _mask_walk(list(values or []), Masker(), kinds, column_sources)
+    )
+    masked_text = _mask_str(text or "", figures)
     # Name evidence is model text only. Answer prose and SQL keep the scan
     # above and do not take this walk. ``None`` means the caller is not
     # building text for the model.

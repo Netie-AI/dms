@@ -10,11 +10,17 @@ include / exclude / unsure on every envelope; missing or COMPLETE is illegal.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
+from dms_core.pii import (
+    fail_closed_mask_payload,
+    mask_unknown_keys,
+    stated_figures,
+    visible_figures,
+)
 
 from dms_executor import executed_trace
 from dms_executor.bronze import stamp_contributing_source_watermarks
@@ -876,6 +882,100 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) < 0.011 or abs(a - b) / max(abs(b), 1e-9) < 1e-4
 
 
+# E14 (FIG-FIDELITY-01, dms#508) - the figure the reader sees is the figure the
+# query returned. Three clauses, read from the envelope alone:
+#   a. no mask token sits inside a numeric literal (1610511.DMSMASK_phone_01);
+#   b. a listed k=v value of a numeric column is a cell of that column, bare
+#      integers included, which E4 never read;
+#   c. a stated row count is the row count, and a cut listing says "of N".
+_MASK_IN_FIGURE = re.compile(r"\d\.?DMSMASK_[a-z]+_\d{2,}|DMSMASK_[a-z]+_\d{2,}\.\d")
+_LISTED_NUMBER = re.compile(
+    r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?"
+)
+_FOUND_ROWS = re.compile(r"\bFound (\d+) row\(s\)")
+_LISTED_LINE = re.compile(r"^\s*- \S", re.M)
+
+
+def _is_number(cell: Any) -> bool:
+    return isinstance(cell, (int, float, Decimal)) and not isinstance(cell, bool)
+
+
+def _listed_records(text: str, columns: list[str]) -> list[list[tuple[str, str]]]:
+    """``column=value`` pairs in the text, grouped into one record per listed row.
+
+    Row columns only. A record ends at the line end, or where a column repeats.
+    """
+    if not columns:
+        return []
+    names = "|".join(re.escape(c) for c in sorted(columns, key=len, reverse=True))
+    key = re.compile(rf"(?<![A-Za-z0-9_.])({names})=")
+    out: list[list[tuple[str, str]]] = []
+    for line in text.splitlines():
+        record: list[tuple[str, str]] = []
+        hits = list(key.finditer(line))
+        for i, hit in enumerate(hits):
+            end = hits[i + 1].start() if i + 1 < len(hits) else len(line)
+            shown = line[hit.end() : end].strip().rstrip(",;").strip()
+            if any(col == hit.group(1) for col, _ in record):
+                out.append(record)
+                record = []
+            record.append((hit.group(1), shown))
+        if record:
+            out.append(record)
+    return out
+
+
+def _shows_cell(shown: str, cell: Any) -> bool:
+    """The text ``shown`` is this cell: a number within ``_close``, else the same string."""
+    if not _is_number(cell):
+        return str(cell) == shown
+    literal = shown if _LISTED_NUMBER.fullmatch(shown) else shown.rstrip(".")
+    if not _LISTED_NUMBER.fullmatch(literal):
+        return False
+    return _close(float(literal.replace(",", "")), float(cell))
+
+
+def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> list[str]:
+    """E14 clauses a served answer breaks. Codes only: no value is repeated."""
+    text = text or ""
+    row_list = [r for r in (rows or []) if isinstance(r, dict)]
+    out: list[str] = []
+    if _MASK_IN_FIGURE.search(text):
+        out.append("a: a mask token sits inside a number")
+    numeric: set[str] = set()
+    for row in row_list:
+        numeric.update(str(col) for col, cell in row.items() if _is_number(cell))
+    columns = sorted({str(col) for row in row_list for col in row})
+    for record in _listed_records(text, columns) if numeric else []:
+        figures = [(col, shown) for col, shown in record if col in numeric]
+        if not figures:
+            continue
+        # A text column narrows the rows only when it names one: a masked or
+        # reworded label must not fail a listing whose figures are right.
+        labels = [
+            (col, shown)
+            for col, shown in record
+            if col not in numeric and any(str(r.get(col)) == shown for r in row_list)
+        ]
+        if not any(
+            all(col in row and _shows_cell(shown, row[col]) for col, shown in figures)
+            and all(str(row.get(col)) == shown for col, shown in labels)
+            for row in row_list
+        ):
+            out.append("b: a listed row shows a figure its row does not hold")
+            break
+    found = _FOUND_ROWS.search(text)
+    if found:
+        listed = len(_LISTED_LINE.findall(text))
+        if int(found.group(1)) != len(row_list):
+            out.append("c: the stated row count is not the row count")
+        elif 0 < listed < len(row_list) and not re.search(
+            rf"\bof {len(row_list)}\b", text
+        ):
+            out.append("c: the listing is cut and does not say so")
+    return out
+
+
 def _value_nums(values: list[dict[str, Any]] | None) -> list[float]:
     out: list[float] = []
     for v in values or []:
@@ -1660,12 +1760,39 @@ def build_answer_envelope(
         sql_used=sql_used,
         column_sources=column_sources,
     )
+    unmasked_text = text or ""
     text = masked["text"]
     rows_out = masked["rows"]
     values_out = masked["values"]
     sources = masked["sources"]
     chart = masked["chart"]
     sql_used = masked["sql_used"]
+
+    # E14 (FIG-FIDELITY-01, dms#508) - a served figure is the figure the query
+    # returned. The masker keeps a non-integral figure the rows show. Anything
+    # else it rewrote (an integer with a phone or account shape, a figure a
+    # longer match ran into) is withheld here, never shown as a mask. Before
+    # E4, so the reason names what happened.
+    if not abstained:
+        readable = visible_figures(rows_out, values_out)
+        rewritten = Counter(stated_figures(unmasked_text, readable)) - Counter(
+            stated_figures(text or "", readable)
+        )
+        broken = figure_fidelity_violations(text or "", rows_out)
+        if rewritten:
+            broken.insert(0, "the mask rewrote a figure the result holds")
+        if broken:
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = (
+                "This answer shows a figure that does not match the query "
+                "result. Rather than show a number I cannot stand behind, I'm "
+                "stopping here. Ask again, or ask for the columns you need by "
+                "name."
+            )
+            assumptions_list.append(
+                f"rendered figure differs from query result: withheld (E14 {broken[0]})"
+            )
 
     # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
     # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.
@@ -1913,7 +2040,7 @@ def reserved_as_of_abstain(
 
 
 def assert_envelope_valid(envelope: dict[str, Any]) -> None:
-    """E1–E9 property assertions. Raises AssertionError on violation."""
+    """E1-E14 property assertions. Raises AssertionError on violation."""
     badge = envelope.get("badge")
     abstained = bool(envelope.get("abstained"))
     values = envelope.get("values") or []
@@ -1954,6 +2081,14 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             f"E4: orphan number {orphans[0]} in text not in "
             f"values[]={_value_nums(values if isinstance(values, list) else [])}"
         )
+
+    # E14 (FIG-FIDELITY-01) - a served figure is the figure the query returned.
+    if not abstained:
+        env_rows_e14 = envelope.get("rows")
+        broken = figure_fidelity_violations(
+            text, env_rows_e14 if isinstance(env_rows_e14, list) else []
+        )
+        assert not broken, f"E14: {broken[0]}"
 
     # E6
     if envelope.get("demo_fallback_used") is True:
@@ -2054,6 +2189,7 @@ __all__ = [
     "build_audit_receipt",
     "chart_from_rows",
     "competing_category_scopes",
+    "figure_fidelity_violations",
     "invented_totals",
     "normalize_badge",
     "normalize_contributing_sources",

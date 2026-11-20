@@ -23,6 +23,7 @@ from dms_executor.abstain import build_abstain
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.demo_warehouse import connect_serving
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.row_listing import found_rows_text
 from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
 
@@ -277,9 +278,7 @@ def _grouped_top_n(
     out_rows = [{"category": str(r[0]).strip(), measure: float(r[1])} for r in rows]
     if not out_rows:
         return None
-    text = f"Found {len(out_rows)} row(s).\n" + "\n".join(
-        f"  - category={r['category']}, {measure}={r[measure]}" for r in out_rows
-    )
+    text = found_rows_text(out_rows, cap=None)
     return build_answer_envelope(
         answer_id=f"ans_bronze_{ident}",
         text=text,
@@ -379,9 +378,7 @@ def _eq_filter_total(
             grounded_tables=[table],
             question=question,
         )
-    text = f"Found {len(out_rows)} row(s).\n" + "\n".join(
-        f"  - {col}={r[col]}, {measure}={r[measure]}" for r in out_rows
-    )
+    text = found_rows_text(out_rows, cap=None)
     return build_answer_envelope(
         answer_id=f"ans_bronze_{ident}",
         text=text,
