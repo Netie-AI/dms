@@ -7,6 +7,7 @@ import { AuditPage } from "@/pages/AuditPage";
 import { ChatPage } from "@/pages/ChatPage";
 import { LibraryPage } from "@/pages/LibraryPage";
 import { OntologyPage } from "@/pages/OntologyPage";
+import { OntologyReviewPage } from "@/pages/OntologyReviewPage";
 import { RunsPage } from "@/pages/RunsPage";
 import { SpacesPage } from "@/pages/SpacesPage";
 import { StudioPage } from "@/pages/StudioPage";
@@ -20,6 +21,7 @@ export default function App() {
           <Route element={<AppShell />}>
             <Route index element={<ChatPage />} />
             <Route path="spaces" element={<SpacesPage />} />
+            <Route path="spaces/:spaceId/ontology-review" element={<OntologyReviewPage />} />
             <Route path="library" element={<LibraryPage />} />
             <Route path="studio" element={<StudioPage />} />
             <Route path="ontology" element={<OntologyPage />} />

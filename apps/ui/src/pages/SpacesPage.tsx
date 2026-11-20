@@ -236,6 +236,7 @@ export function SpacesPage() {
                             ? "Copy failed"
                             : "Share Space"}
                       </button>
+                      <button type="button" data-testid="space-ontology-review-link" onClick={() => navigate(`/spaces/${space.id}/ontology-review`)} className="border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]">Review keys and links</button>
                       {space.id === MOCK_WAREHOUSE_OPS_ID && (
                         <button
                           type="button"
