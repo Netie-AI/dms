@@ -616,7 +616,8 @@ def column_is_pii(
         return True
 
 
-# FIG-FIDELITY-01 (dms#508). A number the answer states is not a person value.
+# FIG-FIDELITY-01 (dms#508). A mask that rewrites a number the answer states is
+# counted, never undone: the answer is withheld (E14), masking never narrows.
 # A numeric literal in text: optional sign, digits or 3-digit comma groups, an
 # optional fraction. Not part of a word, a dotted run (1.2.3, Tel.0355550101)
 # or a longer number.
@@ -675,24 +676,19 @@ def renders_figure(literal: str, figures: Sequence[Decimal]) -> bool:
     return at < len(figures) and figures[at] <= value + tol
 
 
-def _figure_verdict(
+def _rewrites_figure(
     match: re.Match[str], figures: Sequence[Decimal], rx: re.Pattern[str]
-) -> str | None:
-    """What a digit match is to the figures the payload leaves readable.
+) -> bool:
+    """True when masking this digit match rewrites a figure the payload leaves readable.
 
-    ``keep``: the match lies wholly inside a non-integral literal that renders
-    a readable figure. Such a number is already shown in the rows or values,
-    and a phone, IC, account or card number is never non-integral. Not masked.
-
-    ``hit``: masking the match rewrites a readable figure. The match is an
-    integer figure, or it cuts a figure in two, or it ends in a figure it did
-    not need (``0123456789 7``: the phone matches without the 7). It is still
-    masked, and the caller withholds the answer.
-
-    ``None``: the match touches no figure.
+    The match lies inside a literal that renders a readable figure, or it cuts
+    a figure in two, or it ends in a figure it did not need (``0123456789 7``:
+    the phone matches without the 7). The match is still masked: masking never
+    narrows (dms#318). The caller withholds the answer (E14), so a corrupted
+    figure is never served.
     """
     if not figures:
-        return None
+        return False
     inside: list[re.Match[str]] = []
     for hit in NUMBER_LITERAL.finditer(match.string):
         if hit.end() <= match.start():
@@ -702,18 +698,16 @@ def _figure_verdict(
         if not renders_figure(hit.group(0), figures):
             continue
         if hit.start() <= match.start() and match.end() <= hit.end():
-            got = _literal_value(hit.group(0))
-            whole = got is None or got[0] == got[0].to_integral_value()
-            return "hit" if whole else "keep"
+            return True
         if not (match.start() <= hit.start() and hit.end() <= match.end()):
-            return "hit"
+            return True
         inside.append(hit)
     for hit in inside:
         if hit.end() != match.end() or not match.string[hit.start() - 1].isspace():
             continue
         if rx.fullmatch(match.string[match.start() : hit.start()].rstrip()):
-            return "hit"
-    return None
+            return True
+    return False
 
 
 class Masker:
@@ -989,8 +983,8 @@ def _apply_map(text: str, pairs: list[tuple[str, str]]) -> str:
 def _scan_text(text: str, masker: Masker, figures: Sequence[Decimal] = ()) -> str:
     """Mask person values in free text.
 
-    ``figures`` are the numbers the same payload leaves readable. Digits inside
-    a non-integral literal that renders one of them are that figure, and stay.
+    ``figures`` are the numbers the same payload leaves readable. A mask that
+    rewrites one of them is counted in ``masker.figure_hits``; it is still made.
     """
     out = text
 
@@ -999,31 +993,28 @@ def _scan_text(text: str, masker: Masker, figures: Sequence[Decimal] = ()) -> st
 
     out = _EMAIL_FIND.sub(_sub_email, out)
 
-    def _is_figure(match: re.Match[str], rx: re.Pattern[str]) -> bool:
-        """True leaves the match as it is. A rewrite of a figure is counted."""
-        verdict = _figure_verdict(match, figures, rx)
-        if verdict == "hit":
+    def _token(kind: str, match: re.Match[str], rx: re.Pattern[str]) -> str:
+        """Mask the match. A mask that rewrites a readable figure is counted."""
+        if _rewrites_figure(match, figures, rx):
             masker.figure_hits += 1
-        return verdict == "keep"
+        return masker.token(kind, match.group(0))
 
     def _sub_nric(match: re.Match[str]) -> str:
-        if not _valid_yymmdd(match.group(1)) or _is_figure(match, _NRIC_FIND):
+        if not _valid_yymmdd(match.group(1)):
             return match.group(0)
-        return masker.token("nric", match.group(0))
+        return _token("nric", match, _NRIC_FIND)
 
     out = _NRIC_FIND.sub(_sub_nric, out)
 
     def _sub_phone(match: re.Match[str]) -> str:
-        if not _phone_ok(match) or _is_figure(match, _PHONE_FIND):
+        if not _phone_ok(match):
             return match.group(0)
-        return masker.token("phone", match.group(0))
+        return _token("phone", match, _PHONE_FIND)
 
     out = _PHONE_FIND.sub(_sub_phone, out)
 
     def _sub_acct(match: re.Match[str]) -> str:
-        if _is_figure(match, _ACCOUNT_FIND):
-            return match.group(0)
-        return masker.token("account", match.group(0))
+        return _token("account", match, _ACCOUNT_FIND)
 
     out = _ACCOUNT_FIND.sub(_sub_acct, out)
 
@@ -1034,9 +1025,9 @@ def _scan_text(text: str, masker: Masker, figures: Sequence[Decimal] = ()) -> st
             kind = "nric"
         elif _luhn_ok(digits):
             kind = "account"
-        if kind is None or _is_figure(match, _DIGIT_RUN):
+        if kind is None:
             return match.group(0)
-        return masker.token(kind, match.group(0))
+        return _token(kind, match, _DIGIT_RUN)
 
     out = _DIGIT_RUN.sub(_sub_run, out)
 

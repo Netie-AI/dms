@@ -1784,10 +1784,10 @@ def build_answer_envelope(
     sql_used = masked["sql_used"]
 
     # E14 (FIG-FIDELITY-01, dms#508) - a served figure is the figure the query
-    # returned. The masker keeps a non-integral figure the rows show. Anything
-    # else it rewrote (an integer with a phone or account shape, a figure a
-    # longer match ran into) is withheld here, never shown as a mask. Before
-    # E4, so the reason names what happened.
+    # returned. A figure the masker rewrote (digits of a float that look like a
+    # phone, an integer with a phone or account shape, a figure a longer match
+    # ran into) is withheld here, never shown as a mask. The mask itself is
+    # never undone (dms#318). Before E4, so the reason names what happened.
     if not abstained:
         broken = figure_fidelity_violations(text or "", rows_out)
         if masked.get("figure_hits"):

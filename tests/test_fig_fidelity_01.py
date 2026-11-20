@@ -6,9 +6,10 @@ Rules 10 and 10a: every clause is asserted on the envelope from
 cheap HTTP driver here, so those two are asserted on the envelope their
 function returns, which the route sends unchanged.
 
-The class under test: a masker must never rewrite a number the answer states,
-and E14 fails for a rendered figure that is not in the returned rows. PII must
-still be masked (A4).
+The class under test: a figure the answer states is never served rewritten.
+A mask that rewrites one withholds the answer; the mask itself is never undone
+(dms#318, masking only widens). E14 fails for a rendered figure that is not in
+the returned rows. PII must still be masked (A4).
 """
 
 # ruff: noqa: F811  (warehouse and minter are fixtures imported from the pack tests)
@@ -224,31 +225,47 @@ def test_a3_every_listed_number_round_trips_to_its_cell(
         assert _close(float(shown["total_cost_myr"]), row["total_cost_myr"]), (shown, row)
 
 
+# Served: the listing prints the figure without float noise, so no person
+# pattern sees it. Withheld: the figure's own digits still read as a phone or
+# card, the mask takes them, and the answer abstains instead of showing a mask.
+# Widening the scanner to keep these is PR-a in dms#508 and needs the founder.
+OUT_SERVED, OUT_WITHHELD = "served", "withheld"
+
+
 @pytest.mark.parametrize(
-    "value",
+    ("value", "outcome"),
     [
-        1610511.0500000012,  # MY landline in the fraction
-        1578918.4499999997,  # NANP in the fraction
-        234567.8901,  # NANP across the decimal point
-        12.3456789012,  # MY mobile shape in the fraction
-        -1610511.0500000012,
-        0.30000000000000004,
-        3.141592653589793,
-        900101.145678,  # IC shape across the point
-        4111.111111111111,  # card-like run in the fraction
-        1e-07,
-        1.5e16,
+        (1610511.0500000012, OUT_SERVED),  # MY landline in the fraction
+        (1578918.4499999997, OUT_SERVED),  # NANP in the fraction
+        (234567.8901, OUT_WITHHELD),  # NANP across the decimal point
+        (12.3456789012, OUT_WITHHELD),  # MY mobile shape in the fraction
+        (-1610511.0500000012, OUT_SERVED),
+        (0.30000000000000004, OUT_SERVED),
+        (3.141592653589793, OUT_SERVED),
+        (900101.145678, OUT_SERVED),  # IC shape across the point
+        (4111.111111111111, OUT_WITHHELD),  # card-like run in the fraction
+        (1e-07, OUT_SERVED),
+        (1.5e16, OUT_SERVED),
     ],
 )
-def test_a3_a_non_integral_figure_is_never_rewritten(
-    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, value: float
+def test_a3_a_non_integral_figure_is_shown_exactly_or_withheld(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    value: float,
+    outcome: str,
 ) -> None:
     rows = [{"location_code": "WH-A", "total_cost_myr": value}]
     env = _ask_l1(warehouse, minter, monkeypatch, rows)
     assert_envelope_valid(env)
+    assert "DMSMASK_" not in env["text"], env["text"]
+    if outcome == OUT_WITHHELD:
+        assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+        assert env["rows"] == [] and env["values"] == []
+        assert any("mask rewrote a figure" in a for a in env["assumptions"]), env["assumptions"]
+        return
     assert env["abstained"] is False, env["text"]
     assert env["rows"] == rows
-    assert "DMSMASK_" not in env["text"], env["text"]
     (shown,) = _listed_pairs(env["text"])
     assert _close(float(shown["total_cost_myr"]), value), env["text"]
 
@@ -256,9 +273,11 @@ def test_a3_a_non_integral_figure_is_never_rewritten(
 # --- the prose door: Cortex writes the text ------------------------------------
 
 
-def test_cortex_prose_keeps_the_figure_its_rows_hold(
+def test_cortex_prose_with_a_raw_float_is_withheld_not_corrupted(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Cortex prints the raw float. Its fraction reads as a MY landline, the mask
+    takes it, and the answer abstains. Serving it unmasked is PR-a (founder yes)."""
     rows = [{"country": "MY", "total_spend_myr": 1610511.0500000012}]
     env = _ask_prose(
         warehouse,
@@ -268,10 +287,11 @@ def test_cortex_prose_keeps_the_figure_its_rows_hold(
         rows,
     )
     assert_envelope_valid(env)
-    assert env["abstained"] is False, env["text"]
-    assert env["rows"] == rows
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert env["rows"] == [] and env["values"] == []
     assert "DMSMASK_" not in env["text"], env["text"]
-    assert "1610511.0500000012" in env["text"] and "1,610,511.05" in env["text"]
+    assert "1610511" not in env["text"] and "1,610,511" not in env["text"], env["text"]
+    assert any("mask rewrote a figure" in a for a in env["assumptions"]), env["assumptions"]
 
 
 def test_cortex_listing_with_a_wrong_integer_is_withheld(
@@ -412,13 +432,16 @@ def test_a4_the_figure_shield_never_uncovers_a_person_value(text: str, taken: st
     assert got["rows"] == rows
 
 
-def test_a4_only_a_figure_the_rows_show_is_kept() -> None:
-    """The shield is the row's own number at the text's precision. Nothing wider."""
+def test_a4_a_figure_the_rows_show_is_still_masked_and_counted() -> None:
+    """Masking never narrows for a figure. A rewrite of the row's own number is counted."""
     rows = [{"k": 5.01}]
-    assert "0123456789" not in mask_payload(text="x 5.0123456789", rows=rows)["text"]
-    assert "0355550101" not in mask_payload(text="x 7.0355550101", rows=rows)["text"]
-    kept = mask_payload(text="x 7.0355550101", rows=[{"k": 7.0355550101}])
-    assert kept["text"] == "x 7.0355550101" and kept["rows"] == [{"k": 7.0355550101}]
+    other = mask_payload(text="x 5.0123456789", rows=rows)
+    assert "0123456789" not in other["text"] and other["figure_hits"] == 0
+    other = mask_payload(text="x 7.0355550101", rows=rows)
+    assert "0355550101" not in other["text"] and other["figure_hits"] == 0
+    own = mask_payload(text="x 7.0355550101", rows=[{"k": 7.0355550101}])
+    assert "0355550101" not in own["text"], own["text"]
+    assert own["figure_hits"] == 1 and own["rows"] == [{"k": 7.0355550101}]
 
 
 # --- A5: E14 itself, and proof that it can fail ---------------------------------
