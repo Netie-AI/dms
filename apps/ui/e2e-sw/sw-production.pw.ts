@@ -213,3 +213,105 @@ test("8 a cache left by an older build is dropped when a worker activates", asyn
   await expect.poll(() => page.evaluate(() => caches.keys())).toEqual([SHELL]);
   expect(await paths(page)).not.toContain("/assets/ancient.js");
 });
+
+/*
+ * IPHONE-SHELL-01: only the app may become the offline shell. Hotel Wi-Fi and SSO gateways answer
+ * any URL with their own page and 200 (no redirect a fetch can see). Stored as the shell, that page
+ * is what the home-screen app opens to the next time the phone is offline.
+ */
+const PORTAL_TITLE = "Sign in to Hotel Wi-Fi";
+const portal = (extra = "") =>
+  `<!doctype html><html><head><title>Wi-Fi</title>${extra}</head><body><h1>${PORTAL_TITLE}</h1><form><input name="room" /></form></body></html>`;
+const shellBody = (page: Page) =>
+  page.evaluate(async () => (await (await caches.open("dms-shell-v1")).match("/"))?.text() ?? null);
+const assetPaths = async (page: Page) => (await paths(page)).filter((p) => p.startsWith("/assets/")).sort();
+
+/** Decoys: pages that mention /assets/ without being the app (its entry is a module script under /assets/). */
+const PORTALS: Record<string, string> = {
+  "a plain sign-in page": portal(),
+  "a sign-in page with its own /assets/ image, stylesheet and classic script": portal(
+    '<link rel="stylesheet" href="/assets/portal.css"><script src="/assets/portal.js"></script><script type="module" src="/portal/app.js"></script>',
+  ).replace("<h1>", '<img src="/assets/logo.png" alt=""><p>see /assets/index.js</p><h1>'),
+};
+
+for (const [name, body] of Object.entries(PORTALS)) {
+  for (const route of ["/", "/library"]) {
+    test(`9 ${name} answered with 200 at ${route} never becomes the offline shell`, async ({ page, context }) => {
+      await bootWithAssets(page);
+      const goodShell = await shellBody(page);
+      expect(goodShell).toContain('src="/assets/');
+      const goodAssets = await assetPaths(page);
+
+      const isRoute = (url: URL) => url.pathname === route;
+      await context.route(isRoute, (r) => r.fulfill({ status: 200, contentType: "text/html", body }));
+      await page.goto(route);
+      // Online, the person sees the gateway's page: the worker does not hide it.
+      await expect(page.getByRole("heading", { name: PORTAL_TITLE })).toBeVisible();
+      // Give a wrongly started cache write time to land.
+      await page.waitForTimeout(400);
+
+      // The next offline launch opens the app, not the sign-in page.
+      await context.unroute(isRoute);
+      await context.setOffline(true);
+      await page.goto(route);
+      await expect(page.getByText(PORTAL_TITLE), "the offline launch shows the sign-in page").toHaveCount(0);
+      await expect(page.locator('input[name="room"]')).toHaveCount(0);
+      await expect(page.getByTestId("tab-bar")).toBeVisible();
+      expect(await shellBody(page), "the stored shell changed").toBe(goodShell);
+      expect(await assetPaths(page), "the app's assets were pruned").toEqual(goodAssets);
+    });
+  }
+}
+
+test("10 a new deploy of the app still replaces the shell (the guard does not freeze updates)", async ({
+  page,
+  context,
+}) => {
+  await bootWithAssets(page);
+  const old = (await shellBody(page))!;
+  const next = old.replace("</body>", "<!--deploy-2--></body>");
+  expect(next).not.toBe(old);
+  await context.route(
+    (url) => url.pathname === "/",
+    (r) => r.fulfill({ status: 200, contentType: "text/html", body: next }),
+  );
+  await page.goto("/");
+  await expect.poll(() => shellBody(page)).toBe(next);
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.getByTestId("tab-bar")).toBeVisible();
+});
+
+test("11 a sign-in page answered to the worker's own install fetch is not precached as the shell", async ({
+  page,
+  context,
+}) => {
+  let fromWorker = 0;
+  const isRoot = (url: URL) => url.pathname === "/";
+  await context.route(isRoot, (r) => {
+    if (!r.request().serviceWorker()) return r.continue();
+    fromWorker += 1;
+    return r.fulfill({ status: 200, contentType: "text/html", body: portal() });
+  });
+  await page.goto("/");
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await expect
+    .poll(() => page.evaluate(() => navigator.serviceWorker.controller?.scriptURL ?? null))
+    .not.toBeNull();
+  // The install fetch really was answered with the sign-in page (otherwise this test proves nothing).
+  await expect.poll(() => fromWorker).toBeGreaterThanOrEqual(1);
+  await page.waitForTimeout(400);
+  expect((await shellBody(page)) ?? "", "the sign-in page was precached").not.toContain(PORTAL_TITLE);
+
+  // The first real navigation fills the shell, and the app then opens offline.
+  await context.unroute(isRoot);
+  await page.goto("/");
+  await expect.poll(async () => (await shellBody(page)) ?? "").toContain('src="/assets/');
+  await page.reload();
+  await expect.poll(async () => (await assetPaths(page)).some((p) => p.endsWith(".js"))).toBe(true);
+  await expect.poll(async () => (await assetPaths(page)).some((p) => p.endsWith(".css"))).toBe(true);
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.getByTestId("tab-bar")).toBeVisible();
+  await expect(page.getByText(PORTAL_TITLE)).toHaveCount(0);
+});

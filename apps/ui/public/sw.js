@@ -10,15 +10,29 @@ const SHELL = "dms-shell-v1";
 const NEVER = ["/api/", "/v1/", "/health"];
 
 const isHtml = (res) => (res.headers.get("content-type") || "").includes("text/html");
+const storable = (res) => res.ok && !res.redirected && isHtml(res);
+
+/*
+ * The app's own page names its built entry: a module script under /assets/. A Wi-Fi
+ * sign-in or SSO page answered with 200 does not, and must never become the shell
+ * (the home-screen app would open to it on the next offline launch). This guards
+ * against a gateway in the way, not against a page forged to look like the app.
+ */
+const isAppShell = (html) =>
+  (html.match(/<script\b[^>]*>/gi) || []).some(
+    (tag) => /\btype="module"/.test(tag) && /\bsrc="\/assets\/[^"]+\.js"/.test(tag),
+  );
 
 /*
  * Store the newest shell, then drop every cached asset it no longer references,
  * so the cache holds one build instead of growing with each deploy. A chunk the
- * shell does not name is simply fetched again when it is needed.
+ * shell does not name is simply fetched again when it is needed. A page that is
+ * not the app changes nothing: the last good shell and its assets stay.
  */
 async function refreshShell(res) {
-  const cache = await caches.open(SHELL);
   const html = await res.clone().text();
+  if (!isAppShell(html)) return;
+  const cache = await caches.open(SHELL);
   await cache.put("/", res);
   for (const req of await cache.keys()) {
     const path = new URL(req.url).pathname;
@@ -29,9 +43,8 @@ async function refreshShell(res) {
 self.addEventListener("install", (event) => {
   // A failed precache must not discard the worker: the first navigation fills the shell.
   event.waitUntil(
-    caches
-      .open(SHELL)
-      .then((cache) => cache.add("/"))
+    fetch("/")
+      .then((res) => (storable(res) ? refreshShell(res) : undefined))
       .catch(() => undefined),
   );
   self.skipWaiting();
@@ -60,7 +73,7 @@ self.addEventListener("fetch", (event) => {
       fetch(req)
         .then((res) => {
           // A redirect (a login page, say) must never become the shell.
-          if (res.ok && !res.redirected && isHtml(res)) event.waitUntil(refreshShell(res.clone()));
+          if (storable(res)) event.waitUntil(refreshShell(res.clone()));
           return res;
         })
         .catch(() => caches.match("/").then((hit) => hit || Response.error())),
