@@ -36,7 +36,12 @@ import duckdb
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_grants import canonical_space_id
-from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    SERVING_DIALECT,
+    ensure_demo_warehouse,
+    warehouse_path,
+)
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.grant_struct import serve_gap
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
@@ -45,6 +50,7 @@ from dms_executor.skills_quarantine import (
     filter_retrieved_rows,
     reject_scored_write,
 )
+from dms_executor.total_guard import repeated_input_reason
 
 #: Leading underscore keeps this out of list_bronze_tables / Library tree.
 _TABLE = "main._verified_queries"
@@ -834,6 +840,11 @@ def maybe_verified_ask(
         dialect=dialect,
     )
     if hit is None:
+        return None
+    # TOTAL-GUARD-01: a registered statement is not a proof. One that lets an
+    # aggregate read an input twice is no hit; the question takes the normal
+    # ladder, where the same rule decides again.
+    if repeated_input_reason(hit["sql"], dialect or SERVING_DIALECT):
         return None
     if submit is None or ledger_append is None:
         return None
