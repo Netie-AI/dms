@@ -437,6 +437,13 @@ LIST_Q = "List the enrollments"
 #: answers exactly as on the parent commit (this test passes there too).
 CORRECT: dict[str, tuple[str, str]] = {
     "plain_sum": (Q, TRUE_SQL),
+    # Found by the full suite (test_grant_struct_02): sqlglot files a LATERAL
+    # subquery under UDTF and reads ``TABLE t`` as an alias. Both are one read.
+    "lateral_subquery_of_one_row": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM {T} i, LATERAL (SELECT 1 AS one) s",
+    ),
+    "table_shorthand_in_a_cte": (COUNT_Q, f"WITH c AS (TABLE {T}) SELECT COUNT(*) AS total FROM c"),
     "plain_count": (COUNT_Q, f"SELECT COUNT(*) AS total FROM {T}"),
     "plain_avg": (Q, f"SELECT AVG({N}) AS total FROM {T}"),
     "plain_min": (Q, f"SELECT MIN({N}) AS total FROM {T}"),

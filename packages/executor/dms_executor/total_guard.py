@@ -268,7 +268,10 @@ class _Guard:
         return rel
 
     def source(self, item: exp.Expression) -> _Rel:
-        if isinstance(item, exp.UDTF):
+        if isinstance(item, exp.Lateral) and isinstance(item.this, exp.Subquery):
+            # A lateral subquery is what its body is: judged by its own rows.
+            rel = self.query(item.this.this)
+        elif isinstance(item, exp.UDTF):
             rel = _Rel(repeats="row_generator")
         elif isinstance(item, exp.Table):
             cte = self._cte(item)
@@ -310,6 +313,16 @@ class _Guard:
                 rel = self.source(node)
             elif isinstance(node, exp.UDTF):
                 rel = _Rel(repeats="row_generator")
+            elif (
+                isinstance(node, exp.Alias)
+                and isinstance(node.this, exp.Column)
+                and not node.this.this.quoted
+                and node.this.name.upper() == "TABLE"
+                and not node.this.table
+            ):
+                # DuckDB ``TABLE t`` (a whole base table); sqlglot reads it as
+                # ``TABLE AS t``. One read of one table: nothing repeated.
+                rel = _Rel()
             elif isinstance(node, exp.Pivot):
                 rel = _Rel(repeats="row_turn")
             else:
