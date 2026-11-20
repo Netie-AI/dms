@@ -483,6 +483,24 @@ def no_ontology_join_reason(
     return f"{REASON_UNVERIFIED_JOIN}:no_ontology" if refused else None
 
 
+def join_check_unavailable(exc: Exception) -> str:
+    """CONNECT-ASK-05: the join check raised in a Space that has an ontology.
+
+    A check that cannot finish proves no join: the reason is
+    ``unverified_join:check_unavailable``, as on the no-ontology path. Never
+    "no refusal". A serving-lease error, an ask deadline or a stop is not a
+    join verdict and is raised again for the ask boundary. Logs the class.
+    """
+    import logging
+
+    from dms_executor.lake_registry import SERVING_ERRORS
+
+    if isinstance(exc, SERVING_ERRORS):
+        raise exc
+    logging.getLogger(__name__).warning("join check raised %s", type(exc).__name__)
+    return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+
+
 def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:
     """Verify against the lake. Failed subjects stay marked; the rest can answer.
 
@@ -1626,9 +1644,12 @@ def _run_extract_loop(
                 cols = relation_columns(space_onto, warehouse, sorted(grantable))
             except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
                 return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
-            join_why = unverified_join_reason(
-                sql, space_onto, declared_violations, columns_of=cols
-            )
+            try:
+                join_why = unverified_join_reason(
+                    sql, space_onto, declared_violations, columns_of=cols
+                )
+            except Exception as exc:  # noqa: BLE001 - CONNECT-ASK-05
+                return join_check_unavailable(exc)
             if join_why:
                 return join_why
         else:
@@ -2619,9 +2640,12 @@ def maybe_generative_ask(
             except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
                 join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
             else:
-                join_why = unverified_join_reason(
-                    sql, space_onto, declared_violations, columns_of=cols
-                )
+                try:
+                    join_why = unverified_join_reason(
+                        sql, space_onto, declared_violations, columns_of=cols
+                    )
+                except Exception as exc:  # noqa: BLE001 - CONNECT-ASK-05
+                    join_why = join_check_unavailable(exc)
         else:
             # CONNECT-ASK-03: no ontology is zero verified links, not no rule.
             join_why = no_ontology_join_reason(

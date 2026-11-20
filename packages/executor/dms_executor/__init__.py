@@ -96,6 +96,7 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    join_check_unavailable,
     maybe_generative_ask,
     no_ontology_join_reason,
     path_miss_envelope,
@@ -1454,9 +1455,12 @@ class Executor:
         if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
             # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
             # Its SQL answers only if it passes the same rule generation does.
-            join_why = check_sql_against_space(
-                sql_used, space_onto, self._warehouse or warehouse_path(), readable
-            )
+            try:
+                join_why = check_sql_against_space(
+                    sql_used, space_onto, self._warehouse or warehouse_path(), readable
+                )
+            except Exception as exc:  # noqa: BLE001 - CONNECT-ASK-05
+                join_why = join_check_unavailable(exc)
             if join_why:
                 env = path_miss_envelope(
                     question, join_why, space_id=space_id, session_id=session_id
