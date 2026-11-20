@@ -542,6 +542,91 @@ def test_correct_statements_that_now_abstain_are_named(
     assert _join_why(rig, sql) is None, "the class rule is what refuses this one"
 
 
+# --- untyped functions: the guard adds no false abstain -----------------------------
+
+#: One-table statements with a function sqlglot does not type, or an aggregate
+#: spelled by a name the guard has no list entry for. Correct on the table.
+#: #529's function rule decides some of them today (``unproven_function``);
+#: this guard must not change a single outcome. name -> (question, sql).
+UNTYPED: dict[str, tuple[str, str]] = {
+    "date_part_in_a_filter": (Q, f"SELECT SUM({N}) AS total FROM {T} WHERE date_part('year', DATE '2024-05-01') = 2024"),
+    "dayname_in_a_filter": (Q, f"SELECT SUM({N}) AS total FROM {T} WHERE dayname(DATE '2024-05-01') = 'Wednesday'"),
+    "date_part_in_a_projection": (Q, f"SELECT SUM({N}) AS total, date_part('year', DATE '2024-05-01') AS y FROM {T}"),
+    "mean": (Q, f"SELECT mean({N}) AS total FROM {T}"),
+    "product": (Q, f"SELECT product({N}) AS total FROM {T}"),
+    "mode": (Q, f"SELECT mode({N}) AS total FROM {T}"),
+    "geomean": (Q, f"SELECT geomean({N}) AS total FROM {T}"),
+    "hash_listed": (LIST_Q, f"SELECT enrollment_id, hash(school_id) AS h FROM {T} ORDER BY enrollment_id"),
+    "mean_of_one_group_by": (Q, f"SELECT mean(t) AS total FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY school_id)"),
+}
+
+
+def _no_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_executor
+    import dms_executor.generative_ask as ga
+
+    monkeypatch.setattr(ga, "repeated_input_reason", lambda *_a, **_k: None)
+    monkeypatch.setattr(dms_executor, "repeated_input_reason", lambda *_a, **_k: None)
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("name", sorted(UNTYPED))
+def test_untyped_function_outcome_is_not_changed_by_the_guard(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """An unknown function is not by itself a multiplied total (before = after)."""
+    question, sql = UNTYPED[name]
+    assert repeated_input_reason(sql) is None
+    (tmp_path / "with").mkdir()
+    rig, after = _ask(door, sql, tmp_path / "with", monkeypatch, minter, question)
+    with monkeypatch.context() as m:
+        _no_guard(m)
+        (tmp_path / "without").mkdir()
+        _rig0, before = _ask(door, sql, tmp_path / "without", m, minter, question)
+    assert (after["badge"], after["abstained"], after["rows"]) == (
+        before["badge"],
+        before["abstained"],
+        before["rows"],
+    ), (name, before.get("text"), after.get("text"))
+    assert "repeated_input" not in od._reasons(after) + str(after.get("text") or "")
+    if after["abstained"]:
+        # Refused by the join rule's function rule (#529), not by this guard.
+        assert "unverified_join" in str(after.get("text") or ""), after.get("text")
+    else:
+        assert od._multiset(after["rows"]) == od._multiset(od._oracle(rig.lake, sql))
+
+
+#: Correct figures the guard refuses on its own, because a function is applied to
+#: a collection (rule 4). Today #529's function rule refuses them first
+#: (``list_sum`` is untyped); once that rule is narrowed these are new abstains.
+#: name -> (sql, the correct figure).
+LISTS_REFUSED: dict[str, tuple[str, float]] = {
+    "list_sum_of_one_list": (f"SELECT list_sum(list({N})) AS total FROM {T}", 107),
+    "list_avg_of_one_list": (f"SELECT list_avg(list({N})) AS total FROM {T}", 26.75),
+    "len_of_one_list": (f"SELECT len(list({N})) AS total FROM {T}", 4),
+}
+
+
+@pytest.mark.parametrize("name", sorted(LISTS_REFUSED))
+def test_function_over_one_list_is_refused_by_the_guard_and_named(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql, figure = LISTS_REFUSED[name]
+    rig, env = _ask("generate", sql, tmp_path, monkeypatch, minter)
+    assert od._oracle(rig.lake, sql)[0]["total"] == figure
+    assert (repeated_input_reason(sql) or "").startswith("repeated_input:collection_under_function")
+    _assert_abstain_named(env, rig, ())
+
+
 # --- clause 5: open, by name --------------------------------------------------------
 
 
