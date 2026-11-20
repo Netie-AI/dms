@@ -11,6 +11,7 @@ import hashlib
 import logging
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -107,13 +108,24 @@ def _install_token_file(tmp: str, path: Path, token: str) -> None:
         os.replace(tmp, path)
     except OSError as rename_exc:
         try:
-            fd = os.open(path, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                os.chmod(fh.fileno() if os.chmod in os.supports_fd else path, 0o600)
-                fh.truncate(0)
-                fh.write(token)
-                fh.flush()
-                os.fsync(fh.fileno())
+            # O_NONBLOCK: a FIFO at the path must refuse, not wait for a reader.
+            flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(path, flags)
+            with os.fdopen(fd, "wb", buffering=0) as fh:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError("token path is not a regular file")
+                os.chmod(fd if os.chmod in os.supports_fd else path, 0o600)
+                os.ftruncate(fd, 0)
+                data = token.encode("utf-8")
+                try:
+                    if fh.write(data) != len(data):
+                        raise OSError("short write")
+                    os.fsync(fd)
+                except BaseException:
+                    # Part of a token is a Bearer the next boot would send.
+                    with contextlib.suppress(OSError):
+                        os.ftruncate(fd, 0)
+                    raise
         except OSError as exc:
             raise OpenVaultTokenError(
                 OV_MINT_FAILED,
@@ -318,9 +330,13 @@ class ManifestMinter:
             raise OpenVaultTokenError(OV_MINT_FAILED, "register: body is not an object")
         if body.get("service_id") != OV_SERVICE_ID:
             raise OpenVaultTokenError(OV_MINT_FAILED, "register: service_id mismatch")
-        token = str(body.get("token") or "").strip()
+        raw = body.get("token")
+        token = raw.strip() if isinstance(raw, str) else ""
         if not token:
             raise OpenVaultTokenError(OV_MINT_FAILED, "register: no token in response")
+        # The file is read back with strip() and sent as one header value.
+        if not token.isprintable() or any(ch.isspace() for ch in token):
+            raise OpenVaultTokenError(OV_MINT_FAILED, "register: token is not one printable word")
         return token
 
     def _notify_cortex_jwks_refresh(self) -> None:

@@ -96,6 +96,12 @@ FAILURES = {
     "no_token": (_json({"service_id": "dms"}), OV_MINT_FAILED),
     "blank_token": (_json({"service_id": "dms", "token": "  "}), OV_MINT_FAILED),
     "body_not_json": (_not_json, OV_MINT_FAILED),
+    "token_is_a_bool": (_json({"service_id": "dms", "token": True}), OV_MINT_FAILED),
+    "token_is_a_number": (_json({"service_id": "dms", "token": 123}), OV_MINT_FAILED),
+    "token_is_a_list": (_json({"service_id": "dms", "token": ["x"]}), OV_MINT_FAILED),
+    "token_has_a_newline": (_json({"service_id": "dms", "token": "a\nb"}), OV_MINT_FAILED),
+    "token_has_a_space": (_json({"service_id": "dms", "token": "a b"}), OV_MINT_FAILED),
+    "token_has_a_control_char": (_json({"service_id": "dms", "token": "a\x00b"}), OV_MINT_FAILED),
     "body_not_an_object": (_json(["dms", MINTED]), OV_MINT_FAILED),
 }
 
@@ -341,4 +347,59 @@ def test_two_first_mints_at_once_leave_one_whole_token(secret: Path) -> None:
         t.join(timeout=20)
     assert sorted(results) == sorted([MINTED, OV_TOKEN_MISSING])
     assert secret.read_text(encoding="utf-8") == MINTED
+    assert [p.name for p in secret.parent.iterdir()] == [secret.name]
+
+
+def _refuse_rename(monkeypatch: pytest.MonkeyPatch) -> None:
+    def busy(_src: str, _dst: str) -> None:
+        raise OSError(16, "Device or resource busy")
+
+    monkeypatch.setattr(manifest_mod.os, "replace", busy)
+
+
+def test_short_in_place_write_leaves_no_part_of_a_token(
+    secret: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Adversary P1: a disk-full in-place write left 8 bytes the next boot sent as Bearer."""
+    secret.write_bytes(b"")
+    _refuse_rename(monkeypatch)
+    real_fsync = os.fsync
+    calls: list[int] = []
+
+    def fsync(fd: int) -> None:
+        calls.append(fd)
+        if len(calls) == 2:  # the in-place write: keep 8 bytes, then fail
+            os.ftruncate(fd, 8)
+            raise OSError(28, "No space left on device")
+        real_fsync(fd)
+
+    monkeypatch.setattr(manifest_mod.os, "fsync", fsync)
+    ov = _OpenVault()
+    err = _fail(ov)
+    assert err.code == OV_MINT_FAILED and "not stored" in str(err)
+    assert len(calls) == 2
+    assert secret.read_bytes() == b"", "part of a token was left in the token file"
+    assert manifest_mod._load_service_token() == ""
+    assert [p.name for p in secret.parent.iterdir()] == [secret.name]
+
+
+@posix_only
+@pytest.mark.parametrize("reader", [False, True])
+def test_in_place_write_refuses_a_fifo_without_blocking(
+    secret: Path, monkeypatch: pytest.MonkeyPatch, reader: bool
+) -> None:
+    """With a reader the open succeeds, so only the regular-file check refuses it."""
+    os.mkfifo(secret)
+    os.chmod(secret, 0o644)
+    rfd = os.open(secret, os.O_RDONLY | os.O_NONBLOCK) if reader else None
+    try:
+        _refuse_rename(monkeypatch)
+        err = _fail(_OpenVault())
+        assert err.code == OV_MINT_FAILED and "not stored" in str(err)
+        assert rfd is None or os.read(rfd, 64) == b"", "the token was written into the FIFO"
+    finally:
+        if rfd is not None:
+            os.close(rfd)
+    assert stat.S_ISFIFO(secret.lstat().st_mode)
+    assert stat.S_IMODE(secret.lstat().st_mode) == 0o644, "the FIFO was re-moded"
     assert [p.name for p in secret.parent.iterdir()] == [secret.name]
