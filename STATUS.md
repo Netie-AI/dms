@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, DEF-VALIDATE-02
+**Last updated:** 2026-11-13, ONTO-PROFILE-01 (draft, Refs #514)
 **Remote:** https://github.com/Netie-AI/dms
 **Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
@@ -43,6 +43,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
+| P0 JOIN-HOLE-01 (#527): the join allowlist counts every relation a FROM names, not only base tables. Adversary round pending | this branch |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
@@ -52,8 +53,10 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
+| P0 CONNECT-ASK-03 (#520): a non-demo Space with no ontology answers one-table SQL only; a second table abstains `unverified_join:no_ontology`. BIRD multi-table questions abstain by design until that Space has an ontology | this branch |
 | AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
 | GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
 | GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |
+| ONTO-PROFILE-01: file Space keys and links proposed, Space-scoped, never served. Draft, a second run must verify. | #514 |
 
 Not listed: 15 older open drafts (#424, #408, #398, #397, #391, #379, #378, #376, #375, #344, #343, #339, #336, #331, #329).
