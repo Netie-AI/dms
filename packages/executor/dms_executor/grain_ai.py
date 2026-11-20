@@ -213,7 +213,12 @@ def map_question_to_grains(
         heard = thin_understand_question(question, examples)
     heard = dict(heard)
     question_text = str(heard.get("question") or "")
-    candidates = approved_grain_names(space_id)
+    try:
+        candidates = approved_grain_names(space_id)
+    except Exception:  # noqa: BLE001 - an unreadable item store offers no grain
+        return _refused(
+            question, "ontology_store_unavailable", space_id=space_id, session_id=session_id
+        )
     transport = _TRANSPORT.get() or default_transport
     try:
         first = _one_reading(

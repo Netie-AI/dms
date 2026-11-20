@@ -811,3 +811,138 @@ def test_store_reads_approved_items_by_the_space_their_version_names() -> None:
     assert not ids("space-a") & {i["id"] for i in proposed}
     assert {i["status"] for i in store.approved_items_of_space("space-a")} == {"approved"}
     assert len(for_a) == 3 and not (for_a & for_b) and not (for_a & for_none)
+
+
+# --- adversary round (three attackers, none of them the author) --------------------
+
+
+def _catalogs(rig: Rig) -> str:
+    import json
+
+    return json.dumps([c.get("ontology") for c in rig.cortex.insights], sort_keys=True, default=str)
+
+
+@pytest.mark.parametrize("door", ["first_generate", "extract_loop"])
+@pytest.mark.parametrize("flag", ["", "DMS_DEF_VALIDATE", "DMS_GRAIN_AI", "DMS_SCHEMA_CONTEXT"])
+def test_adversary_every_kind_of_item_filed_under_a_leaves_b_unchanged(
+    door: str, flag: str, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attacker 1. Link, measure, grain, declared columns and a fanning-out link,
+    all filed under A and all about B's tables: B's envelope and the catalog
+    sent to Cortex for B are what they are with no item at all."""
+    if door == "extract_loop":
+        monkeypatch.setenv("DMS_CLOOP_B", "1")
+        monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    if flag:
+        monkeypatch.setenv(flag, "1")
+    a, _ta, b, tb = two_spaces(rig)
+    orders_b, ships_b = tb["b_orders.csv"], tb["b_shipments.csv"]
+    sql = join_sql(ships_b, orders_b)
+    bare = rig.ask(b, JOIN_Q, gen(sql))
+    assert bare["badge"] == "ABSTAIN" and bare["rows"] == [] and bare["values"] == []
+    bare_catalogs = _catalogs(rig)
+
+    approve_for(a, link_proposal(ships_b, orders_b))
+    approve_for(a, measure_proposal(orders_b))
+    approve_for(a, declared_orders(orders_b))
+    approve_for(a, link_proposal(ships_b, orders_b, order_key=["customer_id"]))
+    rig.cortex.insights.clear()
+    env = rig.ask(b, JOIN_Q, gen(sql))
+    assert customer_view(env) == customer_view(bare)
+    assert _catalogs(rig) == bare_catalogs
+    assert rig.cortex.executed == []
+
+
+def test_adversary_a_same_named_object_of_a_does_not_rekey_b_own_link(rig: Rig) -> None:
+    """Attacker 1. B serves over its own link. A then files an object with the
+    same name on the same table, keyed on a column that repeats."""
+    a, _ta, b, tb = two_spaces(rig)
+    orders_b, ships_b = tb["b_orders.csv"], tb["b_shipments.csv"]
+    sql = join_sql(ships_b, orders_b)
+    approve_for(b, link_proposal(ships_b, orders_b))
+    before = rig.ask(b, JOIN_Q, gen(sql))
+    assert_serves(before, JOIN_TRUTH)
+    approve_for(a, link_proposal(ships_b, orders_b, order_key=["customer_id"]))
+    after = rig.ask(b, JOIN_Q, gen(sql))
+    assert customer_view(after) == customer_view(before)
+
+
+def test_adversary_a_good_link_of_a_does_not_repair_b_fanning_out_link(rig: Rig) -> None:
+    """Attacker 1. B's own approved key is not a key. A's correct link is not B's."""
+    a = rig.new_space("Space A")
+    b = rig.new_space("Space B")
+    tb = rig.ingest(b, space_files("b", DUP_ORDER_ROWS))
+    orders_b, ships_b = tb["b_orders.csv"], tb["b_shipments.csv"]
+    sql = join_sql(ships_b, orders_b)
+    approve_for(b, link_proposal(ships_b, orders_b))
+    bare = rig.ask(b, JOIN_Q, gen(sql))
+    assert bare["badge"] == "ABSTAIN" and bare["rows"] == [] and bare["values"] == []
+    approve_for(a, link_proposal(ships_b, orders_b, order_key=["order_id", "customer_id"]))
+    assert customer_view(rig.ask(b, JOIN_Q, gen(sql))) == customer_view(bare)
+    assert rig.cortex.executed == []
+
+
+@pytest.mark.parametrize("read", ["approved_items", "approved_items_of_space"])
+def test_adversary_unreadable_item_store_in_def_validate_abstains(
+    read: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    """Attacker 2. A SQL-source Space never reads the item store in the executor,
+    so ``def_validate`` was the first to meet the failure and it surfaced as a
+    503 carrying the exception text. Now a named ABSTAIN, and nothing runs."""
+    monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+    space = sql_space(tmp_path, monkeypatch, minter)
+    monkeypatch.setattr(ontology_data_store(), read, _boom)
+    env = space.ask(od.VERIFIED_Q, gen(od.VERIFIED_SQL))
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert "ontology_store_unavailable" in reasons(env)
+    assert "hunter2" not in str(env) and "db-7" not in str(env)
+    assert space.cortex.executed == []
+
+
+@pytest.mark.parametrize("named", ["another_space", "no_space", "this_space"])
+def test_adversary_pii_protects_a_sql_source_space_too(
+    named: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    """Attacker 2. The derived ontology answers alone, and a pii item still applies."""
+    monkeypatch.setenv("DMS_DEF_VALIDATE", "1")
+    space = sql_space(tmp_path, monkeypatch, minter)
+    version_space = {
+        "another_space": "5c0be000-0000-4000-8000-000000000523",
+        "no_space": None,
+        "this_space": space.space_id,
+    }[named]
+    approve_for(
+        version_space,
+        {
+            "status": "proposed",
+            "pii": [{"name": "school_name", "relation": od.SCHOOLS, "column": "name"}],
+        },
+    )
+    env = space.ask("List school names", gen(f"SELECT name FROM {od.SCHOOLS} ORDER BY name"))
+    assert env["badge"] == "ABSTAIN" and env["rows"] == [] and env["values"] == []
+    assert "pii" in reasons(env) + str(env.get("text") or "")
+    assert "Alder" not in str(env.get("text") or "")
+    assert space.cortex.executed == []
+
+
+def test_adversary_grain_reading_abstains_when_the_item_store_is_down(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attacker 2's class, the second reader: ``map_question_to_grains``."""
+    import dms_executor.grain_ai as grain_ai
+
+    monkeypatch.setattr(ontology_data_store(), "approved_items", _boom)
+    monkeypatch.setattr(ontology_data_store(), "approved_items_of_space", _boom)
+    out = grain_ai.map_question_to_grains(MEASURE_Q, space_id=rig.new_space("S"), session_id="s")
+    assert out["abstained"] is True and out["rows"] == [] and out["reconfirm"] is None
+    assert "ontology_store_unavailable" in str(out.get("assumptions"))
+    assert "hunter2" not in str(out)

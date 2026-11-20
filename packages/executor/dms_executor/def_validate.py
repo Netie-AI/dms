@@ -57,8 +57,24 @@ def validate_generated_sql(
         return None
     from dms_executor.onto_scope import space_item_ontology
 
-    # ONTO-SCOPE-01: the asking Space's items, plus every pii item.
-    onto = space_item_ontology(space_id)
+    # ONTO-SCOPE-01: the asking Space's items, plus every pii item. A store
+    # that cannot be read is a named ABSTAIN: passing the SQL unchecked would
+    # drop every pii protection the store holds.
+    try:
+        onto = space_item_ontology(space_id)
+    except Exception:  # noqa: BLE001
+        return _stop(
+            "abstain",
+            "ontology_store_unavailable",
+            _abstain_env(
+                "ontology_store_unavailable",
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                provenance=_provenance([]),
+            ),
+            _provenance([]),
+        )
     meta = _meta(onto)
     provenance = _provenance(meta)
     parsed = _parse(sql)
