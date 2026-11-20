@@ -330,6 +330,58 @@ MORE_SHAPES: dict[str, tuple[str, str, int, int, str]] = {
         107,
         TURN,
     ),
+    # Adversary round (windows and lists): a string is a collection once split.
+    "string_agg_doubled_and_split": (
+        COUNT_Q,
+        f"SELECT len(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "string_agg_through_a_cte": (
+        COUNT_Q,
+        f"WITH s AS (SELECT string_agg(students, ',') AS j FROM {T}) SELECT len(string_split(j || ',' || j, ',')) AS total FROM s",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "listagg_concat_ws": (
+        COUNT_Q,
+        f"SELECT len(string_split(concat_ws(',', listagg(students, ','), listagg(students, ',')), ',')) AS total FROM {T}",
+        8,
+        4,
+        COLLECTION,
+    ),
+    "scalar_subquery_summed_per_row": (
+        Q,
+        f"SELECT SUM((SELECT SUM({N}) FROM {T})) AS total FROM {T}",
+        428,
+        107,
+        WINDOW,
+    ),
+    # Adversary round (grouping sets): SUMMARIZE aggregates its whole input.
+    "summarize_over_a_rollup": (
+        Q,
+        f"SELECT CAST(avg AS DOUBLE) * count AS total FROM (SUMMARIZE SELECT t FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)))",
+        214,
+        107,
+        GROUPING,
+    ),
+    # Adversary round (doors): a row multiplier listed beside the value.
+    "unlist_listed_beside_the_value": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM (SELECT {N} AS x, unlist([1, 2]) AS g FROM {T})",
+        8,
+        4,
+        GENERATOR,
+    ),
+    "generate_subscripts_listed_beside_the_value": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} AS x, generate_subscripts([1, 2], 1) AS g FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
     "list_concat_counted": (
         COUNT_Q,
         f"SELECT len(list({N}) || list({N})) AS total FROM {T}",
@@ -409,8 +461,8 @@ ADVERSARY_SHAPES: dict[str, tuple[str, str, int | float, int | float, str]] = {
     "self_cross_join_counted": (COUNT_Q, f"SELECT COUNT(*) AS total FROM {T} a CROSS JOIN {T} b", 16, 4, SELF_JOIN),
     "table_cross_joined_to_its_own_sum": (Q, f"WITH tot AS (SELECT SUM({N}) AS t FROM {T}) SELECT SUM(t) AS total FROM {T} CROSS JOIN tot", 428, 107, SELF_JOIN),
     "two_derived_tables_over_one_table": (Q, f"SELECT SUM(x) AS total FROM (SELECT {N} AS x FROM {T}) t1, (SELECT school_id FROM {T}) t2", 428, 107, SELF_JOIN),
-    # A collection encoded as text and turned back into rows: a row generator.
-    "string_agg_concatenated_then_unnested": (Q, f"SELECT SUM(CAST(v AS INTEGER)) AS total FROM (SELECT UNNEST(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS v FROM {T})", 214, 107, GENERATOR),
+    # A collection encoded as text and turned back into rows: string_agg collects.
+    "string_agg_concatenated_then_unnested": (Q, f"SELECT SUM(CAST(v AS INTEGER)) AS total FROM (SELECT UNNEST(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS v FROM {T})", 214, 107, COLLECTION),
     "cte_read_twice_and_summed": (Q, f"WITH c AS (SELECT {N} AS x FROM {T}) SELECT SUM(a.x) AS total FROM c a, c b", 428, 107, SELF_JOIN),
 }
 MORE_SHAPES.update(ADVERSARY_SHAPES)

@@ -129,7 +129,6 @@ _SCALAR_AGGS: tuple[type[exp.Expression], ...] = (
     exp.Corr,
     exp.CovarPop,
     exp.CovarSamp,
-    exp.GroupConcat,
     exp.Grouping,
     # Window-only functions sqlglot files under AggFunc.
     exp.Rank,
@@ -376,6 +375,12 @@ class _Guard:
                 left, right = self.query(node.this), self.query(node.expression)
                 kinds = [left.carried, right.carried, *left.cols.values(), *right.cols.values()]
                 rel = _Rel("set_operation", {}, _worst(*kinds), _sum_reads(left, right))
+            elif isinstance(node, exp.Summarize):
+                # SUMMARIZE aggregates every column of its input.
+                inner = self.query(node.this)
+                if inner.repeats or _any(inner):
+                    raise _Refuse(f"{inner.repeats or 'window_value'}_under_aggregate")
+                rel = _Rel(reads=inner.reads)
             elif isinstance(node, exp.Subquery):
                 rel = self.source(node)
             elif isinstance(node, exp.UDTF):
