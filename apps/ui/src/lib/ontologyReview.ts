@@ -298,7 +298,7 @@ export function observationSentence(obs: Observation): string {
       "identifies a row, so no link is proposed."
     );
   }
-  return `${child} to ${parent} was not proposed (reason code: ${obs.reason}).`;
+  return `${child} to ${parent} was not proposed (reason code: ${safeCode(obs.reason)}).`;
 }
 
 export function unkeyedSentence(table: UnkeyedTable): string {
@@ -310,14 +310,14 @@ export function unkeyedSentence(table: UnkeyedTable): string {
     );
   }
   if (table.reason === "empty_table") return "This table has no rows, so no key can be measured.";
-  return `No key was found (reason code: ${table.reason}).`;
+  return `No key was found (reason code: ${safeCode(table.reason)}).`;
 }
 
 export function skippedSentence(row: SkippedTable): string {
   if (row.reason === "sql_source") {
     return `${row.table} comes from a SQL source, so it is not measured here.`;
   }
-  return `${row.table} was not measured (reason code: ${row.reason}).`;
+  return `${row.table} was not measured (reason code: ${safeCode(row.reason)}).`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -328,9 +328,27 @@ function names(value: unknown): string {
   return Array.isArray(value) && value.length ? value.map(String).join(", ") : "none";
 }
 
-/** A value this module has no sentence for is shown as stated, never dropped. */
+/**
+ * A reason code or key name from the API, shown only when it is a plain
+ * identifier. Anything else is free text this page did not write, so it is
+ * replaced: the page never echoes it.
+ */
+export function safeCode(value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  return /^[a-z0-9_]{1,48}$/.test(text) && !/verif|certif/.test(text) ? text : "not recognised";
+}
+
+/**
+ * A bound this module has no sentence for is still listed, never dropped: its
+ * name, and its value when that is a number or a yes/no. Free text is not echoed.
+ */
 function asStated(key: string, value: unknown): string {
-  return `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`;
+  const name = key
+    .split(" ")
+    .map((part) => (/^[A-Za-z0-9_.]{1,64}$/.test(part) && !/verif|certif/i.test(part) ? part : "not recognised"))
+    .join(" ");
+  if (typeof value === "number" || typeof value === "boolean") return `${name}: ${String(value)}`;
+  return `${name}: stated by the API, and this page has no words for it yet`;
 }
 
 const LINK_COUNT_WORDS: Record<string, string> = {
@@ -410,7 +428,8 @@ export function boundSentences(bounds: Bounds | undefined): string[] {
         const what = r.child_table
           ? `${String(r.child_table)}.${names(r.child_columns)} to ${String(r.parent_table)}.${names(r.parent_columns)}`
           : String(r.table ?? "a table");
-        out.push(`Could not be measured: ${what} (error class: ${String(r.error ?? "unknown")}).`);
+        const cls = typeof r.error === "string" && /^[A-Za-z]{1,48}$/.test(r.error) ? r.error : "not recognised";
+        out.push(`Could not be measured: ${what} (error class: ${cls}).`);
       }
     } else out.push(asStated(key, value));
   }
@@ -448,16 +467,26 @@ export function linkUsability(link: LinkItem, items: readonly ProfileItem[]): Li
   return { usable: childKeyApproved && parentKeyApproved, childKeyApproved, parentKeyApproved };
 }
 
-/** Which key is missing, for the "not usable" line. */
+/**
+ * What stands between this link and an answer, or null when nothing does: the
+ * link is approved and so are both keys. A rejected link is said to be rejected
+ * whatever its keys are.
+ */
 export function linkUsabilitySentence(link: LinkItem, items: readonly ProfileItem[]): string | null {
+  if (link.status === "revoked") return "Rejected: this link is not used, whatever its keys are.";
   const u = linkUsability(link, items);
-  if (u.usable) return null;
-  const missing: string[] = [];
-  if (!u.childKeyApproved) missing.push(`a key of ${link.payload.from_object}`);
-  if (!u.parentKeyApproved) {
-    missing.push(`${columnList(link.payload.to_columns)} as the key of ${link.payload.to_object}`);
+  if (!u.usable) {
+    const missing: string[] = [];
+    if (!u.childKeyApproved) missing.push(`a key of ${link.payload.from_object}`);
+    if (!u.parentKeyApproved) {
+      missing.push(`${columnList(link.payload.to_columns)} as the key of ${link.payload.to_object}`);
+    }
+    return `${LINK_NOT_USABLE}. Not approved yet: ${missing.join(" and ")}.`;
   }
-  return `${LINK_NOT_USABLE}. Not approved yet: ${missing.join(" and ")}.`;
+  if (link.status !== "approved") {
+    return "Both keys are approved. This link itself is not approved yet, so it is not used.";
+  }
+  return null;
 }
 
 /** 409 `key_already_approved`: say which key holds the table. */
@@ -577,4 +606,189 @@ export function isAnswerFor(item: ProfileItem, answer: unknown): answer is Profi
 /** Replace one item with the row the API returned. Nothing else changes. */
 export function withItem(items: readonly ProfileItem[], updated: ProfileItem): ProfileItem[] {
   return items.map((item) => (item.id === updated.id ? updated : item));
+}
+
+// --- the review of one Space, as a plain object -----------------------------------
+
+export type ReviewState = {
+  spaceId: string;
+  loading: boolean;
+  measuring: boolean;
+  items: ProfileItem[];
+  /** The last measurement of this session. Not stored by the API. */
+  measured: ProfileBody | null;
+  persisted: boolean | null;
+  /** A refusal for the whole page (load or measure). */
+  refusal: Refusal | null;
+  /** Item id -> the press that is waiting for the API. */
+  pending: Record<string, "approve" | "reject">;
+  /** Item id -> what the API said when it refused the last press. */
+  itemNotice: Record<string, string>;
+  /** Stored items whose table or column the last measurement no longer found. */
+  stale: "all" | string[];
+};
+
+export type ReviewApi = {
+  fetchSpaceItems: typeof fetchSpaceItems;
+  measureSpace: typeof measureSpace;
+  approveItem: typeof approveItem;
+  rejectItem: typeof rejectItem;
+};
+
+export function hasNoGrant(state: ReviewState): boolean {
+  return state.refusal?.kind === "steward_grant_required";
+}
+
+export function isStale(state: ReviewState, item: ProfileItem): boolean {
+  return state.stale === "all" || state.stale.includes(item.id);
+}
+
+/** Approve is offered only for an item the Space still has, and never without a grant. */
+export function canApprove(state: ReviewState, item: ProfileItem): boolean {
+  return !hasNoGrant(state) && item.status !== "approved" && !isStale(state, item);
+}
+
+export function canReject(state: ReviewState, item: ProfileItem): boolean {
+  return !hasNoGrant(state) && item.status !== "revoked";
+}
+
+/** No press while a measurement is in flight, and no second press on one item. */
+export function pressBlocked(state: ReviewState, item: ProfileItem): boolean {
+  return state.loading || state.measuring || !!state.pending[item.id];
+}
+
+/** No measurement while a press is in flight: its answer could be older than the press's. */
+export function measureBlocked(state: ReviewState): boolean {
+  return state.loading || state.measuring || Object.keys(state.pending).length > 0;
+}
+
+export function showMemoryNotice(state: ReviewState): boolean {
+  return state.persisted === false;
+}
+
+export type Review = {
+  getState: () => ReviewState;
+  subscribe: (listener: () => void) => () => void;
+  load: () => Promise<void>;
+  measure: () => Promise<void>;
+  press: (item: ProfileItem, action: "approve" | "reject") => Promise<void>;
+  dispose: () => void;
+};
+
+/**
+ * The review of one Space. State is held here, not in render state, so two
+ * presses in one tick see each other, and every rule is testable without a
+ * browser. Three rules:
+ * - a status changes only from the item the API returned for that press;
+ * - a measurement and a press never overlap, so the page cannot show a status
+ *   older than one the API already confirmed;
+ * - after `dispose` (the page moved to another Space) a late answer changes nothing.
+ */
+export function createReview(
+  spaceId: string,
+  api: ReviewApi = { fetchSpaceItems, measureSpace, approveItem, rejectItem },
+): Review {
+  let state: ReviewState = {
+    spaceId,
+    loading: true,
+    measuring: false,
+    items: [],
+    measured: null,
+    persisted: null,
+    refusal: null,
+    pending: {},
+    itemNotice: {},
+    stale: [],
+  };
+  let disposed = false;
+  const listeners = new Set<() => void>();
+  const set = (patch: Partial<ReviewState>) => {
+    if (disposed) return;
+    state = { ...state, ...patch };
+    for (const listener of listeners) listener();
+  };
+  const without = <T>(map: Record<string, T>, id: string): Record<string, T> => {
+    const { [id]: _gone, ...rest } = map;
+    return rest;
+  };
+
+  return {
+    getState: () => state,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    dispose() {
+      disposed = true;
+      listeners.clear();
+    },
+    async load() {
+      const result = await api.fetchSpaceItems(spaceId);
+      if (result.ok) {
+        set({
+          loading: false,
+          items: result.body.items ?? [],
+          persisted: typeof result.body.persisted === "boolean" ? result.body.persisted : null,
+        });
+      } else {
+        set({ loading: false, refusal: result.refusal });
+      }
+    },
+    async measure() {
+      if (disposed || hasNoGrant(state) || measureBlocked(state)) return;
+      set({ measuring: true, refusal: null });
+      const result = await api.measureSpace(spaceId);
+      if (!result.ok) {
+        set({
+          measuring: false,
+          refusal: result.refusal,
+          // No file table left: every stored proposal is for a table the Space no longer has.
+          ...(result.refusal.kind === "no_file_tables" ? { stale: "all" as const, measured: null } : {}),
+        });
+        return;
+      }
+      const body = result.body;
+      const kept = new Set(body.not_remeasured ?? []);
+      const fresh = new Set(body.items.map((i) => i.id));
+      set({
+        measuring: false,
+        items: [...body.items, ...state.items.filter((i) => kept.has(i.id) && !fresh.has(i.id))],
+        measured: body,
+        persisted: typeof body.persisted === "boolean" ? body.persisted : null,
+        itemNotice: {},
+        stale: [...kept],
+      });
+    },
+    async press(item, action) {
+      if (disposed || pressBlocked(state, item)) return;
+      if (!(action === "approve" ? canApprove(state, item) : canReject(state, item))) return;
+      set({ pending: { ...state.pending, [item.id]: action }, itemNotice: without(state.itemNotice, item.id) });
+      const result = await (action === "approve" ? api.approveItem(item.id) : api.rejectItem(item.id));
+      const pending = without(state.pending, item.id);
+      if (result.ok) {
+        if (isAnswerFor(item, result.body)) {
+          set({ pending, items: withItem(state.items, result.body) });
+        } else {
+          set({
+            pending,
+            itemNotice: {
+              ...state.itemNotice,
+              [item.id]:
+                "The API answer was not this item with a status this page knows. The status shown is unchanged: reload to read it again.",
+            },
+          });
+        }
+        return;
+      }
+      if (result.refusal.kind === "steward_grant_required") {
+        set({ pending, refusal: result.refusal });
+        return;
+      }
+      const sentence =
+        result.refusal.kind === "key_already_approved"
+          ? keyConflictSentence(result.refusal, state.items)
+          : refusalSentence(result.refusal);
+      set({ pending, itemNotice: { ...state.itemNotice, [item.id]: sentence } });
+    },
+  };
 }
