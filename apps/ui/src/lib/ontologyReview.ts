@@ -338,6 +338,12 @@ export function safeCode(value: unknown): string {
   return /^[a-z0-9_]{1,48}$/.test(text) && !/verif|certif/.test(text) ? text : "not recognised";
 }
 
+/** A stated phrase shown only when it is plain words. Free text is replaced, never echoed. */
+function plain(value: unknown): string {
+  const text = typeof value === "string" ? value : "";
+  return /^[A-Za-z0-9_ .,+:>-]{1,120}$/.test(text) && !/verif|certif/i.test(text) ? text : "not recognised";
+}
+
 /**
  * A bound this module has no sentence for is still listed, never dropped: its
  * name, and its value when that is a number or a yes/no. Free text is not echoed.
@@ -378,11 +384,11 @@ export function boundSentences(bounds: Bounds | undefined): string[] {
       }
     } else if (key === "pair_search" && isRecord(value)) {
       for (const [k, v] of Object.entries(value)) {
-        if (k === "when") out.push(`Two-column keys are searched ${String(v)}.`);
+        if (k === "when") out.push(`Two-column keys are searched ${plain(v)}.`);
         else if (k === "max_columns") {
           out.push(`At most ${n(v)} columns per table are paired.`);
         } else if (k === "wider_than_pairs") {
-          out.push(`Keys wider than two columns: ${String(v)}.`);
+          out.push(`Keys wider than two columns: ${plain(v)}.`);
         } else if (k === "tables" && isRecord(v)) {
           for (const [table, t] of Object.entries(v)) {
             const row = isRecord(t) ? t : {};
@@ -405,10 +411,10 @@ export function boundSentences(bounds: Bounds | undefined): string[] {
       }
     } else if (key === "link_search" && isRecord(value)) {
       for (const [k, v] of Object.entries(value)) {
-        if (k === "shape") out.push(`Links searched: ${String(v)}.`);
-        else if (k === "type_rule") out.push(`Type rule: ${String(v)}.`);
+        if (k === "shape") out.push(`Links searched: ${plain(v)}.`);
+        else if (k === "type_rule") out.push(`Type rule: ${plain(v)}.`);
         else if (k === "self_references") {
-          out.push(`Links from a table to itself: ${String(v)}.`);
+          out.push(`Links from a table to itself: ${plain(v)}.`);
         } else if (k === "max_pairs") {
           out.push(`At most ${n(v)} column pairs are measured for links.`);
         } else if (k in LINK_COUNT_WORDS) out.push(`${n(v)} ${LINK_COUNT_WORDS[k]}.`);
@@ -701,6 +707,7 @@ export function createReview(
     stale: [],
   };
   let disposed = false;
+  let loadStarted = false;
   const listeners = new Set<() => void>();
   const set = (patch: Partial<ReviewState>) => {
     if (disposed) return;
@@ -723,6 +730,8 @@ export function createReview(
       listeners.clear();
     },
     async load() {
+      if (disposed || loadStarted) return;
+      loadStarted = true;
       const result = await api.fetchSpaceItems(spaceId);
       if (result.ok) {
         set({
@@ -756,7 +765,7 @@ export function createReview(
         measured: body,
         persisted: typeof body.persisted === "boolean" ? body.persisted : null,
         itemNotice: {},
-        stale: [...kept],
+        stale: [...kept].filter((id) => !fresh.has(id)),
       });
     },
     async press(item, action) {

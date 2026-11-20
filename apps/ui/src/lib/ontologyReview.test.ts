@@ -582,3 +582,15 @@ describe("the calls the screen makes", () => {
     if (!result.ok) expect(result.refusal.kind).toBe("error");
   });
 });
+
+describe("bound phrases are never echoed as free text", () => {
+  it("replaces a stated phrase that is not plain words", () => {
+    const lines = boundSentences({
+      link_search: { shape: "verified values like 4111-1111", type_rule: "x\ny" },
+      pair_search: { wider_than_pairs: "certified Alice Smith", when: "only on request" },
+    });
+    expect(lines.join("\n")).not.toMatch(/verif|certif|4111|Alice/i);
+    expect(lines).toContain("Links searched: not recognised.");
+    expect(lines).toContain("Two-column keys are searched only on request.");
+  });
+});

@@ -248,3 +248,23 @@ describe("no steward grant", () => {
     expect(calls).toEqual(["approve k1"]);
   });
 });
+
+describe("edges the checker found", () => {
+  it("an id the measurement both returned and listed as not re-measured is not stale", async () => {
+    const { review, measure } = await loaded([key("k1")]);
+    const m = review.measure();
+    measure[0].resolve(ok(body([key("k1")], { not_remeasured: ["k1"] })));
+    await m;
+    expect(review.getState().stale).toEqual([]);
+  });
+
+  it("a second load() does not run, so a late load cannot revert a confirmed status", async () => {
+    const { review, press } = await loaded([key("k1")]);
+    await review.load();
+    const p = review.press(review.getState().items[0], "approve");
+    press["approve k1"].resolve(ok({ ...key("k1"), status: "approved" }));
+    await p;
+    await review.load();
+    expect(statusOf(review, "k1")).toBe("approved");
+  });
+});
