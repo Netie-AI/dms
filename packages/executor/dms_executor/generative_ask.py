@@ -156,6 +156,7 @@ from dms_executor.sql_vote import (
     reconfirm_prompt,
 )
 from dms_executor.stated_values import dropped_stated_value_reason
+from dms_executor.total_guard import repeated_input_reason
 from dms_executor.verified_queries import (
     examples_text,
     maybe_save_checked_sql,
@@ -1652,7 +1653,9 @@ def _run_extract_loop(
             broken = violations_cited_by_sql(sql, declared, declared_violations)
             if broken:
                 return violation_reason(broken)
-        return None
+        # TOTAL-GUARD-01: last, so it refuses only what would otherwise be
+        # served. The reason goes back to the retry like any checker reason.
+        return repeated_input_reason(sql, dialect)
 
     def vote_rows(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         return _vote_rows(
@@ -2687,6 +2690,20 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            # TOTAL-GUARD-01: the statement passed every other check and is
+            # about to be served. An aggregate that can read one input value
+            # twice is the plausible wrong total; refuse it by name.
+            repeat_why = repeated_input_reason(sql, dialect)
+            if repeat_why:
+                return _stamp(
+                    _abstain(
+                        q,
+                        repeat_why,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source,
+                    )
+                )
             sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(

@@ -185,6 +185,7 @@ from dms_executor.space_ontology import (
 from dms_executor.sql_currency import tables_read as tables_read_by_sql
 from dms_executor.sql_currency import tables_read_checked as tables_read_checked_by_sql
 from dms_executor.sql_loop import apply_sql_credit, extract_dialect
+from dms_executor.total_guard import repeated_input_reason
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -1479,6 +1480,16 @@ class Executor:
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
+        if sql_used and not getattr(resp, "abstained", False):
+            # TOTAL-GUARD-01: the contract ask's SQL meets the same class rule
+            # as generated SQL, last, so only a would-be serve is refused.
+            repeat_why = repeated_input_reason(sql_used, self.dialect)
+            if repeat_why:
+                env = path_miss_envelope(
+                    question, repeat_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         # DMS_AI_FIRST still ran the contract grant check above. An ungranted,
         # hostile, numeric, or unverified-join SQL stayed a direct abstain.
         # A SQL that would have been served is not the answer.
@@ -1753,6 +1764,11 @@ class Executor:
                 )
                 if join_why:
                     return abstain(join_why)
+        # TOTAL-GUARD-01: a Yes is not a proof either. Held SQL meets the same
+        # class rule as generated SQL before it runs.
+        repeat_why = repeated_input_reason(sql, self.dialect)
+        if repeat_why:
+            return abstain(repeat_why)
         warehouse = self._warehouse
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")
