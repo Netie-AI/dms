@@ -1445,6 +1445,12 @@ DEMO_HOLES: dict[str, tuple[str, str]] = {
     "table_form_self_join": ("WITH c AS (TABLE inventory) SELECT SUM(a.quantity_kg) AS total FROM c a, c b", "self_join_under_aggregate"),
     "json_group_array_concatenated": ("SELECT list_sum(CAST(json_group_array(quantity_kg) AS DOUBLE[]) || CAST(json_group_array(quantity_kg) AS DOUBLE[])) AS total FROM inventory", COLLECTION),
     "geomean_macro_over_a_window_value": ("SELECT geomean(w) AS total FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory)", WINDOW),
+    # Verifier round 2: ARRAY(SELECT ...) aggregates the query's rows into a list.
+    "array_of_rollup_rows_summed": ("SELECT list_sum(ARRAY(SELECT SUM(quantity_kg) AS x FROM inventory GROUP BY ROLLUP(category))) AS total", GROUPING),
+    "array_of_a_rollup_cte_summed": ("WITH r AS (SELECT SUM(quantity_kg) AS x FROM inventory GROUP BY ROLLUP(category)) SELECT list_sum(ARRAY(SELECT x FROM r)) AS total", GROUPING),
+    "array_of_window_values_summed": ("SELECT list_sum(ARRAY(SELECT w FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory))) AS total", WINDOW),
+    "array_of_a_union_summed": ("SELECT list_sum(ARRAY(SELECT quantity_kg FROM inventory UNION ALL SELECT quantity_kg FROM inventory)) AS total", SET_OP),
+    "two_arrays_concatenated": ("SELECT list_sum(ARRAY(SELECT quantity_kg FROM inventory) || ARRAY(SELECT quantity_kg FROM inventory)) AS total", COLLECTION),
 }
 
 
@@ -1525,6 +1531,9 @@ def test_demo_space_true_total_still_answers(
 #: (#531 clause 4). The guard cannot tell them from the wrong ones in their class.
 #: name -> (sql, the correct figure on the fixture, the rule).
 GUARD_NEW_ABSTAINS: dict[str, tuple[str, Any, str]] = {
+    # Verifier round 2, the price of the ARRAY rule: the same as len(list(x)).
+    "length_of_an_array_of_one_column": (f"SELECT array_length(ARRAY(SELECT school_id FROM {T})) AS total", 4, COLLECTION),
+    "json_array_length_of_json_group_array": (f"SELECT json_array_length(json_group_array(school_id)) AS total FROM {T}", 4, COLLECTION),
     "avg_of_a_lag_gap": (f"SELECT AVG(gap) AS total FROM (SELECT {N} - LAG({N}) OVER (ORDER BY enrollment_id) AS gap FROM {T})", -6.0, WINDOW),
     "array_length_of_split_string_agg": (f"SELECT array_length(string_split(string_agg(students, ','), ',')) AS total FROM {T}", 4, COLLECTION),
     "same_table_semi_join": (f"SELECT SUM({N}) AS total FROM {T} a SEMI JOIN {T} b ON a.enrollment_id = b.enrollment_id", 107, "self_join_under_aggregate"),
@@ -1544,3 +1553,20 @@ def test_guard_new_abstains_are_named(
     rig = od._space(tmp_path, monkeypatch, minter)
     assert od._oracle(rig.lake, sql) == [{"total": figure}]
     assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{why}")
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_array_of_rollup_rows_counted_abstains_in_the_ontology_space(
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """Verifier round 2: rule 16 passes it, so the guard alone refuses it. Served 5 for 4."""
+    sql = f"SELECT array_length(ARRAY(SELECT school_id FROM {T} GROUP BY ROLLUP(school_id))) AS total"
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, "How many schools have enrollments?")
+    assert od._oracle(rig.lake, sql) == [{"total": 5}]
+    assert od._oracle(rig.lake, f"SELECT COUNT(DISTINCT school_id) AS total FROM {T}") == [{"total": 4}]
+    _assert_refused_by_the_rule(env, rig, sql, GROUPING, (5,))
+    assert _join_why(rig, sql) is None, "only the guard stands in front of this one"

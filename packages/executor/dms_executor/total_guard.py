@@ -286,6 +286,8 @@ def _collects(node: exp.Expression) -> bool:
     """An aggregate whose result is a collection of its inputs."""
     if isinstance(node, exp.List):
         return True  # DuckDB list(x); sqlglot does not file it under AggFunc
+    if _array_query(node) is not None:
+        return True  # ARRAY(SELECT ...) collects the query's rows (verifier round 2)
     if isinstance(node, exp.Anonymous):
         # An aggregate sqlglot does not type: ask the engine what its overloads return.
         name = str(node.name).lower()
@@ -309,6 +311,17 @@ def _collects(node: exp.Expression) -> bool:
     ) and any(isinstance(v, (exp.Array, exp.Tuple)) for v in node.args.values()):
         return True  # quantile(x, [0.25, 0.75]) returns a list
     return not isinstance(node, _SCALAR_AGGS)
+
+
+def _array_query(node: exp.Expression) -> exp.Expression | None:
+    """The query of ``ARRAY(SELECT ...)``: DuckDB's list() over that query's rows."""
+    if isinstance(node, exp.Array) and len(node.expressions) == 1:
+        q = node.expressions[0]
+        if isinstance(q, exp.Subquery):
+            q = q.this
+        if isinstance(q, (exp.Select, *_SET_OPS)):
+            return q
+    return None
 
 
 def _aggregates(node: exp.Expression) -> bool:
@@ -547,6 +560,24 @@ class _Guard:
                 if sub.arg_key == "query" or isinstance(sub.parent, (exp.In, exp.Exists)):
                     continue  # a predicate's set, not a value
                 raise _Refuse("window_value_under_aggregate")
+        # ARRAY(q) aggregates q's rows into a list (verifier round 2): the rows
+        # it reads meet the same rule as rows an aggregate reads.
+        for node in mine:
+            q = _array_query(node)
+            if q is None:
+                continue
+            inner = self.query(q)
+            if inner.repeats:
+                raise _Refuse(f"{inner.repeats}_under_aggregate")
+            if any(n > 1 for n in inner.reads.values()):
+                raise _Refuse("self_join_under_aggregate")
+            kind = _any(inner)
+            if kind:
+                raise _Refuse(
+                    "collection_under_function"
+                    if kind == _COLLECTION
+                    else "window_value_under_aggregate"
+                )
         many = _many_grouping_sets(select)
         if many and any(isinstance(n, exp.Window) for n in own):
             raise _Refuse("grouping_sets_under_aggregate")
