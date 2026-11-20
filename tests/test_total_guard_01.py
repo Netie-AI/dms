@@ -1429,3 +1429,118 @@ def test_lateral_shapes_abstain(
     rig, env = _ask(door, sql, tmp_path, monkeypatch, minter)
     assert od._oracle(rig.lake, sql) == [{"total": wrong}] and wrong != TRUE
     _assert_refused_by_the_rule(env, rig, sql, why, (wrong,))
+
+
+# --- verifier round on the merged head: the demo Space, where the guard stands alone --
+
+#: In a demo Space rule 16 does not run, so the class rule is the only check.
+#: name -> (sql, the rule). Truth: SUM(quantity_kg) over the demo inventory.
+DEMO_Q = "What is the total inventory quantity?"
+DEMO_TRUE_SQL = "SELECT SUM(quantity_kg) AS total FROM inventory"
+DEMO_HOLES: dict[str, tuple[str, str]] = {
+    "table_form_names_a_window_cte": ("WITH w AS (SELECT SUM(quantity_kg) OVER () AS w FROM inventory), c AS (TABLE w) SELECT SUM(w) AS total FROM c", WINDOW),
+    "table_form_names_a_rollup_cte": ("WITH r AS (SELECT category, SUM(quantity_kg) AS x FROM inventory GROUP BY ROLLUP(category)), c AS (TABLE r) SELECT SUM(x) AS total FROM c", GROUPING),
+    "table_form_names_an_unpivot_cte": ("WITH u AS (SELECT * FROM (SELECT quantity_kg AS a, quantity_kg AS b FROM inventory) UNPIVOT (n FOR k IN (a, b))), c AS (TABLE u) SELECT SUM(n) AS total FROM c", TURN),
+    "table_form_names_a_union_cte": ("WITH u AS (SELECT quantity_kg FROM inventory UNION ALL SELECT quantity_kg FROM inventory), c AS (TABLE u) SELECT SUM(quantity_kg) AS total FROM c", SET_OP),
+    "table_form_self_join": ("WITH c AS (TABLE inventory) SELECT SUM(a.quantity_kg) AS total FROM c a, c b", "self_join_under_aggregate"),
+    "json_group_array_concatenated": ("SELECT list_sum(CAST(json_group_array(quantity_kg) AS DOUBLE[]) || CAST(json_group_array(quantity_kg) AS DOUBLE[])) AS total FROM inventory", COLLECTION),
+    "geomean_macro_over_a_window_value": ("SELECT geomean(w) AS total FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory)", WINDOW),
+}
+
+
+def _demo_ask(
+    sql: str, door: str, space_id: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter  # noqa: F811
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    client, cortex, _app, lake = ca._app(tmp_path, monkeypatch, minter)
+    rig = ca._Rig(client, cortex, space_id, lake)
+    truth = ca._oracle(lake, DEMO_TRUE_SQL)
+    figure = ca._oracle(lake, sql)
+    if door == "contract":
+
+        def _contract(req: Any) -> AskResponse:
+            return AskResponse(
+                answer=f"The total is {figure[0]['total']}.",
+                abstained=False,
+                badge="generated",
+                route="generated",
+                sql_used=sql,
+                rows=figure,
+            )
+
+        monkeypatch.setattr(cortex, "ask", _contract)
+        return rig.ask(DEMO_Q, {}), truth, figure
+    return rig.ask(DEMO_Q, ca._gen(sql)), truth, figure
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+@pytest.mark.parametrize("name", sorted(DEMO_HOLES))
+def test_demo_space_shapes_abstain_on_the_guard_alone(
+    name: str,
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    """On the merged head each was served L2_VALIDATED with the multiplied figure."""
+    sql, why = DEMO_HOLES[name]
+    env, truth, figure = _demo_ask(sql, door, space_id, tmp_path, monkeypatch, minter)
+    assert figure != truth, (figure, truth)  # the danger is real
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("rows"), env.get("text"))
+    assert env["abstained"] is True and env["rows"] == [] and env["values"] == []
+    assert not env.get("drillthrough_token")
+    text = str(env.get("text") or "")
+    assert f"repeated_input:{why}" in od._reasons(env) + " " + text, (why, env.get("assumptions"))
+    wrong = figure[0]["total"]
+    assert str(wrong) not in text and f"{float(wrong):g}" not in text, (wrong, text)
+    assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{why}")
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+def test_demo_space_true_total_still_answers(
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    env, truth, figure = _demo_ask(DEMO_TRUE_SQL, door, space_id, tmp_path, monkeypatch, minter)
+    assert figure == truth
+    assert env["badge"] != "ABSTAIN" and env["abstained"] is False, env.get("text")
+    assert od._multiset(env["rows"]) == od._multiset(truth), env["rows"]
+    # The TABLE forms are followed, not refused, by the guard. In the demo ask
+    # path another gate decides them (the grant parser reads a table named TABLE).
+    for sql in (
+        "WITH c AS (TABLE inventory) SELECT SUM(quantity_kg) AS total FROM c",
+        "SELECT SUM(quantity_kg) AS total FROM (TABLE inventory)",
+    ):
+        assert repeated_input_reason(sql) is None, sql
+    pair = "SELECT SUM(a.quantity_kg) AS total FROM (TABLE inventory) a, (TABLE inventory) b"
+    assert (repeated_input_reason(pair) or "").startswith("repeated_input:self_join_under_aggregate")
+
+
+#: Correct statements the guard refuses (verifier round): named, never silent
+#: (#531 clause 4). The guard cannot tell them from the wrong ones in their class.
+#: name -> (sql, the correct figure on the fixture, the rule).
+GUARD_NEW_ABSTAINS: dict[str, tuple[str, Any, str]] = {
+    "avg_of_a_lag_gap": (f"SELECT AVG(gap) AS total FROM (SELECT {N} - LAG({N}) OVER (ORDER BY enrollment_id) AS gap FROM {T})", -6.0, WINDOW),
+    "array_length_of_split_string_agg": (f"SELECT array_length(string_split(string_agg(students, ','), ',')) AS total FROM {T}", 4, COLLECTION),
+    "same_table_semi_join": (f"SELECT SUM({N}) AS total FROM {T} a SEMI JOIN {T} b ON a.enrollment_id = b.enrollment_id", 107, "self_join_under_aggregate"),
+    "aggregate_over_a_pivot_statement": (f'SELECT SUM("1") AS total FROM (PIVOT {T} ON school_id USING SUM({N}))', 30, TURN),
+}
+
+
+@pytest.mark.parametrize("name", sorted(GUARD_NEW_ABSTAINS))
+def test_guard_new_abstains_are_named(
+    name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql, figure, why = GUARD_NEW_ABSTAINS[name]
+    rig = od._space(tmp_path, monkeypatch, minter)
+    assert od._oracle(rig.lake, sql) == [{"total": figure}]
+    assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{why}")

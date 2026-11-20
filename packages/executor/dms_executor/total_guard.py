@@ -43,6 +43,7 @@ statement the analysis cannot finish refuses.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -220,9 +221,60 @@ def _aggregate_returns() -> dict[str, frozenset[bool]]:
     for name, ret in rows:
         text = str(ret or "")
         out.setdefault(str(name), set()).add(
-            text.endswith("]") or text.startswith(("MAP", "STRUCT"))
+            text.endswith("]") or text.startswith(("MAP", "STRUCT")) or text == "JSON"
         )
     return {k: frozenset(v) for k, v in out.items()}
+
+
+@lru_cache(maxsize=1)
+def _aggregate_macros() -> dict[str, bool]:
+    """Per DuckDB macro that calls an aggregate: does it return a collection?
+
+    ``json_group_array`` is a macro over ``string_agg``, ``geomean`` and
+    ``weighted_avg`` are macros over aggregates: the aggregate catalog does not
+    list them, so they read as scalar functions (verifier round on the merge).
+    Read from the engine's own macro definitions, to a fixpoint so a macro over
+    such a macro counts. A definition sqlglot cannot parse is taken as a
+    collecting aggregate: fail closed. In-memory, reads no lake.
+    """
+    con = duckdb.connect(":memory:")
+    try:
+        rows = con.execute(
+            "SELECT DISTINCT lower(function_name), macro_definition FROM duckdb_functions() "
+            "WHERE function_type = 'macro'"
+        ).fetchall()
+    finally:
+        con.close()
+    aggs = _aggregate_returns()
+    out: dict[str, bool] = {}
+    trees: list[tuple[str, exp.Expression]] = []
+    for name, body in rows:
+        try:
+            trees.append((str(name), sqlglot.parse_one(f"SELECT {body}", read=SERVING_DIALECT)))
+        except Exception:  # noqa: BLE001 - an unread definition proves nothing
+            # Not parsed: an aggregate it calls must still be named in its text.
+            words = set(re.findall(r"[a-z_][a-z0-9_]*", str(body).lower()))
+            if words & set(aggs):
+                out[str(name)] = True
+    changed = True
+    while changed:
+        changed = False
+        for name, tree in trees:
+            calls, collects = False, False
+            for node in tree.walk():
+                if isinstance(node, exp.Anonymous):
+                    called = str(node.name).lower()
+                    if called in aggs:
+                        calls, collects = True, collects or True in aggs[called]
+                    elif called in out:
+                        calls, collects = True, collects or out[called]
+                elif isinstance(node, (exp.AggFunc, exp.List)):
+                    calls, collects = True, collects or _collects(node)
+            new = out.get(name, False) or collects
+            if calls and out.get(name) != new:
+                out[name] = new
+                changed = True
+    return out
 
 
 def _any(*rels: _Rel) -> str:
@@ -236,9 +288,11 @@ def _collects(node: exp.Expression) -> bool:
         return True  # DuckDB list(x); sqlglot does not file it under AggFunc
     if isinstance(node, exp.Anonymous):
         # An aggregate sqlglot does not type: ask the engine what its overloads return.
-        returns = _aggregate_returns().get(str(node.name).lower())
+        name = str(node.name).lower()
+        returns = _aggregate_returns().get(name)
         if returns is None:
-            return False  # not an aggregate (a scalar function, or unknown)
+            # A macro over an aggregate, or not an aggregate at all.
+            return _aggregate_macros().get(name, False)
         if returns == {True}:
             return True
         return True in returns and any(
@@ -264,7 +318,8 @@ def _aggregates(node: exp.Expression) -> bool:
     so a scalar function sqlglot does not know (``hash``, ``date_part``) is not one.
     """
     if isinstance(node, exp.Anonymous):
-        return str(node.name).lower() in _aggregate_returns()
+        name = str(node.name).lower()
+        return name in _aggregate_returns() or name in _aggregate_macros()
     return isinstance(node, (exp.AggFunc, exp.List, exp.Window))
 
 
@@ -403,9 +458,26 @@ class _Guard:
                 and node.this.name.upper() == "TABLE"
                 and not node.this.table
             ):
-                # DuckDB ``TABLE t`` (a whole base table); sqlglot reads it as
-                # ``TABLE AS t``. One read of one table: nothing repeated.
-                rel = _Rel()
+                # DuckDB ``TABLE t``; sqlglot reads it as ``TABLE AS t``. It is
+                # ``SELECT * FROM t``, so t is followed like any FROM name: an
+                # earlier CTE (a window, a ROLLUP, an UNPIVOT behind it) or a base
+                # table counted toward a self-join (verifier round on the merge).
+                ref = exp.to_table(str(node.alias))
+                ref.parent = node
+                rel = self.source(ref)
+            elif (
+                isinstance(node, exp.Table)
+                and isinstance(node.this, exp.Identifier)
+                and not node.this.quoted
+                and node.name.upper() == "TABLE"
+                and not node.db
+                and node.alias
+            ):
+                # ``(TABLE t)`` as a derived table: sqlglot reads it as a table
+                # named TABLE aliased t. Followed like the CTE form above.
+                ref = exp.to_table(str(node.alias))
+                ref.parent = node
+                rel = self.source(ref)
             elif isinstance(node, exp.Pivot):
                 # ``PIVOT t ON k USING SUM(v)``: the USING aggregate reads t's rows.
                 inner = self.source(node.this) if node.this is not None else _Rel()
@@ -613,7 +685,7 @@ class _Guard:
         return ""
 
 
-def repeated_input_reason(sql: str, dialect: str = SERVING_DIALECT) -> str | None:
+def repeated_input_reason(sql: str, dialect: str | None = SERVING_DIALECT) -> str | None:
     """``repeated_input:<why>`` when an aggregate can read one input value twice.
 
     None when every aggregate in ``sql`` reads rows that were only filtered,
@@ -621,7 +693,8 @@ def repeated_input_reason(sql: str, dialect: str = SERVING_DIALECT) -> str | Non
     and for what it cannot see.
     """
     try:
-        roots = [r for r in sqlglot.parse(sql, read=dialect) if r is not None]
+        # The statement runs on the serving engine: no dialect means its dialect.
+        roots = [r for r in sqlglot.parse(sql, read=dialect or SERVING_DIALECT) if r is not None]
     except Exception:  # noqa: BLE001
         return f"{REASON_REPEATED_INPUT}:parse"
     if len(roots) != 1:
