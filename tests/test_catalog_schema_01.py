@@ -583,6 +583,31 @@ def test_two_table_question_still_abstains_no_ontology(
     assert rig.cortex.executed == [], "the refused SQL reached Cortex submit"
 
 
+def test_one_table_date_function_question_abstains_today_base_defect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    """Pinned, not wanted: a correct one-table answer is refused in a file Space.
+
+    The no-ontology one-read rule (JOIN-HOLE-01, dms#527) refuses a function
+    sqlglot cannot type, here ``dayname``. The same case is red on the base
+    (``test_connect_ask_03::test_one_table_shape_still_answers_the_truth
+    [date_function]``). With the catalog visible a real model will write this
+    SQL, so the false abstain is now reachable. This ticket does not change
+    the gate. When the gate is fixed this test goes red: assert the weekdays.
+    """
+    visits = "visit_id,visit_date\n1,2026-01-05\n2,2026-01-20\n"
+    rig = _file_space(tmp_path, monkeypatch, minter, extra=(("visits.csv", visits),))
+    assert "bronze.visits" in rig.grants()
+    sql = "SELECT visit_id, dayname(visit_date) AS weekday FROM bronze.visits ORDER BY visit_id"
+    env = rig.ask("On which weekday was each visit?", sql)
+    assert any("bronze.visits" in _tables_in(p) for p in rig.prompts())
+    text = _assert_abstain(env, "unverified_join")
+    assert NO_ONTOLOGY in _reasons(env) or NO_ONTOLOGY in text, (text, env.get("assumptions"))
+    # No figure and no row: a refusal, never a wrong answer.
+    assert env["rows"] == [] and env["values"] == []
+    assert rig.cortex.executed == []
+
+
 # --- personal values stay in the lake ---------------------------------------------
 
 

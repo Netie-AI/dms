@@ -2272,8 +2272,9 @@ def _grants_by_schema(grantable: set[str] | None) -> dict[str, set[str] | None]:
         return {_DEFAULT_SCHEMA: None}
     out: dict[str, set[str] | None] = {}
     for name in grantable:
-        schema, _, table = str(name or "").strip().rpartition(".")
-        schema = schema or _DEFAULT_SCHEMA
+        schema, dot, table = str(name or "").strip().rpartition(".")
+        if not dot:
+            schema = _DEFAULT_SCHEMA
         if not _ident(schema) or not _ident(table):
             continue
         held = out.setdefault(schema.lower(), set())
