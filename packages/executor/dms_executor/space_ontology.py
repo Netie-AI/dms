@@ -981,6 +981,7 @@ class _JoinRule:
                     if self.col(col, inner)[0] != inner_node:
                         raise _Refuse("correlated_subquery")
             where = sub.args.get("where")
+            linked = False
             for conj in _conjuncts(where.this if where is not None else None):
                 owners = [self.col(x, inner) for x in conj.find_all(exp.Column)]
                 nodes = {o[0] for o in owners}
@@ -996,6 +997,12 @@ class _JoinRule:
                     raise _Refuse("correlated_subquery")
                 (_na, ra), (_nb, rb) = self.col(conj.this, inner), self.col(conj.expression, inner)
                 self.link_for({(ra[0], ra[1], rb[0], rb[1])})
+                linked = True
+            if not linked:
+                # Not tied to the outer row by a verified link, the EXISTS is one
+                # constant TRUE or FALSE: it filters nothing, and the second table
+                # it reads answers for a relationship no link proves.
+                raise _Refuse("uncorrelated_subquery")
             return sub
         if isinstance(c, exp.In) and c.args.get("query") is not None:
             left = c.this

@@ -123,6 +123,19 @@ NEWLY_ABSTAIN: dict[str, tuple[str, str]] = {
 }
 
 
+#: Shapes a DuckDB below 2 refuses to bind, with the engine's own words. DuckDB 2
+#: runs them and returns the wrong figure in ``od.JOIN_HOLE_SHAPES``. The repo
+#: pins ``duckdb>=1.1,<2`` (F-TBD-28), so on the pinned engine the refusal is the
+#: proof that no figure can be served from the statement. The join rule abstains
+#: on the envelope on both engines, and both outcomes are asserted: no skip.
+ENGINE_REFUSES_BELOW_2: dict[str, str] = {"unlist_in_group_by": "UNNEST not supported here"}
+
+
+def _engine_refuses(name: str) -> bool:
+    """True when this DuckDB cannot run the named shape at all."""
+    return name in ENGINE_REFUSES_BELOW_2 and int(duckdb.__version__.split(".")[0]) < 2
+
+
 def _ask(
     door: str,
     sql: str,
@@ -130,15 +143,21 @@ def _ask(
     monkeypatch: pytest.MonkeyPatch,
     minter: ManifestMinter,  # noqa: F811
     question: str = Q,
+    contract_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[od._Space, dict[str, Any]]:
-    """Carry ``sql`` to the envelope through one door."""
+    """Carry ``sql`` to the envelope through one door.
+
+    ``contract_rows`` are the rows the contract ask claims for ``sql``. A caller
+    passes them only when this engine refuses to run ``sql`` itself: the door
+    must refuse the statement whatever rows come back with it.
+    """
     if door == "loop":
         monkeypatch.setenv("DMS_CLOOP_B", "1")
         monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
     rig = od._space(tmp_path, monkeypatch, minter)
     if door != "contract":
         return rig, rig.ask(question, {"query_sql": sql, "plan_source": "ontology_plan"})
-    rows = od._oracle(rig.lake, sql)
+    rows = od._oracle(rig.lake, sql) if contract_rows is None else contract_rows
     figure = next(iter(rows[0].values())) if rows else None
 
     def _contract(req: Any) -> AskResponse:
@@ -194,9 +213,24 @@ def test_one_table_read_twice_abstains(
     store: OntologyStore,  # noqa: F811
 ) -> None:
     sql, wrong, true = od.JOIN_HOLE_SHAPES[name]
-    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter)
-    # The danger is real: the statement runs and returns the wrong figure.
-    assert od._oracle(rig.lake, sql) == [{"total": wrong}]
+    refused = _engine_refuses(name)
+    # Where this engine will not run the statement, the contract ask still claims
+    # the figure DuckDB 2 returns: the door refuses the SQL, it does not trust rows.
+    rig, env = _ask(
+        door,
+        sql,
+        tmp_path,
+        monkeypatch,
+        minter,
+        contract_rows=[{"total": wrong}] if refused else None,
+    )
+    if refused:
+        # DuckDB below 2 refuses to bind it, so no figure can be served from it here.
+        with pytest.raises(duckdb.BinderException, match=ENGINE_REFUSES_BELOW_2[name]):
+            od._oracle(rig.lake, sql)
+    else:
+        # The danger is real: the statement runs and returns the wrong figure.
+        assert od._oracle(rig.lake, sql) == [{"total": wrong}]
     assert od._oracle(rig.lake, TRUE_SQL[true]) == [{"total": true}]
     assert wrong != true
     _assert_join_abstain(env, rig, (wrong,))
@@ -301,3 +335,62 @@ def test_statement_reading_no_table_abstains(
     assert "42" not in str(env.get("text") or ""), env.get("text")
     assert rig.cortex.executed == []
     assert _why(rig, sql) == "unverified_join:no_table"
+
+
+# --- an EXISTS over a second table that names no link (JOIN-HOLE-01, #527) ----------
+
+S, D = od.SCHOOLS, od.DISTRICTS
+#: The question asks for the North district's schools (3). Each statement reads a
+#: second table through an EXISTS that is not tied to the outer row by a verified
+#: link, so the EXISTS is one constant TRUE or FALSE: it filters nothing, and the
+#: count of every school (4) is served as the North count.
+UNCORRELATED_EXISTS: dict[str, str] = {
+    "exists_filtered": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE EXISTS (SELECT 1 FROM {D} d WHERE d.name = 'North')",
+    "not_exists_filtered": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE NOT EXISTS (SELECT 1 FROM {D} d WHERE d.name = 'East')",
+    "exists_unfiltered": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE EXISTS (SELECT 1 FROM {D} d)",
+    "exists_same_table": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE EXISTS (SELECT 1 FROM {S} s2 WHERE s2.name = 'Alder')",
+    "exists_beside_a_filter": f"SELECT COUNT(*) AS school_count FROM {S} s WHERE s.name <> 'Zed' AND EXISTS (SELECT 1 FROM {D} d WHERE d.name = 'North')",
+}
+CORRELATED_EXISTS = (
+    f"SELECT COUNT(*) AS school_count FROM {S} s WHERE EXISTS "
+    f"(SELECT 1 FROM {D} d WHERE d.district_id = s.district_id AND d.name = 'North')"
+)
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(UNCORRELATED_EXISTS))
+def test_exists_without_a_verified_link_abstains(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql = UNCORRELATED_EXISTS[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, od.VERIFIED_Q)
+    # The danger is real: every school is counted, not the North district's three.
+    assert od._oracle(rig.lake, sql) == [{"school_count": 4}]
+    assert od._oracle(rig.lake, od.VERIFIED_SQL) == [{"school_count": 3}]
+    text = od._assert_abstain(env, "")
+    assert "unverified_join" in text, text
+    assert "school_count=4" not in text and "The total is 4" not in text, text
+    assert rig.cortex.executed == [], "refused SQL reached Cortex submit"
+    assert _why(rig, sql) == "unverified_join:uncorrelated_subquery"
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_exists_over_the_verified_link_still_answers(
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    rig, env = _ask(door, CORRELATED_EXISTS, tmp_path, monkeypatch, minter, od.VERIFIED_Q)
+    assert od._oracle(rig.lake, CORRELATED_EXISTS) == [{"school_count": 3}]
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert env["abstained"] is False and env["rows"] == [{"school_count": 3}]
+    text = str(env.get("text") or "")
+    assert ("The total is 3." if door == "contract" else "school_count=3") in text, text
+    assert _why(rig, CORRELATED_EXISTS) is None
