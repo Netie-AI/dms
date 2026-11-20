@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +42,7 @@ from dms_executor.lake_registry import (
     ServingWaitCancelled,
 )
 from dms_executor.manifest import ManifestMinter
-from dms_executor.space_ontology import load_space_ontology
-from test_onto_derive_01 import minter, store  # noqa: F401 - fixtures
+from dms_executor.space_ontology import load_space_ontology, set_ontology_store
 
 CHECK_UNAVAILABLE = "unverified_join:check_unavailable"
 SECRET = "join analyser raised"
@@ -50,6 +50,21 @@ DOORS = ["first_generate", "extract_loop", "contract_ask"]
 #: The figure the allowed SQL would serve. E9: an abstain must not state it.
 SERVED_FIGURE = "3"
 CONTRACT_ANSWER = "There are 3 schools in the North district."
+
+
+@pytest.fixture()
+def minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
+    return od.make_minter(monkeypatch)
+
+
+@pytest.fixture()
+def store() -> Iterator[OntologyStore]:
+    fresh = OntologyStore()
+    prev = set_ontology_store(fresh)
+    try:
+        yield fresh
+    finally:
+        set_ontology_store(prev)
 
 
 @pytest.fixture(autouse=True)
@@ -95,9 +110,7 @@ def _demo_fallback_on(rig: Any) -> None:
     rig.client.app.dependency_overrides[get_settings] = lambda: settings
 
 
-def _rig(
-    door: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
-) -> Any:
+def _rig(door: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter) -> Any:
     if door == "extract_loop":
         monkeypatch.setenv("DMS_CLOOP_B", "1")
         monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
@@ -161,8 +174,9 @@ def _assert_check_unavailable(r: Any, rig: Any, secret: str = SECRET) -> dict[st
     # Clause 2: no exception text anywhere in the response.
     assert secret not in r.text, r.text
     # Clause 3: not a demo answer, in any costume.
-    assert not env.get("demo_fallback_used"), env
-    assert "fallback" not in r.text.lower(), r.text
+    assert env.get("demo_fallback_used") is False, env
+    assert "fallback" not in od._reasons(env).lower() + text.lower(), env
+    assert "demo" not in str(env.get("answer_id")) + od._reasons(env).lower() + text.lower(), env
     assert "live_ask_failed" not in r.text
     return env
 
@@ -175,8 +189,8 @@ def test_join_check_that_raises_abstains_check_unavailable(
     door: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    minter: ManifestMinter,  # noqa: F811
-    store: OntologyStore,  # noqa: F811
+    minter: ManifestMinter,
+    store: OntologyStore,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """On the parent this is HTTP 503 ``live_ask_failed`` with the exception text."""
@@ -198,8 +212,8 @@ def test_demo_fallback_on_gives_the_same_abstain(
     door: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    minter: ManifestMinter,  # noqa: F811
-    store: OntologyStore,  # noqa: F811
+    minter: ManifestMinter,
+    store: OntologyStore,
 ) -> None:
     """On the parent this is a demo answer for a customer Space (rule 11)."""
     rig = _rig(door, tmp_path, monkeypatch, minter)
@@ -217,8 +231,8 @@ def test_named_refusal_from_the_real_rule_is_not_flattened(
     door: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    minter: ManifestMinter,  # noqa: F811
-    store: OntologyStore,  # noqa: F811
+    minter: ManifestMinter,
+    store: OntologyStore,
 ) -> None:
     rig = _rig(door, tmp_path, monkeypatch, minter)
     r = _post(rig, door, monkeypatch, sql=od.WRONG_JOIN_SQL)
@@ -240,8 +254,8 @@ def test_reason_the_check_returns_is_reported_exactly(
     door: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    minter: ManifestMinter,  # noqa: F811
-    store: OntologyStore,  # noqa: F811
+    minter: ManifestMinter,
+    store: OntologyStore,
 ) -> None:
     """The check answered (``_Refuse``, parse, scope): its reason is the reason."""
     reason = f"unverified_join:{why}"
@@ -264,8 +278,8 @@ def test_check_that_passes_still_serves_the_truth(
     door: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    minter: ManifestMinter,  # noqa: F811
-    store: OntologyStore,  # noqa: F811
+    minter: ManifestMinter,
+    store: OntologyStore,
 ) -> None:
     """The handler does not refuse work the rule allows (as on the parent)."""
     rig = _rig(door, tmp_path, monkeypatch, minter)
@@ -308,8 +322,8 @@ def test_serving_error_reaches_the_ask_boundary(
     door: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    minter: ManifestMinter,  # noqa: F811
-    store: OntologyStore,  # noqa: F811
+    minter: ManifestMinter,
+    store: OntologyStore,
 ) -> None:
     """A lease miss, a deadline and a stop keep their own name (as on the parent)."""
     exc = _SERVING[name]()
