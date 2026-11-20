@@ -123,19 +123,6 @@ NEWLY_ABSTAIN: dict[str, tuple[str, str]] = {
 }
 
 
-#: Shapes a DuckDB below 2 refuses to bind, with the engine's own words. DuckDB 2
-#: runs them and returns the wrong figure in ``od.JOIN_HOLE_SHAPES``. The repo
-#: pins ``duckdb>=1.1,<2`` (F-TBD-28), so on the pinned engine the refusal is the
-#: proof that no figure can be served from the statement. The join rule abstains
-#: on the envelope on both engines, and both outcomes are asserted: no skip.
-ENGINE_REFUSES_BELOW_2: dict[str, str] = {"unlist_in_group_by": "UNNEST not supported here"}
-
-
-def _engine_refuses(name: str) -> bool:
-    """True when this DuckDB cannot run the named shape at all."""
-    return name in ENGINE_REFUSES_BELOW_2 and int(duckdb.__version__.split(".")[0]) < 2
-
-
 def _ask(
     door: str,
     sql: str,
@@ -143,21 +130,15 @@ def _ask(
     monkeypatch: pytest.MonkeyPatch,
     minter: ManifestMinter,  # noqa: F811
     question: str = Q,
-    contract_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[od._Space, dict[str, Any]]:
-    """Carry ``sql`` to the envelope through one door.
-
-    ``contract_rows`` are the rows the contract ask claims for ``sql``. A caller
-    passes them only when this engine refuses to run ``sql`` itself: the door
-    must refuse the statement whatever rows come back with it.
-    """
+    """Carry ``sql`` to the envelope through one door."""
     if door == "loop":
         monkeypatch.setenv("DMS_CLOOP_B", "1")
         monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
     rig = od._space(tmp_path, monkeypatch, minter)
     if door != "contract":
         return rig, rig.ask(question, {"query_sql": sql, "plan_source": "ontology_plan"})
-    rows = od._oracle(rig.lake, sql) if contract_rows is None else contract_rows
+    rows = od._oracle(rig.lake, sql)
     figure = next(iter(rows[0].values())) if rows else None
 
     def _contract(req: Any) -> AskResponse:
@@ -213,24 +194,9 @@ def test_one_table_read_twice_abstains(
     store: OntologyStore,  # noqa: F811
 ) -> None:
     sql, wrong, true = od.JOIN_HOLE_SHAPES[name]
-    refused = _engine_refuses(name)
-    # Where this engine will not run the statement, the contract ask still claims
-    # the figure DuckDB 2 returns: the door refuses the SQL, it does not trust rows.
-    rig, env = _ask(
-        door,
-        sql,
-        tmp_path,
-        monkeypatch,
-        minter,
-        contract_rows=[{"total": wrong}] if refused else None,
-    )
-    if refused:
-        # DuckDB below 2 refuses to bind it, so no figure can be served from it here.
-        with pytest.raises(duckdb.BinderException, match=ENGINE_REFUSES_BELOW_2[name]):
-            od._oracle(rig.lake, sql)
-    else:
-        # The danger is real: the statement runs and returns the wrong figure.
-        assert od._oracle(rig.lake, sql) == [{"total": wrong}]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter)
+    # The danger is real: the statement runs and returns the wrong figure.
+    assert od._oracle(rig.lake, sql) == [{"total": wrong}]
     assert od._oracle(rig.lake, TRUE_SQL[true]) == [{"total": true}]
     assert wrong != true
     _assert_join_abstain(env, rig, (wrong,))
