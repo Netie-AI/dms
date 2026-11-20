@@ -496,6 +496,45 @@ def test_yes_never_asks_a_model_and_never_reaches_the_contract_ask(
     assert len(rig.cortex.insights) == asked
 
 
+def test_yes_stays_on_the_generate_door_when_it_misses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    """A hold that carries grounded tables misses the generate door. It ends there.
+
+    On the product ladder that miss goes on to the Cortex contract ask, which
+    would answer the question with SQL nobody confirmed.
+    """
+    import dms_executor.reconfirm as rc
+    from cortex_client.models import AskResponse
+
+    rig = _held_rig(tmp_path, monkeypatch, minter)
+    token = rig.park(VERIFIED_Q, VERIFIED_SQL)
+    with rc._LOCK:
+        rc._PENDING[token]["tables"] = [SCHOOLS, DISTRICTS]
+
+    def _ask(req: Any) -> AskResponse:
+        rig.cortex.asks.append(req)
+        return AskResponse(
+            answer="There are 3 schools in the North district.",
+            abstained=False,
+            badge="generated",
+            route="generated",
+            sql_used=VERIFIED_SQL,
+            rows=[{"school_count": VERIFIED_TRUTH}],
+        )
+
+    monkeypatch.setattr(rig.cortex, "ask", _ask)
+    env = rig.yes(token)
+    assert rig.cortex.asks == [], "a Yes on held SQL reached the Cortex contract ask"
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert env["text"] == YES_ABSTAIN_TEXT
+    assert rig.cortex.executed == [] and rig.ledger == []
+
+
 def test_door_serving_another_statement_is_not_a_served_yes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -511,13 +550,17 @@ def test_door_serving_another_statement_is_not_a_served_yes(
     held = f"SELECT COUNT(*) AS school_count FROM {SCHOOLS}"
     token = rig.park("How many schools are there?", held)
     second = rig.park("How many schools are there?", held)
-    # Stand-in for any lane of the door that serves SQL of its own.
-    monkeypatch.setattr(de, "_insights_compute_seam", lambda *_a, **_k: _gen(VERIFIED_SQL))
+    # Stand-in for any lane of the door that serves SQL of its own. This one
+    # raises the same code over the same definition as the held statement.
+    other = f"SELECT COUNT(*) AS n FROM {SCHOOLS} LIMIT 1"
+    monkeypatch.setattr(de, "_insights_compute_seam", lambda *_a, **_k: _gen(other))
     env = rig.yes(token)
-    # With def-validate on, the other statement raises a reconfirm nobody answered.
+    # With def-validate on, the Yes answered the held statement's reconfirm, not
+    # this statement's: it is asked again, which here is a refusal.
     assert env["badge"] == "ABSTAIN" and env["rows"] == []
-    assert "reconfirm: not_in_ontology" in _reasons(env), env.get("assumptions")
+    assert "reconfirm: not_in_ontology: public_schools" in _reasons(env), env.get("assumptions")
     assert rig.cortex.executed == [] and saved == []
+    monkeypatch.setattr(de, "_insights_compute_seam", lambda *_a, **_k: _gen(VERIFIED_SQL))
 
     # With it off the door gates and serves that other statement through Cortex.
     # It is still not the statement the user confirmed.
