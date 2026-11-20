@@ -65,7 +65,7 @@ python D:\DMS\scripts\score_bird.py --live
 
 `--live` always A/B's:
 
-1. **bronze list** -- `GET /v1/studio/bronze?space_id=` (fail -> pack snapshot). Prints measured/leftover. Does not invent 75.
+1. **bronze list and grant preflight** -- `GET /v1/studio/bronze?space_id=`. Prints measured/leftover. Does not invent 75. If the list cannot be read, or it names a table the PII scan flagged, the run is BLOCKED (exit 3) before any ask (dms#304).
 2. **exact_match** -- demo pack / VQ-04 with empty grants (BIRD is not Finance). Must miss. Green on a leftover trap is WRONG. Landed leftover traps SKIP.
 3. **generative_live** -- `POST /v1/chat/ask` on the BIRD Space. GEN-01 (#179) already sits on that path after pack miss. Report real OK/LAYER/ABSTAIN/WRONG.
 
@@ -118,3 +118,27 @@ labels the result `cross-setup`.
 
 First live run is a Platform baseline, not PASS. No target. Do not quote a
 Mini-Dev percent from CI or this tree.
+
+## Table allowlist (dms#304, BIRD-ALLOWLIST-01)
+
+`--live`, `--ab` and `--minidev` always apply `tests/fixtures/bird_minidev/table_allowlist.yaml`.
+It lists zero-hit tables from the counts-only PII scan (`pii_counts.csv`, sha256 in the file),
+as `bronze.public_<table>`. Names only, never values.
+
+- A question is scored only when every table its gold SQL reads is listed and it reads no
+  column under `excluded_columns`. The table check is `grant_struct.serve_gap`, not a second parser.
+- Anything else is a named ABSTAIN that stays in n: `excluded_table:<table>`,
+  `excluded_table:(unparsed)` (missing or unsettled gold SQL), `excluded_column:<table>.<column>`.
+  Zero rows, no ask, never OK or WRONG. The table reason wins; the column is still counted.
+- The report prints n, n without the excluded questions, and the excluded counts by table and
+  by column. It is the measure `bird_allowlist_v1`: not comparable with 73/75.
+- A run where every question is excluded is `VERDICT: NOT SCORED` (exit 3), never PASS.
+- The loader refuses a file that lists a flagged table (`tests/fixtures/pii_hold/flagged_columns.csv`),
+  a held table (`trans`, `yearmonth`), or more tables than the scan's zero-hit count. An unusable
+  file is CONFIG (exit 2).
+- **Open:** the file lists no table yet. The scan file is not in this repository, so the 31
+  zero-hit names have to come from Platform. Until then every question abstains by name.
+- The pack's refuse traps carry no gold SQL, so the CLI labels them `excluded_table:(unparsed)`
+  and does not send them.
+- A library call to `live()` or `run_minidev()` without `allowlist=` is not gated. Its artifact
+  says `allowlist.applied: false` and its output says `table_allowlist=NOT APPLIED`.
