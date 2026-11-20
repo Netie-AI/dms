@@ -53,9 +53,7 @@ VERIFIED_TRUTH = sum(1 for _s, district, _n in od.SCHOOL_ROWS if district in _NO
 WRONG_FIGURE = sum(1 for school, _d, _n in od.SCHOOL_ROWS if school in _NORTH)
 LEGACY_TEXT = "The confirmed query ran."
 # The abstain wording of a refused Yes, kept from before this ticket.
-YES_ABSTAIN_TEXT = (
-    "I cannot run that query against the granted tables, so I am not answering it."
-)
+YES_ABSTAIN_TEXT = "I cannot run that query against the granted tables, so I am not answering it."
 
 
 @pytest.fixture()
@@ -230,6 +228,41 @@ def test_yes_on_a_held_wrong_join_abstains_unverified_join(
     assert rig.trace() == ExecutedTrace()
 
 
+ENROLL_DISTRICT_Q = "How many enrollments are in each district?"
+ENROLL_DISTRICT_SQL = (
+    "SELECT d.name AS district, COUNT(*) AS n FROM bronze.public_enrollments e "
+    "JOIN bronze.public_districts d ON e.school_id = d.district_id GROUP BY d.name"
+)
+#: Four enrollments on schools 1 and 2, so the wrong join reads North 2, South 2.
+ENROLL_2_2 = [["100", "1", "30"], ["101", "1", "5"], ["102", "2", "25"], ["103", "2", "12"]]
+
+
+@pytest.mark.parametrize("from_data", ["0", "1"])
+def test_yes_on_enrollments_joined_to_districts_abstains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+    from_data: str,
+) -> None:
+    """Found on the base by another run: a derived ontology, enrollments.school_id
+    = districts.district_id. The ask parks it as not_in_ontology; Yes returned
+    L2_VALIDATED with North 2, South 2 on the parent. With and without
+    DMS_ONTO_FROM_DATA it must abstain."""
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", from_data)
+    rig = _held_rig(tmp_path, monkeypatch, minter, enroll_rows=ENROLL_2_2)
+    assert {(r["district"], r["n"]) for r in _oracle(rig.lake, ENROLL_DISTRICT_SQL)} == {
+        ("North", 2),
+        ("South", 2),
+    }
+    token = rig.park(ENROLL_DISTRICT_Q, ENROLL_DISTRICT_SQL)
+
+    env = rig.yes(token)
+    text = _assert_yes_abstains(env, rig, "unverified_join:")
+    assert "North" not in text and "South" not in text and not re.search(r"\d", text), text
+    assert rig.trace() == ExecutedTrace()
+
+
 # --- clause 2: the verified link answers the truth -----------------------------------
 
 
@@ -369,9 +402,7 @@ def test_yes_is_refused_by_the_text_numeric_gate(
     sql = f"SELECT MAX(students) AS top FROM {E}"
     assert _oracle(rig.lake, sql) == [{"top": "40"}]
     token = rig.park("What is the largest enrollment?", sql)
-    monkeypatch.setattr(
-        bronze, "untyped_numeric_columns", lambda tables, **_k: {E: {"students"}}
-    )
+    monkeypatch.setattr(bronze, "untyped_numeric_columns", lambda tables, **_k: {E: {"students"}})
     env = rig.yes(token)
     text = _assert_yes_abstains(env, rig, f"untyped_numeric:{E}.students")
     assert "40" not in text
