@@ -256,6 +256,10 @@ def test_yes_on_enrollments_joined_to_districts_abstains(
         ("South", 2),
     }
     token = rig.park(ENROLL_DISTRICT_Q, ENROLL_DISTRICT_SQL)
+    from dms_executor.reconfirm import peek_pending
+
+    # The first ask parks it as a definition the ontology does not hold.
+    assert (peek_pending(token) or {}).get("reason_code") == "not_in_ontology"
 
     env = rig.yes(token)
     text = _assert_yes_abstains(env, rig, "unverified_join:")
