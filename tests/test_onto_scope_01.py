@@ -946,3 +946,47 @@ def test_adversary_grain_reading_abstains_when_the_item_store_is_down(
     assert out["abstained"] is True and out["rows"] == [] and out["reconfirm"] is None
     assert "ontology_store_unavailable" in str(out.get("assumptions"))
     assert "hunter2" not in str(out)
+
+
+# --- adversary round 2 (Sonnet, not the author): cases that held --------------------
+
+
+def _secret_grain_proposal(table: str) -> dict[str, Any]:
+    return {
+        "status": "proposed",
+        "terms": [{"name": table, "table": table, "key": ["order_id"]}],
+        "grains": [{"name": "zebrasecret", "object": table}],
+        "measures": [{"name": "zz_measure", "grain": table, "expression": "COUNT(*)"}],
+    }
+
+
+@pytest.mark.parametrize("flag", ["DMS_GRAIN_AI", "DMS_SCHEMA_CONTEXT", "DMS_DEF_VALIDATE"])
+def test_adversary2_a_grain_and_measure_name_never_reach_b_catalog_or_text(
+    flag: str, rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attacker 3. A's distinctive grain and measure names are in neither the
+    insights payload sent for B nor B's envelope, and asking B for A's grain
+    by name does not serve."""
+    import json
+
+    monkeypatch.setenv(flag, "1")
+    a, ta, b, tb = two_spaces(rig)
+    approve_for(a, _secret_grain_proposal(ta["a_orders.csv"]))
+    rig.cortex.insights.clear()
+    env = rig.ask(b, MEASURE_Q, plan(tb["b_orders.csv"]))
+    blob = json.dumps([rig.cortex.insights, env], default=str)
+    assert "zebrasecret" not in blob and "zz_measure" not in blob
+    asked = rig.ask(b, MEASURE_Q, plan("zebrasecret"))
+    assert asked["badge"] == "ABSTAIN" and asked["rows"] == [] and asked["values"] == []
+
+
+def test_adversary2_same_file_names_in_two_spaces_do_not_share_an_item(rig: Rig) -> None:
+    """Attacker 3. Two Spaces ingest identically named files; A's link on that
+    table is not read when B asks."""
+    a = rig.new_space("A same names")
+    ta = rig.ingest(a, space_files("x"))
+    b = rig.new_space("B same names")
+    tb = rig.ingest(b, space_files("x"))
+    approve_for(a, link_proposal(ta["x_shipments.csv"], ta["x_orders.csv"]))
+    env = rig.ask(b, JOIN_Q, gen(join_sql(tb["x_shipments.csv"], tb["x_orders.csv"])))
+    assert env["badge"] == "ABSTAIN" and env["rows"] == [] and env["values"] == []
