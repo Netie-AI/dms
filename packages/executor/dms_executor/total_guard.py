@@ -191,6 +191,17 @@ def _aggregates(node: exp.Expression) -> bool:
     return isinstance(node, (exp.AggFunc, exp.List, exp.Anonymous, exp.Window))
 
 
+#: The DuckDB functions that return one row per element when listed in a SELECT
+#: (a scan of its scalar, macro and table functions found only these; sqlglot
+#: types ``unnest`` but files the others as Anonymous). A closed set, not a
+#: phrasing rule: each one multiplies the rows an aggregate above would read.
+_ROW_MULTIPLIERS = frozenset({"unlist", "generate_subscripts", "regexp_split_to_table"})
+
+
+def _multiplies_rows(node: exp.Expression) -> bool:
+    return isinstance(node, exp.Anonymous) and str(node.name).lower() in _ROW_MULTIPLIERS
+
+
 def _many_grouping_sets(select: exp.Select) -> bool:
     group = select.args.get("group")
     if group is None:
@@ -404,7 +415,7 @@ class _Guard:
 
         # What this SELECT hands on.
         out = _Rel(repeats=repeats or ("grouping_sets" if many else None))
-        if any(isinstance(n, exp.UDTF) for n in mine):
+        if any(isinstance(n, exp.UDTF) or _multiplies_rows(n) for n in mine):
             out.repeats = out.repeats or "row_generator"
         known: dict[str, str] = dict(collections)
         for _ in range(len(select.expressions) + 1):

@@ -366,6 +366,21 @@ MORE_SHAPES: dict[str, tuple[str, str, int, int, str]] = {
         107,
         GROUPING,
     ),
+    # Adversary round (doors): a row multiplier listed beside the value.
+    "unlist_listed_beside_the_value": (
+        COUNT_Q,
+        f"SELECT COUNT(*) AS total FROM (SELECT {N} AS x, unlist([1, 2]) AS g FROM {T})",
+        8,
+        4,
+        GENERATOR,
+    ),
+    "generate_subscripts_listed_beside_the_value": (
+        Q,
+        f"SELECT SUM(x) AS total FROM (SELECT {N} AS x, generate_subscripts([1, 2], 1) AS g FROM {T})",
+        214,
+        107,
+        GENERATOR,
+    ),
     "list_concat_counted": (
         COUNT_Q,
         f"SELECT len(list({N}) || list({N})) AS total FROM {T}",
