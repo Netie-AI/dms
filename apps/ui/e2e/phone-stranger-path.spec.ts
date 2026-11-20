@@ -242,6 +242,7 @@ test.describe("PHONE-PATH-01 stranger path at 390x844", () => {
     await expect(rows.first().locator("td").first()).toHaveText(w.csvName);
     await expect(rows.first().locator("td").first()).toBeInViewport();
     await expect(rows.first().locator("td:last-child")).toHaveText(w.tables[0]);
+    await expect(rows.first().getByTestId("receipt-row-reason"), "a landed file is not called refused").toHaveCount(0);
 
     const visibility = receipt.getByTestId("receipt-chat-visibility");
     if (body.chat_can_see_it === false) {
@@ -444,7 +445,14 @@ test.describe("PHONE-PATH-01 stranger path at 390x844", () => {
     await expect(row).toHaveCount(1);
     await expect(row.locator("td").nth(2)).toContainText(file!.reason!);
     await expect(row.locator("td:last-child")).toHaveText("—");
-    await expect(row.locator("td").first()).toBeInViewport();
+    // The Reason column sits off screen at 390px, so the reason is also under the file name.
+    const why = row.getByTestId("receipt-row-reason");
+    await expect(why).toContainText("Not ingested");
+    await expect(why).toContainText(file!.reason!);
+    await expect(why).toBeInViewport({ ratio: 1 });
+    await expect(receipt.getByTestId("receipt-chat-visibility")).toHaveText(
+      "Nothing was ingested, so Chat cannot see this upload.",
+    );
     await noSidewaysScroll(page);
   });
 });

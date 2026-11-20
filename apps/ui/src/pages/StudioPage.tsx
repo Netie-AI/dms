@@ -633,8 +633,11 @@ export function StudioPage() {
               data-testid="receipt-chat-visibility"
               className="mt-1 text-[var(--color-ink)] lg:hidden"
             >
-              Not confirmed that Chat can see this upload
-              {receipt.serving_sync_detail ? `: ${receipt.serving_sync_detail}` : ""}.
+              {receipt.ingested === 0
+                ? "Nothing was ingested, so Chat cannot see this upload."
+                : `Not confirmed that Chat can see this upload${
+                    receipt.serving_sync_detail ? `: ${receipt.serving_sync_detail}` : ""
+                  }.`}
             </p>
           )}
           {receipt.per_class && (
@@ -662,7 +665,18 @@ export function StudioPage() {
                       key={`${f.file}-${f.classification ?? ""}`}
                       className="border-b border-[var(--color-line)]/70"
                     >
-                      <td className="py-2 pr-3 font-medium text-[var(--color-ink)]">{f.file}</td>
+                      <td className="py-2 pr-3 font-medium text-[var(--color-ink)]">
+                        {f.file}
+                        {/* PHONE-PATH-01 B5: at 390px the Reason column is off screen. */}
+                        {!f.table && (f.reason || f.fix) && (
+                          <span
+                            data-testid="receipt-row-reason"
+                            className="mt-1 block w-[min(18rem,70vw)] font-normal [overflow-wrap:anywhere] lg:hidden"
+                          >
+                            Not ingested: {[f.reason, f.fix].filter(Boolean).join(" — ")}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2 pr-3 tabular-nums text-[var(--color-ink-muted)]">
                         {f.classification ?? "—"}
                       </td>
