@@ -2,9 +2,8 @@
 
 Rules 10 and 10a: every clause is asserted on the envelope from
 ``POST /v1/chat/ask`` (rendered text, rows, values, badge) and through
-``assert_envelope_valid``. The verified-query and generated renderers have no
-cheap HTTP driver here, so those two are asserted on the envelope their
-function returns, which the route sends unchanged.
+``assert_envelope_valid``. The verified-query and generated renderers are
+asserted twice: on the envelope their function returns, and through the route.
 
 The class under test: a figure the answer states is never served rewritten.
 A mask that rewrites one withholds the answer; the mask itself is never undone
@@ -71,6 +70,33 @@ class _FixedPack(_PackCortex):
                 output={"rows": copy.deepcopy(self.rows)},
             )
         return QueryResult(ok=True, status="bound", run_id="run_fig_bind")
+
+
+@dataclass
+class _GenCortex(_PackCortex):
+    """The model writes valid SQL; Cortex submit returns exactly these rows."""
+
+    rows: list[dict[str, Any]] = field(default_factory=list)
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+        del question, kwargs
+        return {
+            "phase": "generate",
+            "query_sql": _GEN_SQL,
+            "served_model": "fake-model",
+            "served_provider": "fake-provider",
+            "ov_key_id": "ovk-fake",
+        }
+
+    def submit(self, req: Any) -> QueryResult:
+        self.submits.append(req)
+        plan = getattr(req, "plan", None)
+        kind = plan.get("kind") if isinstance(plan, dict) else getattr(plan, "kind", None)
+        if kind == "session_bind":
+            return QueryResult(ok=True, status="bound", run_id="run_fig_bind")
+        return QueryResult(
+            ok=True, status="ok", run_id="run_fig_gen", output={"rows": copy.deepcopy(self.rows)}
+        )
 
 
 @dataclass
@@ -561,6 +587,99 @@ def test_generated_listing_follows_the_same_rules() -> None:
     assert env["rows"] == ROWS
     assert "Found 20 row(s). Showing 12 of 20.\n" in env["text"]
     assert "total_cost_myr=1610511.05\n" in env["text"] and "DMSMASK_" not in env["text"]
+
+
+# The same two renderers, driven through POST /v1/chat/ask (rules 10 and 10a).
+
+_VQ_SQL = SHIPMENT_COST_SQL
+_VQ_QUESTION = "FIG-FIDELITY steward: shipment cost by destination?"
+_GEN_QUESTION = "What is the total shipment cost for each destination"
+_GEN_SQL = SHIPMENT_COST_SQL
+
+
+def _assert_listing_envelope(env: dict[str, Any], badge: str) -> None:
+    assert_envelope_valid(env)
+    assert env["badge"] == badge and env["abstained"] is False, env["text"]
+    assert env["rows"] == ROWS
+    assert "Found 20 row(s). Showing 12 of 20.\n" in env["text"], env["text"]
+    assert "total_cost_myr=1610511.05\n" in env["text"], env["text"]
+    assert "DMSMASK_" not in env["text"], env["text"]
+
+
+def test_verified_query_listing_over_http_follows_the_same_rules(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor import verified_queries as vq
+    from dms_executor.verified_queries import register_verified_query
+    from test_vq02_verified_register import _MarkerCortex
+
+    register_verified_query(
+        space_id=WAREHOUSE_OPS, question=_VQ_QUESTION, sql=_VQ_SQL, path=warehouse, dialect="duckdb"
+    )
+    calls: list[dict[str, Any]] = []
+    real = vq.envelope_from_verified_submit
+
+    def _spy(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(vq, "envelope_from_verified_submit", _spy)
+    cortex = _MarkerCortex(sql_output={"rows": copy.deepcopy(ROWS)})
+    client = _live_client(warehouse, minter, monkeypatch, cortex)  # type: ignore[arg-type]
+    r = client.post(
+        "/v1/chat/ask",
+        json={"question": _VQ_QUESTION, "space_id": WAREHOUSE_OPS, "session_id": "ses_fig_vq"},
+    )
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert len(calls) == 1, "the verified-query renderer was not the lane that served this"
+    assert cortex.asks == []
+    assert env["sql_used"] == _VQ_SQL
+    _assert_listing_envelope(env, "L0_CERTIFIED")
+
+
+def test_generated_listing_over_http_follows_the_same_rules(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_api import settings as settings_mod
+    from dms_executor import generative_ask as gen
+
+    for key, val in (
+        ("DMS_CLOOP_B", "1"),
+        ("DMS_SCHEMA_CONTEXT", "1"),
+        ("DMS_HARNESS_ASK_PATHS", "1"),
+        ("DMS_LANE_ONTOLOGY_RANKED", "0"),
+        ("DMS_ASK_MODE", "live"),
+        ("DMS_DEMO_FALLBACK", "0"),
+    ):
+        monkeypatch.setenv(key, val)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    settings_mod.get_settings.cache_clear()
+
+    cortex = _GenCortex(warehouse=warehouse, rows=ROWS)
+    calls: list[dict[str, Any]] = []
+    real = gen._l2_envelope
+
+    def _spy(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(gen, "_l2_envelope", _spy)
+    client = _live_client(warehouse, minter, monkeypatch, cortex)
+    r = client.post(
+        "/v1/chat/ask",
+        json={
+            "question": _GEN_QUESTION,
+            "space_id": WAREHOUSE_OPS,
+            "session_id": "ses_fig_gen",
+            "ask_path": "generative",
+        },
+    )
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert len(calls) == 1, (env["badge"], env["text"], env["assumptions"])
+    assert cortex.asks == []
+    _assert_listing_envelope(env, "L2_VALIDATED")
 
 
 def test_no_renderer_builds_its_own_listing() -> None:
