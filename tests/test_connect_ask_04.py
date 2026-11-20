@@ -920,3 +920,94 @@ def test_adversary_join_attacks_as_held_sql_are_never_served(
     assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (name, env.get("text"))
     assert env["rows"] == [] and env["values"] == []
     assert rig.cortex.executed == [] and rig.ledger == []
+
+
+# --- verifier round: gates owed a committed test ------------------------------------
+
+#: Held SQL a gate of the first-generate door refuses, parked for real (#524
+#: clause 3): name -> (question, sql, the figure it would serve, the reason).
+_S, _D = od.SCHOOLS, od.DISTRICTS
+HELD_GATE_SHAPES: dict[str, tuple[str, str, int, str]] = {
+    # TOTAL-GUARD-01 (#531): 4 schools counted once per grouping set.
+    "sum_over_rollup": (
+        "How many schools are there?",
+        f"SELECT SUM(n) AS school_count FROM (SELECT district_id, COUNT(*) AS n FROM {_S} "
+        "GROUP BY ROLLUP(district_id)) t",
+        8,
+        "repeated_input:grouping_sets_under_aggregate",
+    ),
+    # JOIN-HOLE-01 (#527, c634dcb): an EXISTS that names no link filters nothing.
+    "uncorrelated_exists": (
+        od.VERIFIED_Q,
+        f"SELECT COUNT(*) AS school_count FROM {_S} s WHERE EXISTS "
+        f"(SELECT 1 FROM {_D} d WHERE d.name = 'North')",
+        4,
+        "unverified_join:uncorrelated_subquery",
+    ),
+}
+
+
+@pytest.mark.parametrize("from_data", ["0", "1"])
+@pytest.mark.parametrize("name", sorted(HELD_GATE_SHAPES))
+def test_yes_is_refused_by_the_total_guard_and_the_exists_rule(
+    name: str,
+    from_data: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+) -> None:
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", from_data)
+    question, sql, wrong, reason = HELD_GATE_SHAPES[name]
+    rig = _held_rig(tmp_path, monkeypatch, minter)
+    assert _oracle(rig.lake, sql) == [{"school_count": wrong}]
+    token = rig.park(question, sql)
+    env = rig.yes(token)
+    text = _assert_yes_abstains(env, rig, reason)
+    assert not re.search(rf"\b{wrong}\b", text), text
+    assert rig.trace() == ExecutedTrace()
+
+
+# CONNECT-ASK-05 (#528) clause 4: the held Yes with the join analyser raising.
+_SECRET = "join analyser raised zz9"
+
+
+@pytest.mark.parametrize("cloop", ["0", "1"])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_yes_with_the_join_check_raising_abstains_check_unavailable(
+    cloop: str,
+    fallback: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,
+    store: OntologyStore,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    import dms_executor.generative_ask as ga
+    import dms_executor.space_ontology as so
+    import test_connect_ask_05 as ca5
+
+    if cloop == "1":
+        monkeypatch.setenv("DMS_CLOOP_B", "1")
+        monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
+    rig = _held_rig(tmp_path, monkeypatch, minter)
+    token = rig.park(od.VERIFIED_Q, od.VERIFIED_SQL)
+    if fallback:
+        ca5._demo_fallback_on(rig)
+
+    def _raise(*_a: Any, **_k: Any) -> Any:
+        raise RuntimeError(_SECRET)
+
+    monkeypatch.setattr(ga, "unverified_join_reason", _raise)
+    monkeypatch.setattr(so, "unverified_join_reason", _raise)
+    with caplog.at_level(logging.WARNING):
+        r = rig.client.post("/v1/chat/ask/confirm", json={"token": token, "yes": True})
+    assert r.status_code == 200, (r.status_code, r.text)
+    env = r.json()
+    assert_envelope_valid(env)
+    text = _assert_yes_abstains(env, rig, "unverified_join:check_unavailable")
+    assert _SECRET not in r.text and _SECRET not in caplog.text
+    assert "demo" not in str(env.get("answer_id")).lower()
+    assert not re.search(r"\b3\b", text), text
