@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { DependencyNotice, Page, PageHeader, Section } from "@/components/PageShell";
 import { useApp } from "@/context/AppContext";
@@ -10,6 +10,7 @@ import {
   boundSentences,
   columnList,
   fetchSpaceItems,
+  isAnswerFor,
   isKey,
   keyConflictSentence,
   keyEvidenceSentence,
@@ -42,6 +43,12 @@ import {
  */
 export function OntologyReviewPage() {
   const { spaceId = "" } = useParams();
+  // One instance per Space: an answer still in flight for another Space lands on
+  // an instance that is gone, never on this one.
+  return <SpaceReview key={spaceId} spaceId={spaceId} />;
+}
+
+function SpaceReview({ spaceId }: { spaceId: string }) {
   const { spaces } = useApp();
   const spaceName = spaces.find((s) => s.id === spaceId)?.name ?? null;
 
@@ -56,6 +63,8 @@ export function OntologyReviewPage() {
   const [pending, setPending] = useState<Record<string, "approve" | "reject">>({});
   /** Item id -> what the API said when it refused the last press. */
   const [itemNotice, setItemNotice] = useState<Record<string, string>>({});
+  /** Item ids with a request in flight. A ref, so a second press in the same tick sees it. */
+  const inFlight = useRef(new Set<string>());
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -100,24 +109,27 @@ export function OntologyReviewPage() {
 
   /** One item, one request. The status changes only from the returned item. */
   async function press(item: ProfileItem, action: "approve" | "reject") {
-    if (pending[item.id]) return;
+    if (inFlight.current.has(item.id)) return;
+    inFlight.current.add(item.id);
     setPending((p) => ({ ...p, [item.id]: action }));
     setItemNotice((n) => {
       const { [item.id]: _gone, ...rest } = n;
       return rest;
     });
     const result = await (action === "approve" ? approveItem(item.id) : rejectItem(item.id));
+    inFlight.current.delete(item.id);
     setPending((p) => {
       const { [item.id]: _gone, ...rest } = p;
       return rest;
     });
     if (result.ok) {
-      if (result.body && result.body.id === item.id && typeof result.body.status === "string") {
+      if (isAnswerFor(item, result.body)) {
         setItems((prev) => withItem(prev, result.body));
       } else {
         setItemNotice((n) => ({
           ...n,
-          [item.id]: "The API answer did not name this item. The status shown is unchanged.",
+          [item.id]:
+            "The API answer was not this item with a status this page knows. The status shown is unchanged: reload to read it again.",
         }));
       }
       return;

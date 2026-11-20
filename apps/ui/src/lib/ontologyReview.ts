@@ -135,8 +135,11 @@ export type Refusal =
   | { kind: "key_already_approved"; relation: string; approvedItemId: string | null }
   | { kind: "space_not_found" }
   | { kind: "item_not_found" }
-  | { kind: "gate_refused"; reason: string }
-  | { kind: "error"; status: number; message: string };
+  | { kind: "gate_refused"; reason: GateReason }
+  | { kind: "error"; status: number };
+
+/** Gate reasons this page has words for. Any other text from the API is not shown. */
+export type GateReason = "gate_unavailable" | "gate_task_unknown" | "other";
 
 export type Result<T> = { ok: true; body: T } | { ok: false; refusal: Refusal };
 
@@ -156,7 +159,10 @@ export function classifyRefusal(status: number, bodyText: string): Refusal {
         : "";
   const obj = (detail && typeof detail === "object" ? detail : {}) as Record<string, unknown>;
   if (status === 403 && code === "steward_grant_required") return { kind: "steward_grant_required" };
-  if (status === 403 && code) return { kind: "gate_refused", reason: code };
+  if (status === 403) {
+    const reason = code === "gate_unavailable" || code === "gate_task_unknown" ? code : "other";
+    return { kind: "gate_refused", reason };
+  }
   if (status === 409 && code === "no_file_tables") {
     const skipped = Array.isArray(obj.skipped) ? (obj.skipped as SkippedTable[]) : [];
     return { kind: "no_file_tables", skipped };
@@ -170,7 +176,8 @@ export function classifyRefusal(status: number, bodyText: string): Refusal {
   }
   if (status === 404 && code === "space_not_found") return { kind: "space_not_found" };
   if (status === 404 && code === "ontology_item_not_found") return { kind: "item_not_found" };
-  return { kind: "error", status, message: code || `the API answered ${status}` };
+  // The body's own text is never shown: it is not this page's wording and may quote data.
+  return { kind: "error", status };
 }
 
 // --- fetch calls (DMS API only) ---------------------------------------------------
@@ -183,7 +190,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<Result<T>> {
     if (init?.signal?.aborted) throw err;
     return {
       ok: false,
-      refusal: { kind: "error", status: 0, message: "the DMS API could not be reached" },
+      refusal: { kind: "error", status: 0 },
     };
   }
   const text = await res.text();
@@ -193,7 +200,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<Result<T>> {
   } catch {
     return {
       ok: false,
-      refusal: { kind: "error", status: res.status, message: "the API answer was not JSON" },
+      refusal: { kind: "error", status: res.status },
     };
   }
 }
@@ -241,7 +248,8 @@ export function statusLabel(status: string): string {
   if (status === "proposed") return "proposed";
   if (status === "approved") return "approved";
   if (status === "revoked") return "rejected";
-  return `unknown status: ${status}`;
+  // An unknown status is not echoed: the page has no words for it and claims nothing.
+  return "status not recognised";
 }
 
 export const APPROVED_NOTE = "Approved by a steward. It is re-measured at every question.";
@@ -489,11 +497,17 @@ export function refusalSentence(refusal: Refusal): string {
     case "item_not_found":
       return "This item no longer exists on the DMS API. Measure the Space again.";
     case "gate_refused":
-      return refusal.reason === "gate_unavailable"
-        ? "The Cortex gate is unreachable, so the change was refused. Nothing was changed."
-        : `The compliance gate refused this (${refusal.reason}). Nothing was changed.`;
+      if (refusal.reason === "gate_unavailable") {
+        return "The Cortex gate is unreachable, so the request was refused. Nothing was changed.";
+      }
+      if (refusal.reason === "gate_task_unknown") {
+        return "Cortex does not know this task yet, so the request was refused. Nothing was changed.";
+      }
+      return "The compliance gate refused this request. Nothing was changed.";
     case "error":
-      return `The request failed (${refusal.message}). Nothing was changed on this page.`;
+      return refusal.status === 0
+        ? "The DMS API could not be reached. Nothing was changed on this page."
+        : `The request failed (the API answered ${refusal.status}). Nothing was changed on this page.`;
   }
 }
 
@@ -544,6 +558,20 @@ export function tableReviews(
   for (const obs of measured?.observations ?? []) get(obs.child_table).observations.push(obs);
   for (const t of measured?.unkeyed_tables ?? []) get(t.table).unkeyed = t;
   return [...byTable.values()];
+}
+
+const KNOWN_STATUSES: readonly string[] = ["proposed", "approved", "revoked"];
+
+/** True when the API's answer to a press is that same item with a status this page knows. */
+export function isAnswerFor(item: ProfileItem, answer: unknown): answer is ProfileItem {
+  const a = answer as { id?: unknown; status?: unknown; kind?: unknown } | null;
+  return (
+    !!a &&
+    a.id === item.id &&
+    a.kind === item.kind &&
+    typeof a.status === "string" &&
+    KNOWN_STATUSES.includes(a.status)
+  );
 }
 
 /** Replace one item with the row the API returned. Nothing else changes. */

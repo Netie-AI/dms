@@ -8,6 +8,7 @@ import {
   boundSentences,
   classifyRefusal,
   fetchSpaceItems,
+  isAnswerFor,
   keyConflictSentence,
   keyEvidenceSentence,
   linkEvidenceSentence,
@@ -210,7 +211,9 @@ describe("status words", () => {
     expect(statusLabel("proposed")).toBe("proposed");
     expect(statusLabel("approved")).toBe("approved");
     expect(statusLabel("revoked")).toBe("rejected");
-    expect(statusLabel("weird")).toBe("unknown status: weird");
+    expect(statusLabel("weird")).toBe("status not recognised");
+    // An unknown status from the API is never echoed onto the page.
+    expect(statusLabel("verified")).not.toMatch(/verif/i);
   });
 
   it("never uses the words verified or certified in any sentence it can produce", () => {
@@ -235,7 +238,11 @@ describe("status words", () => {
       refusalSentence({ kind: "space_not_found" }),
       refusalSentence({ kind: "item_not_found" }),
       refusalSentence({ kind: "gate_refused", reason: "gate_unavailable" }),
-      refusalSentence({ kind: "error", status: 500, message: "x" }),
+      refusalSentence({ kind: "error", status: 500 }),
+      refusalSentence({ kind: "error", status: 0 }),
+      refusalSentence({ kind: "gate_refused", reason: "other" }),
+      refusalSentence({ kind: "gate_refused", reason: "gate_task_unknown" }),
+      statusLabel("verified"),
       keyConflictSentence({ kind: "key_already_approved", relation: "t", approvedItemId: null }, []),
     ].join("\n");
     expect(everything).not.toMatch(/verif|certif/i);
@@ -417,10 +424,25 @@ describe("refusals", () => {
   it("names the two 404s and keeps any other answer as an error", () => {
     expect(classifyRefusal(404, '{"detail":"space_not_found"}').kind).toBe("space_not_found");
     expect(classifyRefusal(404, '{"detail":"ontology_item_not_found"}').kind).toBe("item_not_found");
-    expect(classifyRefusal(500, "<html>")).toEqual({
-      kind: "error",
-      status: 500,
-      message: "the API answered 500",
+    expect(classifyRefusal(500, "<html>")).toEqual({ kind: "error", status: 500 });
+  });
+
+  it("never passes the API's own error text through to a sentence", () => {
+    const cases = [
+      classifyRefusal(500, JSON.stringify({ detail: "row BETA-17 violates unverified" })),
+      classifyRefusal(403, JSON.stringify({ detail: { code: "policy verified_by_cortex certified" } })),
+      classifyRefusal(409, JSON.stringify({ detail: { code: "certified C901", relation: "t" } })),
+      classifyRefusal(422, JSON.stringify({ detail: [{ msg: "value C901 is not verified" }] })),
+    ];
+    for (const refusal of cases) {
+      const text = refusalSentence(refusal);
+      expect(text).not.toMatch(/verif|certif|BETA-17|C901/i);
+      expect(text).toContain("Nothing was changed");
+    }
+    expect(cases[1]).toEqual({ kind: "gate_refused", reason: "other" });
+    expect(classifyRefusal(403, '{"detail":"gate_task_unknown"}')).toEqual({
+      kind: "gate_refused",
+      reason: "gate_task_unknown",
     });
   });
 });
@@ -464,6 +486,23 @@ describe("table grouping", () => {
     const rows = tableReviews([key("a", "bronze.customers", ["customer_id"]), SHIP_LINK], null);
     expect(rows.map((r) => r.table)).toEqual(["bronze.customers", "bronze.shipments"]);
     expect(rows[0].rowCount).toBeNull();
+  });
+});
+
+describe("isAnswerFor", () => {
+  const pressed = key("a", "t", ["x"]);
+
+  it("accepts the same item with a known status", () => {
+    expect(isAnswerFor(pressed, key("a", "t", ["x"], "approved"))).toBe(true);
+    expect(isAnswerFor(pressed, key("a", "t", ["x"], "revoked"))).toBe(true);
+  });
+
+  it("refuses another item, another kind, an unknown status and a non-item", () => {
+    expect(isAnswerFor(pressed, key("b", "t", ["x"], "approved"))).toBe(false);
+    expect(isAnswerFor(pressed, { ...SHIP_LINK, id: "a", status: "approved" })).toBe(false);
+    expect(isAnswerFor(pressed, key("a", "t", ["x"], "verified"))).toBe(false);
+    expect(isAnswerFor(pressed, null)).toBe(false);
+    expect(isAnswerFor(pressed, { ok: true })).toBe(false);
   });
 });
 

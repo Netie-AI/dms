@@ -87,6 +87,25 @@ function cellValues(): string[] {
   return [...values].filter((v) => !names.has(v) && !/^\d+$/.test(v));
 }
 
+/**
+ * No cell value in the visible text, an aria-label or a title of the review page.
+ * Plain integers are left out of the list: a quantity "3" cannot be told from a count.
+ */
+async function expectNoCellValue(page: Page): Promise<void> {
+  const root = page.getByTestId("onto-review-page");
+  const text = [
+    await root.innerText(),
+    ...(await root.locator("[aria-label], [title]").evaluateAll((els) =>
+      els.map((el) => `${el.getAttribute("aria-label") ?? ""} ${el.getAttribute("title") ?? ""}`),
+    )),
+  ].join("\n");
+  expect(text).not.toMatch(/verif|certif/i);
+  const values = cellValues();
+  expect(values.length).toBeGreaterThan(800);
+  const leaked = values.filter((v) => new RegExp(`(^|[^\\w])${escapeRe(v)}($|[^\\w])`).test(text));
+  expect(leaked).toEqual([]);
+}
+
 function escapeRe(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -141,7 +160,8 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     const calls: string[] = [];
     page.on("request", (r) => {
       const url = new URL(r.url());
-      if (url.pathname.includes("/v1/ontology/data/")) {
+      // Every ontology-data call, and every write the page makes to any route.
+      if (url.pathname.includes("/v1/ontology/data/") || (url.pathname.startsWith("/api/") && r.method() !== "GET")) {
         calls.push(`${r.method()} ${url.pathname.replace(/^\/api/, "")}`);
       }
     });
@@ -165,6 +185,8 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
       await expect(row(page, item.id)).toHaveAttribute("data-status", "proposed");
       await expect(row(page, item.id).getByTestId("onto-review-status")).toHaveText("proposed");
     }
+
+    await expectNoCellValue(page);
 
     const customerId = keyItem(items, "customers.csv", "customer_id");
     const customerName = keyItem(items, "customers.csv", "name");
@@ -293,7 +315,8 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     await expect(row(page, customerId.id).getByTestId("onto-review-approved-note")).toContainText(
       "re-measured at every question",
     );
-    // One press, one request, one item. Nothing else changed.
+    // One press, one request, one item. Nothing else changed, and nothing follows late.
+    await page.waitForTimeout(500);
     expect(calls.slice(before)).toEqual([`POST /v1/ontology/data/items/${customerId.id}/approve`]);
     for (const item of items.filter((i) => i.id !== customerId.id)) {
       await expect(row(page, item.id)).toHaveAttribute("data-status", "proposed");
@@ -308,17 +331,25 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     );
     await expect(row(page, customerName.id)).toHaveAttribute("data-status", "proposed");
     await expect(row(page, customerName.id).getByTestId("onto-review-status")).toHaveText("proposed");
+    await expectNoCellValue(page);
 
     // --- clause 2: reject one -------------------------------------------------------
     const beforeReject = calls.length;
     const rejected = page.waitForResponse((r) => r.url().includes(`/items/${unitPrice.id}/revoke`));
-    await row(page, unitPrice.id).getByTestId("onto-review-reject").click();
+    // Two presses in the same tick (assistive tech, automation) still send one request.
+    await row(page, unitPrice.id)
+      .getByTestId("onto-review-reject")
+      .evaluate((el) => {
+        (el as HTMLButtonElement).click();
+        (el as HTMLButtonElement).click();
+      });
     const rejectRes = await rejected;
     expect(rejectRes.status()).toBe(200);
     expect((await rejectRes.json()).status).toBe("revoked");
     await expect(row(page, unitPrice.id)).toHaveAttribute("data-status", "revoked");
     await expect(row(page, unitPrice.id).getByTestId("onto-review-status")).toHaveText("rejected");
     await expect(row(page, unitPrice.id).getByTestId("onto-review-reject")).toHaveCount(0);
+    await page.waitForTimeout(500);
     expect(calls.slice(beforeReject)).toEqual([`POST /v1/ontology/data/items/${unitPrice.id}/revoke`]);
 
     // --- clause 5: usable only once BOTH keys are approved --------------------------
@@ -334,12 +365,7 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     await expect(row(page, shipLink!.id)).toHaveAttribute("data-status", "proposed");
 
     // --- clauses 6 and 10: words and values -----------------------------------------
-    const text = await root.innerText();
-    expect(text).not.toMatch(/verif|certif/i);
-    const values = cellValues();
-    expect(values.length).toBeGreaterThan(800);
-    const leaked = values.filter((v) => new RegExp(`(^|[^\\w.])${escapeRe(v)}($|[^\\w.])`).test(text));
-    expect(leaked).toEqual([]);
+    await expectNoCellValue(page);
 
     await shot(page, "review-1280-cream.png");
 
@@ -369,7 +395,7 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     );
     await expect(page.getByTestId("onto-review-stored-only")).toBeVisible();
     await expect(page.getByTestId("onto-review-memory-notice")).toHaveCount(after.persisted ? 0 : 1);
-    expect(await root.innerText()).not.toMatch(/verif|certif/i);
+    await expectNoCellValue(page);
   });
 
   test("the Spaces page links each Space to its review", async ({ page }) => {
@@ -395,6 +421,56 @@ test.describe("ONTO-PROFILE-03 steward review, 1280px", () => {
     await expect(page.getByTestId("onto-review-item")).toHaveCount(0);
     await expect(page.getByTestId("onto-review-approve")).toHaveCount(0);
     await expect(page.getByTestId("onto-review-reject")).toHaveCount(0);
+    await expectNoCellValue(page);
+  });
+
+  test("a Measure answer for one Space never lands on another Space's page", async ({ page, request }) => {
+    const other = await createSpace(request, `ONTO-PROFILE-03 other ${Date.now()}`);
+    await page.goto(`/spaces/${spaceId}/ontology-review`);
+    await expect(page.getByTestId("onto-review-item").first()).toBeVisible();
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    await page.route("**/v1/ontology/data/profile**", async (route) => {
+      await held;
+      await route.continue(); // unchanged, to the real API
+    });
+    const answered = page.waitForResponse((r) => r.url().includes("/v1/ontology/data/profile"));
+    await page.getByRole("button", { name: "Measure this Space" }).click();
+    // In-app navigation to the other Space while the first Space's answer is held.
+    await page.evaluate((url) => {
+      window.history.pushState({}, "", url);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }, `/spaces/${other}/ontology-review`);
+    await expect(page.getByTestId("onto-review-summary")).toHaveText("No proposal is stored for this Space yet.");
+    release();
+    expect((await answered).status()).toBe(200);
+    await page.waitForTimeout(500);
+    await expect(page.getByTestId("onto-review-summary")).toHaveText("No proposal is stored for this Space yet.");
+    await expect(page.getByTestId("onto-review-item")).toHaveCount(0);
+    await expect(page.getByTestId("onto-review-table")).toHaveCount(0);
+    await expect(page.getByTestId("onto-review-approve")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Measure this Space" })).toBeEnabled();
+  });
+
+  test("403 on an Approve press mid-session: the grant notice, no control, no status change", async ({ page, request }) => {
+    expect(NON_STEWARD_API, "DMS_E2E_NON_STEWARD_API_URL must name a running non-steward DMS API").not.toBe("");
+    await page.goto(`/spaces/${spaceId}/ontology-review`);
+    const body = await measure(page);
+    const productId = keyItem(body.items, "products.csv", "product_id");
+    expect(productId.status).toBe("proposed");
+    // Only this approve goes to the real non-steward API; its 403 is passed through.
+    await page.route(`**/v1/ontology/data/items/${productId.id}/approve`, async (route) => {
+      const url = new URL(route.request().url());
+      const res = await route.fetch({ url: `${NON_STEWARD_API}${url.pathname.replace(/^\/api/, "")}` });
+      await route.fulfill({ response: res });
+    });
+    const answered = page.waitForResponse((r) => r.url().includes(`/items/${productId.id}/approve`));
+    await row(page, productId.id).getByTestId("onto-review-approve").click();
+    expect((await answered).status()).toBe(403);
+    await expect(page.getByTestId("onto-review-steward-required")).toContainText("A steward grant is needed");
+    await expect(page.getByRole("button", { name: /Approve|Reject|Measure/ })).toHaveCount(0);
+    expect((await apiItems(request, spaceId)).items.find((i) => i.id === productId.id)?.status).toBe("proposed");
+    await expectNoCellValue(page);
   });
 
   test("403 steward_grant_required: says a grant is needed, no Approve or Reject", async ({ page }) => {
@@ -458,7 +534,8 @@ test.describe("ONTO-PROFILE-03 steward review, 390px", () => {
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
       );
       expect(overflowX).toBeLessThanOrEqual(1);
-      await expect(page.locator("html")).toHaveAttribute("data-theme", mode === "graphite" ? "graphite" : /.*/);
+      await expect(page.locator("html")).toHaveAttribute("data-theme", mode);
+      await expectNoCellValue(page);
       await shot(page, `review-390-${mode}.png`);
     });
   }
