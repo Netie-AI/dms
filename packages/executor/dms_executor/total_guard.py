@@ -45,7 +45,9 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from functools import lru_cache
 
+import duckdb
 import sqlglot
 from sqlglot import exp
 
@@ -82,6 +84,11 @@ _HINTS = {
     "window_value_under_aggregate": (
         "an aggregate reads a value a window function or scalar subquery computed "
         "over many rows, so it is counted once per row; aggregate the base column"
+    ),
+    "self_join_under_aggregate": (
+        "an aggregate reads rows from a table joined to itself or to a relation built "
+        "from the same table, so one value is counted once per matching row; "
+        "aggregate the base rows once"
     ),
     "collection_under_function": (
         "a function or operator is applied to a collection an aggregate built, which "
@@ -163,9 +170,59 @@ class _Rel:
     cols: dict[str, str] = field(default_factory=dict)
     #: The kind any column NOT in ``cols`` is taken to have (default deny).
     carried: str = ""
+    #: Base tables and CTE names read to build it, with how often.
+    reads: dict[str, int] = field(default_factory=dict)
 
     def kind(self, name: str) -> str:
         return self.cols[name] if name in self.cols else self.carried
+
+
+def _sum_reads(*rels: _Rel) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for rel in rels:
+        for name, n in rel.reads.items():
+            out[name] = out.get(name, 0) + n
+    return out
+
+
+#: The functions that add rows when used in a SELECT list. Per the base
+#: session's sweep of DuckDB 1.5.6's catalog (561 functions runnable in a
+#: SELECT list) these four are the only ones; not re-measured here. They parse
+#: as ordinary functions, as methods (``x.unnest()``) and schema-qualified.
+_ROW_ADDING_FUNCTIONS = frozenset(
+    {"unnest", "unlist", "generate_subscripts", "regexp_split_to_table"}
+)
+
+
+def _adds_rows(node: exp.Expression) -> bool:
+    if isinstance(node, exp.UDTF):
+        return True
+    return isinstance(node, exp.Anonymous) and str(node.name).lower() in _ROW_ADDING_FUNCTIONS
+
+
+@lru_cache(maxsize=1)
+def _aggregate_returns() -> dict[str, frozenset[bool]]:
+    """Per aggregate name in DuckDB's own catalog: does each overload return a collection?
+
+    Asked of the engine that runs the statement, never listed here: sqlglot does
+    not type ``histogram`` or ``map_agg``, and a name list would be the next
+    spelling. In-memory, reads no lake.
+    """
+    con = duckdb.connect(":memory:")
+    try:
+        rows = con.execute(
+            "SELECT lower(function_name), return_type FROM duckdb_functions() "
+            "WHERE function_type = 'aggregate'"
+        ).fetchall()
+    finally:
+        con.close()
+    out: dict[str, set[bool]] = {}
+    for name, ret in rows:
+        text = str(ret or "")
+        out.setdefault(str(name), set()).add(
+            text.endswith("]") or text.startswith(("MAP", "STRUCT"))
+        )
+    return {k: frozenset(v) for k, v in out.items()}
 
 
 def _any(*rels: _Rel) -> str:
@@ -177,29 +234,38 @@ def _collects(node: exp.Expression) -> bool:
     """An aggregate whose result is a collection of its inputs."""
     if isinstance(node, exp.List):
         return True  # DuckDB list(x); sqlglot does not file it under AggFunc
+    if isinstance(node, exp.Anonymous):
+        # An aggregate sqlglot does not type: ask the engine what its overloads return.
+        returns = _aggregate_returns().get(str(node.name).lower())
+        if returns is None:
+            return False  # not an aggregate (a scalar function, or unknown)
+        if returns == {True}:
+            return True
+        return True in returns and any(
+            isinstance(a, (exp.Array, exp.Tuple)) for a in node.expressions
+        )
     if not isinstance(node, exp.AggFunc):
         return False
     if isinstance(node, (exp.Min, exp.Max)) and node.expressions:
         return True  # min(x, n) / max(x, n) return a list
     if isinstance(node, (exp.ArgMax, exp.ArgMin)) and node.args.get("count"):
         return True
+    if isinstance(
+        node, (exp.Quantile, exp.PercentileCont, exp.PercentileDisc, exp.ApproxQuantile)
+    ) and any(isinstance(v, (exp.Array, exp.Tuple)) for v in node.args.values()):
+        return True  # quantile(x, [0.25, 0.75]) returns a list
     return not isinstance(node, _SCALAR_AGGS)
 
 
 def _aggregates(node: exp.Expression) -> bool:
-    """A node in aggregate position: typed, collecting, windowed, or not typed at all."""
-    return isinstance(node, (exp.AggFunc, exp.List, exp.Anonymous, exp.Window))
+    """A node in aggregate position: typed, windowed, or an aggregate sqlglot does not type.
 
-
-#: The DuckDB functions that return one row per element when listed in a SELECT
-#: (a scan of its scalar, macro and table functions found only these; sqlglot
-#: types ``unnest`` but files the others as Anonymous). A closed set, not a
-#: phrasing rule: each one multiplies the rows an aggregate above would read.
-_ROW_MULTIPLIERS = frozenset({"unlist", "generate_subscripts", "regexp_split_to_table"})
-
-
-def _multiplies_rows(node: exp.Expression) -> bool:
-    return isinstance(node, exp.Anonymous) and str(node.name).lower() in _ROW_MULTIPLIERS
+    The last is asked of DuckDB's catalog (``fsum``, ``product``, ``histogram``),
+    so a scalar function sqlglot does not know (``hash``, ``date_part``) is not one.
+    """
+    if isinstance(node, exp.Anonymous):
+        return str(node.name).lower() in _aggregate_returns()
+    return isinstance(node, (exp.AggFunc, exp.List, exp.Window))
 
 
 def _many_grouping_sets(select: exp.Select) -> bool:
@@ -264,7 +330,7 @@ class _Guard:
         """``AS q(c1, c2)`` renames by position: no name can be followed."""
         alias = item.args.get("alias")
         if isinstance(alias, exp.TableAlias) and alias.columns:
-            return _Rel(rel.repeats, {}, _any(rel))
+            return _Rel(rel.repeats, {}, _any(rel), rel.reads)
         return rel
 
     def source(self, item: exp.Expression) -> _Rel:
@@ -278,16 +344,33 @@ class _Guard:
             if cte is not None:
                 rel = self._renamed(self.query(cte.this), cte)
             elif isinstance(item.this, exp.Identifier):
-                rel = _Rel()  # a base table
+                rel = _Rel(reads={self._table_key(item): 1})  # a base table
             else:
                 rel = _Rel(repeats="row_generator")  # range(n), read_csv(...)
         elif isinstance(item, exp.Subquery):
             rel = self.query(item.this)
         else:
             rel = _Rel(repeats="unrecognised_source", carried=_WINDOW)
+        for pivot in item.args.get("pivots") or []:
+            if not pivot.args.get("unpivot"):
+                self._pivot_reads(rel, pivot.expressions)
         if item.args.get("pivots"):
-            rel = _Rel("row_turn", {}, _worst(rel.carried, *rel.cols.values()))
+            rel = _Rel("row_turn", {}, _any(rel), rel.reads)
         return self._renamed(rel, item)
+
+    @staticmethod
+    def _table_key(table: exp.Table) -> str:
+        return ".".join(p.lower() for p in (table.catalog, table.db, table.name) if p)
+
+    @staticmethod
+    def _pivot_reads(rel: _Rel, aggregates: list[exp.Expression]) -> None:
+        """A PIVOT's own aggregate reads the rows of the relation it turns."""
+        if not any(isinstance(n, exp.AggFunc) for a in aggregates for n in a.walk()):
+            return
+        if rel.repeats:
+            raise _Refuse(f"{rel.repeats}_under_aggregate")
+        if _any(rel):
+            raise _Refuse("window_value_under_aggregate")
 
     def query(self, node: exp.Expression) -> _Rel:
         key = id(node)
@@ -302,13 +385,13 @@ class _Guard:
             elif isinstance(node, _SET_OPS):
                 left, right = self.query(node.this), self.query(node.expression)
                 kinds = [left.carried, right.carried, *left.cols.values(), *right.cols.values()]
-                rel = _Rel("set_operation", {}, _worst(*kinds))
+                rel = _Rel("set_operation", {}, _worst(*kinds), _sum_reads(left, right))
             elif isinstance(node, exp.Summarize):
                 # SUMMARIZE aggregates every column of its input.
                 inner = self.query(node.this)
                 if inner.repeats or _any(inner):
                     raise _Refuse(f"{inner.repeats or 'window_value'}_under_aggregate")
-                rel = _Rel()
+                rel = _Rel(reads=inner.reads)
             elif isinstance(node, exp.Subquery):
                 rel = self.source(node)
             elif isinstance(node, exp.UDTF):
@@ -324,7 +407,11 @@ class _Guard:
                 # ``TABLE AS t``. One read of one table: nothing repeated.
                 rel = _Rel()
             elif isinstance(node, exp.Pivot):
-                rel = _Rel(repeats="row_turn")
+                # ``PIVOT t ON k USING SUM(v)``: the USING aggregate reads t's rows.
+                inner = self.source(node.this) if node.this is not None else _Rel()
+                if not node.args.get("unpivot"):
+                    self._pivot_reads(inner, list(node.args.get("using") or []))
+                rel = _Rel("row_turn", {}, _any(inner), inner.reads)
             else:
                 rel = _Rel(repeats="unrecognised_source", carried=_WINDOW)
         finally:
@@ -361,22 +448,38 @@ class _Guard:
         mine = [n for n in own if n.find_ancestor(exp.Select) is select]
         if repeats and any(_aggregates(n) for n in own):
             raise _Refuse(f"{repeats}_under_aggregate")
-        # Rule 3, same SELECT: a scalar subquery's value is read once per row of
-        # this SELECT when an aggregate takes it as an argument.
-        for node in mine:
-            if not _aggregates(node):
+        reads = _sum_reads(*rels)
+        if any(n > 1 for n in reads.values()) and any(_aggregates(n) for n in own):
+            raise _Refuse("self_join_under_aggregate")
+        # A scalar subquery is one value handed to every row: an aggregate over
+        # it counts it once per row (``SUM((SELECT SUM(x) FROM t))``).
+        for node in own:
+            if _aggregates(node) and not isinstance(node, exp.Window):
+                scan = node
+            elif isinstance(node, exp.Window) and isinstance(node.this, exp.Expression):
+                scan = node.this
+            else:
                 continue
-            scan = node.this if isinstance(node, exp.Window) else node
-            if isinstance(scan, exp.Expression) and scan.find(exp.Select) is not None:
+            for sub in scan.find_all(exp.Subquery):
+                if sub.arg_key == "query" or isinstance(sub.parent, (exp.In, exp.Exists)):
+                    continue  # a predicate's set, not a value
                 raise _Refuse("window_value_under_aggregate")
         many = _many_grouping_sets(select)
         if many and any(isinstance(n, exp.Window) for n in own):
             raise _Refuse("grouping_sets_under_aggregate")
 
-        # Rule 4, in this SELECT: a collecting aggregate is listed as it is.
+        # Rule 4, in this SELECT: a collecting aggregate is listed as it is. So is
+        # a scalar subquery that hands back a collection.
         collections: dict[str, str] = {}
         for node in mine:
-            if not _collects(node):
+            if isinstance(node, exp.Subquery) and node.arg_key not in ("this", "query"):
+                inner_rel = self.query(node.this) if isinstance(node.this, exp.Select) else None
+                collecting = inner_rel is not None and _any(inner_rel) == _COLLECTION
+            elif isinstance(node, exp.Subquery) and isinstance(node.parent, exp.Select):
+                collecting = False
+            else:
+                collecting = _collects(node)
+            if not collecting:
                 continue
             top: exp.Expression = node
             while isinstance(top.parent, _BARE):
@@ -435,8 +538,8 @@ class _Guard:
                         raise _Refuse("window_value_under_aggregate")
 
         # What this SELECT hands on.
-        out = _Rel(repeats=repeats or ("grouping_sets" if many else None))
-        if any(isinstance(n, exp.UDTF) or _multiplies_rows(n) for n in mine):
+        out = _Rel(repeats=repeats or ("grouping_sets" if many else None), reads=reads)
+        if any(_adds_rows(n) for n in mine):
             out.repeats = out.repeats or "row_generator"
         known: dict[str, str] = dict(collections)
         for _ in range(len(select.expressions) + 1):
@@ -454,6 +557,8 @@ class _Guard:
                         out.carried = _worst(out.carried, src_loose)
                         for rel in rels:
                             for name, kind in rel.cols.items():
+                                if name in out.cols:
+                                    out.carried = _worst(out.carried, kind, out.cols[name])
                                 out.cols[name] = _worst(out.cols.get(name, ""), kind)
                     else:
                         # EXCLUDE / REPLACE / RENAME / COLUMNS(...) / q.*: not followed.
@@ -478,6 +583,10 @@ class _Guard:
                 if not name:
                     out.carried = _worst(out.carried, kind)  # an unnamed value
                     continue
+                if name in out.cols:
+                    # DuckDB renames the second ``c`` to ``c_1``: a name this
+                    # relation does not list. Unlisted names take the carried kind.
+                    out.carried = _worst(out.carried, kind, out.cols[name])
                 out.cols[name] = _worst(out.cols.get(name, ""), kind)
                 known[name] = _worst(known.get(name, ""), out.cols[name])
             if known == before:

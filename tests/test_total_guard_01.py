@@ -61,6 +61,7 @@ WINDOW = "window_value_under_aggregate"
 COLLECTION = "collection_under_function"
 SET_OP = "set_operation_under_aggregate"
 GENERATOR = "row_generator_under_aggregate"
+SELF_JOIN = "self_join_under_aggregate"
 
 #: The issue's Problem table, row by row: name -> (sql, the figure it returns,
 #: the rule that refuses it). The true figure is 107 in every row.
@@ -432,6 +433,40 @@ MORE_SHAPES: dict[str, tuple[str, str, int, int, str]] = {
     ),
 }
 
+_R = f"SELECT 'x' AS k, SUM({N}) AS s FROM {T} GROUP BY ROLLUP(school_id)"
+#: Adversary round (step 7). Four runs on Sonnet at high effort, each with its own lens and
+#: none the author of the check, wrote statements to get a wrong figure past it. These are
+#: the ones that did on the first build, each now refused. name -> same shape as MORE_SHAPES.
+ADVERSARY_SHAPES: dict[str, tuple[str, str, int | float, int | float, str]] = {
+    # Lens A: an aggregate written inside a PIVOT clause was never inspected.
+    "pivot_clause_over_rollup": (Q, f"SELECT * FROM ({_R}) PIVOT (SUM(s) FOR k IN ('x'))", 214, 107, GROUPING),
+    "pivot_clause_over_rollup_cte": (Q, f"WITH r AS ({_R}) SELECT * FROM r PIVOT (SUM(s) FOR k IN ('x'))", 214, 107, GROUPING),
+    "pivot_statement_using_over_rollup": (Q, f"PIVOT ({_R}) ON k USING SUM(s)", 214, 107, GROUPING),
+    "pivot_clause_over_union": (Q, f"SELECT * FROM (SELECT 'x' AS k, {N} AS s FROM {T} UNION ALL SELECT 'x', {N} FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))", 214, 107, SET_OP),
+    "pivot_clause_over_window": (Q, f"SELECT * FROM (SELECT 'x' AS k, SUM({N}) OVER () AS s FROM {T}) PIVOT (SUM(s) FOR k IN ('x'))", 428, 107, WINDOW),
+    "pivot_clause_counts_unpivoted_rows": (COUNT_Q, f"SELECT * FROM (SELECT 'x' AS k, v FROM (UNPIVOT (SELECT {N} a, {N} b FROM {T}) ON a, b INTO NAME n VALUE v)) PIVOT (COUNT(v) FOR k IN ('x'))", 8, 4, TURN),
+    # Lens B: collections sqlglot does not type, list forms of scalar aggregates, a
+    # collection or a window value behind a scalar subquery, a renamed duplicate column.
+    "histogram_keys_concatenated": (Q, f"SELECT list_sum(map_keys(histogram({N})) || map_keys(histogram({N}))) AS total FROM {T}", 214, 107, COLLECTION),
+    "quantile_list_concatenated": (Q, f"SELECT list_sum(list_concat(quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]), quantile_disc({N}, [0.0, 0.34, 0.67, 1.0]))) AS total FROM {T}", 214, 107, COLLECTION),
+    "collection_in_a_scalar_subquery": (Q, f"SELECT list_sum((SELECT list({N}) FROM {T}) || (SELECT list({N}) FROM {T})) AS total", 214, 107, COLLECTION),
+    "scalar_subquery_as_sum_argument": (Q, f"SELECT SUM((SELECT SUM({N}) FROM {T})) AS total FROM {T}", 428, 107, WINDOW),
+    "scalar_subquery_as_avg_argument": ("What is the average per enrollment?", f"SELECT AVG((SELECT SUM({N}) FROM {T})) AS total FROM {T}", 107.0, 26.75, WINDOW),
+    "duplicate_output_name_renamed": (Q, f"SELECT SUM(c_1) AS total FROM (SELECT {N} AS c, SUM({N}) OVER () AS c FROM {T})", 428, 107, WINDOW),
+    # Lens C: row generators that are not UNNEST in a FROM, and a table read twice.
+    "generate_subscripts_in_a_projection": (Q, f"SELECT SUM(x) AS total FROM (SELECT {N} AS x, generate_subscripts([1, 2], 1) AS g FROM {T})", 214, 107, GENERATOR),
+    "method_unnest_in_a_projection": (Q, f"SELECT SUM(x) AS total FROM (SELECT [{N}, {N}].unnest() AS x FROM {T})", 214, 107, GENERATOR),
+    "schema_qualified_unnest_of_range": (Q, f"SELECT SUM({N}) AS total FROM (SELECT students, main.unnest(range(2)) AS k FROM {T})", 214, 107, GENERATOR),
+    "self_join_on_true": (Q, f"SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM {T} a JOIN {T} b ON true", 428, 107, SELF_JOIN),
+    "self_cross_join_counted": (COUNT_Q, f"SELECT COUNT(*) AS total FROM {T} a CROSS JOIN {T} b", 16, 4, SELF_JOIN),
+    "table_cross_joined_to_its_own_sum": (Q, f"WITH tot AS (SELECT SUM({N}) AS t FROM {T}) SELECT SUM(t) AS total FROM {T} CROSS JOIN tot", 428, 107, SELF_JOIN),
+    "two_derived_tables_over_one_table": (Q, f"SELECT SUM(x) AS total FROM (SELECT {N} AS x FROM {T}) t1, (SELECT school_id FROM {T}) t2", 428, 107, SELF_JOIN),
+    # A collection encoded as text and turned back into rows: string_agg collects.
+    "string_agg_concatenated_then_unnested": (Q, f"SELECT SUM(CAST(v AS INTEGER)) AS total FROM (SELECT UNNEST(string_split(string_agg(students, ',') || ',' || string_agg(students, ','), ',')) AS v FROM {T})", 214, 107, COLLECTION),
+    "cte_read_twice_and_summed": (Q, f"WITH c AS (SELECT {N} AS x FROM {T}) SELECT SUM(a.x) AS total FROM c a, c b", 428, 107, SELF_JOIN),
+}
+MORE_SHAPES.update(ADVERSARY_SHAPES)
+
 LIST_Q = "List the enrollments"
 #: Clause 4. Correct one-table statements: name -> (question, sql). Each
 #: answers exactly as on the parent commit (this test passes there too).
@@ -571,6 +606,16 @@ OPEN: dict[str, tuple[str, int]] = {
     "window_total_times_window_count_listed": (
         f"SELECT DISTINCT SUM({N}) OVER () * COUNT(*) OVER () AS total FROM {T}",
         428,
+    ),
+    # Adversary round: a pick among a ROLLUP's mixed rows (a choice, not a repeated value).
+    "rollup_listing_cut_to_its_smallest_row": (
+        f"SELECT SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id) ORDER BY total LIMIT 1",
+        12,
+    ),
+    "rollup_rows_cut_to_one_by_an_outer_select": (
+        f"SELECT t AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} "
+        "GROUP BY ROLLUP(school_id)) ORDER BY t LIMIT 1",
+        12,
     ),
 }
 OPEN_REASON = (
@@ -715,7 +760,8 @@ def test_more_ways_to_repeat_a_value_abstain(
     question, sql, wrong, true, why = MORE_SHAPES[name]
     rig, env = _ask("generate", sql, tmp_path, monkeypatch, minter, question)
     rows = od._oracle(rig.lake, sql)
-    assert rows and rows[0]["total"] == wrong and wrong != true, rows
+    first = rows[0].get("total", next(iter(rows[0].values()))) if rows else None
+    assert first == wrong and wrong != true, rows
     _assert_refused_by_the_rule(env, rig, sql, why, (wrong,))
 
 
