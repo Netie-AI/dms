@@ -39,6 +39,9 @@ type Receipt = {
   summary?: string | null;
   per_class?: Record<string, number> | null;
   files?: FileRow[] | null;
+  serving_sync?: string | null;
+  serving_sync_detail?: string | null;
+  chat_can_see_it?: boolean | null;
 };
 
 /** AGI-BUYER-WALK-01 (#236). Keep in lockstep with tests/fixtures/buyer_walk/questions.yaml. */
@@ -420,7 +423,7 @@ export function StudioPage() {
       <input
         ref={fileInput}
         type="file"
-        accept=".csv,.xlsx,.xlsm,.tsv"
+        accept=".csv,.xlsx,.xlsm"
         multiple
         className="hidden"
         disabled={busy}
@@ -616,11 +619,24 @@ export function StudioPage() {
       </div>
 
       {receipt && (
-        <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 text-sm">
+        <div
+          data-testid="ingest-receipt"
+          className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 text-sm"
+        >
           <p className="font-medium text-[var(--color-ink)]">
             {receipt.summary ??
               `Receipt · ${receipt.files_seen} files · ${receipt.ingested} ingested · ${attention} need attention`}
           </p>
+          {/* PHONE-PATH-01 B1: the API said it cannot confirm Chat sees this; say it in words. */}
+          {receipt.chat_can_see_it === false && (
+            <p
+              data-testid="receipt-chat-visibility"
+              className="mt-1 text-[var(--color-ink)] lg:hidden"
+            >
+              Not confirmed that Chat can see this upload
+              {receipt.serving_sync_detail ? `: ${receipt.serving_sync_detail}` : ""}.
+            </p>
+          )}
           {receipt.per_class && (
             <p className="mt-1 text-[var(--color-ink-muted)]">
               {Object.entries(receipt.per_class)
