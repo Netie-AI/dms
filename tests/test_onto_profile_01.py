@@ -36,7 +36,7 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter
 from dms_executor.ontology import Ontology
 from fastapi.testclient import TestClient
-from test_onto_derive_01 import _RecordingCortex, make_minter
+from test_onto_derive_01 import _parse_ontology, _RecordingCortex, make_minter
 
 SEED = 514
 ORPHAN_CUSTOMERS = ["C901", "C902", "C903", "C904", "C905"]
@@ -839,10 +839,29 @@ def test_profile_items_in_any_status_leave_the_ask_envelope_unchanged(
     rig, space_id, t = retail
     if flag is None:
         monkeypatch.delenv("DMS_ONTO_FROM_DATA", raising=False)
+        # The recording Cortex asserts every Insights body names a source. A file
+        # Space with no ontology is asked with the demo context, which names none,
+        # so every ask below read "Cortex refused" and the comparison held three
+        # identical refusals. Record the body as sent and answer instead.
+        cortex = rig.cortex
+
+        def _insights(question: str, **kw: Any) -> dict[str, Any]:
+            try:
+                parsed = _parse_ontology(kw.get("ontology"))
+            except AssertionError:
+                parsed = {}  # no source named: the demo context
+            cortex.insights.append({"question": question, "parsed": parsed, **kw})
+            return dict(cortex.payload)
+
+        monkeypatch.setattr(cortex, "compute_insights", _insights)
     else:
         monkeypatch.setenv("DMS_ONTO_FROM_DATA", flag)
     before = _asks(rig, space_id, t)
     assert _asks(rig, space_id, t) == before  # the comparison is stable on its own
+    if flag is None:
+        assert before["count"]["badge"] == "L2_VALIDATED" and before["count"]["rows"] == [
+            {"n": 300}
+        ]
     for name in ("proposed_link_join", "orphan_join"):
         assert before[name]["badge"] == "ABSTAIN" and before[name]["abstained"] is True
         assert before[name]["rows"] == [] and before[name]["values"] == []
@@ -859,7 +878,38 @@ def test_profile_items_in_any_status_leave_the_ask_envelope_unchanged(
     approved = [i["id"] for i in body["items"] if _approve(rig, i["id"]).status_code == 200]
     assert len(approved) == 5  # four keys (one per keyed table) and the link
     assert len(_space_items(rig, space_id, "approved")) == 5
-    assert _asks(rig, space_id, t) == before, "approved items changed an answer"
+    approved_asks = _asks(rig, space_id, t)
+    if flag is None:
+        # ONTO-PROFILE-02 (dms#515) changes this stage on purpose: an approved
+        # link that verifies now licenses its join. Everything else is unchanged:
+        # the one-table count, and the orders -> customers join whose link has
+        # orphan rows and so does not verify.
+        # (The catalog Cortex is sent does change: it is now the Space's own,
+        # keyed tables only. It is not a customer-visible field.)
+        def seen(ask: dict[str, Any]) -> dict[str, Any]:
+            return {k: v for k, v in ask.items() if k != "catalog_sent"}
+
+        assert seen(approved_asks["count"]) == seen(before["count"])
+        # The orphan join still abstains with no row and no value. Only the reason
+        # changes: the Space has an ontology now, so the join names the missing
+        # link ("has no declared link") where it said "no_ontology".
+        orphan, was = seen(approved_asks["orphan_join"]), seen(before["orphan_join"])
+        assert "unverified_join:no_ontology" in was["text"]
+        assert "unverified_join:" in orphan["text"] and "has no declared link" in orphan["text"]
+        for field_ in ("badge", "abstained", "rows", "values", "sources"):
+            assert orphan[field_] == was[field_], field_
+        join = approved_asks["proposed_link_join"]
+        assert join["abstained"] is False and join["badge"] == "L2_VALIDATED", join["text"]
+        truth = _oracle(
+            rig.lake,
+            f"SELECT o.status, COUNT(*) AS n FROM {t['shipments.csv']} s "
+            f"JOIN {t['orders.csv']} o ON s.order_id = o.order_id GROUP BY o.status",
+        )
+        assert sorted((r["status"], r["n"]) for r in join["rows"]) == sorted(truth)
+        for status, n in truth:
+            assert f"status={status}, n={n}" in join["text"]
+    else:
+        assert approved_asks == before, "approved items changed an answer under the flag"
 
     for item_id in approved:
         assert _revoke(rig, item_id).status_code == 200
