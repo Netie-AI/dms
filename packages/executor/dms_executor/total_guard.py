@@ -281,30 +281,6 @@ def _aggregate_macros() -> dict[str, bool]:
     return out
 
 
-def _reads_outer(sub: exp.Subquery, before: set[str]) -> bool:
-    """A derived table DuckDB binds laterally: it names an earlier source.
-
-    Without the LATERAL keyword DuckDB still lets a derived table read the
-    sources before it (round 5: ``FROM L s, (SELECT list_sum(s.l || s.l))``).
-    True when a column inside is qualified by an earlier source's alias that no
-    relation inside the subquery takes, or when a SELECT inside reads no
-    relation at all, so any bare column in it can only be an outer one.
-    """
-    inner = {
-        str(n.alias_or_name).lower()
-        for n in sub.this.find_all(exp.Table, exp.Subquery, exp.CTE)
-        if n.alias_or_name
-    }
-    for col in sub.find_all(exp.Column):
-        table = str(col.table or "").lower()
-        if table and table in before and table not in inner:
-            return True
-    return any(
-        not (q.args.get("from") or q.args.get("from_")) and q.find(exp.Column) is not None
-        for q in sub.find_all(exp.Select)
-    )
-
-
 def _pivot_kind(aggregates: list[exp.Expression]) -> str:
     """A PIVOT whose aggregate collects (``list(x)``) turns out collection columns."""
     return _COLLECTION if any(_collects(n) for a in aggregates for n in a.walk()) else ""
@@ -558,8 +534,13 @@ class _Guard:
         items += [j.this for j in select.args.get("joins") or []]
         items += list(select.args.get("laterals") or [])
         for item in items:
+            # Any derived table after the first source may read the sources
+            # before it: DuckDB binds it laterally without the keyword, and an
+            # unqualified or shadowed outer reference cannot be told apart from
+            # its own columns (rounds 5 and 6). Fail closed: it is analysed as
+            # a LATERAL, carrying the earlier sources' kinds in and out.
             lateral = isinstance(item, exp.Lateral) or (
-                bool(rels) and isinstance(item, exp.Subquery) and _reads_outer(item, set(srcs))
+                bool(rels) and isinstance(item, exp.Subquery)
             )
             if lateral:
                 self.outer.append(_worst(*(_any(r) for r in rels)))

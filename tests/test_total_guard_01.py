@@ -1464,6 +1464,13 @@ DEMO_HOLES: dict[str, tuple[str, str]] = {
     "implicit_lateral_by_join_on_true": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s JOIN (SELECT list_sum(s.l || s.l) AS v) u ON true", COLLECTION),
     "implicit_lateral_nested": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (SELECT x.v FROM (SELECT list_sum(s.l || s.l) AS v) x) u", COLLECTION),
     "implicit_lateral_window_value_summed": ("SELECT SUM(u.v) AS total FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory) s, (SELECT s.w AS v) u", WINDOW),
+    # Verifier round 6: an unqualified or shadowed outer reference in a later
+    # derived table; every later derived table is now analysed as a LATERAL.
+    "implicit_lateral_unqualified_outer_column": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (SELECT list_sum(l || l) AS v FROM (SELECT 1 AS one) z) u", COLLECTION),
+    "implicit_lateral_unqualified_window_value": ("SELECT SUM(u.v) AS total FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory) s, (SELECT w AS v FROM (SELECT 1 AS one) z) u", WINDOW),
+    "implicit_lateral_alias_shadowed_inside": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (SELECT list_sum(s.l || s.l) AS v FROM (SELECT 1 AS one) z WHERE EXISTS (SELECT 1 FROM (SELECT 1) s)) u", COLLECTION),
+    "implicit_lateral_through_using": ("SELECT u.v AS total FROM (SELECT 1 AS k, list(quantity_kg) AS l FROM inventory) s JOIN (SELECT one AS k, list_sum(l || l) AS v FROM (SELECT 1 AS one) z) u USING (k)", COLLECTION),
+    "implicit_lateral_through_natural_join": ("SELECT SUM(u.v) AS total FROM (SELECT 1 AS k, SUM(quantity_kg) OVER () AS w FROM inventory) s NATURAL JOIN (SELECT one AS k, w AS v FROM (SELECT 1 AS one) z) u", WINDOW),
     "pivot_list_concatenated": ("SELECT list_sum(x || x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x'))", COLLECTION),
     "pivot_list_concatenated_by_alias": ("SELECT list_sum(p.x || p.x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x')) p", COLLECTION),
     "self_join_through_a_schema_qualifier": ("SELECT SUM(a.quantity_kg) AS total FROM inventory a, main.inventory b", "self_join_under_aggregate"),
