@@ -43,7 +43,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
-| T1 track #532 (do not merge): #524, #528, #523, #518, #515 verified ACCEPT; #516 carried (e2e not run); P0 #527 incl. demo Spaces and #531 under adversary rounds. Founder: VQ-01 demo abstain, #523 clause 8 and outcome 3, #515 D3 | #532 |
+| T1 track #532 (do not merge): #524, #528, #523, #518, #515 verified ACCEPT; #516 carried (e2e not run); P0 #527 incl. demo Spaces, self semi-join and VQ-03 ACCEPT; #531 proof allowlist (cost pinned by name). Founder: VQ-01 demo abstain, #523 clause 8 and outcome 3, #515 D3 | #532 |
 | Open by name: scalar arithmetic (`SUM(x)+SUM(x)`); `date_function` class (43 of 238 one-table statements reported, not re-measured here), routed | #532 |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
