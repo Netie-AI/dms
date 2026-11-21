@@ -967,6 +967,11 @@ class _Proof:
                     continue
                 for node in self._walk(item):
                     if isinstance(node, (exp.Select, *_SET_OPS, exp.Values)):
+                        if isinstance(node, _SET_OPS) and _membership_filter(node, key):
+                            # IN / EXISTS keep or drop rows; a branch repeated in a
+                            # set operation changes no membership (parent ruling 2).
+                            self._branches(node, scope)
+                            continue
                         if not isinstance(node, exp.Select):
                             raise _Unproven
                         if not self._placed_subquery(node, key, select):
@@ -994,6 +999,15 @@ class _Proof:
                             raise _Unproven
                         _row_values(node, nested_ok=False)
         return {"aggregates": aggregates, "carries": carries}
+
+    def _branches(self, node: exp.Expression, scope: dict[str, exp.CTE]) -> None:
+        if isinstance(node, _SET_OPS):
+            if _with_of(node) is not None:
+                raise _Unproven
+            self._branches(node.left, scope)
+            self._branches(node.right, scope)
+            return
+        self.query(node, scope)
 
     @staticmethod
     def _walk(item: exp.Expression) -> Iterator[exp.Expression]:
@@ -1023,6 +1037,18 @@ class _Proof:
                 return False
             walker = walker.parent
         return True
+
+
+def _membership_filter(node: exp.Expression, key: str) -> bool:
+    """The query of an ``IN (...)`` or ``[NOT] EXISTS (...)`` in WHERE, HAVING or QUALIFY."""
+    if key not in ("where", "having", "qualify"):
+        return False
+    holder = node.parent
+    if isinstance(holder, exp.Subquery):
+        holder = holder.parent
+    if isinstance(holder, exp.In):
+        return holder.args.get("query") is not None
+    return isinstance(holder, exp.Exists)
 
 
 def _table_form(node: exp.Expression) -> exp.Table | None:
