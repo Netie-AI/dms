@@ -909,3 +909,58 @@ def test_a_demo_column_alias_list_over_a_self_filter_abstains(
     assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
     assert env["rows"] == [] and env["values"] == []
     assert "unverified_join:column_alias_list" in od._reasons(env), env.get("assumptions")
+
+
+# --- TABLE t read as a table named TABLE (verifier round on the #531 proof) ---------
+
+_FAN = (
+    "SELECT SUM(l.capacity_kg) AS total FROM inventory i JOIN locations l "
+    "ON i.location_id = l.location_id"
+)
+#: name -> sql. The demo join check took ``TABLE t`` for an ungranted table named
+#: TABLE and stood aside; the contract door runs no serve_gap on ``sql_used``, so
+#: these served L2_VALIDATED at 7016f0a (630000 for 450000, 23490 for 7890).
+DEMO_TABLE_FORM_JOINS: dict[str, str] = {
+    "fan_trap_through_a_table_form": (
+        "SELECT SUM(l.capacity_kg) AS total FROM inventory i JOIN (TABLE locations) l "
+        "ON i.location_id = l.location_id"
+    ),
+    "fan_trap_through_a_table_form_cte": (
+        "WITH l AS (TABLE locations) SELECT SUM(l.capacity_kg) AS total FROM inventory i "
+        "JOIN l ON i.location_id = l.location_id"
+    ),
+    "fan_out_through_a_table_form_child": (
+        "SELECT SUM(i.quantity_kg) AS total FROM inventory i JOIN (TABLE transactions) t "
+        "ON t.sku = i.sku"
+    ),
+    "fan_trap_with_a_table_form_in_on": _FAN.replace(
+        "l.location_id", "l.location_id AND EXISTS (SELECT 1 FROM (TABLE suppliers) s)", 1
+    ),
+    "fan_trap_with_a_table_form_in_where": (
+        _FAN + " WHERE EXISTS (SELECT 1 FROM (TABLE suppliers) s)"
+    ),
+}
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+@pytest.mark.parametrize("name", sorted(DEMO_TABLE_FORM_JOINS))
+def test_a_demo_join_through_a_table_form_abstains(
+    name: str,
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    sql = DEMO_TABLE_FORM_JOINS[name]
+    env, figure, truth = _demo(sql, door, space_id, tmp_path, monkeypatch, minter)
+    assert figure and figure != truth, (figure, truth)  # the join repeats rows
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    reasons = od._reasons(env) + " " + str(env.get("text") or "")
+    assert "unverified_join" in reasons or "validate:" in reasons, reasons
+    if door == "contract":
+        assert "unverified_join" in reasons, reasons  # the join check itself ran
+    wrong = figure[0]["total"]
+    assert str(wrong) not in str(env.get("text") or ""), env.get("text")

@@ -455,6 +455,27 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
+def _read_tables(tree: exp.Expression) -> list[exp.Table]:
+    """Every table ``tree`` reads, ``TABLE t`` included as a read of ``t``.
+
+    sqlglot reads DuckDB's ``TABLE t`` as a table named TABLE (``(TABLE t)``)
+    or as an alias of a column named TABLE (a CTE body). Taken by name, it was
+    an ungranted table, and the demo join check stood aside: a fan trap through
+    ``JOIN (TABLE locations) l`` served 630000 for 450000 on the contract door
+    (verifier round on the #531 proof).
+    """
+    from dms_executor.total_guard import _table_form
+
+    out: list[exp.Table] = []
+    for node in tree.walk():
+        ref = _table_form(node)
+        if ref is not None:
+            out.append(ref)
+        elif isinstance(node, exp.Table):
+            out.append(node)
+    return out
+
+
 def _reads_only(sql: str, relations: set[str]) -> bool:
     """True when every base table ``sql`` reads (CTE names aside) is in ``relations``."""
     try:
@@ -464,7 +485,7 @@ def _reads_only(sql: str, relations: set[str]) -> bool:
     ctes = {str(c.alias).lower() for c in tree.find_all(exp.CTE)}
     names = {
         t.name.lower()
-        for t in tree.find_all(exp.Table)
+        for t in _read_tables(tree)
         if not (t.name.lower() in ctes and not t.db)
     }
     return bool(names) and names <= {r.lower() for r in relations}
@@ -490,7 +511,7 @@ def _reads_two_granted_tables(sql: str, grantable: Iterable[str]) -> bool:
     granted = {g.lower() for g in grantable} | {g.lower().split(".")[-1] for g in grantable}
     base: dict[str, int] = {}
     cte_reads: dict[str, int] = {}
-    for table in tree.find_all(exp.Table):
+    for table in _read_tables(tree):
         if not isinstance(table.this, exp.Identifier):
             return False
         name = table.name.lower()
