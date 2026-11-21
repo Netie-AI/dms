@@ -169,6 +169,7 @@ class Onboard:
         self.held_approved = 0
         self.sources: dict[str, str] = {}
         self.item_ids: set[str] = set()
+        self.sent_digests: set[str] = set()
 
     # ------------------------------------------------------------------ helpers
 
@@ -380,7 +381,11 @@ class Onboard:
         files = {}
         for rel in sorted({rel for _p, parts in SEND_CALLS for rel in parts.values()}):
             data = (self.out / rel).read_bytes()
-            files[rel] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+            digest = hashlib.sha256(data).hexdigest()
+            # Remembered in memory: a digest this run wrote is skipped by the leak check
+            # even after the file it names has changed. Never read back from disk.
+            self.sent_digests.add(digest)
+            files[rel] = {"sha256": digest, "bytes": len(data)}
         prompts = (self.prompt_manifest.get("files") or {}) if self.prompt_manifest else {}
         return {
             "format": "fde_send/1",
@@ -630,7 +635,7 @@ class Onboard:
         """Every id, digest and timestamp this run wrote. Only these skip the leak check."""
         from dms_executor.fde_pack import pack_files
 
-        out = {self.run_id, self.space_id, *self.item_ids}
+        out = {self.run_id, self.space_id, *self.item_ids, *self.sent_digests}
         out.update(str(f["sha256"]) for f in pack_files(self.out).values())
         out.update(
             str(f.get("sha256"))

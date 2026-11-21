@@ -43,7 +43,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | Item | PR |
 |------|----|
 | T1 track #532 (do not merge): P0 #527 join holes and #531 total guard (verifier round 3 open), #524 Yes re-enters the door, #528 check that raises abstains, #523 Space-scoped items (founder: clause 8, outcome 3), #518 catalog schemas. #515, #516 building | #532 |
-| T8 #541 FDE-ONBOARD-01: `scripts/fde_onboard.py`, masked pack, fixed prompts through OpenVault, every item proposed, measure = agreement with the unreviewed proposal (founder yes pending). Adversary round fixed; verifier pending | #543 |
+| T8 #541 FDE-ONBOARD-01: `scripts/fde_onboard.py`, masked pack, `--confirm-pack` send set, store writes only via gated routes (`--import`), measure = agreement with the unreviewed proposal. 5 Opus verifier rounds, last ACCEPT (scoped). Next: #515 loader merge | #543 |
 | Open by name: scalar arithmetic (`SUM(x)+SUM(x)`); `date_function` class (43 of 238 one-table statements reported, not re-measured here), routed | #532 |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
