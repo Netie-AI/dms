@@ -631,12 +631,16 @@ export function StudioPage() {
           {receipt.chat_can_see_it === false && (
             <p
               data-testid="receipt-chat-visibility"
+              role="status"
               className="mt-1 text-[var(--color-ink)] lg:hidden"
             >
               {receipt.ingested === 0
                 ? "Nothing was ingested, so Chat cannot see this upload."
                 : `Not confirmed that Chat can see this upload${
-                    receipt.serving_sync_detail ? `: ${receipt.serving_sync_detail}` : ""
+                    // The detail is a sentence of its own and often ends in a full stop: say one.
+                    receipt.serving_sync_detail?.replace(/[.\s]+$/, "")
+                      ? `: ${receipt.serving_sync_detail.replace(/[.\s]+$/, "")}`
+                      : ""
                   }.`}
             </p>
           )}

@@ -148,6 +148,40 @@ async function walk(page: Page): Promise<Walk> {
   return w;
 }
 
+/**
+ * The chip a person reads before the number: its label is not enough, its colours are the signal.
+ * Resolves the theme variables the Badge uses and compares computed ink and fill, so a green chip
+ * wearing the abstain label (or the reverse) fails.
+ */
+async function expectChipTone(chip: Locator, tone: "ok" | "warn" | "mute") {
+  const vars = {
+    ok: ["--color-badge-ok", "--color-accent-soft"],
+    warn: ["--color-badge-warn", "--color-warn-soft"],
+    mute: ["--color-badge-mute", "--color-paper-2"],
+  } as const;
+  const got = await chip.evaluate((el, all) => {
+    const probe = (name: string, prop: "color" | "backgroundColor") => {
+      const p = document.createElement("span");
+      p.style[prop] = `var(${name})`;
+      document.body.appendChild(p);
+      const v = getComputedStyle(p)[prop];
+      p.remove();
+      return v;
+    };
+    const cs = getComputedStyle(el);
+    const out: Record<string, { ink: string; fill: string }> = {};
+    for (const [k, [ink, fill]] of Object.entries(all)) out[k] = { ink: probe(ink, "color"), fill: probe(fill, "backgroundColor") };
+    return { ink: cs.color, fill: cs.backgroundColor, opacity: cs.opacity, want: out };
+  }, vars);
+  expect(got.opacity, "chip is not faded").toBe("1");
+  expect({ ink: got.ink, fill: got.fill }, `chip carries the ${tone} tone`).toEqual(got.want[tone]);
+  for (const other of ["ok", "warn", "mute"] as const) {
+    if (other !== tone && got.want[other].fill !== got.want[tone].fill) {
+      expect(got.fill, `chip is not the ${other} fill`).not.toBe(got.want[other].fill);
+    }
+  }
+}
+
 async function phonePage(browser: Browser): Promise<Page> {
   const ctx = await browser.newContext({ viewport: PHONE, hasTouch: true, isMobile: true });
   return ctx.newPage();
@@ -286,7 +320,9 @@ test.describe("PHONE-PATH-01 stranger path at 390x844", () => {
     if (env.abstained) {
       // Accepted only as an abstain: its badge, its reason, and nothing that reads as an answer.
       expect(rendered).toBe(squash(env.text));
-      await expect(answer.getByText(BADGE_COPY.ABSTAIN.label, { exact: true }).first()).toBeVisible();
+      const chip = answer.getByText(BADGE_COPY.ABSTAIN.label, { exact: true }).first();
+      await expect(chip).toBeVisible();
+      await expectChipTone(chip, BADGE_COPY.ABSTAIN.tone);
       for (const [kind, copy] of Object.entries(BADGE_COPY)) {
         if (kind !== "ABSTAIN") await expect(answer.getByText(copy.label, { exact: true })).toHaveCount(0);
       }
@@ -297,7 +333,9 @@ test.describe("PHONE-PATH-01 stranger path at 390x844", () => {
       // Not executed on a stack without OpenVault and a model key (see the PR).
       expect(squash(env.text)).toContain(rendered);
       const badge = BADGE_COPY[env.badge as keyof typeof BADGE_COPY];
-      await expect(answer.getByText(badge.label, { exact: true }).first()).toBeVisible();
+      const chip = answer.getByText(badge.label, { exact: true }).first();
+      await expect(chip).toBeVisible();
+      await expectChipTone(chip, badge.tone);
       const sources = env.contributing_sources ?? [];
       expect(sources.length, "a non-abstained answer cites its sources").toBeGreaterThan(0);
       for (const s of sources) expect(w.tables, `source ${s.container} was created by the upload`).toContain(s.container);
