@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+import sys
+import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, TypeVar
 
-import duckdb
 import httpx
 import sqlglot
 from ao_vendor.llm.messages import HumanMessage, SystemMessage
@@ -57,7 +59,63 @@ PROMPT_SHA256: dict[str, str] = {
 }
 
 MAX_ROWS = 1000
+#: Wall-clock bound on one question check; the serving connection is interrupted after it.
+CHECK_TIMEOUT_S = 20.0
 _FLOAT_TYPES = ("DOUBLE", "FLOAT", "REAL")
+_FLOAT_ANYWHERE = re.compile(r"\b(DOUBLE|FLOAT|REAL)\b")
+#: DuckDB reports these as CONSISTENT, but their value depends on row order, which a
+#: question's SQL does not pin. Refused as order-dependent aggregates.
+_ORDER_DEPENDENT = frozenset({"any_value", "arbitrary", "first", "last", "mode"})
+#: sqlglot parses the bare keywords below into typed nodes that DuckDB does not list
+#: as functions; each is a clock or random read.
+_VOLATILE_NODES = (
+    exp.CurrentDate,
+    exp.CurrentTime,
+    exp.CurrentTimestamp,
+    exp.CurrentDatetime,
+    exp.Rand,
+    exp.Randn,
+    exp.Uuid,
+)
+_STRING_NODES: tuple[type[exp.Expression], ...] = tuple(
+    getattr(exp, n)
+    for n in ("RawString", "ByteString", "National", "HexString", "BitString", "UnicodeString")
+    if hasattr(exp, n)
+)
+_COMPARISONS = (
+    exp.EQ,
+    exp.NEQ,
+    exp.GT,
+    exp.GTE,
+    exp.LT,
+    exp.LTE,
+    exp.NullSafeEQ,
+    exp.NullSafeNEQ,
+    exp.Like,
+    exp.ILike,
+    exp.SimilarTo,
+    exp.RegexpLike,
+    exp.RegexpILike,
+    exp.Glob,
+)
+_MATCH_FUNCTIONS = frozenset(
+    {
+        "contains",
+        "starts_with",
+        "prefix",
+        "suffix",
+        "strpos",
+        "instr",
+        "position",
+        "regexp_matches",
+        "regexp_full_match",
+        "regexp_extract",
+        "like_escape",
+    }
+)
+_MATCH_PREFIXES = ("jaro", "levenshtein")
+_REASON_CODE = re.compile(r"[A-Za-z_]+(?::[A-Za-z_]+)?")
+_REASON_HEAD = re.compile(r"[A-Za-z_]+(?=:|$)")
 
 
 class PromptDrift(Exception):
@@ -163,12 +221,18 @@ def run_stage(
     ]
     try:
         return client.complete_structured(messages, schema)
-    except AoLlmError as exc:
-        raise StageRefused(exc.code) from None
-    except (ValidationError, ValueError):
-        raise StageRefused("ao_model_output_invalid") from None
-    except (httpx.HTTPError, OSError):
-        raise StageRefused("ao_ov_unreachable") from None
+    except Exception as exc:
+        # A test may purge ``ao_vendor`` from sys.modules, so the client can raise an
+        # AoLlmError class other than the one imported here. Match both, by class.
+        current = getattr(sys.modules.get("ao_vendor.llm.ov_client"), "AoLlmError", None)
+        classes = tuple(c for c in (AoLlmError, current) if isinstance(c, type))
+        if isinstance(exc, classes):
+            raise StageRefused(str(exc.code)) from None  # type: ignore[attr-defined]
+        if isinstance(exc, ValidationError | ValueError):
+            raise StageRefused("ao_model_output_invalid") from None
+        if isinstance(exc, httpx.HTTPError | OSError):
+            raise StageRefused("ao_ov_unreachable") from None
+        raise
 
 
 # --- stage 5a: ontology draft --------------------------------------------------
@@ -288,6 +352,183 @@ def _result_types(con: Any, sql: str) -> list[tuple[str, str]]:
     return [(str(r[0]), str(r[1])) for r in rows]
 
 
+def _string_constant(root: exp.Expression) -> bool:
+    """A string-typed constant in any spelling: 'x', $$x$$, E'x', N'x', hex, bit, U&'x'."""
+    for node in root.walk():
+        if isinstance(node, exp.Literal) and node.is_string:
+            return True
+        if _STRING_NODES and isinstance(node, _STRING_NODES):
+            return True
+    return False
+
+
+def _func_names(node: exp.Func) -> set[str]:
+    names = {node.sql_name().lower()}
+    if isinstance(node, exp.Anonymous):
+        names.add(str(node.name).lower())
+    try:
+        head = re.match(r"[A-Za-z_0-9]+", node.sql(dialect=SERVING_DIALECT))
+    except Exception:  # noqa: BLE001
+        head = None
+    if head:
+        names.add(head.group(0).lower())
+    return names
+
+
+def _landed_types(con: Any, owned: set[str]) -> dict[str, set[str]]:
+    """Column name -> landed types across the Space's tables. Names collide on purpose."""
+    out: dict[str, set[str]] = {}
+    rows = con.execute(
+        "SELECT lower(table_schema) || '.' || lower(table_name), lower(column_name), "
+        "upper(data_type) FROM information_schema.columns"
+    ).fetchall()
+    for label, col, dtype in rows:
+        if label in owned:
+            out.setdefault(str(col), set()).add(str(dtype))
+    return out
+
+
+def _alias_exprs(root: exp.Expression) -> dict[str, list[exp.Expression]]:
+    out: dict[str, list[exp.Expression]] = {}
+    for al in root.find_all(exp.Alias):
+        out.setdefault(str(al.alias).lower(), []).append(al.this)
+    return out
+
+
+def _read_types(
+    node: exp.Expression,
+    landed: Mapping[str, set[str]],
+    aliases: Mapping[str, list[exp.Expression]],
+    seen: frozenset[str] = frozenset(),
+) -> set[str]:
+    """Landed types of every column ``node`` reads, following derived aliases."""
+    out: set[str] = set()
+    for col in node.find_all(exp.Column):
+        name = col.name.lower()
+        if name in landed:
+            out |= landed[name]
+        elif name in aliases and name not in seen:
+            for inner in aliases[name]:
+                out |= _read_types(inner, landed, aliases, seen | {name})
+    for cast in node.find_all(exp.Cast):
+        if cast.to.is_type(*exp.DataType.TEXT_TYPES):
+            out.add("VARCHAR")
+    return out
+
+
+def _reads_column(node: exp.Expression) -> bool:
+    return node.find(exp.Column) is not None
+
+
+def _encoding_reason(
+    root: exp.Expression,
+    landed: Mapping[str, set[str]],
+    aliases: Mapping[str, list[exp.Expression]],
+) -> str | None:
+    """Rule 12: a VARCHAR column compared with something no column supplied."""
+
+    def varchar(n: exp.Expression) -> bool:
+        return "VARCHAR" in _read_types(n, landed, aliases)
+
+    def mixed(operands: list[exp.Expression]) -> bool:
+        return any(varchar(o) for o in operands) and any(not _reads_column(o) for o in operands)
+
+    for node in root.walk():
+        operands: list[exp.Expression] = []
+        if isinstance(node, _COMPARISONS):
+            operands = [node.this, node.expression]
+        elif isinstance(node, exp.In):
+            if node.args.get("query") is not None:
+                continue
+            operands = [node.this, *node.expressions]
+        elif isinstance(node, exp.Between):
+            operands = [node.this, node.args["low"], node.args["high"]]
+        elif isinstance(node, exp.Case) and node.this is not None:
+            operands = [node.this, *[i.this for i in node.args.get("ifs") or []]]
+        elif isinstance(node, exp.Func):
+            lowered = {n for n in _func_names(node)}
+            if lowered & _MATCH_FUNCTIONS or any(n.startswith(_MATCH_PREFIXES) for n in lowered):
+                for v in node.args.values():
+                    operands.extend(x for x in (v if isinstance(v, list) else [v]) if x is not None)
+                operands = [o for o in operands if isinstance(o, exp.Expression)]
+        if operands and mixed(operands):
+            return "unverified_value_encoding"
+    return None
+
+
+_CMP = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+
+
+def _inexact_input(root: exp.Expression, landed: Mapping[str, set[str]]) -> bool:
+    """#540: a DOUBLE/FLOAT/REAL column may only be counted or compared as a filter."""
+    floats = {n for n, ts in landed.items() if any(t.startswith(_FLOAT_TYPES) for t in ts)}
+    for col in root.find_all(exp.Column):
+        if col.name.lower() not in floats:
+            continue
+        parent = col.parent
+        if isinstance(parent, exp.Distinct) and isinstance(parent.parent, exp.Count):
+            continue
+        if isinstance(parent, exp.Count):
+            continue
+        if not isinstance(parent, _CMP):
+            return True
+        in_filter = False
+        child: exp.Expression = parent
+        anc = parent.parent
+        while anc is not None:
+            if isinstance(anc, exp.AggFunc | exp.Window):
+                return True
+            if isinstance(anc, exp.Where | exp.Having) or (
+                isinstance(anc, exp.Join) and child.arg_key == "on"
+            ):
+                in_filter = True
+            child = anc
+            anc = anc.parent
+        if not in_filter:
+            return True
+    return False
+
+
+def _volatile_reason(root: exp.Expression, volatile: set[str]) -> str | None:
+    for node in root.walk():
+        if isinstance(node, exp.TableSample):
+            return "volatile_function"
+        if isinstance(node, exp.Func) and (
+            isinstance(node, _VOLATILE_NODES) or _func_names(node) & volatile
+        ):
+            return "volatile_function"
+    return None
+
+
+def _leaf_selects(root: exp.Expression) -> list[exp.Select]:
+    if isinstance(root, exp.Select):
+        return [root]
+    if isinstance(root, exp.SetOperation):
+        return [*_leaf_selects(root.left), *_leaf_selects(root.right)]
+    return []
+
+
+def _no_column_read(root: exp.Expression) -> bool:
+    for sel in _leaf_selects(root):
+        for item in sel.expressions:
+            inner = item.this if isinstance(item, exp.Alias) else item
+            if isinstance(inner, exp.Count) and isinstance(inner.this, exp.Star):
+                continue
+            if inner.find(exp.Column) is None and not any(
+                not isinstance(s.parent, exp.Count) for s in inner.find_all(exp.Star)
+            ):
+                return True
+    return False
+
+
+def _count_query(root: exp.Select) -> str:
+    c = root.copy()
+    c.set("expressions", [exp.Count(this=exp.Star())])
+    for key in ("group", "having", "qualify", "order", "limit", "offset", "distinct", "windows"):
+        c.set(key, None)
+    return str(c.sql(dialect=SERVING_DIALECT))
+
+
 def check_question_sql(
     sql: str,
     *,
@@ -297,6 +538,8 @@ def check_question_sql(
     back: Callable[[str], str],
 ) -> tuple[str | None, dict[str, Any]]:
     """``(drop reason or None, info)``. Info carries the executed rows, locally only."""
+    from dms_executor.fde_pack import space_file_tables
+
     mapped = back(sql).strip().rstrip(";").strip()
     info: dict[str, Any] = {"sql": mapped}
     try:
@@ -306,14 +549,35 @@ def check_question_sql(
     if len(roots) != 1 or not isinstance(roots[0], exp.Select | exp.SetOperation):
         return "not_one_select", info
     root = roots[0]
-    if any(lit.is_string for lit in root.find_all(exp.Literal)):
+    if _string_constant(root):
         return "literal_value", info
+    # Ownership is re-read here: a table another Space took over is not this Space's.
+    try:
+        owned = {t.lower() for t in space_file_tables(space_id, path=warehouse)}
+    except Exception:  # noqa: BLE001 - fail closed
+        owned = set()
+    tables = {label: cols for label, cols in tables.items() if label.lower() in owned}
     allowed = {label.lower() for label in tables}
     ctes = {c.alias.lower() for c in root.find_all(exp.CTE)}
     for ref in root.find_all(exp.Table):
         name = _table_ref(ref)
         if name is None or (name not in allowed and not (name in ctes and "." not in name)):
             return "table_not_in_space", info
+    # Short-lived connection: the join doors below open their own.
+    probe = connect_serving(warehouse)
+    try:
+        lake_names = {
+            str(r[0])
+            for r in probe.execute(
+                "SELECT lower(table_name) FROM information_schema.tables"
+            ).fetchall()
+        } | {label.lower().split(".")[-1] for label in tables}
+    except Exception:  # noqa: BLE001 - fail closed
+        return "execution_error:ProbeFailed", info
+    finally:
+        probe.close()
+    if any(c in lake_names for c in ctes):
+        return "cte_shadows_table", info
     try:
         onto = load_space_ontology(space_id)
     except Exception:  # noqa: BLE001
@@ -330,22 +594,62 @@ def check_question_sql(
     if why:
         return why, info
     con = connect_serving(warehouse)
+    timed_out = threading.Event()
+
+    def _interrupt() -> None:
+        timed_out.set()
+        con.interrupt()
+
+    timer = threading.Timer(CHECK_TIMEOUT_S, _interrupt)
+    timer.daemon = True
+    timer.start()
     try:
         try:
+            landed = _landed_types(con, allowed)
+            aliases = _alias_exprs(root)
+            volatile = {
+                str(r[0]).lower()
+                for r in con.execute(
+                    "SELECT DISTINCT function_name FROM duckdb_functions() "
+                    "WHERE stability <> 'CONSISTENT'"
+                ).fetchall()
+            } | _ORDER_DEPENDENT
+            if _volatile_reason(root, volatile):
+                return "volatile_function", info
+            if root.args.get("limit") is not None and root.args.get("order") is None:
+                return "unordered_limit", info
+            why = _encoding_reason(root, landed, aliases)
+            if why:
+                return why, info
+            if _no_column_read(root):
+                return "no_column_read", info
             types = _result_types(con, mapped)
             cur = con.execute(f"SELECT * FROM ({mapped}) AS q LIMIT {MAX_ROWS + 1}")
             columns = [d[0] for d in cur.description]
             fetched = cur.fetchall()
-        except duckdb.Error as exc:
+            matched = None
+            if fetched and isinstance(root, exp.Select) and root.args.get("where") is not None:
+                matched = con.execute(_count_query(root)).fetchone()
+        except Exception as exc:  # noqa: BLE001 - class name only, never the message
+            if timed_out.is_set():
+                return "execution_timeout", info
             return f"execution_error:{type(exc).__name__}", info
     finally:
+        timer.cancel()
         con.close()
     if not fetched:
         return "no_rows", info
     if len(fetched) > MAX_ROWS:
         return "too_many_rows", info
-    if any(t.upper().startswith(_FLOAT_TYPES) for _n, t in types):
+    if any(_FLOAT_ANYWHERE.search(t.upper()) for _n, t in types):
         return "inexact_result", info
+    # After the executed result type, so an inexact figure keeps its older reason.
+    if _inexact_input(root, landed):
+        return "inexact_input", info
+    if all(v is None for r in fetched for v in r):
+        return "no_value", info
+    if matched is not None and not matched[0]:
+        return "filter_matches_nothing", info
     rows = [dict(zip(columns, r, strict=True)) for r in fetched]
     canon = sorted(json.dumps(r, default=str, sort_keys=True) for r in rows)
     info.update(
@@ -362,14 +666,25 @@ def check_question_sql(
 def masked_question_row(
     qid: str, question: str, masked_sql: str, info: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """The pack-safe row of a verified question: the model's own text, never results."""
-    return {
-        "id": qid,
-        "status": "proposed",
-        "question": question,
-        "sql": masked_sql,
-        "row_count": int(info.get("row_count", 0)),
-    }
+    """The pack-safe row of a verified question: the model's own text, never results.
+
+    ``row_count`` stays in ``info`` (local). A count is a channel a hostile SQL can
+    write a cell value into, so the pack never carries it.
+    """
+    del info
+    return {"id": qid, "status": "proposed", "question": question, "sql": masked_sql}
+
+
+def reason_code(reason: str) -> str:
+    """The leading reason code only, safe for a pack file; anything else is unknown.
+
+    A reason from ``check_sql_against_space`` can carry raw table names after the
+    code. A code with a detail that is not a plain word keeps only its head.
+    """
+    if _REASON_CODE.fullmatch(reason):
+        return reason
+    head = _REASON_HEAD.match(reason)
+    return head.group(0) if head else "unknown_reason"
 
 
 # --- stage 5c: value mappings --------------------------------------------------

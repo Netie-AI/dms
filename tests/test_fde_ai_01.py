@@ -217,6 +217,22 @@ def test_url_missing_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     assert refused.value.code == "openvault_url_missing"
 
 
+def test_reimported_ao_vendor_error_is_still_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib
+    import sys
+
+    for name in [n for n in sys.modules if n == "ao_vendor" or n.startswith("ao_vendor.")]:
+        monkeypatch.delitem(sys.modules, name)
+    fresh = importlib.import_module("ao_vendor.llm.ov_client")
+    assert fresh.AoLlmError is not fde_ai.AoLlmError  # a new class, as after the purge
+    monkeypatch.delenv("OPENVAULT_URL", raising=False)
+    monkeypatch.setenv("OPENVAULT_API_KEY", "ov_test")
+    client = fresh.OpenVaultOntologyClient(transport=recorded([]))
+    with pytest.raises(StageRefused) as refused:
+        fde_ai.run_stage(client, "01_ontology_draft.md", "p", {}, OntologyDraftOut)
+    assert refused.value.code == "openvault_url_missing"
+
+
 def test_key_missing_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENVAULT_URL", "http://ov.invalid")
     monkeypatch.delenv("OPENVAULT_API_KEY", raising=False)
@@ -416,12 +432,17 @@ def test_no_rows_and_too_many_rows(lake: Lake) -> None:
         "table_not_in_space",
         "unverified_join:no_ontology",
     }  # table function refused first
-    big = {"bronze.big": {"n"}}
-    con = dw.connect_file(lake.path, write=True)
-    try:
-        con.execute("CREATE TABLE bronze.big AS SELECT range AS n FROM range(1500)")
-    finally:
-        con.close()
+    big = {"bronze.big": {"n", "label"}}
+    ingest_batch(
+        [
+            (
+                "big.csv",
+                ("n,label\n" + "\n".join(f"{i},row{i}" for i in range(1500)) + "\n").encode(),
+            )
+        ],
+        space_id=lake.space_id,
+        path=lake.path,
+    )
     why, _ = fde_ai.check_question_sql(
         "SELECT n FROM bronze.big",
         space_id=lake.space_id,
@@ -518,5 +539,260 @@ def test_masked_question_row_carries_no_result(lake: Lake) -> None:
         "status": "proposed",
         "question": "How many?",
         "sql": "SELECT COUNT(*) AS n FROM t_a",
-        "row_count": 1,
     }
+    assert info["row_count"] == 1  # kept locally, never packed
+
+
+# --- adversary round: wrong figures that used to be kept --------------------------
+
+SALES = (
+    b"order_id,region,sku,code,quantity,amount\n"
+    b"0001,KL,BETA,A1,5,10.50\n0002,PG,ALPHA,B2,2,3.25\n0003,KL,SKU-BETA,A1,9,7.10\n"
+)
+
+
+@pytest.fixture()
+def sales(lake: Lake) -> Lake:
+    ingest_batch([("sales.csv", SALES)], space_id=lake.space_id, path=lake.path)
+    lake.tables["bronze.sales"] = {
+        "order_id",
+        "region",
+        "sku",
+        "code",
+        "quantity",
+        "amount",
+        "_src",
+        "_ingest_id",
+    }
+    return lake
+
+
+def reason(lake: Lake, sql: str) -> Any:
+    return check(lake, sql)[0]
+
+
+@pytest.mark.parametrize(
+    "const",
+    ["$$x$$", "E'x'", "N'x'", "U&'x'"],
+)
+def test_every_string_constant_spelling_drops(sales: Lake, const: str) -> None:
+    sql = f"SELECT COUNT(*) AS n FROM bronze.sales WHERE quantity > 1 AND {const} IS NOT NULL"
+    assert reason(sales, sql) == "literal_value"
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "region = chr(75) || chr(76)",
+        "sku = CAST(1 AS VARCHAR)",
+        "order_id = lpad(CAST(1 AS VARCHAR), 4, chr(48))",
+        "regexp_matches(sku, chr(94) || chr(66))",
+        "code IN (1, 2)",
+        "region <> chr(75)",
+        "region LIKE chr(75) || chr(37)",
+        "region BETWEEN chr(65) AND chr(90)",
+        "contains(sku, chr(66))",
+        "starts_with(sku, chr(66))",
+        "CASE region WHEN chr(75) THEN 1 ELSE 0 END = 1",
+    ],
+)
+def test_varchar_column_against_columnless_operand_drops(sales: Lake, predicate: str) -> None:
+    sql = f"SELECT COUNT(*) AS n FROM bronze.sales WHERE {predicate}"
+    assert reason(sales, sql) == "unverified_value_encoding"
+
+
+def test_encoding_rule_keeps_numeric_column_and_column_pairs(sales: Lake) -> None:
+    why, info = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales WHERE quantity > 3")
+    assert why is None and info["rows"] == [{"n": 2}]
+    why, info = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales WHERE region = code")
+    assert why == "filter_matches_nothing"  # column to column is allowed through rule 12
+    why, info = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales WHERE region IS NULL")
+    assert why == "filter_matches_nothing"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT CAST(SUM(amount) AS DECIMAL(38,2)) AS s FROM bronze.sales",
+        "SELECT SUM(CAST(amount AS DECIMAL(18,2))) AS s FROM bronze.sales",
+        "SELECT CAST(SUM(amount) AS INTEGER) AS s FROM bronze.sales",
+        "SELECT CAST(SUM(amount) AS VARCHAR) AS s FROM bronze.sales",
+        "SELECT struct_pack(s := CAST(SUM(amount) AS INTEGER)) AS s FROM bronze.sales",
+        "SELECT CAST(MAX(quantity) + MIN(amount) AS INTEGER) AS s FROM bronze.sales",
+    ],
+)
+def test_float_column_read_outside_count_or_filter_drops(sales: Lake, sql: str) -> None:
+    assert reason(sales, sql) == "inexact_input"
+
+
+def test_float_column_may_be_counted_and_filtered(sales: Lake) -> None:
+    why, info = check(sales, "SELECT COUNT(amount) AS n FROM bronze.sales WHERE amount > 5")
+    assert why is None and info["rows"] == [{"n": 2}]
+
+
+def test_float_struct_result_is_inexact_whichever_rule_fires_first(sales: Lake) -> None:
+    sql = "SELECT struct_pack(s := SUM(amount)) AS s FROM bronze.sales"
+    assert reason(sales, sql) == "inexact_result"
+
+
+def test_inexact_result_matches_nested_types(sales: Lake) -> None:
+    why, _ = check(sales, "SELECT struct_pack(s := quantity * 1.5e0) AS s FROM bronze.sales")
+    assert why == "inexact_result"
+
+
+def test_all_null_result_is_no_value(sales: Lake) -> None:
+    why, _ = check(sales, "SELECT MAX(quantity) AS m FROM bronze.sales WHERE quantity > 999999")
+    assert why == "no_value"
+
+
+def test_filter_matching_nothing_drops_a_zero_count(sales: Lake) -> None:
+    why, _ = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales WHERE quantity > 999999")
+    assert why == "filter_matches_nothing"
+
+
+def test_projection_without_column_read_drops(sales: Lake) -> None:
+    assert reason(sales, "SELECT MAX(42) AS n FROM bronze.sales") == "no_column_read"
+    assert reason(sales, "SELECT COUNT(*) + 1 AS n FROM bronze.sales") == "no_column_read"
+    why, info = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales")
+    assert why is None and info["rows"] == [{"n": 3}]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT quantity + CAST(random() * 0 AS INTEGER) AS q FROM bronze.sales ORDER BY 1",
+        "SELECT MAX(quantity) + year(current_date) AS q FROM bronze.sales",
+        "SELECT COUNT(*) AS n FROM bronze.sales USING SAMPLE 2 ROWS",
+        "SELECT any_value(quantity) AS q FROM bronze.sales",
+        "SELECT first(quantity) AS q FROM bronze.sales",
+    ],
+)
+def test_nondeterministic_shapes_drop(sales: Lake, sql: str) -> None:
+    assert reason(sales, sql) == "volatile_function"
+
+
+def test_limit_without_order_drops_and_ordered_limit_passes(sales: Lake) -> None:
+    assert reason(sales, "SELECT quantity FROM bronze.sales LIMIT 2") == "unordered_limit"
+    why, info = check(sales, "SELECT quantity FROM bronze.sales ORDER BY quantity LIMIT 2")
+    assert why is None and [r["quantity"] for r in info["rows"]] == [2, 5]
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "WITH orders AS (SELECT * FROM bronze.customers) SELECT COUNT(*) AS n FROM orders",
+        "WITH Sales AS (SELECT quantity FROM bronze.customers WHERE cust_id > 0) "
+        "SELECT COUNT(*) AS n FROM sales",
+        "SELECT COUNT(*) AS n FROM transactions WHERE "
+        "(WITH transactions AS (SELECT 1 AS x) SELECT true)",
+    ],
+)
+def test_cte_shadowing_a_lake_table_drops(sales: Lake, sql: str) -> None:
+    assert reason(sales, sql) in {"cte_shadows_table", "table_not_in_space"}
+
+
+def test_cte_shadow_reason_is_named_for_a_space_table(sales: Lake) -> None:
+    sql = "WITH orders AS (SELECT * FROM bronze.customers) SELECT COUNT(*) AS n FROM orders"
+    assert reason(sales, sql) == "cte_shadows_table"
+
+
+def test_cte_with_fresh_name_still_passes(sales: Lake) -> None:
+    sql = (
+        "WITH big AS (SELECT quantity FROM bronze.sales WHERE quantity > 3) "
+        "SELECT COUNT(*) AS n FROM big"
+    )
+    why, info = check(sales, sql)
+    assert why is None and info["rows"] == [{"n": 2}]
+
+
+def test_ownership_is_reread_inside_the_check(sales: Lake, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dms_executor import fde_pack
+
+    monkeypatch.setattr(fde_pack, "space_file_tables", lambda *_a, **_k: ["bronze.customers"])
+    why, _ = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales")
+    assert why == "table_not_in_space"
+    why, info = check(sales, "SELECT COUNT(*) AS n FROM bronze.customers")
+    assert why is None and info["rows"] == [{"n": 3}]
+
+
+class _Raises:
+    """A serving connection whose data statements raise a non-DuckDB error."""
+
+    def __init__(self, inner: Any, exc: BaseException) -> None:
+        self._inner, self._exc = inner, exc
+
+    def execute(self, sql: str, *a: Any, **k: Any) -> Any:
+        if "LIMIT" in sql and "SELECT *" in sql:
+            raise self._exc
+        return self._inner.execute(sql, *a, **k)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def test_non_duckdb_exception_is_class_name_only(
+    sales: Lake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = fde_ai.connect_serving
+    monkeypatch.setattr(
+        fde_ai, "connect_serving", lambda p: _Raises(real(p), OverflowError("days=913377"))
+    )
+    why, _ = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales")
+    assert why == "execution_error:OverflowError"
+    assert "913377" not in str(why)
+
+
+def test_slow_query_is_interrupted_at_the_time_bound(
+    sales: Lake, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    import duckdb
+
+    class _Hangs(_Raises):
+        def __init__(self, inner: Any) -> None:
+            super().__init__(inner, RuntimeError())
+            self.stop = threading.Event()
+
+        def execute(self, sql: str, *a: Any, **k: Any) -> Any:
+            if "LIMIT" in sql and "SELECT *" in sql:
+                assert self.stop.wait(10), "never interrupted"
+                raise duckdb.InterruptException("interrupted")
+            return self._inner.execute(sql, *a, **k)
+
+        def interrupt(self) -> None:
+            self.stop.set()
+
+    real = fde_ai.connect_serving
+    monkeypatch.setattr(fde_ai, "connect_serving", lambda p: _Hangs(real(p)))
+    monkeypatch.setattr(fde_ai, "CHECK_TIMEOUT_S", 0.2)
+    why, _ = check(sales, "SELECT COUNT(*) AS n FROM bronze.sales")
+    assert why == "execution_timeout"
+    assert fde_ai.CHECK_TIMEOUT_S == 0.2
+
+
+def test_default_time_bound_is_twenty_seconds() -> None:
+    assert fde_ai.CHECK_TIMEOUT_S == 20
+
+
+def test_masked_row_has_no_row_count_channel(lake: Lake) -> None:
+    row = fde_ai.masked_question_row("q1", "How many?", "SELECT 1", {"row_count": 12345})
+    assert "row_count" not in row
+    assert "12345" not in json.dumps(row)
+
+
+@pytest.mark.parametrize(
+    ("reason_in", "code"),
+    [
+        ("unverified_join:no_ontology", "unverified_join:no_ontology"),
+        ("execution_error:BinderException", "execution_error:BinderException"),
+        ("no_rows", "no_rows"),
+        ("unverified_join:orders.cust_id", "unverified_join"),
+        ("", "unknown_reason"),
+        ("42 weird", "unknown_reason"),
+        ("Ann <ann@example.com>", "unknown_reason"),
+    ],
+)
+def test_reason_code_keeps_only_the_code(reason_in: str, code: str) -> None:
+    assert fde_ai.reason_code(reason_in) == code
+    assert "." not in fde_ai.reason_code(reason_in)
