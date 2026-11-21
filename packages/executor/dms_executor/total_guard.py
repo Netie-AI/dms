@@ -848,6 +848,10 @@ def _scalar_aggregate(node: exp.Expression) -> bool:
     if _collects(node):
         return False
     if isinstance(node, exp.Anonymous):
+        name = str(node.name).lower()
+        macros = _aggregate_macros()
+        if name in macros and name not in _aggregate_returns():
+            return not macros[name]  # a macro over aggregates: geomean, weighted_avg
         # Each overload's flag says "returns a collection"; scalar when none does.
         return True not in _aggregate_returns().get(str(node.name).lower(), frozenset({True}))
     return isinstance(node, _SCALAR_AGGS)

@@ -609,14 +609,6 @@ CORRECT: dict[str, tuple[str, str]] = {
         Q,
         f"SELECT AVG(t) AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id)",
     ),
-    "rollup_listing_with_its_total_row": (
-        LIST_Q,
-        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id) ORDER BY school_id",
-    ),
-    "rollup_listing_through_a_select": (
-        LIST_Q,
-        f"SELECT COALESCE(school_id, 'all') AS school, t AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) ORDER BY 1",
-    ),
     "filter": (Q, f"SELECT SUM({N}) AS total FROM {T} WHERE school_id <> '9'"),
     "count_distinct": (Q, f"SELECT COUNT(DISTINCT school_id) AS total FROM {T}"),
     "select_distinct": (LIST_Q, f"SELECT DISTINCT school_id FROM {T} ORDER BY school_id"),
@@ -632,6 +624,29 @@ CORRECT: dict[str, tuple[str, str]] = {
         LIST_Q,
         f"SELECT school_id, t * 100 / SUM(t) OVER () AS pct FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY school_id) ORDER BY school_id",
     ),
+    "qualify": (
+        LIST_Q,
+        f"SELECT enrollment_id, students FROM {T} QUALIFY ROW_NUMBER() OVER (ORDER BY {N} DESC) = 1",
+    ),
+    "unpivot_listing": (
+        LIST_Q,
+        f"SELECT * FROM (SELECT enrollment_id, {N} AS a, {N} AS b FROM {T}) UNPIVOT (n FOR k IN (a, b)) ORDER BY enrollment_id, k",
+    ),
+}
+
+
+#: Correct statements the proof (``unproven_single_read``) refuses since the class
+#: change after verifier round 8: served on the parent with these rows, abstain
+#: now. Named, never silent; not widened back without the parent's ruling.
+PROOF_NEW_ABSTAINS: dict[str, tuple[str, str]] = {
+    "rollup_listing_with_its_total_row": (
+        LIST_Q,
+        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id) ORDER BY school_id",
+    ),
+    "rollup_listing_through_a_select": (
+        LIST_Q,
+        f"SELECT COALESCE(school_id, 'all') AS school, t AS total FROM (SELECT school_id, SUM({N}) AS t FROM {T} GROUP BY ROLLUP(school_id)) ORDER BY 1",
+    ),
     "sum_after_row_number_filter": (
         Q,
         f"SELECT SUM(n) AS total FROM (SELECT {N} AS n, ROW_NUMBER() OVER (PARTITION BY school_id ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn = 1",
@@ -644,17 +659,9 @@ CORRECT: dict[str, tuple[str, str]] = {
         Q,
         f"SELECT SUM({N}) AS total FROM (SELECT * EXCLUDE (school_id), ROW_NUMBER() OVER (ORDER BY enrollment_id) AS rn FROM {T}) WHERE rn <= 4",
     ),
-    "qualify": (
-        LIST_Q,
-        f"SELECT enrollment_id, students FROM {T} QUALIFY ROW_NUMBER() OVER (ORDER BY {N} DESC) = 1",
-    ),
     "collections_listed": (
         LIST_Q,
         f"SELECT school_id, list(enrollment_id) AS ids, string_agg(enrollment_id, ',') AS joined FROM {T} GROUP BY school_id ORDER BY school_id",
-    ),
-    "unpivot_listing": (
-        LIST_Q,
-        f"SELECT * FROM (SELECT enrollment_id, {N} AS a, {N} AS b FROM {T}) UNPIVOT (n FOR k IN (a, b)) ORDER BY enrollment_id, k",
     ),
 }
 
@@ -721,7 +728,10 @@ OPEN: dict[str, tuple[str, int]] = {
         f"SELECT DISTINCT SUM({N}) OVER () * COUNT(*) OVER () AS total FROM {T}",
         428,
     ),
-    # Adversary round: a pick among a ROLLUP's mixed rows (a choice, not a repeated value).
+}
+#: Open rows the proof closed (dms#531 class change): served with the wrong figure
+#: 12 on the parent (strict xfail above), abstain now. name -> (sql, wrong figure).
+PROOF_CLOSED: dict[str, tuple[str, int]] = {
     "rollup_listing_cut_to_its_smallest_row": (
         f"SELECT SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id) ORDER BY total LIMIT 1",
         12,
@@ -1114,8 +1124,6 @@ def test_correct_figures_are_the_tables_figures(
         "outer_sum_over_one_group_by": TRUE,
         "filter": TRUE - 12,
         "count_distinct": 4,
-        "sum_after_row_number_filter": TRUE,
-        "sum_after_row_number_filter_star": TRUE,
     }
     rig = od._space(tmp_path, monkeypatch, minter)
     for name, figure in want.items():
@@ -1123,15 +1131,32 @@ def test_correct_figures_are_the_tables_figures(
         env = rig.ask(question, {"query_sql": sql, "plan_source": "ontology_plan"})
         assert env["badge"] == "L2_VALIDATED", (name, env.get("text"))
         assert env["rows"] == [{"total": figure}], (name, env["rows"])
-    rollup = rig.ask(
-        LIST_Q,
-        {
-            "query_sql": CORRECT["rollup_listing_with_its_total_row"][1],
-            "plan_source": "ontology_plan",
-        },
-    )
-    # A ROLLUP listing keeps its total row: four schools and the 107.
-    assert sorted(r["total"] for r in rollup["rows"]) == sorted([*students, TRUE])
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(PROOF_NEW_ABSTAINS))
+def test_correct_statements_the_proof_refuses_are_named(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """The cost of the class change (dms#531 after verifier round 8), pinned: each
+    is correct on the table and abstains, named, with no figure in the text."""
+    question, sql = PROOF_NEW_ABSTAINS[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, question)
+    oracle = od._oracle(rig.lake, sql)
+    assert oracle, name
+    if name.startswith("sum_after_row_number"):
+        assert oracle == [{"total": TRUE}]
+    if name == "rollup_listing_with_its_total_row":
+        # A ROLLUP listing keeps its total row: four schools and the 107.
+        students = [int(r[2]) for r in od.ENROLL_ROWS]
+        assert sorted(r["total"] for r in oracle) == sorted([*students, TRUE])
+    figures = tuple(v for row in oracle for v in row.values() if isinstance(v, int) and v > 9)
+    _assert_refused_by_the_rule(env, rig, sql, PROOF, figures)
 
 
 @pytest.mark.parametrize("door", DOORS)
@@ -1273,6 +1298,22 @@ def test_open_scalar_arithmetic_is_still_served(
     _assert_abstain_named(env, rig, (wrong, TRUE))
 
 
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(PROOF_CLOSED))
+def test_open_rollup_picks_now_abstain(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql, wrong = PROOF_CLOSED[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter)
+    assert od._oracle(rig.lake, sql) == [{"total": wrong}] and wrong != TRUE
+    _assert_refused_by_the_rule(env, rig, sql, PROOF, (wrong, TRUE))
+
+
 def test_open_rows_are_not_refused_by_the_rule() -> None:
     """The limit, pinned: the class rule says nothing about scalar arithmetic."""
     for name, (sql, _wrong) in OPEN.items():
@@ -1302,13 +1343,18 @@ def test_statement_the_analysis_cannot_finish_refuses() -> None:
 def test_rule_reads_positions_not_words() -> None:
     """The words alone do nothing: a ROLLUP, an UNPIVOT and a window are listings here."""
     for sql in (
-        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id)",
-        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY CUBE(school_id, enrollment_id)",
         f"SELECT * FROM {_TWO} UNPIVOT (n FOR k IN (a, b))",
         f"SELECT enrollment_id, SUM({N}) OVER () AS rollup_unpivot_window FROM {T}",
-        f"SELECT list({N}) AS list_concat FROM {T}",
     ):
         assert repeated_input_reason(sql) is None, sql
+    # Since the proof (class change after verifier round 8) a ROLLUP or CUBE
+    # listing and a collecting aggregate are not proven: named, not silent.
+    for sql in (
+        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY ROLLUP(school_id)",
+        f"SELECT school_id, SUM({N}) AS total FROM {T} GROUP BY CUBE(school_id, enrollment_id)",
+        f"SELECT list({N}) AS list_concat FROM {T}",
+    ):
+        assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{PROOF}"), sql
     # And no word is needed to refuse: GROUP BY ALL is one set, a comma of sets is not.
     assert (
         repeated_input_reason(f"SELECT SUM(t) FROM (SELECT SUM({N}) AS t FROM {T} GROUP BY ALL)")
@@ -1319,7 +1365,6 @@ def test_rule_reads_positions_not_words() -> None:
 @pytest.mark.parametrize(
     "sql",
     [
-        f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT 1 AS one) s",
         "WITH c AS (TABLE enrollments) SELECT COUNT(*) AS n FROM c",
     ],
 )
@@ -1330,7 +1375,8 @@ def test_lateral_subquery_and_table_shorthand_are_one_read(sql: str) -> None:
     guard: in the ontology Space the join rule refused both before the guard
     existed (``derived_table_over_join``; ``TABLE schema.t`` does not parse),
     and test_grant_struct_02 asserts the served rows in the Space where they
-    answer."""
+    answer. Since the proof a LATERAL is not proven: see
+    test_one_row_lateral_and_table_form_are_one_read_for_the_guard."""
     assert repeated_input_reason(sql) is None
 
 
@@ -1392,13 +1438,15 @@ def test_one_row_lateral_and_table_form_are_one_read_for_the_guard() -> None:
     A LATERAL subquery that reads no relation adds no row, and ``TABLE t`` is
     ``SELECT * FROM t``. A LATERAL that reads another relation is a join: rule 16's.
     """
+    assert repeated_input_reason("WITH c AS (TABLE enrollments) SELECT COUNT(*) AS n FROM c") is None
+    # Since the proof (class change after verifier round 8) a LATERAL is not
+    # proven, even one that adds no row: named cost, not widened back.
     for sql in (
         f"SELECT COUNT(*) AS n FROM {T} i, LATERAL (SELECT 1 AS one) s",
         f"SELECT COUNT(*) AS n FROM {T} i CROSS JOIN LATERAL (SELECT i.school_id) s",
         f"SELECT SUM(s.v) AS total FROM {T} i, LATERAL (SELECT {N} AS v) s",
-        "WITH c AS (TABLE enrollments) SELECT COUNT(*) AS n FROM c",
     ):
-        assert repeated_input_reason(sql) is None, sql
+        assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{PROOF}"), sql
     # The TABLE form is followed like any CTE body: a ROLLUP over it still refuses.
     rollup = f"WITH c AS (TABLE enrollments) SELECT SUM(x) AS total FROM (SELECT SUM({N}) AS x FROM c GROUP BY ROLLUP(school_id))"
     assert (repeated_input_reason(rollup) or "").startswith(f"repeated_input:{GROUPING}")
@@ -1632,13 +1680,14 @@ def test_pivot_list_concatenated_abstains_in_the_ontology_space(
 
 
 def test_a_collection_column_listed_as_it_is_passes_the_guard() -> None:
-    """Rule 4 as written: a collection may be listed as it is, also out of a PIVOT."""
+    """Rule 4 allowed a collection listed as it is. Since the proof a collecting
+    aggregate is not proven at all: these are named costs of the class change."""
     for sql in (
         f"SELECT x FROM (SELECT 'x' AS k, school_id FROM {T}) PIVOT (list(school_id) FOR k IN ('x'))",
         f"SELECT x AS ids FROM (SELECT 'x' AS k, school_id FROM {T}) PIVOT (list(school_id) FOR k IN ('x'))",
         f"SELECT l FROM (SELECT list(school_id) AS l FROM {T})",
     ):
-        assert repeated_input_reason(sql) is None, sql
+        assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{PROOF}"), sql
     for sql in (
         f"SELECT len(l) AS n FROM (SELECT list(school_id) AS l FROM {T})",
         f"SELECT l FROM (SELECT list(school_id) AS l FROM {T}) WHERE len(l) > 1",
@@ -1688,12 +1737,13 @@ GUARD_NEW_ABSTAINS_LISTINGS: dict[str, str] = {
 def test_guard_new_abstains_in_listings_are_named() -> None:
     for sql, why in GUARD_NEW_ABSTAINS_LISTINGS.items():
         assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{why}"), sql
-    # Listed as they are, a positional or COLUMNS collection passes.
+    # Listed as they are, a positional or COLUMNS collection passed rule 4. The
+    # proof does not prove a collecting aggregate: named cost.
     for sql in (
         f"SELECT #1 FROM (SELECT list(school_id) AS l FROM {T})",
         f"SELECT COLUMNS('l') FROM (SELECT list(school_id) AS l FROM {T})",
     ):
-        assert repeated_input_reason(sql) is None, sql
+        assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{PROOF}"), sql
 
 
 @pytest.mark.parametrize("door", DOORS)

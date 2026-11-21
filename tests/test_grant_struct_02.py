@@ -1452,9 +1452,6 @@ _CTE_SCOPE_HOLES = (
 
 # The CTE does cover these reads, so no base ``suppliers`` is read and they serve.
 _CTE_IN_SCOPE = (
-    "WITH suppliers AS (SELECT 1 AS a) SELECT COUNT(*) AS n FROM inventory, suppliers",
-    "SELECT COUNT(*) AS n FROM inventory g, "
-    "(WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) x",
     "WITH suppliers AS (SELECT 1 AS a) "
     "SELECT COUNT(*) AS n FROM inventory WHERE 1 IN (SELECT a FROM suppliers)",
     "WITH s AS (SELECT * FROM inventory), suppliers AS (SELECT COUNT(*) AS c FROM s) "
@@ -2175,8 +2172,6 @@ def test_duckdb_parse_alone_refuses_what_sqlglot_cannot_see() -> None:
 # not by form (cb84d84 refused the TABLE form: sqlglot saw no table in it).
 _ROUND3_SERVE = (
     "SELECT COUNT(*) AS n FROM inventory",
-    "SELECT COUNT(*) AS n FROM inventory i, LATERAL (SELECT 1 AS one) s",
-    "SELECT COUNT(*) AS n FROM inventory i CROSS JOIN LATERAL (SELECT i.sku) s",
     "WITH c AS (TABLE inventory) SELECT COUNT(*) AS n FROM c",
     "SELECT (SELECT COUNT(*) FROM inventory) AS n",
 )
@@ -2213,6 +2208,45 @@ def test_granted_reads_still_serve_exact_rows(
     assert env["rows"] == [{"n": 7}], sql
     assert env["text"] == "Found 1 row(s).\n  - n=7", sql
     assert _sql_submits(plant.submits), sql
+    assert str(_SECRET) not in json.dumps(env), sql
+
+
+#: Granted reads the grant rule passes and TOTAL-GUARD-01's proof (dms#531 class
+#: change after verifier round 8) does not: a comma join to a one-row CTE and a
+#: one-row LATERAL. Correct (7 rows counted once) and served on the parent; they
+#: abstain now, named. Not widened back without the parent's ruling.
+_PROOF_ABSTAINS = (
+    "WITH suppliers AS (SELECT 1 AS a) SELECT COUNT(*) AS n FROM inventory, suppliers",
+    "SELECT COUNT(*) AS n FROM inventory g, "
+    "(WITH suppliers AS (SELECT 1 AS a) SELECT a FROM suppliers) x",
+    "SELECT COUNT(*) AS n FROM inventory i, LATERAL (SELECT 1 AS one) s",
+    "SELECT COUNT(*) AS n FROM inventory i CROSS JOIN LATERAL (SELECT i.sku) s",
+)
+
+
+@pytest.mark.parametrize("sql", _PROOF_ABSTAINS)
+def test_granted_one_row_joins_abstain_on_the_proof_named(
+    sql: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import shutil
+
+    db = _secret_warehouse(tmp_path / "proof.duckdb")
+    grants = set(Executor(warehouse_path=db).grantable_tables(space_id=OPS))
+    assert serve_gap(sql, grantable=grants, dialect="duckdb") is None, sql
+    con = duckdb.connect(str(db), read_only=True)
+    try:
+        assert con.execute(sql).fetchall() == [(7,)], sql  # correct on the table
+    finally:
+        con.close()
+    copy = tmp_path / "proof_plant.duckdb"
+    shutil.copy(db, copy)
+    env, plant = _http_ask(sql, db, copy, monkeypatch)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True, sql
+    assert env["badge"] == "ABSTAIN", sql
+    assert env["rows"] == [] and env["values"] == [], sql
+    assert "repeated_input:unproven_single_read" in _reason(env), (sql, _reason(env))
+    assert not _sql_submits(plant.submits), sql
     assert str(_SECRET) not in json.dumps(env), sql
 
 
