@@ -625,20 +625,33 @@ def _type_float_columns(con: Any, rel: str, cols: list[str]) -> dict[str, str]:
     and the reason is returned for the receipt. Nothing is rounded.
     """
     kept: dict[str, str] = {}
+    plain = r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)"
     for col in cols:
         q = '"' + col.replace('"', '""') + '"'
-        target = _bare_decimal(con, rel, q)
-        scale = int(target[len("DECIMAL(38,") : -1]) if target else None
-        if target is None or scale is None or scale > CSV_DECIMAL_MAX_SCALE:
-            why = (
-                f"scale {scale} is over {CSV_DECIMAL_MAX_SCALE}"
-                if scale is not None and scale > CSV_DECIMAL_MAX_SCALE
-                else "a value is not a plain decimal (exponent, nan or text)"
-            )
-            con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE DOUBLE USING TRY_CAST({q} AS DOUBLE)")
+        t = f"trim({q})"
+        row = con.execute(
+            f"SELECT COUNT(*) FILTER (WHERE NOT regexp_full_match({t}, '{plain}')), "
+            f"COALESCE(MAX(length(split_part({t}, '.', 2))), 0), "
+            f"COALESCE(MAX(length(ltrim(split_part({t}, '.', 1), '+-'))), 0) "
+            f"FROM {rel} WHERE {q} IS NOT NULL"
+        ).fetchone()
+        bad, scale, whole = (int(v) for v in row) if row else (1, 0, 0)
+        why = None
+        if bad:
+            why = "a value is not a plain decimal (exponent, nan, hex or text)"
+        elif scale > CSV_DECIMAL_MAX_SCALE:
+            why = f"scale {scale} is over {CSV_DECIMAL_MAX_SCALE}"
+        elif whole + scale > 38:
+            why = f"a value has {whole + scale} digits; DECIMAL holds 38"
+        if why:
+            # CAST, not TRY_CAST: a value the sniffer typed DOUBLE that DOUBLE
+            # cannot read (0x10) fails the ingest, as it did before, rather
+            # than landing as NULL.
+            con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE DOUBLE USING CAST({q} AS DOUBLE)")
             kept[col] = why
             continue
-        con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE {target} USING CAST(trim({q}) AS {target})")
+        target = f"DECIMAL(38,{scale})"
+        con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE {target} USING CAST({t} AS {target})")
     return kept
 
 

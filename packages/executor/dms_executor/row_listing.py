@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Any
 
 #: Rows a listing shows before it is cut.
@@ -29,9 +30,14 @@ def cell_text(value: object) -> str:
     is shown at 15 and the answer says so (``float_precision_note``). A
     DECIMAL prints exactly.
     """
-    if isinstance(value, float) and math.isfinite(value) and not value.is_integer():
-        return format(value, f".{FLOAT_DIGITS}g")
+    if isinstance(value, float) and math.isfinite(value):
+        big = abs(value) >= 1e15
+        if big or not value.is_integer():
+            short = format(value, f".{FLOAT_DIGITS}g")
+            # 1.2345678901234568e16 is a 17-digit figure: stated at 15, fixed point.
+            return format(Decimal(short), "f") if big else short
     return str(value)
+
 
 
 def float_precision_note(rows: Sequence[Mapping[str, Any]]) -> str | None:

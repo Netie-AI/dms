@@ -534,3 +534,113 @@ def test_sheet_lane_on_a_double_measure_still_serves(
     assert [r["category"] for r in env["rows"]] == ["Electronics", "Home", "Sports"]
     assert Decimal(str(env["rows"][0]["sales_value_myr"])) == Decimal("1545366.40")
     assert "1545366.4" in env["text"]
+
+
+# ------------------------------------------- reviewer round (Opus, on 4ccf936)
+
+
+def _land_sheet_values(db: Path, values: list[str]) -> str:
+    ident = bronze_table_for_sheet("dec540_sheet.xlsx", "Sales").split(".", 1)[-1]
+    body = "category,sales_value_myr\n" + "".join(f"A,{v}\n" for v in values) + "B,3.00\n"
+    receipt = ingest_csv_bytes(
+        filename="dec540_sheet.csv", data=body.encode(), path=db, table_name=ident,
+        space_id=_SPACE,
+    )
+    assert receipt.ingested == len(values) + 1
+    return ident
+
+
+@pytest.mark.parametrize(
+    ("values", "total"),
+    [(["+5.25", "10.50"], Decimal("15.75")), ([".5", "5.", "10"], Decimal("15.5"))],
+)
+def test_sheet_lane_counts_every_signed_or_bare_dot_decimal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, values: list[str], total: Decimal
+) -> None:
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    _land_sheet_values(db, values)
+    env = maybe_bronze_sheet_ask(_SHEET_Q, warehouse=db, space_id=_SPACE)
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, env["text"]
+    got = {r["category"]: Decimal(str(r["sales_value_myr"])) for r in env["rows"]}
+    assert got["A"] == total, env["text"]
+
+
+def test_sheet_lane_never_drops_a_number_it_cannot_state_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """+1, 1e3 and 10 (the "+" makes the sniffer keep the column VARCHAR): main
+    summed 1011; dropping the values the plain-decimal pattern missed served 10."""
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    ident = _land_sheet_values(db, ["+1", "1e3", "10"])
+    assert _describe(db, ident)["sales_value_myr"] == "VARCHAR"
+    env = maybe_bronze_sheet_ask(_SHEET_Q, warehouse=db, space_id=_SPACE)
+    if env is not None and not env["abstained"]:
+        got = {r["category"]: Decimal(str(r["sales_value_myr"])) for r in env["rows"]}
+        assert got["A"] == Decimal("1011"), env["text"]
+
+
+def test_generated_decimal_sum_past_15_digits_is_stated_at_15_with_the_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    table = "dec540_wide"
+    ingest_csv_bytes(
+        filename="w.csv", data=b"category,amount\nA,12345678901234.56\nA,0.01\n",
+        path=db, table_name=table, space_id=_SPACE,
+    )
+    assert _describe(db, table)["amount"] == "DECIMAL(38,2)"
+    body, model = _ask_generated(
+        monkeypatch, db, table,
+        f'SELECT category, SUM(amount) AS amount FROM bronze."{table}" GROUP BY 1',
+        "Sum the amount for each category", "ses_dec540_wide",
+    )
+    assert model.sql, "the generated SQL was never executed"
+    assert_envelope_valid(body)
+    # The sum is exact in DECIMAL. Rows are floats (the masker reads a Decimal
+    # cell as text), so a figure past 15 digits is stated at 15 and says so.
+    assert body["abstained"] is False, body["text"]
+    assert "amount=12345678901234.6" in body["text"], body["text"]
+    assert "12345678901234.57" not in body["text"] and _NOISE not in json.dumps(body)
+    assert _NOTE in body["assumptions"], body["assumptions"]
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"),
+    [
+        (1.2345678901234568e16, "12345678901234600"),
+        (9007199254740992.0, "9007199254740990"),
+        (1000000000000000.5, "1000000000000000"),
+        (1.5e16, "15000000000000000"),
+    ],
+)
+def test_a_large_float_is_stated_at_15_digits_in_fixed_point(value: float, shown: str) -> None:
+    from dms_executor.row_listing import cell_text, float_precision_note
+
+    assert cell_text(value) == shown
+    exact = float(shown) == value
+    assert (float_precision_note([{"x": value}]) is None) is exact
+
+
+def test_a_value_double_cannot_read_still_fails_the_ingest(tmp_path: Path) -> None:
+    """0x10 is sniffed DOUBLE and does not cast: the file is quarantined, never NULL."""
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    receipt = ingest_csv_bytes(
+        filename="hex.csv", data=b"id,amount\n1,0x10\n2,1.5\n3,2.25\n", path=db,
+        table_name="dec540_hex",
+    )
+    assert receipt.quarantined == 1 and receipt.ingested == 0, receipt
+
+
+def test_a_bare_dot_decimal_column_lands_decimal(tmp_path: Path) -> None:
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    receipt = ingest_csv_bytes(
+        filename="dot.csv", data=b"id,amount\n1,.5\n2,5.\n3,-.5\n", path=db,
+        table_name="dec540_dot",
+    )
+    assert receipt.ingested == 3
+    assert _describe(db, "dec540_dot")["amount"] == "DECIMAL(38,1)"
+    assert _values(db, "dec540_dot", "amount") == [Decimal("0.5"), Decimal("5.0"), Decimal("-0.5")]

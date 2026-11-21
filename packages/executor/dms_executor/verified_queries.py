@@ -157,7 +157,8 @@ def _connect(path: Path | None, *, write: bool = False) -> duckdb.DuckDBPyConnec
 def _cell(value: Any) -> Any:
     if isinstance(value, Decimal):
         # DuckDB DECIMAL. A string here is invisible to E4, so a true SUM
-        # reads as an uncited figure.
+        # reads as an uncited figure. The masker also reads a Decimal cell as
+        # text and would mask its digits (dms#540: routed to dms#318).
         return float(value)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value

@@ -407,7 +407,10 @@ def _eq_filter_total(
     )
 
 
-_PLAIN_DECIMAL = r"-?[0-9]+(\.[0-9]+)?"
+_PLAIN_DECIMAL = r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)"
+
+
+
 _EXACT_TYPES = ("DECIMAL", "BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "UBIGINT")
 
 
@@ -421,6 +424,8 @@ def _exact_measure(
     is. Text, or a DOUBLE read through its shortest text, is cast at the
     largest scale its values carry. A DOUBLE whose text has an exponent, or a
     scale over 18, cannot be stated exactly: None, and the lane does not serve.
+    A value that reads as a number but not as a plain decimal (1e3, inf) is the
+    same: counting it inexactly or dropping it would serve a wrong total.
     """
     q = '"' + measure.replace('"', '""') + '"'
     found = con.execute(
@@ -434,14 +439,14 @@ def _exact_measure(
     text = f"trim(CAST({q} AS VARCHAR))"
     plain = f"regexp_full_match({text}, '{_PLAIN_DECIMAL}')"
     row = con.execute(
-        f"SELECT COUNT(*) FILTER (WHERE {q} IS NOT NULL AND NOT {plain}), "
+        f"SELECT COUNT(*) FILTER (WHERE TRY_CAST({text} AS DOUBLE) IS NOT NULL AND NOT {plain}), "
         f"COALESCE(MAX(length(split_part({text}, '.', 2))) FILTER (WHERE {plain}), 0) "
         f'FROM bronze."{ident}"'
     ).fetchone()
     if row is None:
         return None
     bad, scale = int(row[0]), int(row[1])
-    if scale > 18 or (bad and kind in {"DOUBLE", "FLOAT", "REAL"}):
+    if scale > 18 or bad:
         return None
     return f"CAST({text} AS DECIMAL(38,{scale}))", plain
 
