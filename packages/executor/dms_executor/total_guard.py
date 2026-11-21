@@ -374,6 +374,9 @@ class _Guard:
     def __init__(self) -> None:
         self.done: dict[int, _Rel] = {}
         self.open: set[int] = set()
+        #: While a LATERAL body is analysed: the worst kind of the sources
+        #: before it, which the body reads by outer reference (round 4).
+        self.outer: list[str] = []
 
     # -- row sources ------------------------------------------------------
 
@@ -527,7 +530,14 @@ class _Guard:
         items += [j.this for j in select.args.get("joins") or []]
         items += list(select.args.get("laterals") or [])
         for item in items:
-            rel = self.source(item)
+            if isinstance(item, exp.Lateral):
+                self.outer.append(_worst(*(_any(r) for r in rels)))
+                try:
+                    rel = self.source(item)
+                finally:
+                    self.outer.pop()
+            else:
+                rel = self.source(item)
             if isinstance(item, exp.Lateral):
                 # A LATERAL subquery reads the sources before it, so each of its
                 # columns carries the worst kind they hold: a window value passed
@@ -614,6 +624,8 @@ class _Guard:
             if isinstance(top, exp.Alias):
                 collections[top.alias.lower()] = _COLLECTION
 
+        outer = self.outer[-1] if self.outer else ""
+
         def col_kind(col: exp.Column, known: dict[str, str]) -> str:
             name = col.name.lower()
             table = str(col.table or "").lower()
@@ -623,14 +635,24 @@ class _Guard:
                     return rel.kind(name)
                 # Not a source of this SELECT: a struct field, a whole-row
                 # alias or an outer column. It cannot be followed.
-                return _worst(src_any, known.get(table, ""), known.get(name, ""))
+                return _worst(src_any, known.get(table, ""), known.get(name, ""), outer)
             # A source's alias used as a column is its whole row.
             row = _any(srcs[name]) if name in srcs else ""
-            return _worst(*(r.kind(name) for r in rels), known.get(name, ""), row)
+            return _worst(*(r.kind(name) for r in rels), known.get(name, ""), row, outer)
 
         # Rules 3 and 4 across SELECTs: what reads a carried value.
-        if src_any or collections:
+        if src_any or collections or outer:
             for node in own:
+                if (
+                    isinstance(node, (exp.Columns, exp.PositionalColumn))
+                    and _worst(src_any, outer) == _COLLECTION
+                ):
+                    # #1 and COLUMNS(...) name a source column without a Column
+                    # node: a collection reached that way may only be listed as
+                    # it is (round 4: array_length(#1 || #1) served 8 for 4).
+                    item = node.parent if isinstance(node.parent, exp.Alias) else node
+                    if item.parent is not select or item.arg_key != "expressions":
+                        raise _Refuse("collection_under_function")
                 if isinstance(node, exp.Column) and not isinstance(node.this, exp.Star):
                     if col_kind(node, collections) != _COLLECTION:
                         continue
