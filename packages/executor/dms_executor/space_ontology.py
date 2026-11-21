@@ -33,6 +33,7 @@ import json
 import re
 import threading
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
@@ -52,7 +53,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from dms_executor.demo_warehouse import SERVING_DIALECT, connect_file
-from dms_executor.ontology import Ontology, Violation, from_manifest
+from dms_executor.ontology import ObjectType, Ontology, Violation, from_manifest
 
 #: Provenance columns every bronze row carries; not attributes of the object.
 PROVENANCE_COLUMNS = frozenset({"_src", "_ingest_id"})
@@ -590,6 +591,64 @@ def _table_ok(name: str) -> bool:
     return 1 <= len(parts) <= 2 and all(_IDENT.fullmatch(p) for p in parts)
 
 
+def _row_preserving_table(relation: str) -> str | None:
+    """The base table ``relation`` reads one-to-one, or None.
+
+    A plain table name, or ``SELECT *[, expr ...] FROM t`` with nothing that
+    can drop or add a row (no WHERE, GROUP BY, HAVING, DISTINCT, JOIN, LIMIT,
+    QUALIFY, set operation). Anything else is a derived object: not a relation
+    rule 16 can name.
+    """
+    text = relation.strip()
+    if text.replace(".", "").replace("_", "").isalnum():
+        return text.lower()
+    try:
+        tree = sqlglot.parse_one(text.strip("()"), read=_DIALECT)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(tree, exp.Select) or not any(
+        isinstance(p, exp.Star) for p in tree.expressions
+    ):
+        return None
+    if any(
+        tree.args.get(k)
+        for k in ("where", "group", "having", "distinct", "joins", "limit", "qualify", "with")
+    ) or tree.find(exp.Subquery, *_SET_OPS, exp.UDTF):
+        return None
+    from_ = tree.args.get("from")
+    table = from_.this if from_ is not None else None
+    if not isinstance(table, exp.Table) or not isinstance(table.this, exp.Identifier):
+        return None
+    return table.name.lower()
+
+
+def demo_join_ontology(semantic: Ontology) -> Ontology:
+    """The demo pack's declared ontology, as relations rule 16 can check.
+
+    Demo-Space joins were never checked (a two-table join served 39450 for
+    7890). The demo ontology names semantic objects (``lot`` over
+    ``inventory``, a derived ``product`` and ``day``). Kept: each object that
+    reads one base table row for row, under that table's name, with its
+    declared key; each declared link between two kept objects, as declared.
+    Dropped, so refused: derived objects and every link that touches one.
+    Returned unverified: the caller measures it on the lake at every ask.
+    """
+    out = Ontology()
+    names: dict[str, str] = {}
+    for name, obj in semantic.objects.items():
+        table = _row_preserving_table(obj.relation)
+        if table is None or table in out.objects:
+            continue
+        names[name] = table
+        out.objects[table] = ObjectType(name=table, relation=table, key=tuple(obj.key))
+    for name, link in semantic.links.items():
+        a, b = names.get(link.from_object), names.get(link.to_object)
+        if a is None or b is None or a == b:
+            continue
+        out.links[name] = replace(link, from_object=a, to_object=b)
+    return out
+
+
 def usable_links(onto: Ontology, violations: Sequence[Violation]) -> dict[str, Any]:
     """Links a join may use: measured many-to-one, no violation on it or its ends."""
     failed = {v.subject for v in violations}
@@ -856,8 +915,18 @@ def _under_predicate(node: exp.Expression, stop: exp.Expression) -> bool:
 class _JoinRule:
     """An allowlist, not a blocklist (adversary rounds 1 and 2, ONTO-DERIVE-01).
 
-    SQL reading one table reference has nothing to join and passes. SQL reading
-    two or more must be ONE flat SELECT over base tables:
+    SQL that is one read of one base table has nothing to join and passes
+    (``_one_read``, JOIN-HOLE-01). Every relation a FROM or JOIN names counts,
+    not only base tables, and so does anything that can add rows inside one
+    SELECT: a CTE read twice, a table joined to a constant row source, or a
+    row generator in a projection multiplies rows like any other join. One
+    read means: no set operation and no recursive CTE; no row constructor
+    (VALUES, UNNEST, LATERAL); no function sqlglot cannot type outside WHERE,
+    HAVING and QUALIFY (DuckDB takes ``unlist`` or a macro over UNNEST in a
+    projection, GROUP BY or ORDER BY); every FROM names one item; each CTE
+    name is read at most once; one base table is named, once. Anything else
+    with at most one base table refuses, naming which of these failed.
+    Everything with two or more base tables must be ONE flat SELECT over them:
 
     * no set operation, no CTE, no derived table, no subquery outside the
       top-level WHERE conjuncts;
@@ -878,8 +947,9 @@ class _JoinRule:
       ``col <op> (SELECT AGG(same col) ...)`` uncorrelated.
 
     Anything else refuses. Some correct SQL refuses too (a derived table
-    grouped on the key, CAST on both join sides, USING); that is the price of
-    WRONG=0 until each shape is proven on its own.
+    grouped on the key, CAST on both join sides, USING, a CTE compared with
+    its own average, a constant UNION branch); that is the price of WRONG=0
+    until each shape is proven on its own.
     """
 
     def __init__(
@@ -948,6 +1018,9 @@ class _JoinRule:
             or _top_queries(sub.args.get("where") or exp.Null())
             or any(_top_queries(p) for p in sub.expressions)
             or sub.find(exp.Window)
+            # Any SELECT nested anywhere in it (OFFSET, LIMIT, ORDER BY, a
+            # function argument) is a relation read nothing here checks.
+            or any(q is not sub for q in sub.find_all(exp.Select))
         ):
             raise _Refuse("subquery_shape")
         return sub, inner
@@ -970,6 +1043,7 @@ class _JoinRule:
                     if self.col(col, inner)[0] != inner_node:
                         raise _Refuse("correlated_subquery")
             where = sub.args.get("where")
+            linked = False
             for conj in _conjuncts(where.this if where is not None else None):
                 owners = [self.col(x, inner) for x in conj.find_all(exp.Column)]
                 nodes = {o[0] for o in owners}
@@ -985,6 +1059,12 @@ class _JoinRule:
                     raise _Refuse("correlated_subquery")
                 (_na, ra), (_nb, rb) = self.col(conj.this, inner), self.col(conj.expression, inner)
                 self.link_for({(ra[0], ra[1], rb[0], rb[1])})
+                linked = True
+            if not linked:
+                # Not tied to the outer row by a verified link, the EXISTS is one
+                # constant TRUE or FALSE: it filters nothing, and the second table
+                # it reads answers for a relationship no link proves.
+                raise _Refuse("uncorrelated_subquery")
             return sub
         if isinstance(c, exp.In) and c.args.get("query") is not None:
             left = c.this
@@ -1024,11 +1104,21 @@ class _JoinRule:
                 # query('...'), read_csv(...): a table function can hide any join.
                 raise _Refuse("table_function")
         if len(tables) <= 1:
-            return
+            why = self._one_read(root_expr)
+            if why is None:
+                return
+            raise _Refuse(why)
         if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
             raise _Refuse("set_operation")
         if root_expr.find(exp.With):
             raise _Refuse("cte_over_join")
+        why = _row_source_why(root_expr)
+        if why:
+            raise _Refuse(why)
+        if root_expr.find(exp.Columns, exp.PositionalColumn):
+            # COLUMNS(...) and #n name columns without a Column node, so neither
+            # the link check nor the fan trap can place them over a join.
+            raise _Refuse("unplaced_column")
         root = self.scope_of.get(id(root_expr))
         if root is None:
             raise _Refuse("scope")
@@ -1145,6 +1235,51 @@ class _JoinRule:
             raise _Refuse(f"cross_product ({', '.join(named)} not joined by a verified link)")
         self._fan_trap(root_expr, root, set(parent_of_child))
 
+    def _one_read(self, root_expr: exp.Expression) -> str | None:
+        """None when the statement is one read of one base table, else why not.
+
+        Counts what each FROM and JOIN names, per SELECT and per CTE name
+        (JOIN-HOLE-01). Scope sources are not used for the count: a scope lists
+        every CTE it can see, used or not. Anything this cannot place is not
+        one read.
+        """
+        if any(w.args.get("recursive") for w in root_expr.find_all(exp.With)):
+            return "recursive_cte"
+        if root_expr.find(*_SET_OPS):
+            return "set_operation"
+        why = _row_source_why(root_expr)
+        if why:
+            return why
+        if {id(q) for q in root_expr.find_all(exp.Select)} != set(self.scope_of):
+            return "not_one_read"
+        base, joined = 0, False
+        cte_reads: dict[int, int] = {}
+        for sc in self.scopes:
+            from_ = sc.expression.args.get("from")
+            items = [from_.this] if from_ is not None else []
+            items += [j.this for j in sc.expression.args.get("joins") or []]
+            joined = joined or len(items) > 1
+            for item in items:
+                if isinstance(item, exp.Subquery) and isinstance(item.this, exp.Select):
+                    continue  # a derived table: its own SELECT is counted
+                src = _sources(sc).get(str(item.alias_or_name).lower())
+                if isinstance(item, exp.Table) and isinstance(src, exp.Table):
+                    base += 1
+                elif isinstance(item, exp.Table) and isinstance(src, Scope):
+                    cte_reads[id(src.expression)] = cte_reads.get(id(src.expression), 0) + 1
+                else:
+                    return "not_one_read"
+        if any(n > 1 for n in cte_reads.values()):
+            return "cte_read_twice"
+        if joined:
+            return "second_row_source"
+        named = base + sum(cte_reads.values())
+        if root_expr.find(exp.Join) or named != len(list(root_expr.find_all(exp.Table))):
+            return "not_one_read"
+        if base == 0:
+            return "no_table"
+        return None if base == 1 else "not_one_read"
+
     def _node_or_alias(self, c: exp.Column, root: Scope, outputs: set[str]) -> _Node | None:
         """A column's table, or None for a bare output alias (``HAVING n > 1``).
 
@@ -1163,8 +1298,12 @@ class _JoinRule:
         cur: exp.Expression = col
         parent = col.parent
         while parent is not None and parent is not select:
-            if isinstance(parent, (exp.Predicate, exp.Group, exp.Order, exp.Ordered)):
+            if isinstance(parent, (exp.Predicate, exp.Group)):
                 return True
+            # ORDER BY is safe only as the statement's own ordering (the walk
+            # reaches the SELECT) or a window's. Inside an aggregate,
+            # COUNT(d.name ORDER BY s.name), the ordered value is still counted
+            # once per child row (verifier round on the routed holes).
             if isinstance(parent, (exp.Min, exp.Max)):
                 # DuckDB min(x, n) / max(x, n) return a list: not idempotent.
                 return not parent.expressions
@@ -1184,7 +1323,7 @@ class _JoinRule:
                 )
             if isinstance(parent, exp.Window):
                 return cur is not parent.this
-            if isinstance(parent, (exp.Alias, exp.Paren, exp.Tuple)):
+            if isinstance(parent, (exp.Alias, exp.Paren, exp.Tuple, exp.Order, exp.Ordered)):
                 cur, parent = parent, parent.parent
                 continue
             return False
@@ -1231,6 +1370,30 @@ class _JoinRule:
                 f"fan_trap ({label} is the one side of the join; aggregate it "
                 "before joining, or count its key with COUNT(DISTINCT key))"
             )
+
+
+def _row_source_why(root_expr: exp.Expression) -> str | None:
+    """Why a statement may add rows no table holds, or None.
+
+    VALUES, UNNEST and LATERAL are rows from no table. A function sqlglot does
+    not type proves nothing about the row count: DuckDB refuses a row generator
+    in WHERE, HAVING and QUALIFY, and takes one anywhere else in a SELECT. Both
+    the one-read path and the join path ask this (a generator in a join's
+    projection was never checked: verifier round on the routed holes).
+    """
+    if root_expr.find(exp.UDTF):
+        return "row_generator"
+    for fn in root_expr.find_all(exp.Anonymous):
+        clause = fn.find_ancestor(exp.Where, exp.Having, exp.Qualify, exp.Select)
+        if clause is None or isinstance(clause, exp.Select):
+            name = str(fn.name).lower()
+            which = f" ({name})" if name.isidentifier() else ""
+            return (
+                f"unproven_function{which} because its effect on the number of rows "
+                "cannot be proven, so the statement is not treated as one read of one "
+                "table. A function with a known row effect is accepted"
+            )
+    return None
 
 
 def _ancestors(node: exp.Expression) -> list[exp.Expression]:

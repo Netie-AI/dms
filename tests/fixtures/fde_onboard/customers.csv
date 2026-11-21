@@ -1,0 +1,31 @@
+customer_id,full_name,email,phone,region
+C001,Brian Raj,user001@example.test,+60123000137,Kuala Lumpur
+C002,Chen Lee,user002@example.test,+60123000274,kuala lumpur 
+C003,Devi Hill,user003@example.test,+60123000411,Penang
+C004,Emil Wong,user004@example.test,+60123000548,KL
+C005,Farid Ng,canary.zeta@example.test,+60123000685,Kuala Lumpur
+C006,Gita Park,user006@example.test,+60123000822,kuala lumpur 
+C007,Hana Lim,user007@example.test,+60198877665,Penang
+C008,Ivan Ali,user008@example.test,+60123001096,KL
+C009,Jun Cruz,user009@example.test,+60123001233,Kuala Lumpur
+C010,Aisha Tan,user010@example.test,+60123001370,kuala lumpur 
+C011,Brian Raj,user011@example.test,+60123001507,Penang
+C012,Chen Lee,user012@example.test,+60123001644,KL
+C013,Devi Hill,user013@example.test,+60123001781,Kuala Lumpur
+C014,Emil Wong,user014@example.test,+60123001918,kuala lumpur 
+C015,Farid Ng,user015@example.test,+60123002055,Penang
+C016,Gita Park,user016@example.test,+60123002192,KL
+C017,Hana Lim,user017@example.test,+60123002329,Kuala Lumpur
+C018,Ivan Ali,user018@example.test,+60123002466,kuala lumpur 
+C019,Jun Cruz,user019@example.test,+60123002603,Penang
+C020,Aisha Tan,user020@example.test,+60123002740,KL
+C021,Brian Raj,user021@example.test,+60123002877,Kuala Lumpur
+C022,Chen Lee,user022@example.test,+60123003014,kuala lumpur 
+C023,Devi Hill,user023@example.test,+60123003151,Penang
+C024,Emil Wong,user024@example.test,+60123003288,KL
+C025,Farid Ng,user025@example.test,+60123003425,Kuala Lumpur
+C026,Gita Park,user026@example.test,+60123003562,kuala lumpur 
+C027,Hana Lim,user027@example.test,+60123003699,Penang
+C028,Ivan Ali,user028@example.test,+60123003836,KL
+C029,Jun Cruz,user029@example.test,+60123003973,Kuala Lumpur
+C030,Aisha Tan,user030@example.test,+60123004110,kuala lumpur 

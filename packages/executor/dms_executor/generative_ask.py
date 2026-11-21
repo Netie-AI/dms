@@ -19,7 +19,7 @@ from __future__ import annotations
 import copy
 import json
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -156,6 +156,7 @@ from dms_executor.sql_vote import (
     reconfirm_prompt,
 )
 from dms_executor.stated_values import dropped_stated_value_reason
+from dms_executor.total_guard import repeated_input_reason
 from dms_executor.verified_queries import (
     examples_text,
     maybe_save_checked_sql,
@@ -454,8 +455,140 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
-def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:
+def _reads_only(sql: str, relations: set[str]) -> bool:
+    """True when every base table ``sql`` reads (CTE names aside) is in ``relations``."""
+    try:
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
+    except Exception:  # noqa: BLE001
+        return False
+    ctes = {str(c.alias).lower() for c in tree.find_all(exp.CTE)}
+    names = {
+        t.name.lower()
+        for t in tree.find_all(exp.Table)
+        if not (t.name.lower() in ctes and not t.db)
+    }
+    return bool(names) and names <= {r.lower() for r in relations}
+
+
+def _reads_two_granted_tables(sql: str, grantable: Iterable[str]) -> bool:
+    """True when ``sql`` reads granted base tables in two or more places.
+
+    The demo Space join check (JOIN-HOLE-01) is for statements rule 16 would
+    judge in any other Space: two tables, or one table read in two places (a
+    scalar subquery that re-reads it, a CTE read twice: issue shape 6 served
+    55230 for 7890 when only distinct names were counted). A table function,
+    an ungranted name or a statement that does not parse goes to the grant and
+    hostile-SQL checks first, so their named reasons are unchanged.
+    """
+    try:
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
+    except Exception:  # noqa: BLE001
+        return False
+    if tree is None:
+        return False
+    ctes = {str(c.alias).lower() for c in tree.find_all(exp.CTE)}
+    granted = {g.lower() for g in grantable} | {g.lower().split(".")[-1] for g in grantable}
+    base: dict[str, int] = {}
+    cte_reads: dict[str, int] = {}
+    for table in tree.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            return False
+        name = table.name.lower()
+        if name in ctes and not table.db:
+            cte_reads[name] = cte_reads.get(name, 0) + 1
+            continue
+        full = ".".join(p.lower() for p in (table.catalog, table.db, table.name) if p)
+        if full not in granted and name not in granted:
+            return False
+        base[name] = base.get(name, 0) + 1
+    if len(base) >= 2:
+        return True
+    # One table read in two places matters when something aggregates over it
+    # (a total multiplied by a re-read count); a listing that names one table
+    # twice is decided by the grant and total checks as before.
+    reread = any(n > 1 for n in base.values()) or any(n > 1 for n in cte_reads.values())
+    aggregates = tree.find(exp.AggFunc, exp.Window, exp.Anonymous, exp.List) is not None
+    return reread and aggregates
+
+
+def no_ontology_join_reason(
+    sql: str,
+    *,
+    space_id: str | None,
+    warehouse: Path | None,
+    grantable: Iterable[str],
+) -> str | None:
+    """CONNECT-ASK-03: the Space join rule for a Space that has no ontology.
+
+    A demo Space (seeded, or no Space id) is not gated here and returns None.
+    Any other Space with no verified ontology has zero verified links, so the
+    same allowlist decides with an empty ``Ontology()``: one table reference
+    passes, anything reading a second table (or a table function) refuses.
+    The refusal is always ``unverified_join:no_ontology``. A lake that cannot
+    be read is ``unverified_join:check_unavailable``. Never a second analyser.
+    """
+    from dms_executor.demo_grants import is_demo_space
+
+    if is_demo_space(space_id):
+        # A demo Space is checked against the demo pack's own declared
+        # ontology, measured on the lake now (a two-table join served 39450
+        # for 7890 with no check at all). See ``demo_join_ontology``.
+        from dms_executor.space_ontology import check_sql_against_space, demo_join_ontology
+
+        try:
+            if not _reads_two_granted_tables(sql, grantable):
+                # One table, or a table function or ungranted name: the grant,
+                # hostile-SQL and total checks decide it, with their own reasons.
+                return None
+            if serve_gap(sql, grantable=set(grantable), dialect=SERVING_DIALECT):
+                # The door's own grant check refuses it: its reason comes first.
+                return None
+            lake = Path(warehouse) if warehouse is not None else None
+            if lake is None or not lake.is_file():
+                return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            onto = demo_join_ontology(demo_ontology(lake))
+            if not _reads_only(sql, set(onto.objects)):
+                # Not the demo pack's tables (a lake the demo ontology was never
+                # declared for: BIRD, a test or live lake with no space id). As
+                # load_verified_ontology does, keep today's behaviour there.
+                return None
+            return check_sql_against_space(sql, onto, lake, sorted(grantable))
+        except Exception:  # noqa: BLE001 - a check that cannot finish proves no join
+            return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+    empty = Ontology()
+    try:
+        cols = relation_columns(empty, warehouse, sorted(grantable))
+        refused = unverified_join_reason(sql, empty, [], columns_of=cols)
+    except Exception:  # noqa: BLE001 - a check that cannot finish proves no join
+        return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+    return f"{REASON_UNVERIFIED_JOIN}:no_ontology" if refused else None
+
+
+def join_check_unavailable(exc: Exception) -> str:
+    """CONNECT-ASK-05: the join check raised in a Space that has an ontology.
+
+    A check that cannot finish proves no join: the reason is
+    ``unverified_join:check_unavailable``, as on the no-ontology path. Never
+    "no refusal". A serving-lease error, an ask deadline or a stop is not a
+    join verdict and is raised again for the ask boundary. Logs the class.
+    """
+    import logging
+
+    from dms_executor.lake_registry import SERVING_ERRORS
+
+    if isinstance(exc, SERVING_ERRORS):
+        raise exc
+    logging.getLogger(__name__).warning("join check raised %s", type(exc).__name__)
+    return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+
+
+def load_verified_ontology(
+    warehouse: Path | None, onto: Ontology | None = None, *, space_id: str | None = None
+) -> Ontology | None:
     """Verify against the lake. Failed subjects stay marked; the rest can answer.
+
+    With ``DMS_ONTO_FROM_DATA`` and no caller ontology, the ontology is the
+    asking Space's (ONTO-SCOPE-01), never every approved item of the install.
 
     A caller-declared ontology that fails verify is returned with those
     subjects marked (A2-06). The default demo ontology (``onto is None``)
@@ -471,7 +604,9 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
         target = onto
         declared = True
     elif onto_from_data_enabled():
-        target = Ontology.from_store()
+        from dms_executor.onto_scope import ask_ontology
+
+        target = ask_ontology(space_id)
         declared = True
     else:
         target = demo_ontology(Path(warehouse))
@@ -1597,8 +1732,18 @@ def _run_extract_loop(
                 cols = relation_columns(space_onto, warehouse, sorted(grantable))
             except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
                 return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
-            join_why = unverified_join_reason(
-                sql, space_onto, declared_violations, columns_of=cols
+            try:
+                join_why = unverified_join_reason(
+                    sql, space_onto, declared_violations, columns_of=cols
+                )
+            except Exception as exc:  # noqa: BLE001 - CONNECT-ASK-05
+                return join_check_unavailable(exc)
+            if join_why:
+                return join_why
+        else:
+            # CONNECT-ASK-03: no ontology is zero verified links, not no rule.
+            join_why = no_ontology_join_reason(
+                sql, space_id=space_id, warehouse=warehouse, grantable=grantable
             )
             if join_why:
                 return join_why
@@ -1616,7 +1761,9 @@ def _run_extract_loop(
             broken = violations_cited_by_sql(sql, declared, declared_violations)
             if broken:
                 return violation_reason(broken)
-        return None
+        # TOTAL-GUARD-01: last, so it refuses only what would otherwise be
+        # served. The reason goes back to the retry like any checker reason.
+        return repeated_input_reason(sql, dialect)
 
     def vote_rows(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         return _vote_rows(
@@ -2108,7 +2255,7 @@ def maybe_generative_ask(
     declared_violations: list[Violation] = []
     verify_cache_missing = False
     if onto is None:
-        onto = load_verified_ontology(lake)
+        onto = load_verified_ontology(lake, space_id=space_id)
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:
@@ -2583,9 +2730,17 @@ def maybe_generative_ask(
             except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
                 join_why = f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
             else:
-                join_why = unverified_join_reason(
-                    sql, space_onto, declared_violations, columns_of=cols
-                )
+                try:
+                    join_why = unverified_join_reason(
+                        sql, space_onto, declared_violations, columns_of=cols
+                    )
+                except Exception as exc:  # noqa: BLE001 - CONNECT-ASK-05
+                    join_why = join_check_unavailable(exc)
+        else:
+            # CONNECT-ASK-03: no ontology is zero verified links, not no rule.
+            join_why = no_ontology_join_reason(
+                sql, space_id=space_id, warehouse=lake, grantable=allowed
+            )
         if join_why:
             # No guessed joins: on a Space with a derived ontology, generated
             # SQL may join two relations only over a link the source declared
@@ -2646,6 +2801,20 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            # TOTAL-GUARD-01: the statement passed every other check and is
+            # about to be served. An aggregate that can read one input value
+            # twice is the plausible wrong total; refuse it by name.
+            repeat_why = repeated_input_reason(sql, dialect)
+            if repeat_why:
+                return _stamp(
+                    _abstain(
+                        q,
+                        repeat_why,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source,
+                    )
+                )
             sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(
