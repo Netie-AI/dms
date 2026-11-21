@@ -496,29 +496,67 @@ def test_space_upload_is_granted(
 
 
 def test_sixty_ungranted_names_scrub_under_200ms(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One serving-dialect parse per tail. Sixty names stay under 200 ms."""
+    """One serving-dialect parse per tail. Sixty names stay under 200 ms.
+
+    The work is counted, not only timed: one ``parse_one`` per tail, and
+    ``tokenize`` calls that do not grow with the name count. The time is the
+    best of five runs, so one stalled run on a shared CI runner is not the
+    measure. Ten times the names may cost at most 25 times the time: linear
+    is about 10x, quadratic about 100x.
+    """
     import time
 
-    monkeypatch.setenv("DMS_CLOOP_B", "1")
-    names = [f"tbl_{index:02d}_secret" for index in range(60)]
-    blob = " ".join(f"ungranted:{name}" for name in names) + " bronze layer"
-    env = {
-        "text": blob,
-        "abstain_reason": blob,
-        "assumptions": [blob],
-        "space_id": "not-a-space",
-        "session_id": "ses_speed",
-    }
-    from dms_executor.name_echo import hide_echo
+    import dms_executor.name_echo as name_echo
 
-    started = time.perf_counter()
-    hide_echo(env, blob)
-    elapsed = time.perf_counter() - started
-    assert elapsed < 0.2, elapsed
-    for name in names:
-        assert name not in env["text"]
-        assert name not in env["abstain_reason"]
-    assert "bronze layer" in env["text"]
+    monkeypatch.setenv("DMS_CLOOP_B", "1")
+    calls = {"parse_one": 0, "tokenize": 0}
+    real_parse_one = name_echo.parse_one
+    real_tokenize = name_echo.tokenize
+
+    def _parse_one(*args: Any, **kwargs: Any) -> Any:
+        calls["parse_one"] += 1
+        return real_parse_one(*args, **kwargs)
+
+    def _tokenize(*args: Any, **kwargs: Any) -> Any:
+        calls["tokenize"] += 1
+        return real_tokenize(*args, **kwargs)
+
+    monkeypatch.setattr(name_echo, "parse_one", _parse_one)
+    monkeypatch.setattr(name_echo, "tokenize", _tokenize)
+
+    def _scrub(count: int) -> tuple[float, dict[str, int], dict[str, Any], list[str]]:
+        names = [f"tbl_{index:02d}_secret" for index in range(count)]
+        blob = " ".join(f"ungranted:{name}" for name in names) + " bronze layer"
+        env: dict[str, Any] = {
+            "text": blob,
+            "abstain_reason": blob,
+            "assumptions": [blob],
+            "space_id": "not-a-space",
+            "session_id": "ses_speed",
+        }
+        calls.update(parse_one=0, tokenize=0)
+        started = time.perf_counter()
+        name_echo.hide_echo(env, blob)
+        elapsed = time.perf_counter() - started
+        return elapsed, dict(calls), env, names
+
+    small: list[float] = []
+    sixty: list[float] = []
+    for _ in range(5):
+        elapsed, small_calls, _env, _names = _scrub(6)
+        small.append(elapsed)
+        elapsed, sixty_calls, env, names = _scrub(60)
+        sixty.append(elapsed)
+        for name in names:
+            assert name not in env["text"]
+            assert name not in env["abstain_reason"]
+        assert "bronze layer" in env["text"]
+    assert small_calls["parse_one"] == 6, small_calls
+    assert sixty_calls["parse_one"] == 60, sixty_calls
+    assert sixty_calls["tokenize"] == small_calls["tokenize"], (small_calls, sixty_calls)
+    best = min(sixty)
+    assert best < 0.2, sixty
+    assert best <= 25 * min(small), (small, sixty)
 
 
 def test_db_error_text_stays_out_of_the_ticket(
