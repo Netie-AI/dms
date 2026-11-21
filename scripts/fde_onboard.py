@@ -223,23 +223,11 @@ class Onboard:
         stored = self._store_items([*types, *values], "3")
         self.names = NameMask([(t, list(cols)) for t, cols in self.stats.items()])
         n = len(types)
-        self.type_rows = []
-        for item in stored[:n]:
-            p = item["payload"]
-            self.type_rows.append(
-                {
-                    "id": item["id"],
-                    "status": item["status"],
-                    "kind": item["kind"],
-                    "table": self.names.out(p["table"]),
-                    "column": self.names.out(p["column"]),
-                    "landed_type": p.get("landed_type"),
-                    "proposed_type": p.get("proposed_type"),
-                    "reason": p.get("reason"),
-                    **({"format": p["format"]} if p.get("format") else {}),
-                    **({"formats": p["formats"]} if p.get("formats") else {}),
-                }
-            )
+        # Raw rows: build_pack masks every name it writes.
+        self.type_rows = [
+            {"id": i["id"], "status": i["status"], "kind": i["kind"], **i["payload"]}
+            for i in stored[:n]
+        ]
         self.group_rows = []
         for group, item in zip(self.groups, stored[n:], strict=True):
             self.group_rows.append({**group, "id": item["id"], "status": item["status"]})
@@ -288,18 +276,23 @@ class Onboard:
         draft = fde_ai.run_stage(
             client,
             "01_ontology_draft",
-            self.prompts["01_ontology_draft"],
+            self.prompts["01_ontology_draft.md"],
             base,
             fde_ai.OntologyDraftOut,
         )
         items, dropped = fde_ai.ontology_items(draft, back=names.back, tables=tables)
-        stored = self._store_items(items, "5a")
+        stored = self._store_items(
+            [(k, raw, {"prompt": "01_ontology_draft.md"}) for k, raw, _m in items], "5a"
+        )
         self._write(
             "proposals/ontology_draft.json",
             {
                 "stage": 5,
-                "prompt": "01_ontology_draft",
-                "items": [_masked_onto_row(i, names.out) for i in stored],
+                "prompt": "01_ontology_draft.md",
+                "items": [
+                    {"id": i["id"], "status": i["status"], "kind": k, **masked}
+                    for i, (k, _raw, masked) in zip(stored, items, strict=True)
+                ],
                 "dropped": dropped,
             },
         )
@@ -310,7 +303,7 @@ class Onboard:
         asked = fde_ai.run_stage(
             client,
             "02_verified_questions",
-            self.prompts["02_verified_questions"],
+            self.prompts["02_verified_questions.md"],
             {**base, "ontology_draft": self._load("proposals/ontology_draft.json")},
             fde_ai.VerifiedQuestionsOut,
         )
@@ -340,10 +333,10 @@ class Onboard:
                         "row_count": info["row_count"],
                         "result_sha256": info["result_sha256"],
                     },
-                    {"row_count": info["row_count"], "prompt": "02_verified_questions"},
+                    {"row_count": info["row_count"], "prompt": "02_verified_questions.md"},
                 )
             )
-            q_pack.append({"question": q.question, "sql": q.sql, "row_count": info["row_count"]})
+            q_pack.append(fde_ai.masked_question_row("", q.question, q.sql, info))
             q_rows.append(list(info["rows"]))
         stored_q = self._store_items(q_items, "5b")
         for item, pack_row, rows in zip(stored_q, q_pack, q_rows, strict=True):
@@ -353,7 +346,7 @@ class Onboard:
             )
         self._write(
             "proposals/verified_questions.json",
-            {"stage": 5, "prompt": "02_verified_questions", "items": q_pack, "dropped": q_drop},
+            {"stage": 5, "prompt": "02_verified_questions.md", "items": q_pack, "dropped": q_drop},
         )
         counts["questions_kept"] = len(q_pack)
         counts["questions_dropped"] = len(q_drop)
@@ -362,26 +355,23 @@ class Onboard:
         mapped = fde_ai.run_stage(
             client,
             "03_value_mappings",
-            self.prompts["03_value_mappings"],
+            self.prompts["03_value_mappings.md"],
             {"schema": base["schema"], "value_groups": self._load("proposals/value_groups.json")},
             fde_ai.ValueMappingsOut,
         )
         by_id = {str(g["group_id"]): g for g in self.groups}
         v_items, v_drop = fde_ai.value_mapping_items(mapped, by_id)
-        stored_v = self._store_items(v_items, "5c")
+        stored_v = self._store_items(
+            [(k, raw, {"prompt": "03_value_mappings.md"}) for k, raw, _m in v_items], "5c"
+        )
         self._write(
             "proposals/value_mappings.json",
             {
                 "stage": 5,
-                "prompt": "03_value_mappings",
+                "prompt": "03_value_mappings.md",
                 "items": [
-                    {
-                        "id": i["id"],
-                        "status": i["status"],
-                        "group_id": i["payload"]["group_id"],
-                        "same": True,
-                    }
-                    for i in stored_v
+                    {"id": i["id"], "status": i["status"], **masked}
+                    for i, (_k, _raw, masked) in zip(stored_v, v_items, strict=True)
                 ],
                 "dropped": v_drop,
             },
@@ -585,25 +575,6 @@ class Onboard:
             else "the item store is in memory (DMS_ONTO_PG is off): these proposals are "
             "lost when this command exits"
         )
-
-
-def _masked_onto_row(item: dict[str, Any], out: Callable[[str], str]) -> dict[str, Any]:
-    p = item["payload"]
-    row: dict[str, Any] = {"id": item["id"], "status": item["status"], "kind": item["kind"]}
-    if item["kind"] == "object":
-        row.update(
-            table=out(str(p.get("relation") or "")),
-            key=[out(str(c)) for c in p.get("key") or []],
-            description=p.get("description") or "",
-        )
-    else:
-        row.update(
-            from_table=out(str(p.get("from_object") or "")),
-            from_columns=[out(str(c)) for c in p.get("from_columns") or []],
-            to_table=out(str(p.get("to_object") or "")),
-            to_columns=[out(str(c)) for c in p.get("to_columns") or []],
-        )
-    return row
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:

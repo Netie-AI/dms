@@ -142,12 +142,22 @@ ALLOWED_NUMBER_KEYS = frozenset(
         "distinct_values_checked",
         "proposed",
         "approved",
+        # stage 5 proposals: a position in the model's list, a count of variants
+        "index",
+        "variants",
+        # stage 6 measure
+        "asked",
+        "correct",
+        "abstained",
+        "wrong",
+        "http_status",
     }
 )
 #: ``min`` and ``max`` are numbers only as the length range of a text column.
 _ALLOWED_PATH_KEYS = frozenset({("length", "min"), ("length", "max")})
-#: A dict under one of these keys is a table of counts; any key under it is a count.
-_COUNT_CONTAINERS = frozenset({"counts"})
+#: The manifest's per-stage ``counts`` dict: any key directly under it is a count. Only
+#: at that path, so a source column named ``counts`` opens nothing.
+_COUNT_PATH = ("stages", "counts")
 
 _EXACT_DECIMAL_MAX_SCALE = 18
 _EXACT_DECIMAL_MAX_PRECISION = 38
@@ -796,15 +806,29 @@ def pack_files(out_dir: Path) -> dict[str, dict[str, Any]]:
 # --- leak check ----------------------------------------------------------------------------
 
 
-def _atoms(node: Any) -> Iterator[str]:
+#: Fields this tool generates: an item or run id, a sha256, a timestamp. Hex and digits in
+#: them can spell a short code (``c012``), so they are left out of the leak check, but only
+#: when the value has exactly the generated shape. Anything else under these keys is checked.
+_GENERATED_KEYS = frozenset({"id", "run_id", "space_id", "version_id", "sha256", "created_at"})
+_GENERATED_VALUE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"|[0-9a-f]{64}"
+    r"|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00"
+)
+
+
+def _atoms(node: Any, key: str = "") -> Iterator[str]:
+    """Every key and string value, decoded. A generated id, digest or timestamp is skipped."""
     if isinstance(node, dict):
         for k, v in node.items():
             yield str(k)
-            yield from _atoms(v)
+            yield from _atoms(v, str(k))
     elif isinstance(node, list):
         for v in node:
-            yield from _atoms(v)
+            yield from _atoms(v, key)
     elif isinstance(node, str):
+        if key in _GENERATED_KEYS and _GENERATED_VALUE.fullmatch(node):
+            return
         yield node
 
 
@@ -826,7 +850,7 @@ def _number_allowed(key: str, chain: tuple[str, ...]) -> bool:
     parent = chain[-2] if len(chain) >= 2 else ""
     if (parent, key) in _ALLOWED_PATH_KEYS:
         return True
-    return any(c in _COUNT_CONTAINERS for c in chain[:-1])
+    return len(chain) == 3 and chain[:2] == _COUNT_PATH
 
 
 class LeakChecker:
@@ -882,9 +906,9 @@ class LeakChecker:
                     doc = json.loads(raw)
                 except ValueError:
                     doc = None
-                haystack = raw
-                if doc is not None:
-                    haystack = "\n".join(_atoms(doc)) + "\n" + raw
+                # Decoded atoms, not the raw text: a JSON escape cannot hide a value, and the
+                # generated ids and digests (which can spell a short hex code) are left out.
+                haystack = raw if doc is None else "\n".join(_atoms(doc))
                 n = _int(
                     con.execute(
                         f"SELECT COUNT(*) FROM ({sql}) WHERE contains(?, v)", [haystack.lower()]
