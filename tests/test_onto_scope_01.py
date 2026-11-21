@@ -838,6 +838,12 @@ def test_adversary_every_kind_of_item_filed_under_a_leaves_b_unchanged(
     a, _ta, b, tb = two_spaces(rig)
     orders_b, ships_b = tb["b_orders.csv"], tb["b_shipments.csv"]
     sql = join_sql(ships_b, orders_b)
+    # Warm-up ask: since CATALOG-SCHEMA-01 (#518) B's bronze columns are listed,
+    # and a column line gains ``distinct=`` once the column index is ready,
+    # which happens between B's first and second ask with no item filed at
+    # all. The baseline is B's second ask, so only A's items can differ.
+    rig.ask(b, JOIN_Q, gen(sql))
+    rig.cortex.insights.clear()
     bare = rig.ask(b, JOIN_Q, gen(sql))
     assert bare["badge"] == "ABSTAIN" and bare["rows"] == [] and bare["values"] == []
     bare_catalogs = _catalogs(rig)
