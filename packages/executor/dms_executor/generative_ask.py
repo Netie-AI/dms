@@ -503,12 +503,10 @@ def _reads_two_granted_tables(sql: str, grantable: Iterable[str]) -> bool:
         base[name] = base.get(name, 0) + 1
     if len(base) >= 2:
         return True
-    # One table read in two places matters when something aggregates over it
-    # (a total multiplied by a re-read count); a listing that names one table
-    # twice is decided by the grant and total checks as before.
-    reread = any(n > 1 for n in base.values()) or any(n > 1 for n in cte_reads.values())
-    aggregates = tree.find(exp.AggFunc, exp.Window, exp.Anonymous, exp.List) is not None
-    return reread and aggregates
+    # One demo table read in two places (a total times a re-read count, or a
+    # listing of a self cross product: 49 rows for 7 lots) is rule 16's, as in
+    # any other Space.
+    return any(n > 1 for n in base.values()) or any(n > 1 for n in cte_reads.values())
 
 
 def no_ontology_join_reason(

@@ -205,7 +205,7 @@ LANE_OFF_HOLDS: tuple[str, ...] = ("B-049", "B-051", "E-067", "E-069")
 # Fixed by JOIN-HOLE-01 (#527): demo Spaces now meet rule 16 against the demo
 # pack's declared ontology, so these fan-out and NOT IN joins abstain. They
 # XPASSed under strict=True; the marker comes off, the same assert holds.
-FIXED_BY_DEMO_JOIN_RULE: tuple[str, ...] = ("A-013", "A-025", "D-005")
+FIXED_BY_DEMO_JOIN_RULE: tuple[str, ...] = ("A-013", "A-021", "A-025", "D-005")
 
 _BY_FAMILY: dict[str, list[str]] = {
     "a": ["A-013", "A-021", "A-025"],

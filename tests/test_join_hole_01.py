@@ -575,7 +575,8 @@ DEMO_JOIN_HOLES: dict[str, str] = {
     "issue_shape_6_cte_read_twice": "WITH c AS (SELECT quantity_kg AS x FROM inventory) SELECT (SELECT SUM(x) FROM c) * COUNT(*) AS total FROM c",
     "scalar_total_times_the_row_count": "SELECT (SELECT SUM(quantity_kg) FROM inventory) * COUNT(*) AS total FROM inventory",
     "total_times_a_scalar_row_count": "SELECT SUM(quantity_kg) * (SELECT COUNT(*) FROM inventory) AS total FROM inventory",
-    "cte_total_times_a_scalar_cte_count": "WITH c AS (SELECT quantity_kg AS x FROM inventory) SELECT SUM(x) * (SELECT COUNT(*) FROM c) AS total FROM c",
+    "self_cross_product_summed": "SELECT SUM(a.quantity_kg) AS total FROM inventory a, inventory b",
+        "cte_total_times_a_scalar_cte_count": "WITH c AS (SELECT quantity_kg AS x FROM inventory) SELECT SUM(x) * (SELECT COUNT(*) FROM c) AS total FROM c",
 }
 
 
@@ -587,7 +588,7 @@ def _demo(sql: str, door: str, space_id: str | None, tmp_path: Path, monkeypatch
 
         def _contract(req: Any) -> AskResponse:
             return AskResponse(
-                answer=f"The total is {figure[0]['total'] if figure else None}.",
+                answer=f"The total is {next(iter(figure[0].values())) if figure else None}.",
                 abstained=False,
                 badge="generated",
                 route="generated",
@@ -663,3 +664,21 @@ def test_a_catalog_qualified_demo_join_abstains_on_the_contract_door(
     text = str(env.get("text") or "")
     assert "unverified_join" in od._reasons(env) + " " + text, (env.get("assumptions"), text)
     assert str(figure[0]["total"]) not in text, text
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+def test_a_demo_self_cross_product_listing_abstains(
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    """Demo verifier round: a listing of one demo table crossed with itself served
+    49 rows for 7 lots (no aggregate, so the earlier routing left it out)."""
+    sql = "SELECT a.sku, a.quantity_kg FROM inventory a, inventory b"
+    env, rows, _truth = _demo(sql, door, space_id, tmp_path, monkeypatch, minter, "List the inventory lots")
+    assert len(rows) == 49, len(rows)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
