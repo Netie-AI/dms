@@ -455,6 +455,21 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
+def _reads_only(sql: str, relations: set[str]) -> bool:
+    """True when every base table ``sql`` reads (CTE names aside) is in ``relations``."""
+    try:
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
+    except Exception:  # noqa: BLE001
+        return False
+    ctes = {str(c.alias).lower() for c in tree.find_all(exp.CTE)}
+    names = {
+        t.name.lower()
+        for t in tree.find_all(exp.Table)
+        if not (t.name.lower() in ctes and not t.db)
+    }
+    return bool(names) and names <= {r.lower() for r in relations}
+
+
 def _reads_two_granted_tables(sql: str, grantable: Iterable[str]) -> bool:
     """True when ``sql`` reads granted base tables in two or more places.
 
@@ -532,6 +547,11 @@ def no_ontology_join_reason(
             if lake is None or not lake.is_file():
                 return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
             onto = demo_join_ontology(demo_ontology(lake))
+            if not _reads_only(sql, set(onto.objects)):
+                # Not the demo pack's tables (a lake the demo ontology was never
+                # declared for: BIRD, a test or live lake with no space id). As
+                # load_verified_ontology does, keep today's behaviour there.
+                return None
             return check_sql_against_space(sql, onto, lake, sorted(grantable))
         except Exception:  # noqa: BLE001 - a check that cannot finish proves no join
             return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
