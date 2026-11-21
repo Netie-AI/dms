@@ -368,28 +368,57 @@ def _reads_as_value(name: str) -> bool:
     )
 
 
-def data_header_tables(stats: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> set[str]:
-    """Tables whose header row reads as a data row (a CSV with no header line).
+def _classes_of(text: str) -> str:
+    """The letter, digit and space classes a text uses (``U``, ``L``, ``D``, ``S``), sorted.
+
+    Punctuation is left out, so ``No. 12, Jalan Ampang`` and ``Jalan Sultan Ismail 88``
+    share ``DLSU``. A name made only of punctuation and underscores has no class.
+    """
+    out = set()
+    for ch in text:
+        if ch.isupper():
+            out.add("U")
+        elif ch.islower():
+            out.add("L")
+        elif ch.isdigit():
+            out.add("D")
+        elif ch.isspace():
+            out.add("S")
+    return "".join(sorted(out))
+
+
+def data_header_columns(
+    stats: Mapping[str, Mapping[str, Mapping[str, Any]]],
+) -> dict[str, set[str]]:
+    """Column names that read as data, per table (a CSV with no header line).
 
     Bronze reads every CSV with a header, so a headerless file lands its first data row
     as column names, and names leave the machine as schema. Measured, no word list: a
-    column counts when its name parses as a value, or when the set of character classes
-    of the name (upper, lower, space, digit, each punctuation mark) equals that of a value
-    the column holds. More than half the columns -> flagged, and every name of that table
-    is tokenised.
+    column hits when its name parses as a value, or when the classes of its name equal
+    the classes of a value the column holds (all distinct values, ``_classes``). Each hit
+    column is tokenised; when a third or more of a table's columns hit, the header row
+    reads as data and every name of that table is tokenised. A name made of lower-case
+    letters only also hits a lower-case column (``note``): tokenising it costs the model a
+    word, never a value.
     """
-    flagged: set[str] = set()
+    out: dict[str, set[str]] = {}
     for table, cols in stats.items():
-        if not cols:
-            continue
-        hits = 0
+        hits: set[str] = set()
         for name, st in cols.items():
-            classes = {frozenset(_coarse(str(s.get("shape", "")))) for s in st.get("shapes") or []}
-            if _reads_as_value(name) or frozenset(_coarse(shape(name))) in classes:
-                hits += 1
-        if hits * 2 > len(cols):
-            flagged.add(table)
-    return flagged
+            classes = set(st.get("_classes") or [])
+            own = _classes_of(name)
+            if _reads_as_value(name) or (own and own in classes):
+                hits.add(name)
+        if hits and len(hits) * 3 >= len(cols):
+            hits = set(cols)
+        if hits:
+            out[table] = hits
+    return out
+
+
+def data_header_tables(stats: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> set[str]:
+    """Tables whose every name is tokenised by ``data_header_columns``."""
+    return {t for t, hit in data_header_columns(stats).items() if hit == set(stats[t])}
 
 
 # --- column stats ------------------------------------------------------------------------
@@ -484,6 +513,16 @@ def _shapes(con: duckdb.DuckDBPyConnection, rel: str, q: str) -> list[dict[str, 
     return [{"shape": s, "rows": n} for s, n in top]
 
 
+def _class_sets(con: duckdb.DuckDBPyConnection, rel: str, q: str) -> list[str]:
+    """Every distinct ``_classes_of`` of the column's values (at most 15). Local only:
+    ``build_pack`` drops every stats key that starts with ``_``."""
+    rows = con.execute(
+        f"SELECT DISTINCT CAST({q} AS VARCHAR) FROM {rel} WHERE {q} IS NOT NULL "
+        f"LIMIT {SHAPE_DISTINCT_CAP}"
+    ).fetchall()
+    return sorted({_classes_of(str(v)) for (v,) in rows} - {""})
+
+
 def _pii_kind(
     con: duckdb.DuckDBPyConnection, rel: str, q: str, column: str, table: str
 ) -> str | None:
@@ -557,6 +596,7 @@ def _measure(
         if base in _FLOAT_BASES:
             attempt("decimal", lambda: _decimal(con, rel, q, double=True))
     attempt("shapes", lambda: _shapes(con, rel, q))
+    attempt("_classes", lambda: _class_sets(con, rel, q))
     attempt("pii_kind", lambda: _pii_kind(con, rel, q, column, table.rpartition(".")[2]))
     return stats
 
@@ -1215,7 +1255,11 @@ def build_pack(
     """Write schema, profile, masked samples and the stage 3 proposals. Never a raw value."""
     out = Path(out_dir)
     masked_stats = {
-        names.out_table(t): {names.out(c): s for c, s in cols.items()} for t, cols in stats.items()
+        names.out_table(t): {
+            names.out(c): {k: v for k, v in s.items() if not str(k).startswith("_")}
+            for c, s in cols.items()
+        }
+        for t, cols in stats.items()
     }
     schema = {
         "format": PACK_FORMAT,

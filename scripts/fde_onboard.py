@@ -208,7 +208,6 @@ class Onboard:
         if not items:
             return []
         stored: list[dict[str, Any]] = []
-        held: set[str] = set()
         for start in range(0, len(items), IMPORT_BATCH):
             chunk = items[start : start + IMPORT_BATCH]
             r = self.http.post(
@@ -219,21 +218,24 @@ class Onboard:
                 },
             )
             if r.status_code != 200:
+                # Earlier batches are stored (proposed) and already counted: the receipt
+                # says what landed, then the refusal.
                 raise _Refuse(EXIT_REFUSED, f"import_refused:{_detail_code(r)}")
             result = r.json()
             self.store_info["persisted"] = bool(result.get("persisted"))
-            stored.extend(result.get("items") or [])
-            held.update(result.get("held") or [])
-        fresh = [i for i in stored if i.get("id") not in held]
-        if len(stored) != len(items) or any(i.get("status") != "proposed" for i in fresh):
-            raise _Refuse(EXIT_REFUSED, "store_not_proposed")
-        # A re-run keeps what a steward already decided; it never sets a status itself.
-        self.proposed += len(fresh)
-        self.held += len(stored) - len(fresh)
-        self.item_ids.update(str(i["id"]) for i in stored)
-        self.held_approved += sum(
-            1 for i in stored if i.get("id") in held and i.get("status") == "approved"
-        )
+            batch = list(result.get("items") or [])
+            held = set(result.get("held") or [])
+            fresh = [i for i in batch if i.get("id") not in held]
+            if len(batch) != len(chunk) or any(i.get("status") != "proposed" for i in fresh):
+                raise _Refuse(EXIT_REFUSED, "store_not_proposed")
+            # A re-run keeps what a steward already decided; it never sets a status itself.
+            self.proposed += len(fresh)
+            self.held += len(batch) - len(fresh)
+            self.item_ids.update(str(i["id"]) for i in batch)
+            self.held_approved += sum(
+                1 for i in batch if i.get("id") in held and i.get("status") == "approved"
+            )
+            stored.extend(batch)
         return stored
 
     def _store_counts(self) -> dict[str, Any]:
@@ -297,6 +299,7 @@ class Onboard:
     def stage3(self) -> None:
         from dms_executor.fde_pack import (
             NameMask,
+            data_header_columns,
             data_header_tables,
             type_items,
             value_groups,
@@ -309,13 +312,14 @@ class Onboard:
         stored = self._store_items([*types, *values], "3")
         # A table whose header row reads as data (a CSV with no header line) would send
         # its first row out as column names: every name of it is tokenised.
-        data_headers = data_header_tables(self.stats)
+        data_headers = data_header_columns(self.stats)
         self.names = NameMask(
             [(t, list(cols)) for t, cols in self.stats.items()],
             sources=self.sources,
-            force={c for t in data_headers for c in self.stats[t]},
+            force={c for cols in data_headers.values() for c in cols},
         )
-        self.data_header_tables = len(data_headers)
+        self.data_header_tables = len(data_header_tables(self.stats))
+        self.data_header_names = sum(len(c) for c in data_headers.values())
         n = len(types)
         # Raw rows: build_pack masks every name it writes.
         # The pack rows carry no store id: these files are sent, and what a person confirms
@@ -329,6 +333,7 @@ class Onboard:
             column_types=len(types),
             value_groups=len(self.groups),
             tables_with_data_headers=self.data_header_tables,
+            names_read_as_data=self.data_header_names,
         )
 
     def stage4(self) -> None:

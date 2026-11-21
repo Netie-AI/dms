@@ -471,7 +471,8 @@ def test_happy_path_every_output_pending_measured_on_the_envelope(
 
     items = _onboard_items(summary["space_id"])
     kept = [i for i in items if i["kind"] == "verified_query"]
-    assert [i["payload"]["question"] for i in kept] == [Q_ORDERS, Q_CUSTOMERS]
+    # One batch shares one ts and the store orders by (ts, id): compare as a set.
+    assert sorted(i["payload"]["question"] for i in kept) == sorted([Q_ORDERS, Q_CUSTOMERS])
     assert all(i["status"] == "proposed" and i["approved_by"] is None for i in items)
     kinds = {i["kind"] for i in items}
     assert {"object", "link", "column_type", "value_map", "verified_query"} <= kinds
@@ -952,3 +953,123 @@ def test_the_gate_action_name_is_pinned(rig: Rig) -> None:
     code, _ = rig.run("--stop-after", "4", "--import")
     assert code == 0
     assert GATE_CALLS == ["ontology.profile", "ontology.onboard_import"]
+
+
+# --- verifier 3 (dms#541): headerless variants, partial import receipt --------------------
+
+_NAMES = ["Lim Bee Hua", "Siti Aminah", "Raj Kumar", "Wong Mei Ling", "Ahmad Faiz", "Chen Wei"]
+# Every address carries punctuation, so its full shape never equals the header's
+# (``Jalan Sultan Ismail 88``): only the letter/digit/space classes match (verifier 3).
+_ADDR = [
+    "No. 12, Jalan Bukit Bintang",
+    "No. 7, Jalan Ampang",
+    "No. 88, Lorong Kurau",
+    "No. 3, Jalan Ipoh",
+]
+
+
+def _headerless_cases() -> dict[str, tuple[list[str], list[list[str]]]]:
+    two = [[_NAMES[i % 6], _ADDR[i % 4]] for i in range(20)]
+    users = [[f"user{c}", _ADDR[i % 4]] for i, c in enumerate("abcdefghijklmnopqrst")]
+    wide = [
+        [
+            f"E{1000 + i}",
+            _NAMES[i % 6],
+            _ADDR[i % 4],
+            f"{5000 + i * 13}.50",
+            "sales",
+            "north",
+            f"note {i}",
+            "2020",
+            "active",
+            "yes",
+        ]
+        for i in range(20)
+    ]
+    return {
+        "two_columns": (["Tan Ah Kow", "Jalan Sultan Ismail 88"], two),
+        "lowercase_first": (["tanahkow", "Jalan Sultan Ismail 88"], users),
+        "ten_columns_four_match": (
+            [
+                "E0001",
+                "Tan Ah Kow",
+                "Jalan Sultan Ismail 88",
+                "8812345.67",
+                "accounts payable",
+                "Promoted 2019 relocated north",
+                "Q",
+                "W",
+                "X",
+                "Z",
+            ],
+            wide,
+        ),
+    }
+
+
+@pytest.mark.parametrize("case", sorted(_headerless_cases()))
+def test_no_first_row_value_of_a_headerless_csv_leaves(rig: Rig, tmp_path: Path, case: str) -> None:
+    import csv as _csv
+    import shutil
+
+    first, rows = _headerless_cases()[case]
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("orders.csv", "customers.csv", "products.csv"):
+        shutil.copy(FIXTURE / name, src / name)
+    with (src / "staff.csv").open("w", newline="", encoding="utf-8") as fh:
+        writer = _csv.writer(fh)
+        writer.writerow(first)
+        writer.writerows(rows)
+    buf = io.StringIO()
+    code = cli.main(
+        [
+            "--source",
+            str(src),
+            "--space",
+            rig.space_id(f"Headerless {case}"),
+            "--out",
+            str(rig.out),
+            "--stop-after",
+            "4",
+        ],
+        http=rig.client,
+        transport=rig.model,
+        stdout=buf,
+    )
+    assert code == 0, buf.getvalue()
+    text = rig.pack_text()
+    for value in first:
+        if len(value) >= 4:
+            assert value not in text, value
+
+
+def test_a_refused_later_batch_reports_what_earlier_batches_stored(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dms_api.routes.ontology as onto_routes
+    from cortex_client.gate import ComplianceDecision
+
+    real = fde_pack.type_items
+
+    def _many(stats: Any) -> Any:
+        base = real(stats)
+        kind, payload, evidence = base[0]
+        return base + [
+            (kind, {**payload, "name": f"{payload['name']}:{n}"}, evidence) for n in range(520)
+        ]
+
+    calls: list[str] = []
+
+    def _gate(*, action: str, **_: Any) -> ComplianceDecision:
+        calls.append(action)
+        allowed = calls.count("ontology.onboard_import") < 2
+        return ComplianceDecision(allowed=allowed, reason="test", action=action)
+
+    monkeypatch.setattr(fde_pack, "type_items", _many)
+    monkeypatch.setattr(onto_routes, "compliance_gate", _gate)
+    code, summary = rig.run("--stop-after", "4", "--import")
+    assert code == 3 and summary["reason"].startswith("import_refused:")
+    stored = len(_onboard_items(summary["space_id"]))
+    assert stored == 500
+    assert summary["store"]["proposed"] == stored
