@@ -852,6 +852,12 @@ class PostgresOntologyDataStore:
     def _tenant(self, tenant_id: str | None) -> str:
         return _uuid_text(tenant_id) or self._tenant_id
 
+    def _bound_tenant(self, tenant_id: str | None, what: str) -> str:
+        """The bound tenant. A different non-empty ``tenant_id`` is refused."""
+        if (tenant_id or "").strip() and _uuid_text(tenant_id) != self._tenant_id:
+            raise ValueError(f"tenant_mismatch: {what} is stored in the bound tenant")
+        return self._tenant_id
+
     def store_proposal(
         self,
         body: Mapping[str, Any],
@@ -870,7 +876,7 @@ class PostgresOntologyDataStore:
                 "version_id": None,
                 "items": [],
             }
-        tenant = self._tenant(tenant_id)
+        tenant = self._bound_tenant(tenant_id, "an ontology proposal")
         created = _uuid_text(created_by)
         space = _uuid_text(space_id)
         now = datetime.now(UTC)
@@ -1266,7 +1272,7 @@ class PostgresOntologyDataStore:
         space = _uuid_text(space_id)
         if space is None:
             raise ValueError("a profile proposal belongs to a Space")
-        tenant = self._tenant(tenant_id)
+        tenant = self._bound_tenant(tenant_id, "a profile proposal")
         created = _uuid_text(created_by)
         now = datetime.now(UTC)
         ts = _iso(now)

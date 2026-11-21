@@ -215,3 +215,56 @@ def test_pg_diff_and_revoked_read_leave_onboard_rows_out(pg_rig: tuple[Rig, str]
     for item in stored["items"]:
         _revoke(rig, item["id"])
     assert not [i for i in store.revoked_items() if i["source"] == ONBOARD_SOURCE]
+
+
+def _profile_body() -> dict[str, Any]:
+    return {"keys": [{"table": "orders", "columns": ["order_id"], "evidence": {"rows": 3}}]}
+
+
+def _proposal_body() -> dict[str, Any]:
+    return {
+        "status": "proposed",
+        "terms": [{"name": "orders", "table": "orders", "key": ["order_id"]}],
+    }
+
+
+def _versions(migrated_db: str, tenant: str) -> int:
+    with psycopg.connect(migrated_db) as conn:
+        set_tenant_context(conn, tenant, role="steward")
+        row = conn.execute("SELECT count(*) FROM dms.ontology_versions").fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def test_pg_store_proposal_refuses_another_tenant(
+    pg_rig: tuple[Rig, str], two_tenants: dict[str, Any], migrated_db: str
+) -> None:
+    _rig, alpha = pg_rig
+    beta = str(two_tenants["beta"])
+    before = {t: _versions(migrated_db, t) for t in (alpha, beta)}
+    with pytest.raises(ValueError, match="tenant_mismatch"):
+        _store().store_proposal(_proposal_body(), created_by="ao", tenant_id=beta)
+    assert {t: _versions(migrated_db, t) for t in (alpha, beta)} == before
+    ok = _store().store_proposal(_proposal_body(), created_by="ao", tenant_id=alpha)
+    assert ok["version_id"] and len(ok["items"]) == 1
+    bound = _store().store_proposal(_proposal_body(), created_by="ao")
+    assert bound["version_id"] and bound["version_id"] != ok["version_id"]
+    assert _versions(migrated_db, alpha) == before[alpha] + 2
+    assert _versions(migrated_db, beta) == before[beta]
+
+
+def test_pg_store_profile_refuses_another_tenant(
+    pg_rig: tuple[Rig, str], two_tenants: dict[str, Any], migrated_db: str
+) -> None:
+    rig, alpha = pg_rig
+    beta = str(two_tenants["beta"])
+    space = _space(rig, "Profile tenant")
+    before = {t: _versions(migrated_db, t) for t in (alpha, beta)}
+    with pytest.raises(ValueError, match="tenant_mismatch"):
+        _store().store_profile(_profile_body(), created_by="fde", space_id=space, tenant_id=beta)
+    assert {t: _versions(migrated_db, t) for t in (alpha, beta)} == before
+    assert _store().space_profile_items(space) == []
+    ok = _store().store_profile(_profile_body(), created_by="fde", space_id=space, tenant_id=alpha)
+    assert len(ok["items"]) == 1
+    assert len(_store().space_profile_items(space)) == 1
+    assert _versions(migrated_db, beta) == before[beta]

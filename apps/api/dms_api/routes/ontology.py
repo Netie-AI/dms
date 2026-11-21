@@ -15,12 +15,14 @@ from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from dms_core.control_plane.onto_data import (
+    ONBOARD_KINDS,
     PostgresOntologyDataStore,
     ProfileKeyConflict,
     _public_item,
     ontology_data_store,
 )
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from dms_api.cortex_read import cortex_get
 from dms_api.deps import CortexDep, SettingsDep, SpaceStoreDep
@@ -136,6 +138,54 @@ def profile_ontology_data(
             detail={"code": "no_file_tables", "skipped": result["skipped"]},
         )
     return result
+
+
+class OnboardItem(BaseModel):
+    kind: str
+    payload: dict[str, Any]
+    evidence: dict[str, Any]
+
+
+class OnboardImport(BaseModel):
+    items: list[OnboardItem] = Field(max_length=500)
+    run: dict[str, Any]
+
+
+@router.post("/data/spaces/{space_id}/onboard")
+def import_onboard_items(
+    space_id: str,
+    body: OnboardImport,
+    settings: SettingsDep,
+    cortex: CortexDep,
+    spaces: SpaceStoreDep,
+) -> dict[str, Any]:
+    """FDE-ONBOARD-01: store onboarding proposals of one Space. Never approves."""
+    _require_steward(settings)
+    decision = compliance_gate(
+        action="ontology.onboard_import",
+        actor=settings.dms_actor_user_id,
+        metadata={
+            "task_id": "ontology.onboard_import",
+            "space_id": space_id,
+            "item_count": len(body.items),
+        },
+        client=cortex,
+    )
+    enforce(decision)
+    space = spaces.get(space_id)
+    if space is None:
+        raise HTTPException(status_code=404, detail="space_not_found")
+    if any(item.kind not in ONBOARD_KINDS for item in body.items):
+        raise HTTPException(status_code=422, detail="unknown_onboard_kind")
+    store = ontology_data_store()
+    stored = store.store_onboard(
+        [(item.kind, item.payload, item.evidence) for item in body.items],
+        created_by=settings.dms_actor_user_id,
+        space_id=str(space.id),
+        tenant_id=settings.dms_tenant_id,
+        run=body.run,
+    )
+    return {**stored, "persisted": isinstance(store, PostgresOntologyDataStore)}
 
 
 @router.get("/data/spaces/{space_id}/items")
