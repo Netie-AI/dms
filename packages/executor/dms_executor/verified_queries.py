@@ -36,7 +36,12 @@ import duckdb
 
 from dms_executor.demo_ask import normalize_ask_question
 from dms_executor.demo_grants import canonical_space_id
-from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, warehouse_path
+from dms_executor.demo_warehouse import (
+    DEMO_TABLES,
+    SERVING_DIALECT,
+    ensure_demo_warehouse,
+    warehouse_path,
+)
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.grant_struct import serve_gap
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
@@ -45,6 +50,7 @@ from dms_executor.skills_quarantine import (
     filter_retrieved_rows,
     reject_scored_write,
 )
+from dms_executor.total_guard import repeated_input_reason
 
 #: Leading underscore keeps this out of list_bronze_tables / Library tree.
 _TABLE = "main._verified_queries"
@@ -293,6 +299,21 @@ def register_verified_query(
         raise ValueError(f"sql_not_in_space:{','.join(sorted(leaked))}")
     if gap:
         raise ValueError(gap)
+    # #527 class (parent ruling 1): a certified figure that is wrong breaks rule
+    # 13 whoever wrote the SQL. The steward sees the named reason.
+    # The stored scope is the ask's: company-default is the ask with no Space
+    # (the UI registers it for "Company (default ACL)"), read as that ask reads.
+    asking = None if sid == _COMPANY else space_id
+    refused = space_sql_reason(
+        sql_text,
+        space_id=asking,
+        warehouse=db,
+        grantable=grantable,
+        readable=_default_readable(grantable, asking),
+        dialect=dialect,
+    )
+    if refused:
+        raise ValueError(refused)
     qn = normalize_verified_question(q)
     syn = _synonyms_norm(synonyms)
     carried = canonical_pack_hash(pack_hash)
@@ -328,6 +349,70 @@ def register_verified_query(
         "synonyms": syn,
         "created_at": created.isoformat(),
     }
+
+
+def space_sql_reason(
+    sql_text: str,
+    *,
+    space_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+    readable: set[str] | None = None,
+    dialect: str | None = None,
+) -> str | None:
+    """The ask doors' verdict on a verified query: grants, rule 16, total guard.
+
+    ``readable`` is what the asking turn reads (its ticked tables, else the
+    default readable set): a table outside it refuses with the grant reason,
+    as the ask does, never a 503 at submit. The ontology is resolved as the ask
+    resolves it: under ``DMS_ONTO_FROM_DATA`` the one shared ``ask_ontology``
+    (never the approved profile); otherwise the Space's stored ontology, or a
+    file Space's approved profile. A demo Space meets the demo pack's
+    ontology; any other Space with none has zero verified links. Then the
+    total guard. None only when all pass. A check that cannot finish refuses.
+    """
+    from dms_executor.demo_grants import is_demo_space
+    from dms_executor.generative_ask import join_check_unavailable, no_ontology_join_reason
+    from dms_executor.ontology import onto_from_data_enabled
+    from dms_executor.space_ontology import check_sql_against_space, load_space_ontology
+
+    if readable is not None:
+        gap = serve_gap(sql_text, grantable=set(readable), dialect=dialect)
+        if gap:
+            return f"validate:{gap}"
+    lake = warehouse or warehouse_path()
+    allowed = set(grantable or ())
+    try:
+        onto = None
+        if not is_demo_space(space_id):
+            if onto_from_data_enabled():
+                from dms_executor.onto_scope import ask_ontology
+
+                onto = ask_ontology(space_id)
+            else:
+                onto = load_space_ontology(space_id)
+                if onto is None:
+                    from dms_executor.onto_profile import approved_profile_ontology
+
+                    onto = approved_profile_ontology(space_id)
+        if onto is not None:
+            why = check_sql_against_space(sql_text, onto, lake, sorted(allowed))
+        else:
+            why = no_ontology_join_reason(
+                sql_text, space_id=space_id, warehouse=lake, grantable=allowed, contract=True
+            )
+    except Exception as exc:  # noqa: BLE001 - a check that cannot finish proves no join
+        why = join_check_unavailable(exc)
+    if why:
+        return why
+    return repeated_input_reason(sql_text, dialect or SERVING_DIALECT)
+
+
+def _default_readable(grantable: set[str] | None, space_id: str | None) -> set[str]:
+    """What an ask in ``space_id`` reads with nothing ticked (the ask's own rule)."""
+    from dms_executor import default_readable_tables
+
+    return set(default_readable_tables(sorted(grantable or ()), space_id=space_id))
 
 
 def list_verified_queries(*, space_id: str, path: Path | None = None) -> list[dict[str, Any]]:
@@ -835,6 +920,24 @@ def maybe_verified_ask(
     )
     if hit is None:
         return None
+    # #527 class (parent ruling 1): a registered statement is not a proof. Rule
+    # 16 and the total guard run again at every replay, so a query registered
+    # before this check (or whose link verify() now rejects) never serves L0.
+    # A caller that passes no grants gets the Space's own, as register reads
+    # them: an empty set would let the demo join check stand aside.
+    held = set(grantable) if grantable is not None else _grantable(space_id, warehouse)
+    refused = space_sql_reason(
+        hit["sql"],
+        space_id=space_id,
+        warehouse=warehouse,
+        grantable=held,
+        readable=set(tables) if tables else _default_readable(held, space_id),
+        dialect=dialect,
+    )
+    if refused:
+        from dms_executor.generative_ask import path_miss_envelope
+
+        return path_miss_envelope(question, refused, space_id=space_id, session_id=session_id)
     if submit is None or ledger_append is None:
         return None
     result = submit(hit["sql"])

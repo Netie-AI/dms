@@ -20,6 +20,9 @@ here classifies the question text.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +47,26 @@ class DefVerdict:
     provenance: dict[str, Any]
 
 
+# CONNECT-ASK-04: the reconfirm a Yes answered, as (sql, code, definition).
+_ANSWERED: ContextVar[tuple[str, str, str] | None] = ContextVar(
+    "dms_def_validate_answered", default=None
+)
+
+
+@contextmanager
+def answered_reconfirm(*, sql: str, code: str, definition: str) -> Iterator[None]:
+    """While open, the reconfirm the user said Yes to is not asked again.
+
+    Only that one: the same statement, raising the same code over the same
+    definition. Any other verdict, every abstain included, stands.
+    """
+    token = _ANSWERED.set((sql.strip(), code.strip(), definition.strip()))
+    try:
+        yield
+    finally:
+        _ANSWERED.reset(token)
+
+
 def validate_generated_sql(
     sql: str,
     *,
@@ -53,9 +76,55 @@ def validate_generated_sql(
     session_id: str | None,
 ) -> DefVerdict | None:
     """None when the flag is off. The caller executes only on ``pass``."""
+    verdict = _verdict(
+        sql, grantable=grantable, question=question, space_id=space_id, session_id=session_id
+    )
+    answered = _ANSWERED.get()
+    if verdict is None or answered is None or verdict.outcome != "reconfirm":
+        return verdict
+    block = (verdict.envelope or {}).get("reconfirm")
+    if not isinstance(block, dict):
+        return verdict
+    raised = (
+        sql.strip(),
+        str(block.get("code") or "").strip(),
+        str(block.get("definition") or "").strip(),
+    )
+    if raised != answered:
+        return verdict
+    return DefVerdict("pass", "", None, verdict.provenance)
+
+
+def _verdict(
+    sql: str,
+    *,
+    grantable: set[str],
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+) -> DefVerdict | None:
     if not def_validate_enabled():
         return None
-    onto = Ontology.from_store()
+    from dms_executor.onto_scope import space_item_ontology
+
+    # ONTO-SCOPE-01: the asking Space's items, plus every pii item. A store
+    # that cannot be read is a named ABSTAIN: passing the SQL unchecked would
+    # drop every pii protection the store holds.
+    try:
+        onto = space_item_ontology(space_id)
+    except Exception:  # noqa: BLE001
+        return _stop(
+            "abstain",
+            "ontology_store_unavailable",
+            _abstain_env(
+                "ontology_store_unavailable",
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                provenance=_provenance([]),
+            ),
+            _provenance([]),
+        )
     meta = _meta(onto)
     provenance = _provenance(meta)
     parsed = _parse(sql)

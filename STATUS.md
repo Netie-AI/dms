@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, DEF-VALIDATE-02
+**Last updated:** 2026-11-21, track T1 on `claude/integration-epic-178` (PR #532, do not merge)
 **Remote:** https://github.com/Netie-AI/dms
 **Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
@@ -43,17 +43,18 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
+| T1 track #532 (do not merge): #524, #528, #523, #518, #515 verified ACCEPT; #516 carried (e2e not run); P0 #527 incl. demo Spaces, self semi-join and VQ-03 ACCEPT; #531 proof allowlist (cost pinned by name). Founder: VQ-01 demo abstain, #523 clause 8 and outcome 3, #515 D3 | #532 |
+| Open by name: scalar arithmetic (`SUM(x)+SUM(x)`); `date_function` class (43 of 238 one-table statements reported, not re-measured here), routed | #532 |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
 | SAFE-01: one grant function, one parser | #454 |
 | WIRE-01a / b / c / d: contract 1.5.0, dms_payload, plan+SQL stamps, AI rung in grade52 | #449 / #452 / #455 / #453 |
 | WIRE-19: contract 1.9.0 client, `document` badge (was a 502), Cortex `reconfirm` Yes/No | this branch |
-| SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
-| DR-0006: writer family | #440 |
-| ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
-| AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
-| GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
-| GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |
+| SQL-VOTE: equal rows, one call cap, not PASS; ONTO-DERIVE-01 | #463; #316 |
+| P0 CONNECT-ASK-03 (#520): a non-demo Space with no ontology answers one-table SQL only; a second table abstains `unverified_join:no_ontology`. BIRD multi-table questions abstain by design until that Space has an ontology | this branch |
+| AI-LADDER-PLAN-01 / ASK-CLARIFY-01; DR-0006 writer family | #431 / #419; #440 |
+| GRANT-STRUCT-01 / -KEY-01 / -UNICODE-01; GOLD-LEAK-01; serving-lock deadline | #421 / #422 / #438; #435; #437 |
+| ONTO-PROFILE-01: file Space keys and links proposed, Space-scoped, never served. Draft, a second run must verify. | #514 |
 
 Not listed: 15 older open drafts (#424, #408, #398, #397, #391, #379, #378, #376, #375, #344, #343, #339, #336, #331, #329).
