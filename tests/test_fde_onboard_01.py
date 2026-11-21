@@ -793,15 +793,13 @@ def test_a_csv_without_a_header_row_does_not_send_its_first_row_as_names(
         transport=rig.model,
         stdout=buf,
     )
-    assert code == 0, buf.getvalue()
+    # (C) DuckDB's sniffer reads the typed first row as data: refused before any ingest.
+    assert code == 2, buf.getvalue()
+    assert json.loads(buf.getvalue())["reason"] == "csv_header_not_detected"
+    assert not (rig.out / "schema.json").exists()
     text = rig.pack_text()
     for value in first:
         assert value not in text, value
-    assert rig.stage(3)["counts"]["tables_with_data_headers"] == 1
-    # The fixture's real headers still leave as names: the rule is measured, not blanket.
-    schema = json.loads((rig.out / "schema.json").read_text())
-    names = {c["name"] for t in schema["tables"] for c in t["columns"]}
-    assert {"order_id", "sku", "unit_price", "region"} <= names
 
 
 def test_a_model_invented_group_id_never_reaches_the_pack(
@@ -1073,3 +1071,200 @@ def test_a_refused_later_batch_reports_what_earlier_batches_stored(
     stored = len(_onboard_items(summary["space_id"]))
     assert stored == 500
     assert summary["store"]["proposed"] == stored
+
+
+# --- verifier 4 (dms#541) ------------------------------------------------------------------
+
+
+def test_a_file_changed_after_stage_4_is_not_sent_even_with_the_manifest_untouched(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-file check, not only the manifest sha: profile.json is rewritten after the
+    stage 4 gate, send_manifest.json is left as confirmed."""
+    sha = rig.schema_sha()
+    real = cli.Onboard.stage5
+
+    def _tamper(self: Any) -> None:
+        path = self.out / "profile.json"
+        path.write_text(path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+        real(self)
+
+    monkeypatch.setattr(cli.Onboard, "stage5", _tamper)
+    code, summary = rig.run("--confirm-pack", sha)
+    assert (code, summary["reason"]) == (3, "pack_changed")
+    assert rig.model.bodies == []
+
+
+def test_the_pack_profile_carries_no_local_class_sets(rig: Rig) -> None:
+    code, _ = rig.run("--stop-after", "4")
+    assert code == 0
+    text = (rig.out / "profile.json").read_text(encoding="utf-8")
+    assert '"_classes"' not in text
+
+
+@pytest.mark.parametrize("word", ["store", "single", "schema", "status", "memory", "searched"])
+def test_a_common_word_in_the_data_does_not_refuse_the_pack(
+    rig: Rig, tmp_path: Path, word: str
+) -> None:
+    """Verifier 4: a cell equal to a word the pack itself uses (a prose hint, a key) refused
+    every run. Tool words are codes or exact atoms now."""
+    import shutil
+
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("orders.csv", "customers.csv", "products.csv"):
+        shutil.copy(FIXTURE / name, src / name)
+    rows = [f"C{i:03d},{word if i == 1 else 'web'}" for i in range(1, 21)]
+    (src / "channels.csv").write_text("customer_id,channel\n" + "\n".join(rows) + "\n", "utf-8")
+    buf = io.StringIO()
+    code = cli.main(
+        [
+            "--source",
+            str(src),
+            "--space",
+            rig.space_id(f"Vocab {word}"),
+            "--out",
+            str(rig.out),
+            "--stop-after",
+            "4",
+        ],
+        http=rig.client,
+        transport=rig.model,
+        stdout=buf,
+    )
+    assert code == 0, buf.getvalue()
+
+
+# --- parent ruling (C)(D)(B)(A) on headerless files (dms#541) ------------------------------
+
+_V4_DESIGNS = {
+    "name_phone": (
+        ["Siti", "+60 12-345 6789"],
+        [[n, f"01{i % 9}-34567{i:02d}"] for i, n in enumerate(_NAMES * 4)],
+    ),
+    "note": (
+        [
+            "E77",
+            "Ali",
+            "Customer complained twice about late delivery Shah Alam",
+            "Selangor",
+            "Klang",
+        ],
+        [
+            [f"E{80 + i}", n, f"note {i} about delivery", "Johor", "Muar"]
+            for i, n in enumerate(_NAMES * 4)
+        ],
+    ),
+    "lower": (
+        [
+            "kedai runcit pak ali",
+            "Puchong",
+            "+60 3-8070 1234",
+            "Shah",
+            "Bandar Baru Bangi",
+            "Hulu Langat",
+            "nota pertama",
+            "aktif",
+        ],
+        [
+            [
+                f"kedai {i}",
+                "Kajang",
+                f"03-8{i:03d} 1234",
+                "Abu",
+                "Seri Kembangan",
+                "Petaling",
+                f"nota {i}",
+                "aktif",
+            ]
+            for i in range(24)
+        ],
+    ),
+}
+
+
+def _run_design(
+    rig: Rig, tmp_path: Path, case: str, *extra: str
+) -> tuple[int, dict[str, Any], str, list[str]]:
+    import csv as _csv
+    import shutil
+
+    first, rows = _V4_DESIGNS[case]
+    src = tmp_path / f"src_{case}_{len(extra)}"
+    src.mkdir()
+    for name in ("orders.csv", "customers.csv", "products.csv"):
+        shutil.copy(FIXTURE / name, src / name)
+    with (src / "staff.csv").open("w", newline="", encoding="utf-8") as fh:
+        w = _csv.writer(fh)
+        w.writerow(first)
+        w.writerows(rows)
+    out = rig.out.parent / f"pack_{case}_{len(extra)}"
+    buf, err = io.StringIO(), io.StringIO()
+    code = cli.main(
+        [
+            "--source",
+            str(src),
+            "--space",
+            rig.space_id(f"V4 {case} {len(extra)}"),
+            "--out",
+            str(out),
+            "--stop-after",
+            "4",
+            *extra,
+        ],
+        http=rig.client,
+        transport=rig.model,
+        stdout=buf,
+        stderr=err,
+    )
+    text = "\n".join(p.read_text("utf-8") for p in sorted(out.rglob("*")) if p.is_file())
+    return code, json.loads(buf.getvalue()), err.getvalue(), [text, *first]
+
+
+@pytest.mark.parametrize("case", sorted(_V4_DESIGNS))
+def test_a_headerless_first_row_is_refused_masked_or_shown_before_confirming(
+    rig: Rig, tmp_path: Path, case: str
+) -> None:
+    """(C) refuse, (D) masked by the PII masker on names, or (B) shown to the person who
+    confirms: never sent silently."""
+    code, summary, shown, (text, *first) = _run_design(rig, tmp_path, case)
+    if code == 2:
+        assert summary["reason"] == "csv_header_not_detected"
+        return
+    assert code == 0, summary
+    for value in first:
+        if len(value) >= 4 and value in text:
+            assert value in shown, (case, value)
+    assert "Names stage 5 would send" in shown
+
+
+@pytest.mark.parametrize("case", sorted(_V4_DESIGNS))
+def test_opaque_names_sends_no_name_at_all(rig: Rig, tmp_path: Path, case: str) -> None:
+    code, summary, _shown, (text, *first) = _run_design(rig, tmp_path, case, "--opaque-names")
+    if code == 2:
+        return
+    assert code == 0, summary
+    for value in first:
+        if len(value) >= 4:
+            assert value not in text, (case, value)
+    schema = json.loads(
+        (rig.out.parent / f"pack_{case}_1" / "schema.json").read_text(encoding="utf-8")
+    )
+    names = {c["name"] for t in schema["tables"] for c in t["columns"]}
+    assert all(n.startswith("fde_name_") for n in names), names
+
+
+def test_a_phone_used_as_a_header_is_masked_by_the_pii_masker(rig: Rig, tmp_path: Path) -> None:
+    code, summary, _shown, (text, *first) = _run_design(rig, tmp_path, "lower")
+    assert code in (0, 2), summary
+    assert "+60 3-8070 1234" not in text
+
+
+def test_the_leak_gate_refuses_a_pii_name_written_raw(
+    rig: Rig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(D) folded into the gate: if masking a PII name failed, the pack is refused."""
+    monkeypatch.setattr(fde_pack.NameMask, "out", lambda self, name: name)
+    code, summary, _shown, (text, *_first) = _run_design(rig, tmp_path, "lower")
+    assert (code, summary["reason"]) == (4, "pack_leak")
+    assert "+60 3-8070 1234" not in text

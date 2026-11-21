@@ -248,7 +248,37 @@ def _reserved(name: str) -> bool:
 
 
 def _scanner_changes(name: str) -> bool:
-    return mask_payload(text=name)["text"] != name
+    """The PII masker run over a name as it runs over a cell: the text scan, and the value
+    classifier on the name as a value (a landline such as ``+60 3-8070 1234`` is found by
+    the second only). Fails closed."""
+    try:
+        return (
+            mask_payload(text=name)["text"] != name or classify_column("_name", [name]) is not None
+        )
+    except Exception:  # noqa: BLE001 - a name the masker cannot read is masked
+        return True
+
+
+def name_is_pii(name: str) -> bool:
+    """Public for the leak gate: a column or table name the PII masker flags."""
+    return _scanner_changes(name)
+
+
+def csv_header_detected(path: Path) -> bool | None:
+    """DuckDB's own CSV sniffer on the file as uploaded: does it read a header row?
+
+    Bronze reads every CSV with ``header := true``. When the sniffer says the first row is
+    data, the first row would leave as column names. None when the sniffer cannot read the
+    file (bronze ingest then reports it). A fresh in-memory connection: no lake is touched.
+    """
+    con = duckdb.connect()
+    try:
+        row = con.execute("SELECT HasHeader FROM sniff_csv(?)", [str(path)]).fetchone()
+    except duckdb.Error:
+        return None
+    finally:
+        con.close()
+    return None if row is None else bool(row[0])
 
 
 def _source_variants(source: str) -> list[str]:
@@ -514,8 +544,9 @@ def _shapes(con: duckdb.DuckDBPyConnection, rel: str, q: str) -> list[dict[str, 
 
 
 def _class_sets(con: duckdb.DuckDBPyConnection, rel: str, q: str) -> list[str]:
-    """Every distinct ``_classes_of`` of the column's values (at most 15). Local only:
-    ``build_pack`` drops every stats key that starts with ``_``."""
+    """Every distinct ``_classes_of`` of the column's values (at most 15 class strings,
+    read over at most ``SHAPE_DISTINCT_CAP`` distinct values). Local only: ``build_pack``
+    drops every stats key that starts with ``_``."""
     rows = con.execute(
         f"SELECT DISTINCT CAST({q} AS VARCHAR) FROM {rel} WHERE {q} IS NOT NULL "
         f"LIMIT {SHAPE_DISTINCT_CAP}"
@@ -1021,6 +1052,199 @@ TOOL_VOCAB = frozenset(
         "ambiguous_date_format", "low_cardinality", "single_shape", "exponent_notation",
         "scale_over_18", "precision_over_38", "not_plain_decimal", "no_values",
         "double_text", "text",
+        # the pack's own structure: every key, stage name, outcome and code this tool and
+        # the #514 profiler write (an exact atom only; inside another atom it still hits)
+        "01_ontology_draft.md",
+        "02_verified_questions.md",
+        "03_value_mappings.md",
+        "DOUBLE",
+        "abstained",
+        "agrees",
+        "asked",
+        "basis",
+        "bounds",
+        "bytes",
+        "calls",
+        "child",
+        "child_columns",
+        "child_distinct",
+        "child_has_key",
+        "child_has_no_key",
+        "child_is_own_key",
+        "child_null_rows",
+        "child_rows",
+        "child_table",
+        "column",
+        "column_types",
+        "columns",
+        "columns_checked",
+        "columns_not_measured",
+        "correct",
+        "counts",
+        "created_at",
+        "date",
+        "decimal",
+        "description",
+        "disagrees",
+        "distinct_count",
+        "distinct_values_checked",
+        "dropped",
+        "duplicate",
+        "empty_table",
+        "error",
+        "evidence",
+        "fde_onboard/1",
+        "fde_onboard/v1",
+        "fde_send/1",
+        "file_tables",
+        "files",
+        "files_seen",
+        "fixed_prompts",
+        "folds",
+        "format",
+        "formats",
+        "from_columns",
+        "from_object",
+        "group_id",
+        "held_from_earlier_runs",
+        "hint",
+        "hits",
+        "http_error",
+        "imported",
+        "index",
+        "ingest",
+        "ingested",
+        "invalid_envelope",
+        "item_store_in_memory",
+        "items",
+        "kept",
+        "keys",
+        "kind",
+        "landed_type",
+        "length",
+        "link",
+        "link_search",
+        "links",
+        "lossless",
+        "magnitude",
+        "manifest.json",
+        "mask",
+        "masked_pack",
+        "matched_parent_keys",
+        "max_columns",
+        "max_columns_per_table",
+        "max_exp",
+        "max_fanout",
+        "max_pairs",
+        "max_rows",
+        "measure.json",
+        "members",
+        "min_exp",
+        "min_length",
+        "model",
+        "model_calls",
+        "model_says_distinct",
+        "name",
+        "names_read_as_data",
+        "need_attention",
+        "negative",
+        "no_unique_column_or_pair",
+        "none_until_a_steward_approves",
+        "null_count",
+        "null_rate",
+        "object",
+        "observations",
+        "observed_scale",
+        "one_to_one",
+        "onto_profile/1",
+        "ontology_dropped",
+        "ontology_items",
+        "origin",
+        "orphan_keys",
+        "orphan_observation_min_match_ratio",
+        "orphan_rows",
+        "orphans",
+        "pair_keys_not_searched_as_parents",
+        "pair_search",
+        "pairs_below_orphan_threshold",
+        "pairs_child_all_null",
+        "pairs_measured",
+        "pairs_over_cap_not_measured",
+        "pairs_type_incompatible",
+        "parent",
+        "parent_columns",
+        "parent_distinct",
+        "parent_table",
+        "persisted",
+        "pii_kind",
+        "profile.json",
+        "profile_items",
+        "profile_persisted",
+        "profiler",
+        "prompt",
+        "prompts",
+        "proposals/column_types.json",
+        "proposals/ontology_draft.json",
+        "proposals/value_groups.json",
+        "proposals/value_mappings.json",
+        "proposals/verified_questions.json",
+        "proposed_sql_unreviewed",
+        "proposed_type",
+        "questions_dropped",
+        "questions_kept",
+        "reason",
+        "reference",
+        "referenced_by",
+        "relation",
+        "result",
+        "row_count",
+        "rows",
+        "run_id",
+        "samples",
+        "samples.masked.json",
+        "schema",
+        "schema.json",
+        "searched",
+        "send_manifest.json",
+        "sha256",
+        "shape",
+        "shapes",
+        "short_integer_max_digits",
+        "single_columns",
+        "skipped",
+        "space",
+        "space_id",
+        "space_persisted",
+        "sql_source",
+        "status",
+        "store",
+        "table",
+        "tables",
+        "tables_with_data_headers",
+        "target_mask",
+        "to_columns",
+        "to_object",
+        "tool",
+        "truncated",
+        "truncated_tables",
+        "truth",
+        "type",
+        "type_and_clean_proposals",
+        "unexpected_files",
+        "unkeyed_reason",
+        "unkeyed_tables",
+        "unknown_column",
+        "unknown_group",
+        "unknown_table",
+        "unknown_target",
+        "unlisted_numbers",
+        "unmeasured",
+        "user_message",
+        "value_mappings_dropped",
+        "variants",
+        "version",
+        "whole_digits",
+        "wrong",
         # exception class names a failed measurement reports
         "ConversionException", "BinderException", "ParserException", "CatalogException",
         "InvalidInputException", "OutOfRangeException", "ConstraintException",
@@ -1059,6 +1283,8 @@ def _atoms(
             yield from _atoms(v, key, generated, shas, vocab)
     elif isinstance(node, str):
         if key == "sha256" and (node in shas or node in generated):
+            return
+        if key in ("group_id", "target_mask", "mask") and re.fullmatch(r"g\d{3,}|V\d{2,}", node):
             return
         if key in _GENERATED_KEYS and node in generated:
             return
@@ -1121,10 +1347,16 @@ class LeakChecker:
         con = connect_serving(self._db)
         try:
             for label in self._tables:
+                bare = label.rpartition(".")[2]
+                if name_is_pii(bare) and len(normalise(bare)) >= MIN_LEAK_LEN:
+                    values.add(normalise(bare).strip())
                 for column, landed in _columns(con, label):
                     columns += 1
                     types.add(landed)
                     types.add(_base(landed))
+                    # A name the PII masker flags is data: it must not leave either.
+                    if name_is_pii(column) and len(normalise(column)) >= MIN_LEAK_LEN:
+                        values.add(normalise(column).strip())
                     q = quote_ident(column)
                     cur = con.execute(
                         f"SELECT DISTINCT CAST({q} AS VARCHAR) FROM {_relation(label)} "
@@ -1212,6 +1444,17 @@ class LeakChecker:
 # --- build ---------------------------------------------------------------------------------
 
 
+def _without_prose(node: Any) -> Any:
+    """The #514 bounds with their explanatory sentences left out (numbers and names kept).
+
+    Every word in the pack is checked against the data, so a sentence such as "only for a
+    table where no single column is a key" would refuse a lake holding the cell "single".
+    """
+    if isinstance(node, dict):
+        return {k: _without_prose(v) for k, v in node.items() if not isinstance(v, str)}
+    return node
+
+
 def _mask_node(node: Any, names: NameMask) -> Any:
     if isinstance(node, dict):
         return {names.text(str(k)): _mask_node(v, names) for k, v in node.items()}
@@ -1276,6 +1519,7 @@ def build_pack(
         ],
     }
     write_pack_file(out, "schema.json", schema)
+    profile = {**profile, "bounds": _without_prose(profile.get("bounds") or {})}
     write_pack_file(out, "profile.json", {**_mask_node(profile, names), "columns": masked_stats})
     write_pack_file(out, "samples.masked.json", masked_samples(space_id, names, path=path))
     write_pack_file(

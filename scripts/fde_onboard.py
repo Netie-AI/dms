@@ -256,10 +256,19 @@ class Onboard:
 
     def stage1(self) -> None:
         from dms_api.wiring import batch_ingest
+        from dms_executor.fde_pack import csv_header_detected
 
         files = _source_files(Path(self.args.source))
         if not files:
             raise _Refuse(EXIT_INPUT, "no_source_files")
+        # Bronze reads every CSV with a header. When DuckDB's own sniffer reads the first
+        # row as data, that row would leave as column names: refuse the run, name no file.
+        headerless = sum(
+            1 for p in files if p.suffix.lower() == ".csv" and csv_header_detected(p) is False
+        )
+        if headerless:
+            self._stage(1)["counts"] = {"files_seen": len(files), "csv_without_header": headerless}
+            raise _Refuse(EXIT_INPUT, "csv_header_not_detected")
         receipt = batch_ingest([(p.name, p.read_bytes()) for p in files], space_id=self.space_id)
         ingested = int(receipt.get("ingested") or 0)
         attention = int(receipt.get("need_attention") or 0)
@@ -313,10 +322,15 @@ class Onboard:
         # A table whose header row reads as data (a CSV with no header line) would send
         # its first row out as column names: every name of it is tokenised.
         data_headers = data_header_columns(self.stats)
+        force = {c for cols in data_headers.values() for c in cols}
+        if self.args.opaque_names:
+            # Opt-in: no table or column name leaves; the model sees fde_name_NN only.
+            force |= {c for cols in self.stats.values() for c in cols}
+            force |= {t.rpartition(".")[2] for t in self.stats}
         self.names = NameMask(
             [(t, list(cols)) for t, cols in self.stats.items()],
             sources=self.sources,
-            force={c for cols in data_headers.values() for c in cols},
+            force=force,
         )
         self.data_header_tables = len(data_header_tables(self.stats))
         self.data_header_names = sum(len(c) for c in data_headers.values())
@@ -787,12 +801,9 @@ class Onboard:
 
         persisted = isinstance(ontology_data_store(), PostgresOntologyDataStore)
         self.store_info["persisted"] = persisted
-        self.store_info["hint"] = (
-            None
-            if persisted
-            else "the item store is in memory (DMS_ONTO_PG is off): these proposals are "
-            "lost when this command exits"
-        )
+        # A code, not a sentence: every word in the pack is checked against the data, and
+        # a common cell value ("store", "memory") must not refuse the run.
+        self.store_info["hint"] = None if persisted else "item_store_in_memory"
 
 
 def _detail_code(r: Any) -> str:
@@ -844,6 +855,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="sha256 of the send_manifest.json a person read; stage 5 sends nothing without it",
     )
     ap.add_argument(
+        "--opaque-names",
+        action="store_true",
+        help="send no table or column name: every name becomes fde_name_NN",
+    )
+    ap.add_argument(
         "--import",
         dest="do_import",
         action="store_true",
@@ -858,6 +874,7 @@ def main(
     http: Any = None,
     transport: Callable[..., Any] | None = None,
     stdout: Any = None,
+    stderr: Any = None,
 ) -> int:
     """``http`` and ``transport`` are for tests: an in-process client and a recorded model."""
     args = parse_args(argv)
@@ -889,7 +906,23 @@ def main(
         ),
     }
     print(json.dumps(summary, sort_keys=True), file=stdout or sys.stdout)
+    if not args.confirm_pack and (run.out / "schema.json").is_file():
+        _show_names(run.out / "schema.json", stderr or sys.stderr)
     return code
+
+
+def _show_names(schema_path: Path, out: Any) -> None:
+    """Before confirming, a person sees exactly the names stage 5 would send.
+
+    A header row that is really data (an all-text CSV with no header line) cannot be told
+    from a header by measurement; this is where a person catches it, and --opaque-names
+    sends no name at all.
+    """
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    print("Names stage 5 would send (schema.json). Confirm with --confirm-pack:", file=out)
+    for table in schema.get("tables") or []:
+        cols = ", ".join(str(c.get("name")) for c in table.get("columns") or [])
+        print(f"  {table.get('table')}: {cols}", file=out)
 
 
 if __name__ == "__main__":
