@@ -87,7 +87,11 @@ for (const mode of MODES) {
     // Studio is Operate mode only (graphite): Ask mode has no such page.
     for (const path of mode === "graphite" ? ["/", "/library", "/spaces", "/studio"] : ["/", "/library", "/spaces"]) {
       await open(page, path, mode);
-      if (path === "/studio") await expect(page.getByTestId("sql-source-tables")).toBeAttached();
+      if (path === "/studio") {
+        // The SQL source field lives in a drawer that is closed on load (0x0): open it, or it is never measured.
+        await page.getByTestId("studio-sources-toggle").click();
+        await expect(page.getByTestId("sql-source-tables")).toBeVisible();
+      }
       const found = await page.evaluate(() => {
         const out: string[] = [];
         for (const el of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input[placeholder], textarea[placeholder]")) {
@@ -131,6 +135,58 @@ for (const mode of MODES) {
     expect(body).toContain("demo warehouse");
     await ctx.close();
   });
+}
+
+for (const mode of MODES) {
+  for (const vp of SIZES_LANDSCAPE.slice(0, 2)) {
+    test(`F2 ${mode} ${vp.width}x${vp.height}: with the longer DEMO FALLBACK banner (two lines) Chat still keeps half the height and the banner is whole`, async ({ browser }) => {
+      const ctx = await browser.newContext({ viewport: vp, hasTouch: true, isMobile: true });
+      const page = await ctx.newPage();
+      // The only state that shows the two-line banner: live mode with the fallback switch on.
+      await page.route("**/api/health", async (route) => {
+        const res = await route.fetch();
+        const body = await res.json();
+        await route.fulfill({ response: res, json: { ...body, ask_mode: "live", demo_fallback: true } });
+      });
+      await open(page, "/", mode);
+      const banner = page.getByRole("status").filter({ hasText: "DEMO FALLBACK ENABLED" });
+      await expect(banner).toBeVisible();
+      expect(await banner.evaluate((e) => e.scrollHeight <= e.clientHeight + 1 && e.scrollWidth <= e.clientWidth + 1)).toBe(true);
+      const scroller = (await page.getByTestId("chat-scroll").boundingBox())!;
+      expect(scroller.height / vp.height).toBeGreaterThanOrEqual(0.5);
+      await ctx.close();
+    });
+
+    test(`F1 ${mode} ${vp.width}x${vp.height}: landscape Library is two columns, the tree 14rem wide, the table keeps room`, async ({ browser }) => {
+      const ctx = await browser.newContext({ viewport: vp, hasTouch: true, isMobile: true });
+      const page = await ctx.newPage();
+      await open(page, "/library", mode);
+      const tree = page.getByTestId("library-tree");
+      const t = (await tree.boundingBox())!;
+      const d = (await page.getByTestId("library-detail").boundingBox())!;
+      expect(Math.abs(t.width - 224)).toBeLessThanOrEqual(2);
+      expect(d.width).toBeGreaterThanOrEqual(vp.width - 224 - 4 - 24);
+      expect(Math.abs(t.y - d.y)).toBeLessThanOrEqual(2); // side by side, not stacked
+      const edge = await tree.evaluate((e) => {
+        const c = getComputedStyle(e);
+        return { right: c.borderRightWidth, bottom: c.borderBottomWidth };
+      });
+      expect(edge).toEqual({ right: "1px", bottom: "0px" });
+      // The header (title and the Postgres notice) is one compact line; the filter box is tight.
+      const head = (await page.locator("h1").evaluate((h) => h.parentElement!.getBoundingClientRect().height));
+      expect(head).toBeLessThanOrEqual(60);
+      // The Postgres notice (shown when the API has no DATABASE_URL, as on the demo stack) shares the title's
+      // row, fills it to the right margin and stays short.
+      const notice = page.getByText("Postgres sources need").first();
+      await expect(notice).toBeVisible();
+      const n = (await notice.boundingBox())!;
+      expect(n.x + n.width).toBeGreaterThanOrEqual(vp.width - 16 - 2);
+      expect(n.height).toBeLessThanOrEqual(46); // two lines at 667px with py-1 measure 43; py-2 would be 51
+      const filter = await tree.locator("input[type=search]").evaluate((i) => i.parentElement!.getBoundingClientRect().height);
+      expect(filter).toBeLessThanOrEqual(54);
+      await ctx.close();
+    });
+  }
 }
 
 test("F5 lg: desktop still shows the session id", async ({ page }) => {
