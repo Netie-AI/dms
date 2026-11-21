@@ -226,9 +226,9 @@ def test_committed_allowlist_holds_names_only() -> None:
 def _write(tmp_path: Path, **change: Any) -> Path:
     data: dict[str, Any] = {
         "measure": "bird_allowlist_v1",
-        "scan": {"file": "pii_counts.csv", "sha256": SHA, "zero_hit_tables": 2},
+        "scan": {"file": "pii_counts.csv", "sha256": SHA, "zero_hit_tables": 31},
         "tables": ["bronze.public_gender", "bronze.public_superhero"],
-        "held": ["bronze.public_trans"],
+        "held": ["bronze.public_trans", "bronze.public_yearmonth"],
         "excluded_columns": ["bronze.public_superhero.full_name"],
     }
     for key, value in change.items():
@@ -532,6 +532,7 @@ def test_table_reason_wins_and_the_column_is_still_counted() -> None:
         "n": 3,
         "n_without_excluded": 2 - 1,
         "excluded": 2,
+        "gold_error": 0,
         "excluded_by_table": {"client": 1},
         "excluded_by_column": {"superhero.full_name": 2},
     }
@@ -568,7 +569,6 @@ def test_preflight_blocks_a_flagged_or_unreadable_name(name: str) -> None:
 @pytest.mark.parametrize(
     "names",
     [
-        [],
         ["bronze.public_gender"],
         [
             "bronze.public_superhero",
@@ -784,6 +784,7 @@ def test_minidev_labels_each_question_once_and_never_asks_an_excluded_one(tmp_pa
         "n": 5,
         "n_without_excluded": 1,
         "excluded": 4,
+        "gold_error": 0,
         "excluded_by_table": {"(unparsed)": 1, "client": 1, "users": 1},
         "excluded_by_column": {"widgets.price": 2},
     }
@@ -866,3 +867,68 @@ def test_self_check_fails_when_an_allowlist_plant_fails(
     monkeypatch.setattr(score_bird, "allowlist_self_check", lambda: ["planted allowlist failure"])
     assert score_bird.self_check() == score_bird.EXIT_FAIL
     assert "planted allowlist failure" in capsys.readouterr().out
+
+
+# --- second adversary round (Opus, on c941801): the four holes it confirmed --------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bronze.public_users_1a2b3c4d",  # DMS's own collision rename (bronze._claim_table_name)
+        "bronze.schools2",
+        "bronze.users__1_",
+        "bronze.post_history",
+        "BRONZE.PUBLIC_POSTHISTORY_0F0F0F0F",
+    ],
+)
+def test_preflight_blocks_a_flagged_table_under_a_copy_name(name: str) -> None:
+    got = _mod().grant_preflight("ok", ["bronze.public_gender", name], _allow(ALLOWED))
+    assert got is not None and "flagged" in got and name in got, got
+
+
+@pytest.mark.parametrize("names", [[], ["", None], ["  "]])
+def test_preflight_blocks_a_space_that_lists_no_table(names: list[Any]) -> None:
+    got = _mod().grant_preflight("ok", names, _allow(ALLOWED))
+    assert got is not None and "no table" in got, got
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"sha256": "ab" * 32},  # well-formed, but not the scan
+        {"held": ["bronze.public_trans"]},  # yearmonth dropped
+        {"held": []},
+        {"zero_hit_tables": 60},
+        {"file": "other_counts.csv"},
+    ],
+)
+def test_loader_refuses_a_file_that_does_not_name_the_pinned_scan(
+    tmp_path: Path, change: dict[str, Any]
+) -> None:
+    with pytest.raises(_mod().AllowlistError):
+        _mod().load_table_allowlist(_write(tmp_path, **change))
+
+
+def test_loader_refuses_a_held_table_listed_after_held_is_emptied(tmp_path: Path) -> None:
+    path = _write(tmp_path, held=[], tables=["bronze.public_trans", "bronze.public_yearmonth"])
+    with pytest.raises(_mod().AllowlistError):
+        _mod().load_table_allowlist(path)
+
+
+def test_counts_drop_gold_errors_and_count_every_unlisted_table() -> None:
+    mod = _mod()
+    both = mod.classify(
+        "SELECT COUNT(*) FROM users u JOIN posts p ON p.owner = u.id", _allow(ALLOWED),
+        dialect="duckdb",
+    )
+    assert both is not None and set(both.tables) == {"users", "posts"}, both
+    rows = [
+        {"exclusion": both.reason, "excluded_tables": list(both.tables), "verdict": "ABSTAIN"},
+        {"verdict": "GOLD_ERROR"},
+        {"verdict": "OK"},
+    ]
+    counts = mod.exclusion_counts(rows)
+    assert counts["n"] == 3 and counts["excluded"] == 1 and counts["gold_error"] == 1
+    assert counts["n_without_excluded"] == 1
+    assert counts["excluded_by_table"] == {"posts": 1, "users": 1}

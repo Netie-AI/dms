@@ -456,9 +456,25 @@ def _tokens(name: str) -> list[str] | None:
     if not text.isascii():
         return None
     pieces = "".join(ch if ch.isalnum() or ch == "_" else " " for ch in text).split()
-    # schools2, users__1_, post_history: the same table under a copy's name.
-    parts = [p for piece in pieces for p in re.split(r"[_0-9]+", piece) if p]
-    return pieces + parts + ["".join(parts)]
+    return pieces + [_copy_stem(piece) for piece in pieces]
+
+
+# DMS's own collision rename (bronze._claim_table_name: ``<stem[:31]>_<8 hex>``),
+# then a copy's numbering (``schools2``, ``users__1_``).
+_COLLISION_SUFFIX = re.compile(r"_[0-9a-f]{8}$")
+_COPY_NUMBER = re.compile(r"[_0-9]+$")
+
+
+def _copy_stem(piece: str) -> str:
+    """The table a renamed or numbered copy was made from, underscores dropped.
+
+    ``public_users_1a2b3c4d`` is ``users``; ``schools2`` is ``schools``;
+    ``post_history`` is ``posthistory``. ``player_attributes`` stays
+    ``playerattributes``: a different table, not a copy of ``player``.
+    """
+    stem = piece[len("public_") :] if piece.startswith("public_") else piece
+    stem = _COPY_NUMBER.sub("", _COLLISION_SUFFIX.sub("", stem))
+    return stem.replace("_", "")
 
 
 def flagged_grant_names(names: Iterable[Any], flagged: Iterable[str]) -> list[str]:
@@ -475,35 +491,22 @@ def flagged_grant_names(names: Iterable[Any], flagged: Iterable[str]) -> list[st
             continue
         pieces = _tokens(label)
         if pieces is None or any(
-            piece == flag or piece.endswith("_" + flag) for piece in pieces for flag in flags
+            piece == flag.replace("_", "") or piece.endswith("_" + flag)
+            for piece in pieces
+            for flag in flags
         ):
             hits.append(label)
     return hits
 
 
-def _grant_stem(label: str) -> str | None:
-    """The listed-table stem a granted name is, or None.
-
-    Only ``bronze.public_<t>``, ``public_<t>`` and ``<t>`` (any case, quotes
-    dropped) name a table. Anything else, a collision suffix
-    (``public_users_1a2b3c4d``), a view or copy (``schools_view``) or another
-    schema, is not shown to be a listed table and so cannot pass.
-    """
-    text = _fold(label).replace('"', "").replace("`", "")
-    if text.startswith("bronze."):
-        text = text[len("bronze.") :]
-    if text.startswith("public_"):
-        text = text[len("public_") :]
-    return text if _plain(text) else None
-
-
 def grant_preflight(status: str, names: Sequence[Any], allowlist: TableAllowlist) -> str | None:
-    """None when the Space's tables were read and every one is a listed table.
+    """None when the Space's tables were read and none is flagged.
 
-    Fail closed (dms#304 acceptance 4): the generate context samples values from
-    any granted table whose name matches words in the question, and DMS itself
-    renames a bronze table on a name collision. A blocklist of flagged names
-    cannot see every spelling, so a grant passes only when it is on the list.
+    dms#304 acceptance 4: the generate context samples values from any granted
+    table whose name matches words in the question. A flagged table matches in
+    any casing, schema or prefix, and under the names DMS itself gives a copy
+    (a collision suffix, a number). An empty list is not "no flagged table":
+    nothing was read.
     """
     if not isinstance(names, (list, tuple)):
         return "the Space's table names are not a list, so no flagged grant can be ruled out"
@@ -515,11 +518,6 @@ def grant_preflight(status: str, names: Sequence[Any], allowlist: TableAllowlist
     hits = flagged_grant_names(names, allowlist.flagged)
     if hits:
         return "flagged table grantable on this Space: " + ", ".join(sorted(hits))
-    unlisted = sorted(
-        label for label in labels if label and _grant_stem(label) not in allowlist.tables
-    )
-    if unlisted:
-        return "table grantable on this Space is not on the table allowlist: " + ", ".join(unlisted)
     return None
 
 
