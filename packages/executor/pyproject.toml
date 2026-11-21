@@ -25,3 +25,7 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dms_executor*"]
+
+# FDE-ONBOARD-01: the fixed prompt files ship with the package (sha256 pinned in fde_ai).
+[tool.setuptools.package-data]
+dms_executor = ["prompts/fde_onboard/*/*.md"]
