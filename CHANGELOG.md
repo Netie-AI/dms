@@ -2,6 +2,23 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-21 - ENV-EXAMPLE-SENTINEL (#388): a placeholder left in a secret refuses boot, by name
+
+- **Sentinel.** Root `.env.example` ships `CHANGE_ME` in `DATABASE_URL` instead of `change-me`. `get_settings()` raises `placeholder_secret: <VARIABLE>` for any of `DATABASE_URL`, `CORTEX_API_KEY`, `OPENVAULT_API_KEY`, `DMS_OV_SERVICE_TOKEN` that holds it (any case, `- _ .` or space between the words, percent-encoded or not, alone or inside a URL). The message names the variable, never the value. `app = create_app()` runs at import, so `import dms_api.app` and the container entrypoint (which imports `dms_api` before migrating) both exit non-zero before any connection. No new config key.
+- **Proof, CI as the runner (no `cortex_contract` in the authoring session).** Tests alone: 24 failed, all in `tests/test_env_example_sentinel_388.py`, 4059 passed ([run 44858685949](https://github.com/Netie-AI/dms/actions/runs/44858685949), `8a1f446`). With the fix: green ([run 44860979364](https://github.com/Netie-AI/dms/actions/runs/44860979364), `215c8e5`). Guard disabled in `get_settings` (`a5f5d5a`): 9 failed, all in that file ([run 44862792154](https://github.com/Netie-AI/dms/actions/runs/44862792154)); reverted by a new commit.
+- **Verifier (Opus, did not write it): PASS-WITH-FINDINGS, no HIGH.** Left as LOW: fullwidth, zero-width and Cyrillic spellings of the sentinel are not caught (nothing ships them); `OPENVAULT_API_KEY` and `DMS_OV_SERVICE_TOKEN` are guarded in the process environment only, which is where the packages read them, not in a `.env` file; the guard scans the whole `DATABASE_URL`, so a real password such as `ChangeMe123!` is refused (fail closed, named). Not PASS.
+
+## 2026-11-21 - TLS-HOST-VALIDATE (#387) fix 2: an all-numeric host must be a dotted IPv4 address
+
+- **Guard.** An Opus adversary found the guard took any RFC 1123 name, so `2130706433`, `999.999.999.999`, `1.2.3.4.5`, `0x7f.1` and `0.0.0.0` reached Caddy as site names while the docs say "dotted IPv4". A host whose last label is all digits now has to be four parts, 0-255, no leading zero, and not `0.0.0.0`; anything else exits 1 at the guard with a named reason. Run in the real `caddy:2-alpine` ash as well as sh, dash and bash.
+- **Known and accepted (LOW).** With `default_sni`, a client that sends no SNI (a scanner on the bare IP) now gets the configured host's certificate, so the host name is visible; before, the handshake failed. A wrong SNI is still refused. An upper-case host is lowercased in the site address but kept as typed in `default_sni`; handshakes with no SNI and with an upper-case SNI both worked live.
+
+## 2026-11-21 - TLS-HOST-VALIDATE (#387): DMS_TLS_HOST is checked before Caddy reads it
+
+- **Guard.** The `ui` entry command admits only RFC 1123 labels (letters, digits, hyphens, dots; 253 total, 63 per label), which includes a dotted IPv4 address, and exits 1 before Caddy starts with one fixed line naming `DMS_TLS_HOST` and the reason, never the value. No port, no IPv6, no raw IDN (use `xn--`). On main a value with a newline and braces added a second site and a `respond` directive to the rendered config.
+- **IPv4 served.** The guard admits an IPv4 host, but a client sends no SNI for an IP address and the handshake failed (`tlsv1 alert internal error`) on main and on the carried branch. The Caddyfile global block now has `default_sni {$DMS_TLS_HOST:localhost}`. Same variable, same guard, no new key.
+- **Proof.** `tests/test_tls_host_validate_387.py`; live in the real `caddy:2-alpine` with the shipped Caddyfile and `ui` command: DNS name, `localhost`, `127.0.0.1` and `10.1.2.3` answer 200 over a certificate that verifies; a second-site payload is refused at the guard. `scripts/compose_tls_smoke.sh` sections F1, F2 and three refusals; the full smoke needs the private `cortex_contract` wheel and was not run here. Not PASS.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
