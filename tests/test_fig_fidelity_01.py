@@ -1112,3 +1112,37 @@ def test_verifier_round5_a_loose_list_is_served(
     )
     assert_envelope_valid(env)
     assert env["abstained"] is False, (env["text"], env["assumptions"])
+
+
+# --- verifier round 6 (Opus, on b8d9890) ------------------------------------------
+
+
+def test_verifier_round6_a_number_beside_a_masked_cell_is_withheld_without_found(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [{"name": "Ali", "acct": "DMSMASK_account_01"}, {"name": "Abu", "acct": "7"}]
+    env = _ask_prose(warehouse, minter, monkeypatch, "  - name=Ali, acct=12345", rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+
+
+@pytest.mark.parametrize(
+    ("answer", "rows"),
+    [
+        ("1. The top is country=MY with orders=7.", _MY_SG),
+        ("1. Note that orders=7 is from country=MY.", _MY_SG),
+        (_LISTING + "\n1. Note that country=SG, orders=8 is the max.", _MY_SG),
+        ("country=**MY**, orders=7", [{"country": "MY", "orders": 7}]),
+        ("country='MY', orders=7", [{"country": "MY", "orders": 7}]),
+    ],
+)
+def test_verifier_round6_commentary_and_wrapped_labels_are_served(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])

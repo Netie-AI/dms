@@ -889,6 +889,7 @@ _LISTED_NUMBER = re.compile(
 )
 _FOUND_ROWS = re.compile(r"\bFound (\d+) row\(s\)")
 _LISTED_LINE = re.compile(r"^\s*(?:[-*\u00b7\u2022]|\d+[.)]) \S")
+_LIST_MARKER = re.compile(r"^\s*(?:[-*\u00b7\u2022]|\d+[.)]) +")
 _SHOWING = re.compile(r"\bShowing (\d+) of (\d+)\b")
 
 
@@ -927,9 +928,15 @@ def _listed_records(
             elif not bullet and line.strip():
                 # Only a line of text ends the listing; a blank line does not.
                 in_block = False
-        listing = bullet and in_block
         record: list[tuple[str, str, str]] = []
         hits = list(key.finditer(line))
+        # A row line is the marker then its k=v pairs. "1. Note that orders=7
+        # ..." has text before its first key: commentary, read as prose.
+        marker = _LIST_MARKER.match(line)
+        listing = (
+            bullet and in_block and bool(hits) and marker is not None
+            and hits[0].start() == marker.end()
+        )
         for i, hit in enumerate(hits):
             last = i + 1 == len(hits)
             raw = line[hit.end() : len(line) if last else hits[i + 1].start()]
@@ -958,6 +965,10 @@ def _prose_label(col: str, shown: str, rows: list[dict[str, Any]]) -> str | None
     labels = {str(r.get(col)) for r in rows if col in r}
     if shown in labels:
         return shown
+    # 'MY', "MY", `MY`, **MY**: a wrapped label is the label.
+    bare = shown.strip("'\"`*")
+    if bare != shown and bare in labels:
+        return bare
     folded = [label for label in labels if label.casefold() == shown.casefold()]
     if len(folded) == 1:
         return folded[0]
@@ -1041,7 +1052,8 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
         figures = [(col, shown) for col, shown, _ in record if col in numeric]
         # A line of a Found listing states a whole row, so it is checked even
         # with no numeric cell. A label-only bullet elsewhere is commentary.
-        if not figures and not (listing and has_found):
+        shows_number = any(_LISTED_NUMBER.fullmatch(shown) for _, shown, _ in record)
+        if not figures and not (listing and (has_found or shows_number)):
             continue
         # On a listing line the label is the row's own text, exactly. In prose
         # a label may be reworded, so it narrows the rows only when it names one.
