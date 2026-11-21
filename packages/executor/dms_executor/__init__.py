@@ -1916,6 +1916,13 @@ class Executor:
         repeat_why = repeated_input_reason(sql, self.dialect or SERVING_DIALECT)
         if repeat_why:
             return abstain(repeat_why)
+        # JOIN-HOLE-01: the demo Space's joins meet the demo pack's declared
+        # ontology, as on the ask doors.
+        join_why = no_ontology_join_reason(
+            sql, space_id=space_id, warehouse=self._warehouse, grantable=grantable
+        )
+        if join_why:
+            return abstain(join_why)
         warehouse = self._warehouse
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")

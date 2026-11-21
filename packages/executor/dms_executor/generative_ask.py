@@ -474,7 +474,19 @@ def no_ontology_join_reason(
     from dms_executor.demo_grants import is_demo_space
 
     if is_demo_space(space_id):
-        return None
+        # A demo Space is checked against the demo pack's own declared
+        # ontology, measured on the lake now (a two-table join served 39450
+        # for 7890 with no check at all). See ``demo_join_ontology``.
+        from dms_executor.space_ontology import check_sql_against_space, demo_join_ontology
+
+        try:
+            lake = Path(warehouse) if warehouse is not None else None
+            if lake is None or not lake.is_file():
+                return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            onto = demo_join_ontology(demo_ontology(lake))
+            return check_sql_against_space(sql, onto, lake, sorted(grantable))
+        except Exception:  # noqa: BLE001 - a check that cannot finish proves no join
+            return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
     empty = Ontology()
     try:
         cols = relation_columns(empty, warehouse, sorted(grantable))

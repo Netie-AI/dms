@@ -33,6 +33,7 @@ import json
 import re
 import threading
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
@@ -52,7 +53,7 @@ from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from dms_executor.demo_warehouse import SERVING_DIALECT, connect_file
-from dms_executor.ontology import Ontology, Violation, from_manifest
+from dms_executor.ontology import ObjectType, Ontology, Violation, from_manifest
 
 #: Provenance columns every bronze row carries; not attributes of the object.
 PROVENANCE_COLUMNS = frozenset({"_src", "_ingest_id"})
@@ -588,6 +589,64 @@ def _wire_id(name: str) -> str | None:
 def _table_ok(name: str) -> bool:
     parts = name.split(".")
     return 1 <= len(parts) <= 2 and all(_IDENT.fullmatch(p) for p in parts)
+
+
+def _row_preserving_table(relation: str) -> str | None:
+    """The base table ``relation`` reads one-to-one, or None.
+
+    A plain table name, or ``SELECT *[, expr ...] FROM t`` with nothing that
+    can drop or add a row (no WHERE, GROUP BY, HAVING, DISTINCT, JOIN, LIMIT,
+    QUALIFY, set operation). Anything else is a derived object: not a relation
+    rule 16 can name.
+    """
+    text = relation.strip()
+    if text.replace(".", "").replace("_", "").isalnum():
+        return text.lower()
+    try:
+        tree = sqlglot.parse_one(text.strip("()"), read=_DIALECT)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(tree, exp.Select) or not any(
+        isinstance(p, exp.Star) for p in tree.expressions
+    ):
+        return None
+    if any(
+        tree.args.get(k)
+        for k in ("where", "group", "having", "distinct", "joins", "limit", "qualify", "with")
+    ) or tree.find(exp.Subquery, *_SET_OPS, exp.UDTF):
+        return None
+    from_ = tree.args.get("from")
+    table = from_.this if from_ is not None else None
+    if not isinstance(table, exp.Table) or not isinstance(table.this, exp.Identifier):
+        return None
+    return table.name.lower()
+
+
+def demo_join_ontology(semantic: Ontology) -> Ontology:
+    """The demo pack's declared ontology, as relations rule 16 can check.
+
+    Demo-Space joins were never checked (a two-table join served 39450 for
+    7890). The demo ontology names semantic objects (``lot`` over
+    ``inventory``, a derived ``product`` and ``day``). Kept: each object that
+    reads one base table row for row, under that table's name, with its
+    declared key; each declared link between two kept objects, as declared.
+    Dropped, so refused: derived objects and every link that touches one.
+    Returned unverified: the caller measures it on the lake at every ask.
+    """
+    out = Ontology()
+    names: dict[str, str] = {}
+    for name, obj in semantic.objects.items():
+        table = _row_preserving_table(obj.relation)
+        if table is None or table in out.objects:
+            continue
+        names[name] = table
+        out.objects[table] = ObjectType(name=table, relation=table, key=tuple(obj.key))
+    for name, link in semantic.links.items():
+        a, b = names.get(link.from_object), names.get(link.to_object)
+        if a is None or b is None or a == b:
+            continue
+        out.links[name] = replace(link, from_object=a, to_object=b)
+    return out
 
 
 def usable_links(onto: Ontology, violations: Sequence[Violation]) -> dict[str, Any]:

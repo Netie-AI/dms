@@ -557,3 +557,81 @@ def test_parent_column_in_the_statements_order_by_still_answers(
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
     assert od._multiset(env["rows"]) == od._multiset(truth)
     assert _why(rig, sql) is None
+
+
+# --- demo Spaces meet the join rule (routed P0, #527 class) --------------------------
+
+import test_connect_ask_03 as ca  # noqa: E402
+
+DEMO_Q = "What is the total inventory quantity?"
+DEMO_TRUE = "SELECT SUM(quantity_kg) AS total FROM inventory"
+#: name -> sql. In a demo Space rule 16 never ran: each was served with a
+#: multiplied figure. Now checked against the demo pack's declared ontology.
+DEMO_JOIN_HOLES: dict[str, str] = {
+    "cross_product_with_locations": "SELECT SUM(i.quantity_kg) AS total FROM inventory i, locations l",
+    "join_on_an_undeclared_column": "SELECT SUM(i.quantity_kg) AS total FROM inventory i JOIN locations l ON i.sku = l.name",
+    "fan_trap_over_a_declared_link": "SELECT SUM(l.capacity_kg) AS total FROM inventory i JOIN locations l ON i.location_id = l.location_id",
+}
+
+
+def _demo(sql: str, door: str, space_id: str | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter, question: str = DEMO_Q) -> tuple[dict[str, Any], Any, Any]:  # noqa: F811
+    client, cortex, _app, lake = ca._app(tmp_path, monkeypatch, minter)
+    rig = ca._Rig(client, cortex, space_id, lake)
+    figure = ca._oracle(lake, sql)
+    if door == "contract":
+
+        def _contract(req: Any) -> AskResponse:
+            return AskResponse(
+                answer=f"The total is {figure[0]['total'] if figure else None}.",
+                abstained=False,
+                badge="generated",
+                route="generated",
+                sql_used=sql,
+                rows=figure,
+            )
+
+        monkeypatch.setattr(cortex, "ask", _contract)
+        return rig.ask(question, {}), figure, ca._oracle(lake, DEMO_TRUE)
+    return rig.ask(question, ca._gen(sql)), figure, ca._oracle(lake, DEMO_TRUE)
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+@pytest.mark.parametrize("name", sorted(DEMO_JOIN_HOLES))
+def test_a_demo_space_join_meets_the_demo_ontology(
+    name: str,
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    sql = DEMO_JOIN_HOLES[name]
+    env, figure, truth = _demo(sql, door, space_id, tmp_path, monkeypatch, minter)
+    assert figure and figure != truth, (figure, truth)  # the figure is not the table's
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    text = str(env.get("text") or "")
+    assert "unverified_join" in od._reasons(env) + " " + text, (env.get("assumptions"), text)
+    assert str(figure[0]["total"]) not in text, text
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+def test_a_demo_space_join_over_a_declared_link_still_answers(
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    sql = (
+        "SELECT l.name AS location, SUM(i.quantity_kg) AS total FROM inventory i "
+        "JOIN locations l ON i.location_id = l.location_id GROUP BY l.name ORDER BY l.name"
+    )
+    env, figure, _truth = _demo(
+        sql, door, space_id, tmp_path, monkeypatch, minter, "What is the inventory quantity at each location?"
+    )
+    assert figure, "the demo lake has inventory at locations"
+    assert env["badge"] != "ABSTAIN" and env["abstained"] is False, (env.get("text"), env.get("assumptions"))
+    assert od._multiset(env["rows"]) == od._multiset(figure)
