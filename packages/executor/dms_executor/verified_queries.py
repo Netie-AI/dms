@@ -301,8 +301,16 @@ def register_verified_query(
         raise ValueError(gap)
     # #527 class (parent ruling 1): a certified figure that is wrong breaks rule
     # 13 whoever wrote the SQL. The steward sees the named reason.
+    # The stored scope is the ask's: company-default is the ask with no Space
+    # (the UI registers it for "Company (default ACL)"), read as that ask reads.
+    asking = None if sid == _COMPANY else space_id
     refused = space_sql_reason(
-        sql_text, space_id=space_id, warehouse=db, grantable=grantable, dialect=dialect
+        sql_text,
+        space_id=asking,
+        warehouse=db,
+        grantable=grantable,
+        readable=_default_readable(grantable, asking),
+        dialect=dialect,
     )
     if refused:
         raise ValueError(refused)
@@ -349,29 +357,44 @@ def space_sql_reason(
     space_id: str | None,
     warehouse: Path | None,
     grantable: set[str] | None,
+    readable: set[str] | None = None,
     dialect: str | None = None,
 ) -> str | None:
-    """Rule 16 and TOTAL-GUARD-01 on a verified query, as the ask doors run them.
+    """The ask doors' verdict on a verified query: grants, rule 16, total guard.
 
-    The Space's own stored ontology (or a file Space's approved profile) is
-    measured on the lake now; a demo Space meets the demo pack's ontology; any
-    other Space with none has zero verified links. Then the total guard. None
-    only when both pass. A check that cannot finish refuses.
+    ``readable`` is what the asking turn reads (its ticked tables, else the
+    default readable set): a table outside it refuses with the grant reason,
+    as the ask does, never a 503 at submit. The ontology is resolved as the ask
+    resolves it: under ``DMS_ONTO_FROM_DATA`` the one shared ``ask_ontology``
+    (never the approved profile); otherwise the Space's stored ontology, or a
+    file Space's approved profile. A demo Space meets the demo pack's
+    ontology; any other Space with none has zero verified links. Then the
+    total guard. None only when all pass. A check that cannot finish refuses.
     """
     from dms_executor.demo_grants import is_demo_space
     from dms_executor.generative_ask import join_check_unavailable, no_ontology_join_reason
+    from dms_executor.ontology import onto_from_data_enabled
     from dms_executor.space_ontology import check_sql_against_space, load_space_ontology
 
+    if readable is not None:
+        gap = serve_gap(sql_text, grantable=set(readable), dialect=dialect)
+        if gap:
+            return f"validate:{gap}"
     lake = warehouse or warehouse_path()
     allowed = set(grantable or ())
     try:
         onto = None
         if not is_demo_space(space_id):
-            onto = load_space_ontology(space_id)
-            if onto is None:
-                from dms_executor.onto_profile import approved_profile_ontology
+            if onto_from_data_enabled():
+                from dms_executor.onto_scope import ask_ontology
 
-                onto = approved_profile_ontology(space_id)
+                onto = ask_ontology(space_id)
+            else:
+                onto = load_space_ontology(space_id)
+                if onto is None:
+                    from dms_executor.onto_profile import approved_profile_ontology
+
+                    onto = approved_profile_ontology(space_id)
         if onto is not None:
             why = check_sql_against_space(sql_text, onto, lake, sorted(allowed))
         else:
@@ -383,6 +406,13 @@ def space_sql_reason(
     if why:
         return why
     return repeated_input_reason(sql_text, dialect or SERVING_DIALECT)
+
+
+def _default_readable(grantable: set[str] | None, space_id: str | None) -> set[str]:
+    """What an ask in ``space_id`` reads with nothing ticked (the ask's own rule)."""
+    from dms_executor import default_readable_tables
+
+    return set(default_readable_tables(sorted(grantable or ()), space_id=space_id))
 
 
 def list_verified_queries(*, space_id: str, path: Path | None = None) -> list[dict[str, Any]]:
@@ -893,11 +923,15 @@ def maybe_verified_ask(
     # #527 class (parent ruling 1): a registered statement is not a proof. Rule
     # 16 and the total guard run again at every replay, so a query registered
     # before this check (or whose link verify() now rejects) never serves L0.
+    # A caller that passes no grants gets the Space's own, as register reads
+    # them: an empty set would let the demo join check stand aside.
+    held = set(grantable) if grantable is not None else _grantable(space_id, warehouse)
     refused = space_sql_reason(
         hit["sql"],
         space_id=space_id,
         warehouse=warehouse,
-        grantable=grantable,
+        grantable=held,
+        readable=set(tables) if tables else _default_readable(held, space_id),
         dialect=dialect,
     )
     if refused:

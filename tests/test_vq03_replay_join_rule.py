@@ -270,3 +270,105 @@ def test_an_ontology_space_verified_query_over_the_verified_link_still_serves_l0
     assert env["badge"] == "L0_CERTIFIED", (env["badge"], env.get("text"), od._reasons(env))
     assert env["rows"] == truth
     assert "3" in str(env["text"])
+
+
+# --- parent ruling on the VQ-03 verifier's routes: same verdict as the ask doors ---------
+
+
+def _register(
+    client: Any, space: str, question: str, sql: str, *, stored_before: bool = False
+) -> Any:
+    with pytest.MonkeyPatch.context() as before:
+        if stored_before:
+            before.setattr(
+                verified_queries, "space_sql_reason", lambda *_a, **_k: None, raising=False
+            )
+        return client.post(
+            "/v1/studio/verified-queries",
+            json={"space_id": space, "question": question, "sql": sql},
+        )
+
+
+def _ask_no_space(client: Any, question: str) -> dict[str, Any]:
+    r = client.post("/v1/chat/ask", json={"question": question, "session_id": "ses_vq03_cd"})
+    assert r.status_code == 200, r.text
+    env = r.json()
+    assert_envelope_valid(env)
+    return env
+
+
+def test_a_company_default_verified_join_over_a_declared_link_registers_and_serves_l0(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(a) The UI registers "Company (default ACL)" as ``company-default``: the ask
+    with no Space. That ask meets the demo pack's ontology and answers this join,
+    so register must accept it (refused ``unverified_join:no_ontology`` at 7ffbe45)."""
+    v._gate_allows(monkeypatch)
+    cortex = _lake_cortex(warehouse)
+    client = v._live_client(warehouse, minter, monkeypatch, cortex)
+    question = "VQ-03 company inventory per location?"
+    reg = _register(client, "company-default", question, DEMO_GOOD)
+    assert reg.status_code == 200, reg.text
+    env = _ask_no_space(client, question)
+    truth = _lake_rows(warehouse, DEMO_GOOD)
+    assert env["badge"] == "L0_CERTIFIED" and env["abstained"] is False, env
+    assert od._multiset(env["rows"]) == od._multiset(truth)
+    assert str(truth[0]["location"]) in str(env["text"])
+
+
+def test_a_company_default_verified_cross_product_is_still_refused(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sql, wrong, _true = DEMO_WRONG["cross_product_with_locations"]
+    v._gate_allows(monkeypatch)
+    cortex = _lake_cortex(warehouse)
+    client = v._live_client(warehouse, minter, monkeypatch, cortex)
+    question = "VQ-03 company cross?"
+    reg = _register(client, "company-default", question, sql)
+    assert reg.status_code == 400, reg.text
+    assert str(reg.json()["detail"]).startswith("unverified_join:"), reg.text
+    stored = "VQ-03 company cross stored?"
+    assert _register(client, "company-default", stored, sql, stored_before=True).status_code == 200
+    env = _ask_no_space(client, stored)
+    assert env["badge"] == "ABSTAIN" and env["rows"] == [] and env["values"] == [], env
+    _assert_no_figure(env, wrong)
+    assert sql not in _sql_submits(cortex)
+
+
+_CAPS = b"location_id,cap\nWH-A,100\nWH-B,200\nWH-C,300\nWH-D,400\nWH-E,500\n"
+#: (c) Joins to an uploaded table nobody ticked: the ask reads the demo spine only.
+UNTICKED: dict[str, str] = {
+    "on_true_cross_with_an_upload": (
+        "SELECT SUM(i.quantity_kg) AS total FROM inventory i JOIN {u} u ON true"
+    ),
+    "fan_trap_onto_an_upload": (
+        "SELECT SUM(u.cap) AS total FROM inventory i JOIN {u} u ON i.location_id = u.location_id"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(UNTICKED))
+def test_a_demo_verified_join_to_an_unticked_upload_is_refused_and_abstains(
+    name: str, warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(c) Registered 200 at 7ffbe45 (the demo check skips tables outside the demo
+    ontology) and replayed as an HTTP 503 with no envelope. Now: refused at
+    register with the grant reason, and a row stored before abstains."""
+    from dms_executor.bronze import ingest_csv_bytes
+
+    rec = ingest_csv_bytes(filename="caps.csv", data=_CAPS, path=warehouse, space_id=v.FINANCE)
+    sql = UNTICKED[name].format(u=rec.table)
+    v._gate_allows(monkeypatch)
+    cortex = _lake_cortex(warehouse)
+    client = v._live_client(warehouse, minter, monkeypatch, cortex)
+    question = f"VQ-03 upload {name}?"
+    reg = _register(client, v.FINANCE, question, sql)
+    assert reg.status_code == 400, reg.text
+    assert str(reg.json()["detail"]).startswith("validate:"), reg.text
+    stored = f"VQ-03 upload stored {name}?"
+    assert _register(client, v.FINANCE, stored, sql, stored_before=True).status_code == 200
+    env = _ask(client, v.FINANCE, stored)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, env
+    assert env["rows"] == [] and env["values"] == []
+    assert "validate:" in _reasons(env), _reasons(env)
+    assert sql not in _sql_submits(cortex)
