@@ -404,7 +404,7 @@ for (const [name, init] of [
   });
 }
 
-test("15 assets of the types a build emits (script, style, font, image, JSON, wasm) are still cached", async ({
+test("15 assets of the types a build emits (script, style, font, image, wasm) are still cached", async ({
   page,
   context,
 }) => {
@@ -417,7 +417,6 @@ test("15 assets of the types a build emits (script, style, font, image, JSON, wa
     ["e.woff", "application/font-woff"],
     ["f.png", "image/png"],
     ["g.svg", "image/svg+xml"],
-    ["h.json", "application/json"],
     ["i.wasm", "application/wasm"],
   ];
   await context.route("**/assets/legit-*", (r) => {
@@ -546,4 +545,197 @@ test("20 a newly deployed worker takes over without waiting, and the phone opens
   await context.setOffline(true);
   await page.reload();
   await expect(page.getByTestId("deploy-2"), "the old worker still controls the page").toBeVisible();
+});
+
+/*
+ * IPHONE-SHELL-03: round 2. The shell test reads the page's markup, so a page must not pass by merely
+ * containing the marker text somewhere inert, or by attributes that only look like the right ones.
+ */
+const MOD = '<script type="module" crossorigin src="/assets/index-Portal9.js"></script>';
+const wrap = (head: string, inBody = "") =>
+  `<!doctype html><html><head>${head}</head><body><h1>${PORTAL_TITLE}</h1>${inBody}</body></html>`;
+const NOT_THE_APP: Record<string, string> = {
+  "the marker inside an HTML comment": wrap(`<!-- ${MARKER} -->${MOD}`),
+  "the marker inside a script string": wrap(`<script>var s = '${MARKER}';</script>${MOD}`),
+  "the marker inside a CDATA block": wrap(`<svg><![CDATA[${MARKER}]]></svg>${MOD}`),
+  "the marker and the module script inside a textarea": wrap(
+    "",
+    `<textarea>${MARKER}<script type="module" src="/assets/x.js"></script></textarea>`,
+  ),
+  "data-name, data-content and data-type attributes": wrap(
+    '<meta data-name="dms-shell" data-content="1"><script data-type="module" src="/assets/p.js"></script>',
+  ),
+  "a module script that climbs out of /assets/": wrap(
+    `${MARKER}<script type="module" src="/assets/../portal/evil.js"></script>`,
+  ),
+  "a data-name attribute beside a real content": wrap(`<meta data-name="dms-shell" content="1" />${MOD}`),
+  "a data-content attribute beside a real name": wrap(`<meta name="dms-shell" data-content="1" />${MOD}`),
+  "a data-type attribute on the entry script": wrap(`${MARKER}<script data-type="module" src="/assets/p.js"></script>`),
+  "a data-src attribute on the entry script": wrap(`${MARKER}<script type="module" data-src="/assets/p.js"></script>`),
+  "a marker whose content is 0": wrap(`<meta name="dms-shell" content="0" />${MOD}`),
+  "a meta with another name": wrap(`<meta name="other-shell" content="1" />${MOD}`),
+  "a marker with no content": wrap(`<meta name="dms-shell" />${MOD}`),
+  "a marker and a classic script (no module)": wrap(`${MARKER}<script src="/assets/p.js"></script>`),
+};
+for (const [name, body] of Object.entries(NOT_THE_APP)) {
+  test(`21 a page with ${name} is not the app and never becomes the shell`, async ({ page, context }) => {
+    await expectPageNeverBecomesShell(page, context, body);
+  });
+}
+
+test("22 a new deploy whose marker is single-quoted and in another attribute order still replaces the shell", async ({
+  page,
+  context,
+}) => {
+  await bootWithAssets(page);
+  const old = (await goodShell(page))!;
+  expect(old).toContain(MARKER);
+  const next = old.replace(MARKER, "<meta content='1' name='dms-shell'>").replace("</body>", "<!--deploy-3--></body>");
+  expect(next).not.toBe(old);
+  await context.route(
+    (url) => url.pathname === "/",
+    (r) => r.fulfill({ status: 200, contentType: "text/html", body: next }),
+  );
+  await page.goto("/");
+  await expect.poll(() => goodShell(page)).toBe(next);
+});
+
+/** Each spelling is fetched online (a gateway's page under a script URL), then again offline. */
+async function offlineAnswers(page: Page, context: import("@playwright/test").BrowserContext, types: string[], body: string) {
+  await context.route("**/assets/ty-*", (r) => {
+    const i = Number(new URL(r.request().url()).pathname.split("ty-")[1].split(".")[0]);
+    return r.fulfill({ status: 200, headers: { "content-type": types[i] }, body });
+  });
+  const all = (list: number) => Array.from({ length: list }, (_, i) => `/assets/ty-${i}.js`);
+  await page.evaluate(async (urls) => {
+    for (const u of urls) await fetch(u);
+  }, all(types.length));
+  await page.waitForTimeout(500);
+  await context.unroute("**/assets/ty-*");
+  await context.setOffline(true);
+  return page.evaluate(
+    async (urls) => Promise.all(urls.map((u) => fetch(u).then((r) => r.text(), () => "network-error"))),
+    all(types.length),
+  );
+}
+
+test("23 an HTML answer under a lookalike, malformed or list content type is never served from cache", async ({
+  page,
+  context,
+}) => {
+  await bootWithAssets(page);
+  const types = [
+    "text/javascriptx",
+    "application/jsonp",
+    "text/css-evil",
+    "image/html",
+    "font/html",
+    "application/font-html",
+    "text/javascript, text/html",
+    "text/javascript; charset=utf-8, text/html",
+    "text/html; x=text/javascript",
+    "application/json",
+    "application/octet-stream",
+    "TEXT/HTML",
+    "text/plain",
+  ];
+  const answers = await offlineAnswers(page, context, types, "<html><h1>gateway</h1></html>");
+  types.forEach((t, i) => expect(answers[i], `content-type ${JSON.stringify(t)} was served from cache`).toBe("network-error"));
+});
+
+test("24 asset types are matched exactly, ignoring case, spaces and parameters", async ({ page, context }) => {
+  await bootWithAssets(page);
+  const types = [
+    "Text/JavaScript;charset=utf-8",
+    " text/css",
+    "text/javascript ; charset=utf-8",
+    "TEXT/CSS",
+    "application/javascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "application/ecmascript",
+    "application/wasm",
+    "font/woff",
+    "font/woff2",
+    "font/ttf",
+    "font/otf",
+    "font/sfnt",
+    "application/font-woff",
+    "application/font-woff2",
+    "application/vnd.ms-fontobject",
+    "application/x-font-ttf",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/svg+xml",
+    "image/x-icon",
+    "image/vnd.microsoft.icon",
+  ];
+  const answers = await offlineAnswers(page, context, types, "asset-body");
+  types.forEach((t, i) => expect(answers[i], `content-type ${JSON.stringify(t)} was not cached`).toBe("asset-body"));
+});
+
+test("25 offline, near-API spellings are network errors and ordinary paths still open the app", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  await bootWithAssets(page);
+  await context.setOffline(true);
+  const never = [
+    "//api/health",
+    "/api;x",
+    "/v1;jsessionid=1",
+    "/x/..%2Fapi%2Fhealth",
+    "/%2Fapi/health",
+    "/%5Capi/health",
+    "/\\api/health",
+    "/%252561pi/health",
+    "/%25252561pi/health",
+    `/%${"25".repeat(11)}61pi/health`,
+    // Needs 12 decoding rounds to become /library: past the cap, so the network answers.
+    `/li%${"25".repeat(11)}62rary`,
+    "/api%00",
+    "/api%20/x",
+    "/%E0%A4%A",
+    "/./api",
+    "/%2e/api",
+    "/%2e%2e/api",
+    "/x/%2e%2e/v1/spaces",
+    "/Health",
+    "/healthz",
+  ];
+  // A fresh page each time: a failed navigation can commit its error page late.
+  for (const u of never) {
+    const pg = await context.newPage();
+    try {
+      await expect(pg.goto(`${baseURL}${u}`), u).rejects.toThrow(/net::ERR/);
+    } finally {
+      await pg.close();
+    }
+  }
+  // "/li%2562rary" is "/library" after two decoding rounds: an app route, not an API path.
+  for (const u of ["/apiary", "/v10", "/library", "/li%2562rary"]) {
+    const pg = await context.newPage();
+    try {
+      await pg.goto(`${baseURL}${u}`);
+      await expect(pg.getByTestId("tab-bar"), u).toBeVisible();
+    } finally {
+      await pg.close();
+    }
+  }
+});
+
+test("26 an asset cached online under one query string is served offline under another", async ({ page, context }) => {
+  await bootWithAssets(page);
+  const isAsset = (url: URL) => url.pathname === "/assets/qk-1.js";
+  await context.route(isAsset, (r) => r.fulfill({ status: 200, contentType: "text/javascript", body: "//qk" }));
+  await page.evaluate(() => fetch("/assets/qk-1.js?q=1").then((r) => r.text()));
+  await page.waitForTimeout(500);
+  await context.unroute(isAsset);
+  await context.setOffline(true);
+  const offline = await page.evaluate(() => fetch("/assets/qk-1.js?q=2").then((r) => r.text(), () => "network-error"));
+  expect(offline).toBe("//qk");
 });

@@ -10,26 +10,68 @@ const SHELL = "dms-shell-v1";
 
 /*
  * Paths that are never intercepted: /api, /v1 and /health, anything under them, with or without a
- * trailing slash or query. Compared on the decoded, lower-cased path so /API/health and /v1%2Fspaces
- * cannot slip past a prefix test. /health also covers /healthz, as it always has. A path that does not
- * decode is left alone too: when in doubt, the network answers, never the cache.
+ * trailing slash, query or ;parameter. The path is reduced to what a server would route before it is
+ * tested: percent-decoded until it stops changing, backslashes read as slashes, repeated slashes
+ * collapsed, "." and ".." segments resolved, lower-cased. /health also covers /healthz, as it always
+ * has; /apiary does not match. A path that does not decode, or still changes after 10 rounds, is left
+ * alone too: when in doubt, the network answers, never the cache.
  */
-const NEVER = /^\/(?:(?:api|v1)(?:\/|$)|health)/;
+const NEVER = /^\/(?:(?:api|v1)(?![a-z0-9_-])|health)/;
 function isNever(pathname) {
   try {
     let path = pathname;
-    for (let i = 0; i < 3 && /%/.test(path); i++) path = decodeURIComponent(path);
-    return NEVER.test(path.toLowerCase());
+    for (let round = 0; ; round++) {
+      if (round >= 10) return true;
+      const next = decodeURIComponent(path);
+      if (next === path) break;
+      path = next;
+    }
+    const kept = [];
+    for (const part of path.replace(/\\/g, "/").split("/")) {
+      if (part === "..") kept.pop();
+      else if (part !== "" && part !== ".") kept.push(part);
+    }
+    return NEVER.test("/" + kept.join("/").toLowerCase());
   } catch {
     return true;
   }
 }
 
-// Only these may be cached under an /assets/ URL. A gateway's HTML, or an answer with no or a
-// generic type, must not become the script the app loads from cache first.
-const ASSET_TYPE =
-  /^(?:(?:text|application)\/(?:javascript|x-javascript|ecmascript|css|json|wasm)|font\/|application\/(?:font-|x-font-|vnd\.ms-fontobject)|image\/)/;
-const isAsset = (res) => ASSET_TYPE.test((res.headers.get("content-type") || "").trim().toLowerCase());
+// Only these may be cached under an /assets/ URL, matched exactly on the media type. A gateway's HTML,
+// or an answer with no, a generic or a lookalike type, must not become the script the app loads from
+// cache first. JSON is not here: an answer cached under a normalised URL would be a stale figure.
+const ASSET_TYPES = new Set([
+  "text/javascript",
+  "application/javascript",
+  "application/x-javascript",
+  "text/ecmascript",
+  "application/ecmascript",
+  "text/css",
+  "application/wasm",
+  "font/woff",
+  "font/woff2",
+  "font/ttf",
+  "font/otf",
+  "font/sfnt",
+  "application/font-woff",
+  "application/font-woff2",
+  "application/vnd.ms-fontobject",
+  "application/x-font-ttf",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/svg+xml",
+  "image/x-icon",
+  "image/vnd.microsoft.icon",
+]);
+function isAsset(res) {
+  const raw = res.headers.get("content-type") || "";
+  // A comma makes it a list of values, not a media type.
+  if (raw.includes(",")) return false;
+  return ASSET_TYPES.has(raw.split(";")[0].trim().toLowerCase());
+}
 
 // Hashed assets are keyed by path alone, so ?v=1, ?v=2 ... never make one entry each.
 const assetKey = (url) => new Request(url.origin + url.pathname);
@@ -43,14 +85,28 @@ const storable = (res) => res.ok && !res.redirected && isHtml(res);
  * the entry alone is not enough: any Vite-built page has one. It must never become the shell
  * (the home-screen app would open to it on the next offline launch). This guards against a
  * gateway in the way, not against a page forged to look like the app.
+ *
+ * The test reads real elements only: comments, CDATA and the bodies of script, textarea and style
+ * are blanked first, and an attribute must start after whitespace or a quote, so data-name is not name.
  */
-const isAppShell = (html) =>
-  (html.match(/<meta\b[^>]*>/gi) || []).some(
-    (tag) => /\bname=["']dms-shell["']/.test(tag) && /\bcontent=["']1["']/.test(tag),
-  ) &&
-  (html.match(/<script\b[^>]*>/gi) || []).some(
-    (tag) => /\btype="module"/.test(tag) && /\bsrc="\/assets\/[^"]+\.js"/.test(tag),
+const inertRemoved = (html) =>
+  html
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, " ")
+    .replace(/(<(script|textarea|style)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi, "$1$3");
+
+const isAppShell = (page) => {
+  const html = inertRemoved(page);
+  return (
+    (html.match(/<meta\b[^>]*>/gi) || []).some(
+      (tag) => /[\s"']name=["']dms-shell["']/.test(tag) && /[\s"']content=["']1["']/.test(tag),
+    ) &&
+    (html.match(/<script\b[^>]*>/gi) || []).some((tag) => {
+      const src = /[\s"']src=["'](\/assets\/[^"']+\.js)["']/.exec(tag);
+      return /[\s"']type=["']module["']/.test(tag) && src !== null && !src[1].includes("..");
+    })
   );
+};
 
 /*
  * Store the newest shell, then drop every cached asset it no longer references,
@@ -113,7 +169,7 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/assets/")) {
     // Vite content-hashes these names, so a cached copy is never stale.
     event.respondWith(
-      caches.match(assetKey(url), { ignoreVary: true }).then(
+      caches.match(assetKey(url)).then(
         (hit) =>
           hit ||
           fetch(req).then((res) => {
