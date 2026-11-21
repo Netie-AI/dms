@@ -7,18 +7,47 @@
  * of a stale figure. Bump SHELL to drop everything cached by an older build.
  */
 const SHELL = "dms-shell-v1";
-const NEVER = ["/api/", "/v1/", "/health"];
+
+/*
+ * Paths that are never intercepted: /api, /v1 and /health, anything under them, with or without a
+ * trailing slash or query. Compared on the decoded, lower-cased path so /API/health and /v1%2Fspaces
+ * cannot slip past a prefix test. /health also covers /healthz, as it always has. A path that does not
+ * decode is left alone too: when in doubt, the network answers, never the cache.
+ */
+const NEVER = /^\/(?:(?:api|v1)(?:\/|$)|health)/;
+function isNever(pathname) {
+  try {
+    let path = pathname;
+    for (let i = 0; i < 3 && /%/.test(path); i++) path = decodeURIComponent(path);
+    return NEVER.test(path.toLowerCase());
+  } catch {
+    return true;
+  }
+}
+
+// Only these may be cached under an /assets/ URL. A gateway's HTML, or an answer with no or a
+// generic type, must not become the script the app loads from cache first.
+const ASSET_TYPE =
+  /^(?:(?:text|application)\/(?:javascript|x-javascript|ecmascript|css|json|wasm)|font\/|application\/(?:font-|x-font-|vnd\.ms-fontobject)|image\/)/;
+const isAsset = (res) => ASSET_TYPE.test((res.headers.get("content-type") || "").trim().toLowerCase());
+
+// Hashed assets are keyed by path alone, so ?v=1, ?v=2 ... never make one entry each.
+const assetKey = (url) => new Request(url.origin + url.pathname);
 
 const isHtml = (res) => (res.headers.get("content-type") || "").includes("text/html");
 const storable = (res) => res.ok && !res.redirected && isHtml(res);
 
 /*
- * The app's own page names its built entry: a module script under /assets/. A Wi-Fi
- * sign-in or SSO page answered with 200 does not, and must never become the shell
- * (the home-screen app would open to it on the next offline launch). This guards
- * against a gateway in the way, not against a page forged to look like the app.
+ * The app's own page carries the dms-shell marker (index.html) and names its built entry: a
+ * module script under /assets/. A Wi-Fi sign-in or SSO page answered with 200 has neither, and
+ * the entry alone is not enough: any Vite-built page has one. It must never become the shell
+ * (the home-screen app would open to it on the next offline launch). This guards against a
+ * gateway in the way, not against a page forged to look like the app.
  */
 const isAppShell = (html) =>
+  (html.match(/<meta\b[^>]*>/gi) || []).some(
+    (tag) => /\bname=["']dms-shell["']/.test(tag) && /\bcontent=["']1["']/.test(tag),
+  ) &&
   (html.match(/<script\b[^>]*>/gi) || []).some(
     (tag) => /\btype="module"/.test(tag) && /\bsrc="\/assets\/[^"]+\.js"/.test(tag),
   );
@@ -63,7 +92,7 @@ self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
-  if (NEVER.some((prefix) => url.pathname.startsWith(prefix))) return;
+  if (isNever(url.pathname)) return;
 
   if (req.mode === "navigate") {
     // A path with an extension is a file (a download), not an app route: leave it to the network.
@@ -84,15 +113,16 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/assets/")) {
     // Vite content-hashes these names, so a cached copy is never stale.
     event.respondWith(
-      caches.match(req).then(
+      caches.match(assetKey(url), { ignoreVary: true }).then(
         (hit) =>
           hit ||
           fetch(req).then((res) => {
-            // The server answers a missing file with the app shell and 200. Caching
-            // that HTML under a script URL would break the app on every later load.
-            if (res.ok && !res.redirected && !isHtml(res)) {
+            // The server answers a missing file with the app shell and 200, and a gateway
+            // with its own page. Caching either under a script URL would break the app on
+            // every later load, so only a response of an asset type is stored.
+            if (res.ok && !res.redirected && isAsset(res)) {
               const copy = res.clone();
-              event.waitUntil(caches.open(SHELL).then((cache) => cache.put(req, copy)));
+              event.waitUntil(caches.open(SHELL).then((cache) => cache.put(assetKey(url), copy)));
             }
             return res;
           }),
