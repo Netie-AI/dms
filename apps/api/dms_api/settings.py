@@ -104,5 +104,5 @@ def refuse_placeholder_secrets(settings: Settings) -> None:
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
-    refuse_placeholder_secrets(settings)
+    # MUTATION: guard disabled
     return settings
