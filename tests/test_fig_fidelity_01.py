@@ -912,3 +912,96 @@ def test_verifier_a_label_that_reads_as_a_figure_is_withheld(
     assert_envelope_valid(env)
     assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
     assert "999" not in env["text"]
+
+
+# --- verifier round 3 (Opus, on a903909) ------------------------------------------
+
+_TWINS = [{"country": "MY", "orders": 7}, {"country": "MY ", "orders": 8}]
+
+
+@pytest.mark.parametrize(
+    ("answer", "rows"),
+    [
+        # The padded label printed with the unpadded group's figure.
+        ("Found 2 row(s).\n  - country=MY, orders=7\n  - country=MY , orders=7", _TWINS),
+        (
+            "Found 2 row(s).\n  - country=Acme, orders=7\n  - country=Acme,, orders=7",
+            [{"country": "Acme", "orders": 7}, {"country": "Acme,", "orders": 8}],
+        ),
+        # A decorated prose label still names its row.
+        (
+            "country=MY (largest), orders=8",
+            [{"country": "MY", "orders": 7}, {"country": "SG", "orders": 8}],
+        ),
+        (
+            "country=MY. orders=8",
+            [{"country": "MY", "orders": 7}, {"country": "SG", "orders": 8}],
+        ),
+        # One row listed twice while another is left out.
+        (
+            "Found 2 row(s).\n  - country=MY, orders=7\n  - country=MY, orders=7",
+            [{"country": "MY", "orders": 7}, {"country": "MY", "orders": 8}],
+        ),
+        (
+            "Found 1 row(s).\n  - country=MY, orders=7\n  - country=MY, orders=7",
+            [{"country": "MY", "orders": 7}],
+        ),
+        # More listed rows than the result holds, on lines with no figure.
+        (
+            "Found 1 row(s).\n  - country=MY, note=x\n  - country=SG, note=x",
+            [{"country": "MY", "note": "x", "orders": 7}],
+        ),
+        # An exponent literal states the cell to the unit, not to 5e5.
+        ("country=MY, total_spend_myr=1e6", [{"country": "MY", "total_spend_myr": 1400000}]),
+    ],
+)
+def test_verifier_round3_a_wrong_listing_is_withheld(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert env["rows"] == [] and env["values"] == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "rows"),
+    [
+        ("Found 2 row(s).\n  - country=MY, orders=7\n  - country=MY , orders=8", _TWINS),
+        (
+            "country=MY (largest), orders=7",
+            [{"country": "MY", "orders": 7}, {"country": "SG", "orders": 8}],
+        ),
+        (
+            "Found 2 row(s).\n  - country=MY, orders=7\n  - country=MY, orders=7",
+            [{"country": "MY", "orders": 7}, {"country": "MY", "orders": 7}],
+        ),
+        ("country=MY, total_spend_myr=1.4e6", [{"country": "MY", "total_spend_myr": 1400000}]),
+    ],
+)
+def test_verifier_round3_the_right_listing_is_served(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert env["rows"] == rows
+
+
+def test_verifier_round3_a_label_holding_an_equals_sign_is_not_withheld(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label cell "paid=yes" beside a padded label: the writer's own listing serves."""
+    rows = [{"id": "KL ", "region": "paid=yes", "total_cost_myr": 12.5}]
+    env = _ask_l1(warehouse, minter, monkeypatch, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert env["rows"] == rows
