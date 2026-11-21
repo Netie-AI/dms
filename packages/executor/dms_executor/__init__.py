@@ -1293,6 +1293,14 @@ class Executor:
             # be a silent downgrade.
             try:
                 space_onto = load_space_ontology(space_id)
+                if space_onto is None:
+                    # ONTO-PROFILE-02: a file Space has no derived ontology.
+                    # Its steward-approved keys and links answer instead,
+                    # unverified here and measured at this ask. Never merged
+                    # into a derived one.
+                    from dms_executor.onto_profile import approved_profile_ontology
+
+                    space_onto = approved_profile_ontology(space_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("ontology store unreadable for %s: %s", space_id, exc)
                 env = path_miss_envelope(
