@@ -1458,6 +1458,12 @@ DEMO_HOLES: dict[str, tuple[str, str]] = {
     "list_reached_by_position": ("SELECT list_sum(#1 || #1) AS total FROM (SELECT list(quantity_kg) AS l FROM inventory)", COLLECTION),
     "list_reached_by_columns": ("SELECT list_sum(COLUMNS('l') || COLUMNS('l')) AS total FROM (SELECT list(quantity_kg) AS l FROM inventory)", COLLECTION),
     "list_reached_from_a_lateral_body": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, LATERAL (SELECT list_sum(s.l || s.l) AS v) u", COLLECTION),
+    # Verifier round 5: a derived table that reads an earlier source without the
+    # LATERAL keyword is bound laterally by DuckDB.
+    "implicit_lateral_by_comma": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (SELECT list_sum(s.l || s.l) AS v) u", COLLECTION),
+    "implicit_lateral_by_join_on_true": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s JOIN (SELECT list_sum(s.l || s.l) AS v) u ON true", COLLECTION),
+    "implicit_lateral_nested": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (SELECT x.v FROM (SELECT list_sum(s.l || s.l) AS v) x) u", COLLECTION),
+    "implicit_lateral_window_value_summed": ("SELECT SUM(u.v) AS total FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory) s, (SELECT s.w AS v) u", WINDOW),
     "pivot_list_concatenated": ("SELECT list_sum(x || x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x'))", COLLECTION),
     "pivot_list_concatenated_by_alias": ("SELECT list_sum(p.x || p.x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x')) p", COLLECTION),
     "self_join_through_a_schema_qualifier": ("SELECT SUM(a.quantity_kg) AS total FROM inventory a, main.inventory b", "self_join_under_aggregate"),
