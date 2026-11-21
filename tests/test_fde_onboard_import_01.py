@@ -169,3 +169,21 @@ def test_second_import_keeps_ids_and_statuses(rig: Rig) -> None:
     assert {i["id"] for i in again} == {i["id"] for i in held}
     assert {i["id"]: i["status"] for i in again}[victim] == "revoked"
     assert {i["id"] for i in second.json()["items"]} == set(ids.values())
+
+
+def test_a_revoked_onboard_item_is_never_approved_again_nor_resurrected(rig: Rig) -> None:
+    """After the T1 merge (c3d17d3): approve on a revoked item is 409 item_revoked, and a
+    re-import through this route keeps it revoked (held), never proposed again."""
+    space = rig.new_space("Onboard revoked")
+    first = _post(rig, space, _body())
+    assert first.status_code == 200, first.text
+    item = first.json()["items"][0]["id"]
+    assert rig.client.post(f"/v1/ontology/data/items/{item}/revoke").status_code == 200
+    again = rig.client.post(f"/v1/ontology/data/items/{item}/approve")
+    assert again.status_code == 409, again.text
+    assert "item_revoked" in again.text
+    second = _post(rig, space, _body())
+    assert second.status_code == 200, second.text
+    assert item in second.json()["held"]
+    statuses = {i["id"]: i["status"] for i in ontology_data_store().space_onboard_items(space)}
+    assert statuses[item] == "revoked"

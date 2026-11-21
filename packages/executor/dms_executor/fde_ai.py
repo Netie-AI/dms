@@ -13,7 +13,7 @@ What the model writes is data, never authority:
 * a verified question's SQL is back-mapped, parsed, refused if it carries a
   string literal (rule 12: the model never saw a value encoding), refused if it
   reads a table outside the Space, passed through the same join doors the ask
-  uses (``load_space_ontology`` + ``check_sql_against_space``, or
+  uses (``ask_join_ontology`` + ``check_sql_against_space``, or
   ``no_ontology_join_reason``), executed on the serving cursor, and kept only
   with exact, non-empty, bounded rows (#540: a served figure is exact or
   abstains);
@@ -46,7 +46,7 @@ from sqlglot import exp
 
 from dms_executor.demo_warehouse import SERVING_DIALECT, connect_serving
 from dms_executor.generative_ask import no_ontology_join_reason
-from dms_executor.space_ontology import check_sql_against_space, load_space_ontology
+from dms_executor.space_ontology import check_sql_against_space
 from dms_executor.total_guard import repeated_input_reason
 
 PROMPT_VERSION = "fde_onboard/v1"
@@ -529,6 +529,26 @@ def _count_query(root: exp.Select) -> str:
     return str(c.sql(dialect=SERVING_DIALECT))
 
 
+def ask_join_ontology(space_id: str) -> Any:
+    """The ontology the ask path's join rule would read for this Space, the same calls.
+
+    With ``DMS_ONTO_FROM_DATA`` on, the asking Space's items (ONTO-SCOPE-01
+    ``ask_ontology``) when it has any; otherwise ``space_join_ontology`` (the derived
+    ontology, else the steward-approved profile keys and links of #515). No second copy
+    of either rule lives here.
+    """
+    from dms_executor.onto_profile import space_join_ontology
+    from dms_executor.ontology import onto_from_data_enabled
+
+    if onto_from_data_enabled():
+        from dms_executor.onto_scope import ask_ontology
+
+        data_onto = ask_ontology(space_id)
+        if data_onto is not None:
+            return data_onto
+    return space_join_ontology(space_id)
+
+
 def check_question_sql(
     sql: str,
     *,
@@ -579,7 +599,7 @@ def check_question_sql(
     if any(c in lake_names for c in ctes):
         return "cte_shadows_table", info
     try:
-        onto = load_space_ontology(space_id)
+        onto = ask_join_ontology(space_id)
     except Exception:  # noqa: BLE001
         return "ontology_store_unavailable", info
     grantable = sorted(tables)

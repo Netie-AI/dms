@@ -453,3 +453,17 @@ def approved_profile_ontology(space_id: str | None) -> Ontology | None:
     if not onto.objects or not onto.links:
         return None
     return onto
+
+
+def space_join_ontology(space_id: str | None) -> Ontology | None:
+    """The Space ontology the ask path's join rule reads, unverified, or None.
+
+    The Space's derived ontology (ONTO-DERIVE-01) alone when it has one; otherwise the
+    keys and links a steward approved for it (ONTO-PROFILE-02). Never merged. One
+    implementation: the ask path and the onboarding SQL check (dms#541) both call this.
+    Raises when a store cannot be read.
+    """
+    from dms_executor.space_ontology import load_space_ontology
+
+    onto = load_space_ontology(space_id)
+    return onto if onto is not None else approved_profile_ontology(space_id)
