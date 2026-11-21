@@ -51,6 +51,26 @@ def check_capture(capture: dict[str, Any]) -> None:
         assert sources, "B2: a non-abstained answer cites no source"
     foreign = [s.get("container") for s in sources if s.get("container") not in tables]
     assert not foreign, f"B2: sources not created by the upload: {foreign}"
+    # Checker findings (2026-11-21): the validator trusts `contributing_sources` and never reads
+    # the SQL, accepts a string where a number belongs, and lets abstention prose carry a
+    # non-abstain badge.
+    for v in env.get("values") or []:
+        val = v.get("value")
+        assert isinstance(val, (int, float)) and not isinstance(val, bool), (
+            f"B2: value {val!r} is not a number: the phone would draw a figure from text"
+        )
+    if not env.get("abstained") and re.match(
+        r"\s*(I can.t answer|No answer)", env.get("text") or "", re.I
+    ):
+        raise AssertionError("B2: abstention prose on an envelope that is not abstained")
+    sql = env.get("sql_used") or ""
+    read = {
+        re.sub(r'^[`"\[]|[`"\]]$', "", t).split(".")[-1].strip('`"[]')
+        for t in re.findall(r"\b(?:FROM|JOIN)\s+([\w.`\"\[\]]+)", sql, re.I)
+    }
+    own = {t.split(".")[-1] for t in tables}
+    stray = sorted(read - own)
+    assert not stray, f"B2: the SQL reads tables the upload did not create: {stray}"
 
 
 def _abstain() -> dict[str, Any]:
@@ -138,6 +158,22 @@ def _mutate(base: dict[str, Any], **env: Any) -> dict[str, Any]:
         ),
         (_mutate(_answer(), sql_used=None), "E3"),
         (_mutate(_answer(), text="Total qty is 66 and revenue is RM 9,999.50."), "E4"),
+        (
+            _mutate(_answer(), values=[{"id": "v1", "value": "66", "label": "total qty"}]),
+            "not a number",
+        ),
+        (_mutate(_answer(), sql_used="SELECT SUM(qty) FROM transactions"), "SQL reads tables"),
+        (
+            _mutate(
+                _answer(),
+                sql_used=f"SELECT SUM(a.qty) FROM {TABLE} a JOIN transactions t ON a.k = t.k",
+            ),
+            "SQL reads tables",
+        ),
+        (
+            _mutate(_answer(), text="I can't answer this: no signing key.", badge="L2_VALIDATED"),
+            "abstention prose",
+        ),
         ({**_answer(), "upload_tables": []}, "names no uploaded table"),
     ],
 )

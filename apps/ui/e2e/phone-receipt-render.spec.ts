@@ -49,6 +49,23 @@ async function upload(page: Page, mode: (typeof MODES)[number], body: Body, name
   await expect(page.getByTestId("ingest-receipt")).toBeVisible();
 }
 
+/** Two files through the real chooser: the batch route. */
+async function uploadMany(page: Page, mode: (typeof MODES)[number], body: Body) {
+  await page.addInitScript((m) => localStorage.setItem("dms-theme", m), mode);
+  await page.route("**/api/v1/studio/ingest-batch", (route) => route.fulfill({ json: body }));
+  await page.goto("/studio");
+  await page.waitForLoadState("networkidle");
+  const files = ["one.csv", "two.csv"].map((n) => {
+    const f = test.info().outputPath(n);
+    fs.writeFileSync(f, "a,b\n1,2\n");
+    return f;
+  });
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Add files" }).click();
+  await (await chooser).setFiles(files);
+  await expect(page.getByTestId("ingest-receipt")).toBeVisible();
+}
+
 /** Ink contrast and visibility of the element, read from computed styles up the ancestor chain. */
 async function look(page: Page, testId: string) {
   return page.getByTestId(testId).first().evaluate((el) => {
@@ -95,6 +112,7 @@ async function look(page: Page, testId: string) {
       textAlpha: fg0.a,
       left: r.left,
       right: r.right,
+      fontSize: parseFloat(getComputedStyle(el).fontSize),
       text: (el.textContent ?? "").replace(/\s+/g, " ").trim(),
       role: el.getAttribute("role"),
     };
@@ -148,6 +166,83 @@ for (const mode of MODES) {
       expect((await look(page, "receipt-chat-visibility")).text).toBe("Nothing was ingested, so Chat cannot see this upload.");
     });
 
+    test("a detail that already ends in ! or an ellipsis is not given another mark", async ({ page }) => {
+      await upload(page, mode, landed({ serving_sync_detail: "sync failed!" }));
+      expect((await look(page, "receipt-chat-visibility")).text).toBe("Not confirmed that Chat can see this upload: sync failed!");
+    });
+
+    test("a detail with no spaces, 600 characters long, wraps inside the screen and nothing scrolls sideways", async ({ page }) => {
+      await upload(page, mode, landed({ serving_sync_detail: "x".repeat(600) }));
+      const v = await look(page, "receipt-chat-visibility");
+      expect(v.right).toBeLessThanOrEqual(PHONE.width);
+      // The Studio scroller, not only the document: a wide line scrolls the pane sideways.
+      const wide = await page.getByTestId("ingest-receipt").evaluate((el) => {
+        const bad: string[] = [];
+        for (let e: Element | null = el; e; e = e.parentElement) {
+          if (e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX !== "visible") bad.push(`${e.tagName} ${e.scrollWidth}>${e.clientWidth}`);
+        }
+        return bad;
+      });
+      expect(wide, "an ancestor of the receipt scrolls sideways").toEqual([]);
+    });
+
+    test("characters that reorder text are not passed through", async ({ page }) => {
+      await upload(page, mode, landed({ serving_sync_detail: "ok\u202Esync" }));
+      expect((await look(page, "receipt-chat-visibility")).text).toBe("Not confirmed that Chat can see this upload: oksync.");
+    });
+
+    test("the receipt is on screen after the upload without the person scrolling to it", async ({ page }) => {
+      await upload(page, mode, landed({ serving_sync_detail: "Serving sync did not run." }));
+      await expect(page.getByTestId("ingest-receipt")).toBeInViewport();
+      await expect(page.getByTestId("receipt-summary")).toBeInViewport({ ratio: 1 });
+    });
+
+    test("the summary is exactly what the API said, readable, and not faded", async ({ page }) => {
+      await upload(page, mode, landed({ summary: "1 file ingested into sales." }));
+      const v = await look(page, "receipt-summary");
+      expect(v.text).toBe("1 file ingested into sales.");
+      expect(v.opacity).toBe(1);
+      expect(v.textAlpha).toBe(1);
+      expect(v.ratio).toBeGreaterThanOrEqual(4.5);
+      expect(v.fontSize).toBeGreaterThanOrEqual(12);
+    });
+
+    test("with no summary the receipt counts for itself, in the right places", async ({ page }) => {
+      await upload(page, mode, landed({ summary: null, files_seen: 3, ingested: 2, need_attention: 1, files: null }));
+      expect((await look(page, "receipt-summary")).text).toBe("Receipt · 3 files · 2 ingested · 1 need attention");
+    });
+
+    test("two files take the batch route and each gets its row", async ({ page }) => {
+      await uploadMany(
+        page,
+        mode,
+        landed({
+          files_seen: 2,
+          ingested: 1,
+          need_attention: 1,
+          files: [
+            { file: "one.csv", classification: "csv", table: "one", ingested: true },
+            { file: "two.csv", classification: "csv", table: null, ingested: false, reason: "empty_file", fix: "Add a header row." },
+          ],
+        }),
+      );
+      const rows = page.getByTestId("ingest-receipt").locator("tbody tr");
+      await expect(rows).toHaveCount(2);
+      await expect(rows.nth(0).locator("td").first()).toHaveText("one.csv");
+      await expect(rows.nth(1).locator("td").first()).toContainText("two.csv");
+      await expect(rows.nth(1).getByTestId("receipt-row-reason")).toHaveCount(1);
+      await expect(rows.nth(0).getByTestId("receipt-row-reason")).toHaveCount(0);
+    });
+
+    test("a row the API marks ingested is never called refused, even with no table name", async ({ page }) => {
+      await upload(
+        page,
+        mode,
+        landed({ files: [{ file: "sales.csv", classification: "csv", table: null, ingested: true, reason: "header_and_types_ok", fix: "Ready for bronze ingest as-is." }] }),
+      );
+      await expect(page.getByTestId("receipt-row-reason")).toHaveCount(0);
+    });
+
     test("the visibility line is announced, visible, readable and inside the screen", async ({ page }) => {
       await upload(page, mode, landed({ serving_sync_detail: "Serving sync did not run." }));
       const v = await look(page, "receipt-chat-visibility");
@@ -181,9 +276,8 @@ for (const mode of MODES) {
         "a_rather_long_name_for_a_tab_file_that_goes_on.tsv",
       );
       const r = await look(page, "receipt-row-reason");
-      expect(r.text).toContain("Not ingested:");
-      expect(r.text).toContain("unsupported_kind");
-      expect(r.text).toContain("Save it as .csv and add it again.");
+      expect(r.text).toBe("Not ingested: unsupported_kind \u2014 Save it as .csv and add it again.");
+      expect(r.fontSize, "readable size").toBeGreaterThanOrEqual(12);
       expect(r.hidden).toBe(false);
       expect(r.opacity).toBe(1);
       expect(r.textAlpha).toBe(1);
@@ -218,5 +312,16 @@ test.describe("receipt lines at lg are what they were", () => {
       "x.tsv",
     );
     expect((await look(page, "receipt-row-reason")).hidden).toBe(true);
+    // The Reason column carries it instead, and a person can see it.
+    const cell = page
+      .getByTestId("ingest-receipt")
+      .locator("tbody tr")
+      .first()
+      .locator("td")
+      .filter({ hasText: "unsupported_kind" })
+      .filter({ hasNot: page.getByTestId("receipt-row-reason") });
+    await cell.scrollIntoViewIfNeeded();
+    await expect(cell).toBeVisible();
+    expect(await look(page, "receipt-summary")).toMatchObject({ hidden: false });
   });
 });

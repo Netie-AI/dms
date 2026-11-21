@@ -4,6 +4,8 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { useApp } from "@/context/AppContext";
+import { chatVisibilityLine, isRefused } from "@/lib/receiptLines";
+import { lgMedia } from "@/lib/viewport";
 import {
   describeApiError,
   fetchLibraryTree,
@@ -70,7 +72,13 @@ export function StudioPage() {
   const { setActivity, activeSpaceId } = useApp();
   const navigate = useNavigate();
 
+  const receiptRef = useRef<HTMLDivElement | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
+  // On a phone the receipt lands far below the Add files button: bring it to the top of the screen.
+  // (At lg it is already in view and the page is left alone.)
+  useEffect(() => {
+    if (receipt && !lgMedia()?.matches) receiptRef.current?.scrollIntoView({ block: "start" });
+  }, [receipt]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [vqQuestion, setVqQuestion] = useState("");
@@ -620,10 +628,11 @@ export function StudioPage() {
 
       {receipt && (
         <div
+          ref={receiptRef}
           data-testid="ingest-receipt"
           className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 text-sm"
         >
-          <p className="font-medium text-[var(--color-ink)]">
+          <p data-testid="receipt-summary" className="font-medium text-[var(--color-ink)]">
             {receipt.summary ??
               `Receipt · ${receipt.files_seen} files · ${receipt.ingested} ingested · ${attention} need attention`}
           </p>
@@ -632,16 +641,9 @@ export function StudioPage() {
             <p
               data-testid="receipt-chat-visibility"
               role="status"
-              className="mt-1 text-[var(--color-ink)] lg:hidden"
+              className="mt-1 text-[var(--color-ink)] [overflow-wrap:anywhere] lg:hidden"
             >
-              {receipt.ingested === 0
-                ? "Nothing was ingested, so Chat cannot see this upload."
-                : `Not confirmed that Chat can see this upload${
-                    // The detail is a sentence of its own and often ends in a full stop: say one.
-                    receipt.serving_sync_detail?.replace(/[.\s]+$/, "")
-                      ? `: ${receipt.serving_sync_detail.replace(/[.\s]+$/, "")}`
-                      : ""
-                  }.`}
+              {chatVisibilityLine(receipt)}
             </p>
           )}
           {receipt.per_class && (
@@ -672,7 +674,7 @@ export function StudioPage() {
                       <td className="py-2 pr-3 font-medium text-[var(--color-ink)]">
                         {f.file}
                         {/* PHONE-PATH-01 B5: at 390px the Reason column is off screen. */}
-                        {!f.table && (f.reason || f.fix) && (
+                        {isRefused(f) && (f.reason || f.fix) && (
                           <span
                             data-testid="receipt-row-reason"
                             className="mt-1 block w-[min(18rem,70vw)] font-normal [overflow-wrap:anywhere] lg:hidden"

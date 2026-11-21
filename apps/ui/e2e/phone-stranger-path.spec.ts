@@ -260,7 +260,8 @@ test.describe("PHONE-PATH-01 stranger path at 390x844", () => {
 
     const receipt = page.getByTestId("ingest-receipt");
     await expect(receipt).toBeVisible();
-    await receipt.scrollIntoViewIfNeeded();
+    // No scrolling for the person: after the upload the receipt is on the screen.
+    await expect(receipt).toBeInViewport();
     const text = squash(await receipt.innerText());
     expect(body.summary, "the response carries a summary").toBeTruthy();
     expect(text).toContain(squash(body.summary!));
@@ -441,8 +442,11 @@ test.describe("PHONE-PATH-01 stranger path at 390x844", () => {
     const accept = (await (await chooserP).element().getAttribute("accept")) ?? "";
     const kinds = accept.split(",").map((k) => k.trim()).filter(Boolean);
     expect(kinds.length, "the picker filters by kind").toBeGreaterThan(0);
-    expect(kinds).not.toContain(".tsv");
-    // Every kind it does offer is ingested: tests/test_phone_path_01.py reads this same list.
+    // Every kind it offers is a kind the route ingests (tests/test_phone_path_01.py reads this same list
+    // and runs each through the route). Any kind outside this set, in any case or as a MIME type, is a
+    // promise the backend refuses: .tsv, .TSV, text/tab-separated-values, .txt, .tab, text/*.
+    const INGESTED = new Set([".csv", ".xlsx", ".xlsm"]);
+    expect(kinds.filter((k) => !INGESTED.has(k)), "kinds offered that the route does not ingest").toEqual([]);
     expect(kinds).toContain(".csv");
   });
 
