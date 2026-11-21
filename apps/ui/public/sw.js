@@ -13,8 +13,8 @@ const SHELL = "dms-shell-v1";
  * trailing slash, query or ;parameter. The path is reduced to what a server would route before it is
  * tested: percent-decoded until it stops changing, backslashes read as slashes, repeated slashes
  * collapsed, "." and ".." segments resolved, lower-cased. /health also covers /healthz, as it always
- * has; /apiary does not match. A path that does not decode, or still changes after 10 rounds, is left
- * alone too: when in doubt, the network answers, never the cache.
+ * has; /apiary does not match. A path that does not decode, or that needs 10 decodes or more to stop
+ * changing, is never intercepted either: when in doubt, the network answers, never the cache.
  */
 const NEVER = /^\/(?:(?:api|v1)(?![a-z0-9_-])|health)/;
 function isNever(pathname) {
@@ -83,30 +83,75 @@ const storable = (res) => res.ok && !res.redirected && isHtml(res);
  * The app's own page carries the dms-shell marker (index.html) and names its built entry: a
  * module script under /assets/. A Wi-Fi sign-in or SSO page answered with 200 has neither, and
  * the entry alone is not enough: any Vite-built page has one. It must never become the shell
- * (the home-screen app would open to it on the next offline launch). This guards against a
- * gateway in the way, not against a page forged to look like the app.
+ * (the home-screen app would open to it on the next offline launch).
  *
- * The test reads real elements only: comments, CDATA and the bodies of script, textarea and style
- * are blanked first, and an attribute must start after whitespace or a quote, so data-name is not name.
+ * What this defends: a gateway or captive portal that answers with its own page, which has no
+ * reason to contain the marker, or to contain it only as inert text (a comment, a script string,
+ * a CDATA block, a textarea or style body). The scan is one linear pass over the markup, skips
+ * those, matches attribute names and values exactly (data-name is not name), and refuses an entry
+ * src with ".." or "%" in it.
+ *
+ * What it does not defend: a page deliberately forged to look like the app. Markup this scan does
+ * not model (title, noscript, template, xmp, plaintext, svg, attribute values, duplicate
+ * attributes, nomodule) can still carry a marker that a browser would not treat as one. Nobody
+ * between the phone and the server is assumed to be writing the app's own HTML.
  */
-const inertRemoved = (html) =>
-  html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, " ")
-    .replace(/(<(script|textarea|style)\b[^>]*>)[\s\S]*?(<\/\2\s*>)/gi, "$1$3");
-
-const isAppShell = (page) => {
-  const html = inertRemoved(page);
-  return (
-    (html.match(/<meta\b[^>]*>/gi) || []).some(
-      (tag) => /[\s"']name=["']dms-shell["']/.test(tag) && /[\s"']content=["']1["']/.test(tag),
-    ) &&
-    (html.match(/<script\b[^>]*>/gi) || []).some((tag) => {
-      const src = /[\s"']src=["'](\/assets\/[^"']+\.js)["']/.exec(tag);
-      return /[\s"']type=["']module["']/.test(tag) && src !== null && !src[1].includes("..");
-    })
-  );
+const MAX_SHELL_CHARS = 64 * 1024; // the real shell is about 1.3KB; anything bigger is not it
+const TAG = /<(meta|script|textarea|style)(?![A-Za-z0-9_])/iy;
+const CLOSER = {
+  script: /<\/script\s*>/gi,
+  textarea: /<\/textarea\s*>/gi,
+  style: /<\/style\s*>/gi,
 };
+
+function isAppShell(page) {
+  if (page.length > MAX_SHELL_CHARS) return false;
+  let marker = false;
+  let entry = false;
+  let at = 0;
+  // Every step moves forward over text it has not seen, so the cost is linear in the page.
+  while ((at = page.indexOf("<", at)) !== -1) {
+    if (page.startsWith("<!--", at) || page.startsWith("<![CDATA[", at)) {
+      const comment = page.startsWith("<!--", at);
+      const end = page.indexOf(comment ? "-->" : "]]>", at + 4);
+      if (end === -1) break; // unclosed: the rest of the page is inert
+      at = end + 3;
+      continue;
+    }
+    TAG.lastIndex = at;
+    const open = TAG.exec(page);
+    const close = open ? page.indexOf(">", at + open[0].length) : -1;
+    if (!open || close === -1) {
+      if (open) break; // an unfinished tag
+      at += 1;
+      continue;
+    }
+    const tag = page.slice(at, close + 1);
+    const name = open[1].toLowerCase();
+    at = close + 1;
+    if (name === "meta") {
+      if (/[\s"']name=["']dms-shell["']/.test(tag) && /[\s"']content=["']1["']/.test(tag)) marker = true;
+      continue;
+    }
+    if (name === "script") {
+      const src = /[\s"']src=["'](\/assets\/[^"']+\.js)["']/.exec(tag);
+      if (
+        /[\s"']type=["']module["']/.test(tag) &&
+        src !== null &&
+        !src[1].includes("..") &&
+        !src[1].includes("%")
+      ) {
+        entry = true;
+      }
+    }
+    // The body of script, textarea and style is text, not markup.
+    CLOSER[name].lastIndex = at;
+    const closer = CLOSER[name].exec(page);
+    if (closer === null) break; // unclosed: the rest of the page is inert
+    at = closer.index + closer[0].length;
+  }
+  return marker && entry;
+}
 
 /*
  * Store the newest shell, then drop every cached asset it no longer references,

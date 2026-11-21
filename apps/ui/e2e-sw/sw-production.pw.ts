@@ -340,7 +340,12 @@ const MARKER = '<meta name="dms-shell" content="1" />';
 const goodShell = (page: Page) => page.evaluate(async (s) => (await (await caches.open(s)).match("/"))?.text() ?? null, SHELL);
 
 /** Serve `body` at "/" online, then go offline: the next launch must still open the app, with its assets. */
-async function expectPageNeverBecomesShell(page: Page, context: import("@playwright/test").BrowserContext, body: string) {
+async function expectPageNeverBecomesShell(
+  page: Page,
+  context: import("@playwright/test").BrowserContext,
+  body: string,
+  opts: { headingShown?: boolean } = {},
+) {
   await bootWithAssets(page);
   const good = await goodShell(page);
   const goodAssets = await assetPaths(page);
@@ -348,7 +353,7 @@ async function expectPageNeverBecomesShell(page: Page, context: import("@playwri
   const isRoot = (url: URL) => url.pathname === "/";
   await context.route(isRoot, (r) => r.fulfill({ status: 200, contentType: "text/html", body }));
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: PORTAL_TITLE })).toBeVisible();
+  if (opts.headingShown !== false) await expect(page.getByRole("heading", { name: PORTAL_TITLE })).toBeVisible();
   await page.waitForTimeout(400);
   await context.unroute(isRoot);
   await context.setOffline(true);
@@ -572,6 +577,21 @@ const NOT_THE_APP: Record<string, string> = {
   "a data-content attribute beside a real name": wrap(`<meta name="dms-shell" data-content="1" />${MOD}`),
   "a data-type attribute on the entry script": wrap(`${MARKER}<script data-type="module" src="/assets/p.js"></script>`),
   "a data-src attribute on the entry script": wrap(`${MARKER}<script type="module" data-src="/assets/p.js"></script>`),
+  "a marker and module script only inside a style body": wrap(`<style>${MARKER}${MOD}</style>`),
+  "a marker and module script inside an upper-case STYLE element": wrap(`<STYLE>${MARKER}${MOD}</STYLE>`),
+  "a marker and module script inside an upper-case TEXTAREA element": wrap(`<TEXTAREA>${MARKER}${MOD}</TEXTAREA>`),
+  "a style body closed by an upper-case </STYLE>": wrap(`<style>${MARKER}${MOD}</STYLE>`),
+  "a style body closed by </style >": wrap(`<style>${MARKER}${MOD}</style >`),
+  "a script body closed by </script >": wrap(`<script>var s = '${MARKER}';</script >`),
+  "a content of 10": wrap(`<meta name="dms-shell" content="10" />${MOD}`),
+  "a marker name of dms-shell-x": wrap(`<meta name="dms-shell-x" content="1" />${MOD}`),
+  "a script type of modulex": wrap(`${MARKER}<script type="modulex" src="/assets/p.js"></script>`),
+  "a script src ending in .json": wrap(`${MARKER}<script type="module" src="/assets/p.json"></script>`),
+  "a metadata element named dms-shell": wrap(`<metadata name="dms-shell" content="1"></metadata>${MOD}`),
+  "a scripts element as the entry": wrap(`${MARKER}<scripts type="module" src="/assets/p.js"></scripts>`),
+  "an entry src with a percent-encoded dot segment": wrap(
+    `${MARKER}<script type="module" src="/assets/%2e%2e/portal/evil.js"></script>`,
+  ),
   "a marker whose content is 0": wrap(`<meta name="dms-shell" content="0" />${MOD}`),
   "a meta with another name": wrap(`<meta name="other-shell" content="1" />${MOD}`),
   "a marker with no content": wrap(`<meta name="dms-shell" />${MOD}`),
@@ -738,4 +758,114 @@ test("26 an asset cached online under one query string is served offline under a
   await context.setOffline(true);
   const offline = await page.evaluate(() => fetch("/assets/qk-1.js?q=2").then((r) => r.text(), () => "network-error"));
   expect(offline).toBe("//qk");
+});
+
+/*
+ * IPHONE-SHELL-04: round 3. A hostile page must not hold the worker, the cap on what may be the shell,
+ * both edges of the decoding cap, and the near-API spellings that must still open the app.
+ */
+const HOSTILE: Record<string, string> = {
+  "unclosed comment openers": "<!--",
+  "unclosed meta tags": "<meta ",
+  "style openers": "<style>",
+  "unclosed script tags": "<script ",
+  "CDATA openers": "<![CDATA[",
+};
+for (const [name, unit] of Object.entries(HOSTILE)) {
+  test(`27 a 2MB page of ${name} answered at / does not hold the worker or become the shell`, async ({
+    page,
+    context,
+  }) => {
+    const body = unit.repeat(Math.floor(2_000_000 / unit.length));
+    await expectPageNeverBecomesShell(page, context, body, { headingShown: false });
+  });
+}
+
+const sizedShell = (real: string, chars: number) => {
+  const pad = "<p>x</p>".repeat(Math.max(0, Math.ceil((chars - real.length) / 8)));
+  return real.replace("</body>", `${pad}</body>`);
+};
+
+test("28 a 63KB page with the marker and a module script still becomes the shell; a 70KB one does not", async ({
+  page,
+  context,
+}) => {
+  await bootWithAssets(page);
+  const real = (await goodShell(page))!;
+  const big = sizedShell(real, 63 * 1024);
+  expect(big.length).toBeGreaterThan(62 * 1024);
+  expect(big.length).toBeLessThan(64 * 1024);
+  const isRoot = (url: URL) => url.pathname === "/";
+  await context.route(isRoot, (r) => r.fulfill({ status: 200, contentType: "text/html", body: big }));
+  await page.goto("/");
+  await expect.poll(() => goodShell(page)).toBe(big);
+  await context.unroute(isRoot);
+
+  const tooBig = sizedShell(real, 70 * 1024);
+  await context.route(isRoot, (r) => r.fulfill({ status: 200, contentType: "text/html", body: tooBig }));
+  await page.goto("/");
+  await page.waitForTimeout(400);
+  expect(await goodShell(page), "a page over the size cap replaced the shell").toBe(big);
+});
+
+test("29 a page whose marker is real and whose styles and scripts close in other spellings still becomes the shell", async ({
+  page,
+  context,
+}) => {
+  await bootWithAssets(page);
+  const isRoot = (url: URL) => url.pathname === "/";
+  const bodies = [
+    wrap(`<style>a{}</STYLE >${MARKER}${MOD}`),
+    wrap(`<SCRIPT>var x = 1;</SCRIPT >${MARKER}${MOD}`),
+    wrap(`<textarea>a</TEXTAREA>${MARKER}${MOD}`),
+  ];
+  for (const body of bodies) {
+    await context.route(isRoot, (r) => r.fulfill({ status: 200, contentType: "text/html", body }));
+    await page.goto("/");
+    await expect.poll(() => goodShell(page), body).toBe(body);
+    await context.unroute(isRoot);
+  }
+});
+
+/** Offline paths that decode to /library after exactly n decoding rounds. */
+const libraryAfter = (n: number) => `/li%${"25".repeat(n - 1)}62rary`;
+
+test("30 offline, a path needing 9 or fewer decodes opens the app; 10 or more is a network error", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  await bootWithAssets(page);
+  await context.setOffline(true);
+  for (const n of [5, 9]) {
+    const pg = await context.newPage();
+    try {
+      await pg.goto(`${baseURL}${libraryAfter(n)}`);
+      await expect(pg.getByTestId("tab-bar"), `${n} decodes`).toBeVisible();
+    } finally {
+      await pg.close();
+    }
+  }
+  for (const n of [10, 11]) {
+    const pg = await context.newPage();
+    try {
+      await expect(pg.goto(`${baseURL}${libraryAfter(n)}`), `${n} decodes`).rejects.toThrow(/net::ERR/);
+    } finally {
+      await pg.close();
+    }
+  }
+});
+
+test("31 offline, paths that only start like /api or /v1 open the app", async ({ page, context, baseURL }) => {
+  await bootWithAssets(page);
+  await context.setOffline(true);
+  for (const u of ["/api-x", "/api_x", "/v1-x", "/v1_x", "/x/api", "/x/v1/spaces", "/x/health"]) {
+    const pg = await context.newPage();
+    try {
+      await pg.goto(`${baseURL}${u}`);
+      await expect(pg.getByTestId("tab-bar"), u).toBeVisible();
+    } finally {
+      await pg.close();
+    }
+  }
 });
