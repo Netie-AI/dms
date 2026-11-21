@@ -668,7 +668,15 @@ def test_projection_without_column_read_drops(sales: Lake) -> None:
     ],
 )
 def test_nondeterministic_shapes_drop(sales: Lake, sql: str) -> None:
-    assert reason(sales, sql) == "volatile_function"
+    why = reason(sales, sql)
+    if "USING SAMPLE" in sql:
+        # Since the T1 merge (46f77bf) the shared total guard refuses an aggregate over a
+        # sample first; either reason drops the question.
+        assert why == "volatile_function" or str(why).startswith(
+            "repeated_input:sample_under_aggregate"
+        ), why
+        return
+    assert why == "volatile_function"
 
 
 def test_limit_without_order_drops_and_ordered_limit_passes(sales: Lake) -> None:
