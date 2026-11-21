@@ -122,10 +122,36 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
     expect(panel).toMatch(/fixed inset-0 top-12/);
   });
 
+  /** public/sw.js run with a stub worker scope, so its pure helpers can be called. */
+  const loadSw = () => {
+    const src = readFileSync(join(here, "../../public/sw.js"), "utf8");
+    const scope = { addEventListener: () => undefined, location: { origin: "http://x" }, skipWaiting: () => undefined };
+    return {
+      src,
+      ...(new Function("self", `${src}\n;return { isNever, isAsset, isAppShell, storable };`)(scope) as {
+        isNever: (p: string) => boolean;
+        isAsset: (r: { headers: { get: (k: string) => string | null } }) => boolean;
+        isAppShell: (html: string) => boolean;
+        storable: (r: { ok: boolean; redirected: boolean; headers: { get: (k: string) => string | null } }) => boolean;
+      }),
+    };
+  };
+  const res = (type: string | null, extra: object = {}) => ({
+    ok: true,
+    redirected: false,
+    headers: { get: (k: string) => (k.toLowerCase() === "content-type" ? type : null) },
+    ...extra,
+  });
+
   it("the offline shell never caches an answer path", () => {
-    const sw = readFileSync(join(here, "../../public/sw.js"), "utf8");
-    expect(sw).toMatch(/const NEVER = \["\/api\/", "\/v1\/", "\/health"\]/);
-    expect(sw).toMatch(/NEVER\.some\(.*\)\) return;/);
+    const { src, isNever } = loadSw();
+    // The routed path is reduced (decoded, slashes, dots, case) before the /api /v1 /health test.
+    for (const p of ["/api/x", "/api", "/v1/spaces", "/health", "/healthz", "/API/health", "/v1%2Fspaces", "/x/..%2Fapi%2Fhealth"]) {
+      expect(isNever(p), p).toBe(true);
+    }
+    for (const p of ["/", "/library", "/spaces", "/apiary", "/assets/index-abc.js"]) expect(isNever(p), p).toBe(false);
+    // And the fetch handler really leaves such a request to the network.
+    expect(src).toMatch(/if \(isNever\(url\.pathname\)\) return;/);
   });
 
   it("the shell keeps its home-indicator padding (cannot be measured in a browser test)", () => {
@@ -137,11 +163,22 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
   });
 
   it("the offline shell never stores HTML as an asset, a redirect as the shell, or a dead build", () => {
-    // Verified on a production build (the missing-asset, prune and file-URL cases);
-    // these pins keep the three guards from being dropped.
-    const sw = readFileSync(join(here, "../../public/sw.js"), "utf8");
-    expect(sw).toMatch(/res\.ok && !res\.redirected && !isHtml\(res\)/);
-    expect(sw).toMatch(/res\.ok && !res\.redirected && isHtml\(res\)\) event\.waitUntil\(refreshShell/);
-    expect(sw).toMatch(/!html\.includes\(path\)\) await cache\.delete\(req\)/);
+    // Verified on a production build (the missing-asset, prune and file-URL cases) by e2e-sw; these keep
+    // the guards from being dropped without a browser.
+    const { src, isAsset, isAppShell, storable } = loadSw();
+    expect(isAsset(res("text/html"))).toBe(false);
+    expect(isAsset(res(null))).toBe(false);
+    expect(isAsset(res("text/javascript; charset=utf-8"))).toBe(true);
+    expect(storable(res("text/html", { redirected: true }))).toBe(false);
+    expect(storable(res("text/html", { ok: false }))).toBe(false);
+    expect(storable(res("text/html"))).toBe(true);
+    // A page that is not the app (no marker) is never the shell, even with a module entry.
+    expect(isAppShell('<script type="module" src="/assets/index-a.js"></script>')).toBe(false);
+    expect(
+      isAppShell('<meta name="dms-shell" content="1"><script type="module" crossorigin src="/assets/index-a.js"></script>'),
+    ).toBe(true);
+    expect(src).toMatch(/res\.ok && !res\.redirected && isAsset\(res\)/);
+    expect(src).toMatch(/storable\(res\) \? refreshShell\(res\)/);
+    expect(src).toMatch(/!html\.includes\(path\)\) await cache\.delete\(req\)/);
   });
 });
