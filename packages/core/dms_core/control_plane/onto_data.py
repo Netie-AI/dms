@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -28,7 +28,16 @@ import psycopg
 
 from dms_core.control_plane.session import set_tenant_context
 
-KINDS = ("object", "link", "measure", "grain", "pii")
+KINDS = (
+    "object",
+    "link",
+    "measure",
+    "grain",
+    "pii",
+    "column_type",
+    "value_map",
+    "verified_query",
+)
 STATUSES = ("proposed", "approved", "revoked")
 
 _LOCK = threading.Lock()
@@ -45,10 +54,16 @@ _ITEM_COLUMNS = (
 #: their version names and are never part of the tenant-wide approved read.
 PROFILE_SOURCE = "profile"
 _PROFILE_KINDS = ("object", "link")
+#: FDE-ONBOARD-01: items an onboarding run proposes for one Space. Proposals
+#: only. An approved onboard item changes no answer in that ticket, so no
+#: approved read returns it (applying one is a follow-up).
+ONBOARD_SOURCE = "fde_onboard"
+ONBOARD_KINDS = ("object", "link", "column_type", "value_map", "verified_query")
 _PROFILE_ITEM_COLUMNS = (
     "i.id::text, i.tenant_id::text, i.version_id::text, i.kind, i.payload, i.status, "
     "i.source, i.provenance, i.created_by::text, i.approved_by, i.approval_ref, i.ts"
 )
+_UNSERVED_SOURCES = (PROFILE_SOURCE, ONBOARD_SOURCE)
 #: ONTO-SCOPE-01: approved items by the Space their version names. ``IS NOT
 #: DISTINCT FROM`` also matches a version that names no Space (NULL).
 _APPROVED_ITEMS_OF_SPACE = f"""
@@ -58,6 +73,15 @@ _APPROVED_ITEMS_OF_SPACE = f"""
      WHERE v.space_id IS NOT DISTINCT FROM %s::uuid
        AND i.status = 'approved'
        AND i.source <> '{PROFILE_SOURCE}'
+       AND i.source <> '{ONBOARD_SOURCE}'
+     ORDER BY i.ts, i.id
+"""
+_ONBOARD_ITEMS_OF_SPACE = f"""
+    SELECT {_PROFILE_ITEM_COLUMNS}
+      FROM dms.ontology_items i
+      JOIN dms.ontology_versions v ON v.id = i.version_id
+     WHERE v.space_id = %s
+       AND i.source = '{ONBOARD_SOURCE}'
      ORDER BY i.ts, i.id
 """
 _PROFILE_ITEMS_OF_SPACE = f"""
@@ -189,6 +213,31 @@ def _profile_relation(row: ItemRow) -> str | None:
         return None
     relation = row.payload.get("relation")
     return relation if isinstance(relation, str) and relation else None
+
+
+def _check_onboard(
+    items: Sequence[tuple[str, Mapping[str, Any], Mapping[str, Any]]],
+) -> None:
+    """Refuse an unknown kind before anything is written."""
+    for kind, _payload, _evidence in items:
+        if kind not in ONBOARD_KINDS:
+            raise ValueError(f"unknown onboard item kind: {kind!r}")
+
+
+def _onboard_provenance(run: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
+    return {"run": dict(run), "evidence": dict(evidence)}
+
+
+def _onboard_response(
+    space: str, version_id: str | None, items: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "status": "proposed",
+        "served": False,
+        "space_id": space,
+        "version_id": version_id,
+        "items": items,
+    }
 
 
 def _profile_response(
@@ -558,7 +607,10 @@ class OntologyDataStore:
         return [_public_item(row) for row in rows if status is None or row.status == status]
 
     def approved_items_of_space(self, space_id: str | None) -> list[dict[str, Any]]:
-        """Approved items whose version names ``space_id``. Never a profile item.
+        """Approved items whose version names ``space_id``. Never a profile or onboard item.
+
+        An approved onboard item changes no answer in FDE-ONBOARD-01, so it is
+        read only through ``space_onboard_items``.
 
         ``None`` reads the items whose version names no Space. An item whose
         version is unknown belongs to no Space and to no named Space either.
@@ -568,7 +620,7 @@ class OntologyDataStore:
             return []
         rows = []
         for row in self._items.values():
-            if row.status != "approved" or row.source == PROFILE_SOURCE:
+            if row.status != "approved" or row.source in _UNSERVED_SOURCES:
                 continue
             version = self._versions.get(row.version_id)
             named = None if version is None else version.space_id
@@ -576,6 +628,70 @@ class OntologyDataStore:
                 rows.append(row)
         rows.sort(key=lambda row: (row.ts, row.id))
         return [_public_item(row) for row in rows]
+
+    def store_onboard(
+        self,
+        items: Sequence[tuple[str, Mapping[str, Any], Mapping[str, Any]]],
+        *,
+        created_by: str,
+        space_id: str,
+        tenant_id: str = "",
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Store onboarding proposals of one Space. Always ``proposed``, never served.
+
+        A ``status`` or ``approved`` key in a payload is data, not a command.
+        """
+        space = str(space_id or "").strip()
+        if not space:
+            raise ValueError("an onboard proposal belongs to a Space")
+        _check_onboard(items)
+        if not items:
+            return _onboard_response(space, None, [])
+        now = _now()
+        version = VersionRow(
+            id=str(uuid4()),
+            tenant_id=tenant_id,
+            space_id=space,
+            source=ONBOARD_SOURCE,
+            provenance={"served": False, "run": dict(run)},
+            created_by=created_by,
+            ts=now,
+        )
+        self._versions[version.id] = version
+        stored: list[dict[str, Any]] = []
+        for kind, payload, evidence in items:
+            row = ItemRow(
+                id=str(uuid4()),
+                tenant_id=tenant_id,
+                version_id=version.id,
+                kind=kind,
+                payload=dict(payload),
+                status="proposed",
+                source=ONBOARD_SOURCE,
+                provenance=_onboard_provenance(run, evidence),
+                created_by=created_by,
+                approved_by=None,
+                ts=now,
+            )
+            self._items[row.id] = row
+            stored.append(_public_item(row))
+        return _onboard_response(space, version.id, stored)
+
+    def space_onboard_items(
+        self, space_id: str, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Onboard items of one Space, optionally one status. No other Space's."""
+        want = str(space_id or "").strip()
+        rows = []
+        for row in self._items.values():
+            if row.source != ONBOARD_SOURCE:
+                continue
+            version = self._versions.get(row.version_id)
+            if version is not None and version.space_id == want:
+                rows.append(row)
+        rows.sort(key=lambda row: (row.ts, row.id))
+        return [_public_item(row) for row in rows if status is None or row.status == status]
 
     def _refuse_second_profile_key(self, rows: list[ItemRow]) -> None:
         """Raise before any change when ``rows`` would approve a second key."""
@@ -655,11 +771,13 @@ class OntologyDataStore:
 
     def approved_items(self) -> list[dict[str, Any]]:
         """Tenant-wide approved items. A profile item belongs to one Space and
-        is read only through ``space_profile_items``."""
+        is read only through ``space_profile_items``. An onboard item is read
+        only through ``space_onboard_items``: even approved, it changes no
+        answer in FDE-ONBOARD-01."""
         rows = [
             row
             for row in self._items.values()
-            if row.status == "approved" and row.source != PROFILE_SOURCE
+            if row.status == "approved" and row.source not in _UNSERVED_SOURCES
         ]
         rows.sort(key=lambda row: (row.ts, row.id))
         return [_public_item(row) for row in rows]
@@ -948,12 +1066,123 @@ class PostgresOntologyDataStore:
 
     def approved_items(self) -> list[dict[str, Any]]:
         """Tenant-wide approved items. A profile item belongs to one Space and
-        is read only through ``space_profile_items``."""
+        is read only through ``space_profile_items``. An onboard item is read
+        only through ``space_onboard_items``: even approved, it changes no
+        answer in FDE-ONBOARD-01."""
         return [
             _public_item(row)
             for row in self._items_by_status("approved")
-            if row.source != PROFILE_SOURCE
+            if row.source not in _UNSERVED_SOURCES
         ]
+
+    def store_onboard(
+        self,
+        items: Sequence[tuple[str, Mapping[str, Any], Mapping[str, Any]]],
+        *,
+        created_by: str,
+        space_id: str,
+        tenant_id: str = "",
+        run: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Store onboarding proposals of one Space in one transaction. Never served."""
+        space = _uuid_text(space_id)
+        if space is None:
+            raise ValueError("an onboard proposal belongs to a Space")
+        _check_onboard(items)
+        if not items:
+            return _onboard_response(space, None, [])
+        tenant = self._tenant(tenant_id)
+        created = _uuid_text(created_by)
+        now = datetime.now(UTC)
+        ts = _iso(now)
+        version_id = str(uuid4())
+        rows = [
+            ItemRow(
+                id=str(uuid4()),
+                tenant_id=tenant,
+                version_id=version_id,
+                kind=kind,
+                payload=dict(payload),
+                status="proposed",
+                source=ONBOARD_SOURCE,
+                provenance=_onboard_provenance(run, evidence),
+                created_by=created_by,
+                approved_by=None,
+                ts=ts,
+            )
+            for kind, payload, evidence in items
+        ]
+        conn = self._connect()
+        try:
+            ensure_tenant_row(conn, tenant)
+            set_tenant_context(conn, tenant, role="steward")
+            conn.execute(
+                """
+                INSERT INTO dms.ontology_versions (
+                  id, tenant_id, space_id, source, provenance, created_by, ts
+                ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                """,
+                (
+                    version_id,
+                    tenant,
+                    space,
+                    ONBOARD_SOURCE,
+                    json.dumps({"served": False, "run": dict(run)}),
+                    created,
+                    now,
+                ),
+            )
+            for row in rows:
+                conn.execute(
+                    """
+                    INSERT INTO dms.ontology_items (
+                      id, tenant_id, version_id, kind, payload, status, source,
+                      provenance, created_by, approved_by, approval_ref, ts
+                    ) VALUES (
+                      %s, %s, %s, %s, %s::jsonb, 'proposed', %s,
+                      %s::jsonb, %s, NULL, NULL, %s
+                    )
+                    """,
+                    (
+                        row.id,
+                        tenant,
+                        version_id,
+                        row.kind,
+                        json.dumps(row.payload, default=str),
+                        row.source,
+                        json.dumps(row.provenance, default=str),
+                        created,
+                        now,
+                    ),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return _onboard_response(space, version_id, [_public_item(r) for r in rows])
+
+    def space_onboard_items(
+        self, space_id: str, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Onboard items of one Space, optionally one status. No other Space's."""
+        space = _uuid_text(space_id)
+        if space is None:
+            return []
+        tenant = self._tenant(None)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            fetched = conn.execute(_ONBOARD_ITEMS_OF_SPACE, (space,)).fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        rows = [_item_from_db(record) for record in fetched]
+        return [_public_item(row) for row in rows if status is None or row.status == status]
 
     def store_profile(
         self,
@@ -1099,7 +1328,10 @@ class PostgresOntologyDataStore:
         return [_public_item(row) for row in rows if status is None or row.status == status]
 
     def approved_items_of_space(self, space_id: str | None) -> list[dict[str, Any]]:
-        """Approved items whose version names ``space_id``. Never a profile item.
+        """Approved items whose version names ``space_id``. Never a profile or onboard item.
+
+        An approved onboard item changes no answer in FDE-ONBOARD-01, so it is
+        read only through ``space_onboard_items``.
 
         ``None`` reads the items whose version names no Space. An id that is
         not a UUID names no stored Space, so it reads nothing (never the
@@ -1319,4 +1551,21 @@ def store_proposal(
         created_by=created_by,
         space_id=space_id,
         tenant_id=tenant_id,
+    )
+
+
+def store_onboard(
+    items: Sequence[tuple[str, Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    created_by: str,
+    space_id: str,
+    tenant_id: str = "",
+    run: Mapping[str, Any],
+) -> dict[str, Any]:
+    return ontology_data_store().store_onboard(
+        items,
+        created_by=created_by,
+        space_id=space_id,
+        tenant_id=tenant_id,
+        run=run,
     )

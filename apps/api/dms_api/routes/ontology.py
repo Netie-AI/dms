@@ -145,8 +145,9 @@ def space_ontology_items(
     cortex: CortexDep,
     spaces: SpaceStoreDep,
     status: Literal["proposed", "approved", "revoked"] | None = None,
+    source: Literal["profile", "fde_onboard"] = "profile",
 ) -> dict[str, Any]:
-    """Profile items of one Space with status and stored evidence."""
+    """Profile (default) or onboarding items of one Space with status and evidence."""
     _require_steward(settings)
     decision = compliance_gate(
         action="ontology.space_items",
@@ -163,7 +164,12 @@ def space_ontology_items(
         "space_id": str(space.id),
         "served": False,
         "persisted": isinstance(store, PostgresOntologyDataStore),
-        "items": store.space_profile_items(str(space.id), status),
+        "source": source,
+        "items": (
+            store.space_onboard_items(str(space.id), status)
+            if source == "fde_onboard"
+            else store.space_profile_items(str(space.id), status)
+        ),
     }
 
 
