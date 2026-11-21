@@ -21,7 +21,8 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Iterator, Sequence
+import unicodedata
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,9 @@ ALLOWED_NUMBER_KEYS = frozenset(
         "distinct_values_checked",
         "proposed",
         "approved",
+        "held_from_earlier_runs",
+        "agrees",
+        "disagrees",
         # stage 5 proposals: a position in the model's list, a count of variants
         "index",
         "variants",
@@ -212,7 +216,9 @@ def shape(value: object) -> str:
     out = ""
     truncated = False
     for cls, n in runs:
-        piece = cls if (cls in _PUNCT and n == 1) else f"{cls}{n}"
+        # A punctuation run always carries its count, so no cell made only of punctuation
+        # is its own shape (``-`` is ``shape:-1``, never ``shape:-``).
+        piece = f"{cls}{n}"
         if len(out) + len(piece) > SHAPE_MAX:
             truncated = True
             break
@@ -223,43 +229,101 @@ def shape(value: object) -> str:
 # --- names -------------------------------------------------------------------------------
 
 
-class NameMask:
-    """Replaces a table or column name the PII scanner changes with ``fde_name_NN``."""
+_RESERVED_NAME = re.compile(r"fde_name_\d+", re.IGNORECASE)
+_TOKEN_RE = re.compile(r"\bfde_name_\d+\b")
 
-    def __init__(self, tables: Sequence[tuple[str, Sequence[str]]] = ()) -> None:
+
+def _reserved(name: str) -> bool:
+    """A name inside the namespace the pack itself writes: it must be tokenised."""
+    folded = name.casefold()
+    return (
+        _RESERVED_NAME.search(name) is not None
+        or folded.startswith("dmsmask_")
+        or folded.startswith("shape:")
+    )
+
+
+def _scanner_changes(name: str) -> bool:
+    return mask_payload(text=name)["text"] != name
+
+
+def _source_variants(source: str) -> list[str]:
+    """The original upload name and its stem. pii.py has no person-name detector for a
+    bare header: the scanner sees emails, phones, ids and dates, not a name like ``alice``."""
+    base = source.replace("\\", "/").rpartition("/")[2]
+    stem = base.rpartition(".")[0] if "." in base else base
+    return [v for v in dict.fromkeys((source, base, stem)) if v]
+
+
+class NameMask:
+    """Replaces a table or column name the PII scanner changes with ``fde_name_NN``.
+
+    A name in the reserved namespace (``fde_name_N``, ``DMSMASK_``, ``shape:``) is
+    tokenised too, so the model never sees two columns with one name. ``sources`` maps a
+    table label to its original upload file name: the table is tokenised when the scanner
+    changes that name or its stem, even if the derived table name is clean."""
+
+    def __init__(
+        self,
+        tables: Sequence[tuple[str, Sequence[str]]] = (),
+        *,
+        sources: Mapping[str, str] | None = None,
+    ) -> None:
         self._token_of: dict[str, str] = {}
         self._raw_of: dict[str, str] = {}
+        self._source_text: dict[str, str] = {}
+        self._pattern: tuple[int, re.Pattern[str] | None] = (-1, None)
         for table, columns in tables:
-            self.out(table.rpartition(".")[2])
+            bare = table.rpartition(".")[2]
+            origin = (sources or {}).get(table)
+            variants = _source_variants(origin) if origin else []
+            if variants and any(_scanner_changes(v) for v in variants):
+                token = self._assign(bare)
+                for v in variants:
+                    self._source_text[v] = token
+            else:
+                self.out(bare)
             for column in columns:
                 self.out(column)
+
+    def _assign(self, name: str) -> str:
+        known = self._token_of.get(name)
+        if known is not None:
+            return known
+        token = f"fde_name_{len(self._token_of) + 1:02d}"
+        self._token_of[name] = token
+        self._raw_of[token] = name
+        return token
 
     def out(self, name: str) -> str:
         known = self._token_of.get(name)
         if known is not None:
             return known
-        if mask_payload(text=name)["text"] == name:
+        if not _reserved(name) and not _scanner_changes(name):
             return name
-        token = f"fde_name_{len(self._token_of) + 1:02d}"
-        self._token_of[name] = token
-        self._raw_of[token] = name
-        return token
+        return self._assign(name)
 
     def out_table(self, label: str) -> str:
         schema, dot, bare = label.rpartition(".")
         return f"{schema}{dot}{self.out(bare)}"
 
     def text(self, text: str) -> str:
-        """``text`` with every masked raw name replaced by its token (longest first)."""
-        for raw in sorted(self._token_of, key=len, reverse=True):
-            if raw in text:
-                text = text.replace(raw, self._token_of[raw])
-        return text
+        """``text`` with every masked raw name replaced by its token, in one pass."""
+        size = len(self._token_of) + len(self._source_text)
+        if self._pattern[0] != size:
+            raws = sorted({*self._token_of, *self._source_text}, key=len, reverse=True)
+            pat = re.compile("|".join(re.escape(r) for r in raws)) if raws else None
+            self._pattern = (size, pat)
+        pat = self._pattern[1]
+        if pat is None:
+            return text
+        return pat.sub(
+            lambda m: self._token_of.get(m.group(0)) or self._source_text[m.group(0)], text
+        )
 
     def back(self, text: str) -> str:
-        for token in sorted(self._raw_of, key=len, reverse=True):
-            text = text.replace(token, self._raw_of[token])
-        return text
+        """Whole tokens only. An unknown token (``fde_name_99``) stays as it is."""
+        return _TOKEN_RE.sub(lambda m: self._raw_of.get(m.group(0), m.group(0)), text)
 
     def tokens(self) -> dict[str, str]:
         return dict(self._raw_of)
@@ -805,35 +869,104 @@ def pack_files(out_dir: Path) -> dict[str, dict[str, Any]]:
 
 # --- leak check ----------------------------------------------------------------------------
 
-
-#: Fields this tool generates: an item or run id, a sha256, a timestamp. Hex and digits in
-#: them can spell a short code (``c012``), so they are left out of the leak check, but only
-#: when the value has exactly the generated shape. Anything else under these keys is checked.
-_GENERATED_KEYS = frozenset({"id", "run_id", "space_id", "version_id", "sha256", "created_at"})
-_GENERATED_VALUE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-    r"|[0-9a-f]{64}"
-    r"|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?\+00:00"
+#: The only files a pack may hold. Any other file under the pack directory is refused.
+PACK_FILES = frozenset(
+    {
+        "manifest.json",
+        "schema.json",
+        "profile.json",
+        "samples.masked.json",
+        "measure.json",
+        "proposals/column_types.json",
+        "proposals/value_groups.json",
+        "proposals/ontology_draft.json",
+        "proposals/verified_questions.json",
+        "proposals/value_mappings.json",
+    }
 )
 
+#: Fields this tool generates: an item or run id, a sha256, a timestamp. Hex and digits in
+#: them can spell a short code (``c012``). Such an atom is left out of the leak check only
+#: when it is exactly one of the ``generated`` values the caller passes (or, for ``sha256``,
+#: the digest of a pack file or of a listed value). Every other atom is checked.
+_GENERATED_KEYS = frozenset({"id", "run_id", "space_id", "version_id", "sha256", "created_at"})
 
-def _atoms(node: Any, key: str = "") -> Iterator[str]:
-    """Every key and string value, decoded. A generated id, digest or timestamp is skipped."""
+#: Words the tool itself writes. An atom that is exactly one of these is not a source value
+#: leak. A closed constant: no cell value is ever added to it. The landed types of this
+#: lake come from information_schema (a per-check set), never from a cell.
+TOOL_VOCAB = frozenset(
+    {
+        # stage statuses and item statuses
+        "done", "refused", "failed", "not_requested", "not_reached", "running", "passed",
+        "proposed", "approved", "revoked",
+        # stage names and item kinds
+        "measure", "profile", "propose", "pack", "leak_check", "stage", "stages",
+        "column_type", "column_types", "value_map", "value_maps", "value_group",
+        "value_groups", "value_mapping", "value_mappings", "ontology_draft",
+        "verified_question", "verified_questions",
+        # fold names
+        "case_space", "punct", "affix", "initials",
+        # mask and pack format strings
+        PACK_FORMAT, SAMPLES_MASK, "measured",
+        # type proposals
+        "code", "category", "DATE", "BIGINT", "VARCHAR",
+        *(f"DECIMAL(38,{n})" for n in range(_EXACT_DECIMAL_MAX_SCALE + 1)),
+        *_DATE_FORMATS,
+        # reason codes this module writes
+        "leading_zero", "lossless_integer", "lossless_decimal", "single_format",
+        "ambiguous_date_format", "low_cardinality", "single_shape", "exponent_notation",
+        "scale_over_18", "precision_over_38", "not_plain_decimal", "no_values",
+        "double_text", "text",
+        # exception class names a failed measurement reports
+        "ConversionException", "BinderException", "ParserException", "CatalogException",
+        "InvalidInputException", "OutOfRangeException", "ConstraintException",
+        "InternalException", "SyntaxException", "IOException",
+    }
+)  # fmt: skip
+
+_RATIO_KEYS = frozenset({"null_rate", "orphan_observation_min_match_ratio"})
+_SIGNED_INT_KEYS = frozenset({"min_exp", "max_exp"})
+
+
+def normalise(text: str) -> str:
+    """NFKC, no format characters (zero-width and friends), casefolded. Both sides of the
+    leak comparison go through this."""
+    folded = unicodedata.normalize("NFKC", text)
+    folded = "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+    return unicodedata.normalize("NFKC", folded.casefold())
+
+
+def _atoms(
+    node: Any,
+    key: str = "",
+    generated: Collection[str] = frozenset(),
+    shas: Collection[str] = frozenset(),
+    vocab: Collection[str] = TOOL_VOCAB,
+) -> Iterator[str]:
+    """Every key and string value, decoded. A generated value the caller listed, or a
+    closed tool word, is skipped; it must be that whole atom."""
     if isinstance(node, dict):
         for k, v in node.items():
-            yield str(k)
-            yield from _atoms(v, str(k))
+            if str(k) not in vocab:
+                yield str(k)
+            yield from _atoms(v, str(k), generated, shas, vocab)
     elif isinstance(node, list):
         for v in node:
-            yield from _atoms(v, key)
+            yield from _atoms(v, key, generated, shas, vocab)
     elif isinstance(node, str):
-        if key in _GENERATED_KEYS and _GENERATED_VALUE.fullmatch(node):
+        if key == "sha256" and (node in shas or node in generated):
+            return
+        if key in _GENERATED_KEYS and node in generated:
+            return
+        if node in vocab:
             return
         yield node
 
 
-def _numbers(node: Any, key: str, chain: tuple[str, ...]) -> Iterator[tuple[str, tuple[str, ...]]]:
-    """``(nearest dict key, ancestor chain)`` of every JSON number."""
+def _numbers(
+    node: Any, key: str, chain: tuple[str, ...]
+) -> Iterator[tuple[str, tuple[str, ...], Any]]:
+    """``(nearest dict key, ancestor chain, value)`` of every JSON number."""
     if isinstance(node, dict):
         for k, v in node.items():
             yield from _numbers(v, str(k), (*chain, str(k)))
@@ -841,7 +974,7 @@ def _numbers(node: Any, key: str, chain: tuple[str, ...]) -> Iterator[tuple[str,
         for v in node:
             yield from _numbers(v, key, chain)
     elif isinstance(node, (int, float)) and not isinstance(node, bool):
-        yield key, chain
+        yield key, chain, node
 
 
 def _number_allowed(key: str, chain: tuple[str, ...]) -> bool:
@@ -853,101 +986,122 @@ def _number_allowed(key: str, chain: tuple[str, ...]) -> bool:
     return len(chain) == 3 and chain[:2] == _COUNT_PATH
 
 
+def _number_problem(key: str, value: Any) -> str | None:
+    """Why an allowed key holds a number that is not a count or a ratio, else None."""
+    if key in _RATIO_KEYS:
+        ok = isinstance(value, (int, float)) and math.isfinite(value) and 0 <= value <= 1
+        return None if ok else "not_a_ratio"
+    if not isinstance(value, int):
+        return "not_an_int"
+    if key in _SIGNED_INT_KEYS:
+        return None
+    return None if value >= 0 else "not_a_count"
+
+
 class LeakChecker:
     """Counts source values that appear in text. Returns counts only, never a value."""
 
     def __init__(self, space_id: str, *, path: Path | None = None) -> None:
         self._db = path or warehouse_path()
         self._tables = space_file_tables(space_id, path=self._db)
+        self._loaded: tuple[frozenset[str], int, frozenset[str]] | None = None
 
-    def _values_sql(self, con: duckdb.DuckDBPyConnection) -> tuple[str, int]:
-        selects: list[str] = []
+    def _load(self) -> tuple[frozenset[str], int, frozenset[str]]:
+        """Normalised distinct source values, the column count and the landed type names.
+        Read once and kept in memory only."""
+        if self._loaded is not None:
+            return self._loaded
+        values: set[str] = set()
+        types: set[str] = set()
         columns = 0
-        for label in self._tables:
-            for column, _t in _columns(con, label):
-                columns += 1
-                q = quote_ident(column)
-                selects.append(
-                    f"SELECT DISTINCT lower(trim(CAST({q} AS VARCHAR))) AS v "
-                    f"FROM {_relation(label)} WHERE {q} IS NOT NULL"
-                )
-        if not selects:
-            return "SELECT CAST(NULL AS VARCHAR) AS v WHERE false", 0
-        union = " UNION ".join(selects)
-        sql = (
-            f"SELECT v FROM ({union}) WHERE length(v) >= {MIN_LEAK_LEN} "
-            f"AND NOT regexp_full_match(v, '[0-9]{{1,{SHORT_INT_MAX_DIGITS}}}')"
-        )
-        return sql, columns
-
-    def hits(self, text: str) -> int:
         con = connect_serving(self._db)
         try:
-            sql, _ = self._values_sql(con)
-            row = con.execute(
-                f"SELECT COUNT(*) FROM ({sql}) WHERE contains(?, v)", [text.lower()]
-            ).fetchone()
-            return _int(row)
+            for label in self._tables:
+                for column, landed in _columns(con, label):
+                    columns += 1
+                    types.add(landed)
+                    types.add(_base(landed))
+                    q = quote_ident(column)
+                    cur = con.execute(
+                        f"SELECT DISTINCT CAST({q} AS VARCHAR) FROM {_relation(label)} "
+                        f"WHERE {q} IS NOT NULL"
+                    )
+                    while True:
+                        batch = cur.fetchmany(10_000)
+                        if not batch:
+                            break
+                        for (raw,) in batch:
+                            v = normalise(str(raw)).strip()
+                            if len(v) >= MIN_LEAK_LEN and not re.fullmatch(
+                                f"[0-9]{{1,{SHORT_INT_MAX_DIGITS}}}", v
+                            ):
+                                values.add(v)
         finally:
             con.close()
+        self._loaded = (frozenset(values), columns, frozenset(types))
+        return self._loaded
 
-    def check_pack(self, out_dir: Path) -> dict[str, Any]:
+    def _count(self, text: str) -> int:
+        haystack = normalise(text)
+        return sum(1 for v in self._load()[0] if v in haystack)
+
+    def hits(self, text: str) -> int:
+        return self._count(text)
+
+    def check_pack(self, out_dir: Path, *, generated: Collection[str] = ()) -> dict[str, Any]:
         root = Path(out_dir)
+        gen = frozenset(generated)
+        values, columns, landed_types = self._load()
+        vocab = TOOL_VOCAB | landed_types
+        files = [p for p in sorted(root.rglob("*")) if p.is_file()]
+        blobs = {p.relative_to(root).as_posix(): p.read_bytes() for p in files}
+        shas = {hashlib.sha256(b).hexdigest() for b in blobs.values()}
+        shas |= {hashlib.sha256(g.encode("utf-8")).hexdigest() for g in gen}
+
+        def safe(name: str, what: str = "path") -> str:
+            # A key or a path can itself be a source value: name it only when it is not.
+            return name if self._count(name) == 0 else f"<{what}_holds_source_value>"
+
         hits: dict[str, int] = {}
         unlisted: dict[str, list[str]] = {}
-        con = connect_serving(self._db)
-        try:
-            sql, columns = self._values_sql(con)
-            distinct = _int(con.execute(f"SELECT COUNT(*) FROM ({sql})").fetchone())
-            for p in sorted(root.rglob("*.json")):
-                rel = p.relative_to(root).as_posix()
-                raw = p.read_text(encoding="utf-8")
+        unexpected: list[str] = []
+        for rel, data in blobs.items():
+            if rel not in PACK_FILES:
+                unexpected.append(safe(rel))
+            raw = data.decode("utf-8", errors="replace")
+            doc: Any = None
+            if rel.endswith(".json"):
                 try:
                     doc = json.loads(raw)
                 except ValueError:
                     doc = None
-                # Decoded atoms, not the raw text: a JSON escape cannot hide a value, and the
-                # generated ids and digests (which can spell a short hex code) are left out.
-                haystack = raw if doc is None else "\n".join(_atoms(doc))
-                n = _int(
-                    con.execute(
-                        f"SELECT COUNT(*) FROM ({sql}) WHERE contains(?, v)", [haystack.lower()]
-                    ).fetchone()
-                )
-                if n:
-                    hits[rel] = n
-                if doc is not None:
-                    bad = sorted(
-                        {k for k, chain in _numbers(doc, "", ()) if not _number_allowed(k, chain)}
-                    )
-                    if bad:
-                        # A key can itself be a source value: name it only when it is not.
-                        unlisted[rel] = sorted(
-                            {
-                                k
-                                if _int(
-                                    con.execute(
-                                        f"SELECT COUNT(*) FROM ({sql}) WHERE contains(?, v)",
-                                        [k.lower()],
-                                    ).fetchone()
-                                )
-                                == 0
-                                else "<key_holds_source_value>"
-                                for k in bad
-                            }
-                        )
-                else:
-                    unlisted[rel] = ["<unparseable>"]
-        finally:
-            con.close()
+            # Decoded atoms, not the raw text: a JSON escape cannot hide a value.
+            haystack = raw if doc is None else "\n".join(_atoms(doc, "", gen, shas, vocab))
+            n = self._count(haystack)
+            if n:
+                hits[safe(rel)] = n
+            if doc is not None:
+                bad: set[str] = set()
+                for k, chain, value in _numbers(doc, "", ()):
+                    if not _number_allowed(k, chain):
+                        bad.add(safe(k, "key"))
+                        continue
+                    why = _number_problem(k, value)
+                    if why is not None:
+                        bad.add(f"{safe(k, 'key')}:{why}")
+                if bad:
+                    unlisted[safe(rel)] = sorted(bad)
+            elif rel.endswith(".json"):
+                unlisted[safe(rel)] = ["<unparseable>"]
         return {
-            "status": "failed" if hits or unlisted else "passed",
+            "status": "failed" if hits or unlisted or unexpected else "passed",
             "min_length": MIN_LEAK_LEN,
             "short_integer_max_digits": SHORT_INT_MAX_DIGITS,
             "columns_checked": columns,
-            "distinct_values_checked": distinct,
+            "distinct_values_checked": len(values),
             "hits": hits,
             "unlisted_numbers": unlisted,
+            "unexpected_files": sorted(unexpected),
         }
 
 
