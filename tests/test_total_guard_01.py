@@ -62,6 +62,7 @@ COLLECTION = "collection_under_function"
 SET_OP = "set_operation_under_aggregate"
 GENERATOR = "row_generator_under_aggregate"
 SELF_JOIN = "self_join_under_aggregate"
+PROOF = "unproven_single_read"
 
 #: The issue's Problem table, row by row: name -> (sql, the figure it returns,
 #: the rule that refuses it). The true figure is 107 in every row.
@@ -1480,6 +1481,15 @@ DEMO_HOLES: dict[str, tuple[str, str]] = {
     "self_join_through_a_schema_qualifier": ("SELECT SUM(a.quantity_kg) AS total FROM inventory a, main.inventory b", "self_join_under_aggregate"),
     "self_join_through_a_qualified_derived_table": ("SELECT SUM(a.quantity_kg) AS total FROM inventory a, (SELECT * FROM main.inventory) b", "self_join_under_aggregate"),
     "self_join_on_a_column_through_a_qualifier": ("SELECT SUM(a.quantity_kg) AS total FROM main.inventory a JOIN inventory b ON a.category = b.category", "self_join_under_aggregate"),
+    # Verifier round 8: a first-source VALUES never had its arguments read. The
+    # class changed (proof allowlist): these abstain as unproven_single_read.
+    "values_row_sums_an_array_of_rollup_rows": ("SELECT t.v AS total FROM (VALUES (list_sum(ARRAY(SELECT SUM(quantity_kg) FROM inventory GROUP BY ROLLUP(category))))) AS t(v)", PROOF),
+    "values_row_in_a_cte": ("WITH c AS (SELECT * FROM (VALUES (list_sum(ARRAY(SELECT SUM(quantity_kg) FROM inventory GROUP BY ROLLUP(category))))) AS t(v)) SELECT v AS total FROM c", PROOF),
+    "values_row_in_a_derived_table": ("SELECT v AS total FROM (SELECT * FROM (VALUES (list_sum(ARRAY(SELECT SUM(quantity_kg) FROM inventory GROUP BY ROLLUP(category))))) AS t(v))", PROOF),
+    "values_row_sums_an_array_of_unpivot_rows": ("SELECT t.v AS total FROM (VALUES (list_sum(ARRAY(SELECT n FROM (SELECT quantity_kg AS a, quantity_kg AS b FROM inventory) UNPIVOT (n FOR k IN (a, b)))))) AS t(v)", PROOF),
+    "values_row_sums_an_array_of_window_values": ("SELECT t.v AS total FROM (VALUES (list_sum(ARRAY(SELECT w FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory))))) AS t(v)", PROOF),
+    "values_row_counts_rollup_groups": ("SELECT t.v AS total FROM (VALUES (array_length(ARRAY(SELECT category FROM inventory GROUP BY ROLLUP(category))))) AS t(v)", PROOF),
+    "values_row_sums_window_counts": ("SELECT t.v AS total FROM (VALUES (list_sum(ARRAY(SELECT COUNT(*) OVER () FROM inventory)))) AS t(v)", PROOF),
 }
 
 

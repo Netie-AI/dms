@@ -784,6 +784,258 @@ class _Guard:
         return ""
 
 
+# ---- the proof (dms#531 class change, after verifier round 8) -------------------
+#
+# The four rules above name a refusal. Eight verifier rounds each found a shape
+# they did not name, so they no longer decide alone. A statement with an
+# aggregate in it serves only when it matches the grammar below, which can show
+# every base row reaches each aggregate once. Everything else abstains with one
+# reason, ``unproven_single_read``. The rules above still run first, so a shape
+# they name keeps its reason.
+#
+# Proven, per SELECT that feeds an aggregate:
+#   row sources  a base table (no sample, no PIVOT), a CTE read once, or a
+#                derived table that is itself proven; joined only with ON or
+#                USING (no comma, CROSS, NATURAL, POSITIONAL or ASOF join); no
+#                LATERAL; no base table or CTE read twice in one FROM chain.
+#   grouping     a plain list of expressions (no ROLLUP, CUBE, GROUPING SETS).
+#   aggregates   the scalar ones only (``_SCALAR_AGGS``, or a catalog aggregate
+#                that returns a scalar); their arguments are row values: no
+#                subquery, window, aggregate, star (``COUNT(*)`` aside),
+#                ``COLUMNS`` or positional column in them.
+#   subqueries   in WHERE, HAVING or QUALIFY only as filters; in the SELECT list
+#                only as a scalar, outside any aggregate or window; each one is
+#                proven on its own.
+#   windows      over this SELECT's own rows. A relation that carries a window
+#                value or a scalar subquery's value is never read by a SELECT
+#                that aggregates or windows.
+#   never        a set operation, VALUES, a table function, a row-adding
+#                function, ``ARRAY(subquery)``, a recursive CTE, a sample.
+
+REASON_UNPROVEN = "unproven_single_read"
+_HINTS[REASON_UNPROVEN] = (
+    "this check can show each base row reaches an aggregate once only for plain "
+    "reads, ON or USING joins, one GROUP BY list and scalar aggregates over row "
+    "values; aggregate the base rows in that form"
+)
+
+_BAD_JOIN_METHODS = frozenset({"NATURAL", "POSITIONAL", "ASOF"})
+
+
+class _Unproven(Exception):
+    pass
+
+
+def _aggregate_node(node: exp.Expression) -> bool:
+    """In aggregate position, or a collection made from rows (``ARRAY(q)``)."""
+    if isinstance(node, exp.Window):
+        return True
+    if _array_query(node) is not None:
+        return True
+    return _aggregates(node)
+
+
+def _needs_proof(root: exp.Expression) -> bool:
+    for node in root.walk():
+        if isinstance(node, exp.Group) or _aggregate_node(node):
+            return True
+    return False
+
+
+def _scalar_aggregate(node: exp.Expression) -> bool:
+    if isinstance(node, exp.Window):
+        return False
+    if _collects(node):
+        return False
+    if isinstance(node, exp.Anonymous):
+        return False not in _aggregate_returns().get(str(node.name).lower(), frozenset({True}))
+    return isinstance(node, _SCALAR_AGGS)
+
+
+class _Proof:
+    def __init__(self, root: exp.Expression) -> None:
+        self.root = root
+        self.cte_reads: dict[int, int] = {}
+
+    # -- queries ----------------------------------------------------------------
+    def query(self, node: exp.Expression, scope: dict[str, exp.CTE]) -> bool:
+        """Prove a query. Returns True when its output carries a non-row value."""
+        if isinstance(node, exp.Subquery):
+            if node.args.get("sample") or node.args.get("pivots"):
+                raise _Unproven
+            if any(node.args.get(k) for k in ("joins", "laterals")):
+                raise _Unproven
+            return self.query(node.this, scope)
+        if not isinstance(node, exp.Select):
+            raise _Unproven  # set operations, VALUES, anything else
+        scope = self._scope(node, scope)
+        return self.select(node, scope)
+
+    def _scope(self, node: exp.Expression, scope: dict[str, exp.CTE]) -> dict[str, exp.CTE]:
+        with_ = _with_of(node)
+        if with_ is None:
+            return scope
+        if with_.args.get("recursive"):
+            raise _Unproven
+        out = dict(scope)
+        for cte in with_.expressions:
+            if not isinstance(cte, exp.CTE):
+                raise _Unproven
+            out[str(cte.alias_or_name).lower()] = cte
+        return out
+
+    # -- one SELECT -------------------------------------------------------------
+    def select(self, select: exp.Select, scope: dict[str, exp.CTE]) -> bool:
+        if select.args.get("sample") or select.args.get("pivots"):
+            raise _Unproven
+        if select.args.get("laterals"):
+            raise _Unproven
+        group = select.args.get("group")
+        if group is not None and _many_grouping_sets(select):
+            raise _Unproven
+        from_ = select.args.get("from") or select.args.get("from_")
+        items: list[exp.Expression] = [from_.this] if from_ is not None else []
+        for join in select.args.get("joins") or []:
+            method = str(join.args.get("method") or "").upper()
+            kind = str(join.args.get("kind") or "").upper()
+            if method in _BAD_JOIN_METHODS or kind == "CROSS":
+                raise _Unproven
+            if not join.args.get("on") and not join.args.get("using"):
+                raise _Unproven
+            if join.args.get("pivots"):
+                raise _Unproven
+            items.append(join.this)
+        reads: dict[str, int] = {}
+        carries = False
+        for item in items:
+            carries = self.source(item, scope, reads) or carries
+        if any(n > 1 for n in reads.values()):
+            raise _Unproven
+        uses = self.own(select, scope)
+        if carries and uses["aggregates"]:
+            raise _Unproven
+        return carries or uses["carries"]
+
+    def source(
+        self, item: exp.Expression, scope: dict[str, exp.CTE], reads: dict[str, int]
+    ) -> bool:
+        if isinstance(item, exp.Table):
+            held = ("sample", "pivots", "joins", "laterals", "rows_from")
+            if any(item.args.get(k) for k in held):
+                raise _Unproven
+            if not isinstance(item.this, exp.Identifier):
+                raise _Unproven  # a table function: range, read_csv, ...
+            name = str(item.name).lower()
+            cte = scope.get(name) if not item.args.get("db") else None
+            if cte is not None:
+                key = f"cte:{id(cte)}"
+                reads[key] = reads.get(key, 0) + 1
+                self.cte_reads[id(cte)] = self.cte_reads.get(id(cte), 0) + 1
+                if self.cte_reads[id(cte)] > 1:
+                    raise _Unproven
+                # A CTE sees the CTEs before it, as written; the outer scope is a
+                # superset, which is enough for a proof of single reads.
+                return self.query(cte.this, scope)
+            parts = (item.args.get("catalog"), item.args.get("db"), item.this)
+            key = ".".join(str(p.name).lower() for p in parts if p)
+            reads[key] = reads.get(key, 0) + 1
+            return False
+        if isinstance(item, exp.Subquery):
+            return self.query(item, scope)
+        raise _Unproven  # VALUES, UNNEST, LATERAL, anything else
+
+    def own(self, select: exp.Select, scope: dict[str, exp.CTE]) -> dict[str, bool]:
+        aggregates = False
+        carries = False
+        window_fns: set[int] = set()
+        for key, value in select.args.items():
+            if key in _SOURCE_ARGS:
+                continue
+            for item in value if isinstance(value, list) else [value]:
+                if not isinstance(item, exp.Expression):
+                    continue
+                for node in self._walk(item):
+                    if isinstance(node, (exp.Select, *_SET_OPS, exp.Values)):
+                        if not isinstance(node, exp.Select):
+                            raise _Unproven
+                        if not self._placed_subquery(node, key, select):
+                            raise _Unproven
+                        carries = carries or key == "expressions"
+                        self.query(node, scope)
+                        continue
+                    if _adds_rows(node) or isinstance(node, (exp.Unnest, exp.Explode)):
+                        raise _Unproven
+                    if _array_query(node) is not None:
+                        raise _Unproven
+                    if isinstance(node, exp.Window):
+                        aggregates = carries = True
+                        fn = node.this
+                        if isinstance(fn, exp.Expression) and _aggregates(fn):
+                            if not _scalar_aggregate(fn):
+                                raise _Unproven
+                            window_fns.add(id(fn))
+                            # Over this SELECT's rows or groups: an aggregate may sit
+                            # in a window's argument (``SUM(SUM(x)) OVER ()``).
+                            _row_values(fn, nested_ok=True)
+                    elif id(node) not in window_fns and _aggregates(node):
+                        aggregates = True
+                        if not _scalar_aggregate(node):
+                            raise _Unproven
+                        _row_values(node, nested_ok=False)
+        return {"aggregates": aggregates, "carries": carries}
+
+    @staticmethod
+    def _walk(item: exp.Expression) -> Iterator[exp.Expression]:
+        """Every node of ``item``, but not inside a nested query (proven on its own)."""
+        stack = [item]
+        while stack:
+            node = stack.pop()
+            yield node
+            if isinstance(node, (exp.Select, *_SET_OPS, exp.Values)):
+                continue
+            stack.extend(c for c in node.iter_expressions())
+
+    def _placed_subquery(self, node: exp.Expression, key: str, select: exp.Select) -> bool:
+        """A nested query used as a filter, or as a scalar outside any aggregate."""
+        if key in ("where", "having", "qualify"):
+            return True
+        if key != "expressions":
+            return False
+        holder = node.parent
+        if isinstance(holder, exp.Subquery):
+            holder = holder.parent
+        walker = holder
+        while walker is not None and walker is not select:
+            if isinstance(walker, exp.Window) or _aggregates(walker):
+                return False
+            if _array_query(walker) is not None:
+                return False
+            walker = walker.parent
+        return True
+
+
+def _row_values(agg: exp.Expression, *, nested_ok: bool) -> None:
+    """An aggregate's arguments are values of one row: no query, window, star
+    (``COUNT(*)`` aside), ``COLUMNS``, positional column, or (outside a window's
+    own function) another aggregate."""
+    if isinstance(agg, exp.Count) and isinstance(agg.this, exp.Star):
+        return
+    for arg in agg.iter_expressions():
+        for node in arg.walk():
+            if isinstance(node, (exp.Select, *_SET_OPS, exp.Values, exp.Window)):
+                raise _Unproven
+            if isinstance(node, (exp.Star, exp.Columns, exp.PositionalColumn)):
+                if not (isinstance(node, exp.Star) and isinstance(node.parent, exp.Count)):
+                    raise _Unproven
+            if _aggregates(node) and (not nested_ok or not _scalar_aggregate(node)):
+                raise _Unproven
+
+
+def _prove(root: exp.Expression) -> None:
+    proof = _Proof(root)
+    proof.query(root, {})
+
+
 def repeated_input_reason(sql: str, dialect: str | None = SERVING_DIALECT) -> str | None:
     """``repeated_input:<why>`` when an aggregate can read one input value twice.
 
@@ -810,7 +1062,12 @@ def repeated_input_reason(sql: str, dialect: str | None = SERVING_DIALECT) -> st
         return f"{REASON_REPEATED_INPUT}:{code}" + (f" ({hint})" if hint else "")
     except Exception:  # noqa: BLE001 - an analysis we cannot finish proves nothing
         return f"{REASON_REPEATED_INPUT}:unanalysable"
+    if _needs_proof(root):
+        try:
+            _prove(root)
+        except Exception:  # noqa: BLE001 - _Unproven, or a proof we cannot finish
+            return f"{REASON_REPEATED_INPUT}:{REASON_UNPROVEN} ({_HINTS[REASON_UNPROVEN]})"
     return None
 
 
-__all__ = ["REASON_REPEATED_INPUT", "repeated_input_reason"]
+__all__ = ["REASON_REPEATED_INPUT", "REASON_UNPROVEN", "repeated_input_reason"]
