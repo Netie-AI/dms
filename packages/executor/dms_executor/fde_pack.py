@@ -271,7 +271,7 @@ def csv_header_detected(path: Path) -> bool | None:
     data, the first row would leave as column names. None when the sniffer cannot read the
     file (bronze ingest then reports it). A fresh in-memory connection: no lake is touched.
     """
-    con = duckdb.connect()
+    con = duckdb.connect(":memory:")
     try:
         row = con.execute("SELECT HasHeader FROM sniff_csv(?)", [str(path)]).fetchone()
     except duckdb.Error:
