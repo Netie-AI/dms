@@ -343,7 +343,7 @@ export function LibraryPage() {
       <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:short:flex-row">
         <aside
           data-testid="library-tree"
-          className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:max-h-[60%] max-lg:w-full max-lg:border-r-0 max-lg:border-b max-lg:short:max-h-none max-lg:short:w-56 max-lg:short:border-r max-lg:short:border-b-0"
+          className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:max-h-[40%] max-lg:min-h-[10.5rem] max-lg:short:min-h-0 max-lg:w-full max-lg:border-r-0 max-lg:border-b max-lg:short:max-h-none max-lg:short:w-56 max-lg:short:border-r max-lg:short:border-b-0"
         >
           <div className="border-b border-[var(--color-line)] px-2 py-2 max-lg:short:py-1">
             <input

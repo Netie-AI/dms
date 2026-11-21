@@ -174,6 +174,38 @@ for (const size of SIZES) {
       }
     });
 
+    test("after the sheet closes, focus is on the figure that was tapped (not the one whose pad won the DOM order)", async ({ page }) => {
+      await ask(page, size);
+      const first = stackedPairs(await figures(page))[0];
+      const { upper, x } = await pairNow(page, first.upper.text, first.lower.text);
+      // tapAndRead taps the lower edge of the upper digits, reads the sheet, then presses Escape.
+      expect(await tapAndRead(page, x, Math.floor(upper.bottom) - 2)).toBe(upper.label);
+      await expect.poll(() => page.evaluate(() => document.activeElement?.textContent ?? "")).toBe(upper.text);
+    });
+
+    test("the distance counts the side as well as the height: beside one control and between two, the truly nearer one opens", async ({ page }) => {
+      await ask(page, size);
+      // Two stand-in controls placed by hand so the geometry is exact: the page's real figures cannot be
+      // positioned. They carry the real .tap-pad class, so the real rule and the real listener are in play.
+      // A is above-left, B below-right and later in the DOM (it wins the raw hit). The point is 3px beside
+      // A's right edge and 2px under A's bottom: A is hypot(3, 2) = 3.6px away, B is 3px away (B's top is 3px
+      // below the point). Counting only the vertical gap would make A look nearer (2 < 3) and wrongly take
+      // the tap. Whole pixels: the browser rounds a tap to them.
+      await page.evaluate(() => {
+        for (const [id, l, t, w, h] of [["pad-a", 100, 300, 60, 20], ["pad-b", 150, 325, 60, 20]] as const) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.id = id;
+          b.className = "tap-pad";
+          b.style.cssText = `position:fixed !important;left:${l}px;top:${t}px;width:${w}px;height:${h}px;min-height:0;padding:0;margin:0;z-index:99999;background:#ccc`;
+          b.addEventListener("click", () => ((window as unknown as { __hit: string }).__hit = id));
+          document.body.appendChild(b);
+        }
+      });
+      await page.touchscreen.tap(163, 322);
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __hit?: string }).__hit)).toBe("pad-b");
+    });
+
     test("every figure opens its own Sources from its centre, and from the padded area where no other figure is nearer", async ({ page }) => {
       await ask(page, size);
       const names = (await figures(page)).map((f) => f.text);
