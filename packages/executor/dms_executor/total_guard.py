@@ -418,6 +418,16 @@ class _Guard:
             # A lateral subquery is what its body is: judged by its own rows.
             rel = self.query(item.this.this)
         elif isinstance(item, exp.UDTF):
+            # VALUES, UNNEST or a table function that reads a column can only read
+            # an outer one: a collection or window value passed in is refused
+            # (round 7: (VALUES (list_sum(s.l || s.l))) served 15780 for 7890).
+            outer = self.outer[-1] if self.outer else ""
+            if outer and item.find(exp.Column) is not None:
+                raise _Refuse(
+                    "collection_under_function"
+                    if outer == _COLLECTION
+                    else "window_value_under_aggregate"
+                )
             rel = _Rel(repeats="row_generator")
         elif isinstance(item, exp.Table):
             cte = self._cte(item)
@@ -540,10 +550,13 @@ class _Guard:
             # its own columns (rounds 5 and 6). Fail closed: it is analysed as
             # a LATERAL, carrying the earlier sources' kinds in and out.
             lateral = isinstance(item, exp.Lateral) or (
-                bool(rels) and isinstance(item, exp.Subquery)
+                bool(rels) and isinstance(item, (exp.Subquery, exp.UDTF))
             )
             if lateral:
-                self.outer.append(_worst(*(_any(r) for r in rels)))
+                # Nested laterals see every enclosing source too (round 7).
+                self.outer.append(
+                    _worst(*(_any(r) for r in rels), self.outer[-1] if self.outer else "")
+                )
                 try:
                     rel = self.source(item)
                 finally:

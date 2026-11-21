@@ -1471,6 +1471,10 @@ DEMO_HOLES: dict[str, tuple[str, str]] = {
     "implicit_lateral_alias_shadowed_inside": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (SELECT list_sum(s.l || s.l) AS v FROM (SELECT 1 AS one) z WHERE EXISTS (SELECT 1 FROM (SELECT 1) s)) u", COLLECTION),
     "implicit_lateral_through_using": ("SELECT u.v AS total FROM (SELECT 1 AS k, list(quantity_kg) AS l FROM inventory) s JOIN (SELECT one AS k, list_sum(l || l) AS v FROM (SELECT 1 AS one) z) u USING (k)", COLLECTION),
     "implicit_lateral_through_natural_join": ("SELECT SUM(u.v) AS total FROM (SELECT 1 AS k, SUM(quantity_kg) OVER () AS w FROM inventory) s NATURAL JOIN (SELECT one AS k, w AS v FROM (SELECT 1 AS one) z) u", WINDOW),
+    # Verifier round 7: a nested lateral keeps the outermost kind; VALUES reading
+    # an outer collection is inspected.
+    "nested_lateral_reads_the_outermost_source": ("SELECT u.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (SELECT x.v FROM (SELECT 1 AS one) z, (SELECT list_sum(s.l || s.l) AS v) x) u", COLLECTION),
+    "values_row_reads_an_outer_collection": ("SELECT t.v AS total FROM (SELECT list(quantity_kg) AS l FROM inventory) s, (VALUES (list_sum(s.l || s.l))) t(v)", COLLECTION),
     "pivot_list_concatenated": ("SELECT list_sum(x || x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x'))", COLLECTION),
     "pivot_list_concatenated_by_alias": ("SELECT list_sum(p.x || p.x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x')) p", COLLECTION),
     "self_join_through_a_schema_qualifier": ("SELECT SUM(a.quantity_kg) AS total FROM inventory a, main.inventory b", "self_join_under_aggregate"),
@@ -1522,7 +1526,11 @@ def test_demo_space_shapes_abstain_on_the_guard_alone(
     assert env["abstained"] is True and env["rows"] == [] and env["values"] == []
     assert not env.get("drillthrough_token")
     text = str(env.get("text") or "")
-    assert f"repeated_input:{why}" in od._reasons(env) + " " + text, (why, env.get("assumptions"))
+    # Since JOIN-HOLE-01 (#527) a demo statement that reads demo tables in two
+    # places meets rule 16 first; either named refusal is an abstain, and the
+    # guard's own verdict is asserted below whichever reason the envelope shows.
+    shown = od._reasons(env) + " " + text
+    assert f"repeated_input:{why}" in shown or "unverified_join:" in shown, (why, env.get("assumptions"))
     wrong = figure[0]["total"]
     assert str(wrong) not in text and f"{float(wrong):g}" not in text, (wrong, text)
     assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{why}")
@@ -1654,6 +1662,11 @@ def test_list_reached_by_position_or_columns_abstains_in_the_ontology_space(
 #: Correct statements the guard refuses (verifier rounds 3 and 4), named (#531
 #: clause 4): sql -> the rule.
 GUARD_NEW_ABSTAINS_LISTINGS: dict[str, str] = {
+    # Verifier round 7, the price of treating every later derived table as a
+    # LATERAL: once the first source carries a window value, an aggregate over a
+    # later derived table refuses (correct figure here: the capacity of each
+    # location once).
+    "SELECT SUM(l.capacity_kg) FROM (SELECT location_id, ROW_NUMBER() OVER (PARTITION BY location_id ORDER BY sku) AS rn FROM inventory) i JOIN (SELECT location_id, capacity_kg FROM locations) l USING (location_id) WHERE i.rn = 1": WINDOW,
     # A function over a collection: the same price as len(list(x)).
     f"SELECT school_id, list_sort(list(enrollment_id)) AS ids FROM {T} GROUP BY school_id": COLLECTION,
     # The table key is the name alone, so one table read twice through a third
