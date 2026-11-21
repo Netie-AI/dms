@@ -410,6 +410,13 @@ def classify(sql: str, allowlist: TableAllowlist, *, dialect: str) -> Exclusion 
         columns = _column_hits(tree, allowlist)
         unlisted = _unlisted_tables(tree, allowlist)
         spelled = _tree_tables(tree)
+        from sqlglot import exp
+
+        for with_ in tree.find_all(exp.With):
+            if with_.args.get("recursive"):
+                # A recursive CTE reads itself; its name is not a table.
+                for cte in with_.expressions:
+                    spelled.pop(_fold(cte.alias_or_name), None)
     except Exception as exc:  # noqa: BLE001
         if not gap:
             return Exclusion(EXCLUDED_TABLE + UNPARSED, f"shape_check_error:{type(exc).__name__}")
@@ -558,9 +565,15 @@ def _source_table(source: str) -> str:
     ``...#california_schools.frpm`` is ``frpm``: the database name around it
     is not a table, and matching it would block legitimate grants.
     """
+    from dms_executor.bronze import classify_source_kind
+
     text = source.strip()
-    if "#" in text:
-        return text.rsplit("#", 1)[1].rsplit(".", 1)[-1]
+    if "#" in text and classify_source_kind(text) == "sql":
+        # ``#<schema>.<table>``: the schema is not the table; a dotted table
+        # name (``dbo.users.archive``) stays whole.
+        return text.rsplit("#", 1)[1].split(".", 1)[-1]
+    # A file: its whole base name. A "#" in it is part of the name
+    # ("users #2.csv"), and ``users.xlsx#Sheet1`` keeps its workbook.
     base = re.split(r"[\\/]", text)[-1]
     return base.rsplit(".", 1)[0] if "." in base else base
 

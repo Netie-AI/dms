@@ -1069,3 +1069,36 @@ def test_the_label_names_a_table_the_statement_reads(
     assert got is not None and got.reason == label, got
     if tables is not None:
         assert set(got.tables) == tables, got
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "2024/community export #final version of users.csv",
+        "users #2.csv",
+        "#users.csv",
+        "reports#2/users.csv",
+        "users.xlsx#Sheet1",
+        "sqlserver://h:1433/db#dbo.users.archive",
+    ],
+)
+def test_preflight_reads_a_hash_in_a_file_name_as_part_of_the_name(
+    monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    import httpx
+
+    body = {"tables": [{"table": "bronze.pulled_t2", "source": source}]}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(body))
+    status, names = score_bird.fetch_bronze(URL, score_bird.BIRD_SPACE, 1.0)
+    got = _mod().grant_preflight(status, names, _allow(ALLOWED))
+    assert got is not None and "flagged" in got, got
+
+
+def test_a_recursive_cte_is_not_labelled_as_a_table() -> None:
+    sql = (
+        "WITH RECURSIVE r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 3) "
+        "SELECT * FROM r JOIN users ON 1=1"
+    )
+    got = _mod().classify(sql, _allow(ALLOWED), dialect="duckdb")
+    assert got is not None and got.reason == "excluded_table:users", got
+    assert "r" not in got.tables, got
