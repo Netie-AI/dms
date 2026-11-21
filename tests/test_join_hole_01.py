@@ -731,6 +731,11 @@ DEMO_SAME_TABLE_STILL_REFUSED: dict[str, str] = {
     "in_over_an_aggregate_of_itself": "SELECT SUM(quantity_kg) AS total FROM inventory WHERE quantity_kg IN (SELECT MAX(quantity_kg) FROM inventory)",
     "in_over_another_table_without_a_link": "SELECT SUM(quantity_kg) AS total FROM inventory WHERE location_id IN (SELECT location_id FROM transactions)",
     "self_join_summed": "SELECT SUM(a.quantity_kg) AS total FROM inventory a JOIN inventory b ON a.sku = b.sku",
+    # Adversary round on this shape: two different columns of one table are two
+    # key domains with no link (served 0 for 5 and 0 for 7 at 7a5c750).
+    "in_over_another_column_of_itself": "SELECT COUNT(*) AS total FROM locations WHERE location_id IN (SELECT cctv_camera_id FROM locations)",
+    "exists_on_another_column_of_itself": "SELECT COUNT(*) AS total FROM inventory i WHERE EXISTS (SELECT 1 FROM inventory j WHERE j.supplier_id = i.sku)",
+    "exists_same_column_plus_another_column": "SELECT COUNT(*) AS total FROM inventory i WHERE EXISTS (SELECT 1 FROM inventory j WHERE j.sku = i.sku AND j.location_id = i.sku)",
 }
 
 
@@ -798,3 +803,41 @@ def test_an_ontology_space_table_filtered_by_itself_answers(
     assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
     assert od._multiset(env["rows"]) == od._multiset(oracle)
     assert f"total={oracle[0]['total']}" in str(env.get("text") or "") or f"The total is {oracle[0]['total']}." in str(env.get("text") or "")
+
+
+#: Adversary round on the shape: a self filter across two columns of one table
+#: served L2_VALIDATED with a wrong figure in the ontology Space at 7a5c750.
+#: name -> (sql, the wrong figure served).
+ONTO_CROSS_COLUMN_SELF_FILTERS: dict[str, tuple[str, int]] = {
+    "exists_school_id_against_district_id": (
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} s WHERE EXISTS "
+        f"(SELECT 1 FROM {od.SCHOOLS} t WHERE t.district_id = s.school_id)",
+        2,
+    ),
+    "verified_join_plus_cross_column_in": (
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} s JOIN {od.DISTRICTS} d "
+        "ON s.district_id = d.district_id WHERE d.name = 'North' "
+        f"AND s.school_id IN (SELECT district_id FROM {od.SCHOOLS})",
+        2,
+    ),
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(ONTO_CROSS_COLUMN_SELF_FILTERS))
+def test_an_ontology_space_self_filter_across_two_columns_abstains(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql, wrong = ONTO_CROSS_COLUMN_SELF_FILTERS[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, Q)
+    assert od._oracle(rig.lake, sql) == [{"total": wrong}]
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    assert (_why(rig, sql) or "").startswith("unverified_join:")
+    assert "unverified_join" in od._reasons(env), env.get("assumptions")
+    assert f"total={wrong}" not in str(env.get("text") or "")

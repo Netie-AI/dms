@@ -1376,16 +1376,18 @@ class _JoinRule:
 
 
 def _same_table(a: tuple[str, str], b: tuple[str, str]) -> bool:
-    """A semi-join of a table against itself (dms#527, parent ruling 2).
+    """A semi-join of a table against itself on one column (dms#527, ruling 2).
 
     ``[NOT] EXISTS`` correlated on, or ``col IN (SELECT col ...)`` over, the
-    same base table the filtered column belongs to. It keeps or drops rows of
-    that table and cannot repeat one: the subquery's rows never reach the
-    select list or an aggregate (``_simple_inner`` keeps it to one table, no
-    grouping, no nesting; the EXISTS projection reads the inner table only).
-    No second table is related, so no link is needed.
+    same column of the same base table. It keeps or drops rows of that table
+    and cannot repeat one: the subquery's rows never reach the select list or
+    an aggregate (``_simple_inner`` keeps it to one table, no grouping, no
+    nesting; the EXISTS projection reads the inner table only). Two different
+    columns of one table are two key domains no verified link ties together
+    (``school_id IN (SELECT district_id ...)`` served 2 for 4, adversary round
+    on this shape): that is a join and needs a link like any other.
     """
-    return bool(a[0]) and a[0] == b[0]
+    return bool(a[0]) and bool(a[1]) and a == b
 
 
 def _row_source_why(root_expr: exp.Expression) -> str | None:
