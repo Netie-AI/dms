@@ -1005,3 +1005,55 @@ def test_verifier_round3_a_label_holding_an_equals_sign_is_not_withheld(
     assert_envelope_valid(env)
     assert env["abstained"] is False, (env["text"], env["assumptions"])
     assert env["rows"] == rows
+
+
+# --- verifier round 4 (Opus, on 4214964) ------------------------------------------
+
+_MY_SG = [{"country": "MY", "orders": 7}, {"country": "SG", "orders": 8}]
+_LISTING = "Found 2 row(s).\n  - country=MY, orders=7\n  - country=SG, orders=8\n"
+
+
+@pytest.mark.parametrize(
+    ("answer", "rows"),
+    [
+        ("country=my, orders=8", _MY_SG),  # names MY ignoring case: MY holds 7
+        ("country=Malaysia, orders=8", _MY_SG),  # names no row of two: withheld
+    ],
+)
+def test_verifier_round4_a_reworded_label_never_takes_another_rows_figure(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+    assert env["rows"] == [] and env["values"] == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "rows"),
+    [
+        ("country=my, orders=7", _MY_SG),
+        ("country=Malaysia, orders=7", [{"country": "MY", "orders": 7}]),  # one group only
+        (_LISTING + "\nHighlights:\n  - country=SG leads", _MY_SG),
+        (_LISTING + "\nHighlights:\n  - orders=8 is the highest", _MY_SG),
+        (
+            "Found 2 row(s).\n  - country=MY, n=7\n  - country=MY, n=7.4",
+            [{"country": "MY", "n": 7.4}, {"country": "MY", "n": 7}],
+        ),
+    ],
+)
+def test_verifier_round4_a_right_answer_is_served(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
+    assert env["rows"] == rows

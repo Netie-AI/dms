@@ -19,7 +19,7 @@ from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 from dms_executor import executed_trace
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
-from dms_executor.row_listing import float_precision_note
+from dms_executor.row_listing import cell_text, float_precision_note
 
 ALLOWED_BADGES = frozenset(
     {
@@ -914,8 +914,19 @@ def _listed_records(
     names = "|".join(re.escape(c) for c in sorted(columns, key=len, reverse=True))
     key = re.compile(rf"(?<![A-Za-z0-9_.])({names})=")
     out: list[tuple[bool, list[tuple[str, str, str]]]] = []
+    # With a "Found N rows" line, the listing is the run of bullets right
+    # after it; a "Highlights:" bullet further down is prose. Without one,
+    # every bullet is a listing line.
+    has_found = bool(_FOUND_ROWS.search(text))
+    in_block = not has_found
     for line in text.splitlines():
-        listing = bool(_LISTED_LINE.match(line))
+        bullet = bool(_LISTED_LINE.match(line))
+        if has_found:
+            if _FOUND_ROWS.search(line):
+                in_block = True
+            elif not bullet:
+                in_block = False
+        listing = bullet and in_block
         record: list[tuple[str, str, str]] = []
         hits = list(key.finditer(line))
         for i, hit in enumerate(hits):
@@ -933,6 +944,10 @@ def _listed_records(
     return out
 
 
+#: A prose label that names no row of a column holding two or more groups.
+_NO_ROW = "\x00no row\x00"
+
+
 def _prose_label(col: str, shown: str, rows: list[dict[str, Any]]) -> str | None:
     """The row label a prose label names, or None when it names none.
 
@@ -942,12 +957,22 @@ def _prose_label(col: str, shown: str, rows: list[dict[str, Any]]) -> str | None
     labels = {str(r.get(col)) for r in rows if col in r}
     if shown in labels:
         return shown
+    folded = [label for label in labels if label.casefold() == shown.casefold()]
+    if len(folded) == 1:
+        return folded[0]
     starts = [
         label
         for label in labels
         if label and shown.startswith(label) and not shown[len(label)].isalnum()
     ]
-    return max(starts, key=len) if starts else None
+    if starts:
+        return max(starts, key=len)
+    # A label that names no row ("Malaysia" for MY) cannot be shown to name the
+    # right one. With one group in the column it can only be that group; with
+    # two or more it is withheld (rule 13), never matched to any row.
+    if not labels:
+        return None
+    return next(iter(labels)) if len(labels) == 1 else _NO_ROW
 
 
 def _shows_cell(shown: str, cell: Any) -> bool:
@@ -1004,16 +1029,21 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
                 named = None if col in numeric else _prose_label(col, shown, row_list)
                 if named is not None:
                     labels.append((col, named))
-        match = next(
-            (
-                at
-                for at, row in enumerate(row_list)
-                if not (listing and at in used)
-                and all(col in row and _shows_cell(shown, row[col]) for col, shown in figures)
-                and all(str(row.get(col)) == want for col, want in labels)
-            ),
-            None,
-        )
+        fits = [
+            at
+            for at, row in enumerate(row_list)
+            if not (listing and at in used)
+            and all(col in row and _shows_cell(shown, row[col]) for col, shown in figures)
+            and all(str(row.get(col)) == want for col, want in labels)
+        ]
+        # A row whose cell text is the shown figure first: "7" takes the 7 row,
+        # not the 7.4 row it also rounds to.
+        exact = [
+            at
+            for at in fits
+            if all(cell_text(row_list[at][col]) == shown for col, shown in figures)
+        ]
+        match = (exact or fits or [None])[0]
         if match is None:
             out.append("b: a listed row shows a figure its row does not hold")
             break
