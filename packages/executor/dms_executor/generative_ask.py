@@ -455,6 +455,36 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
+def _reads_two_granted_tables(sql: str, grantable: Iterable[str]) -> bool:
+    """True when ``sql`` reads two or more distinct base tables, every one granted.
+
+    The demo Space join check (JOIN-HOLE-01) is for joins of granted tables
+    only. A table function, an ungranted name or a statement that does not
+    parse goes to the grant and hostile-SQL checks first, so their named
+    reasons are unchanged; one table read twice is the total guard's.
+    """
+    try:
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
+    except Exception:  # noqa: BLE001
+        return False
+    if tree is None:
+        return False
+    ctes = {str(c.alias).lower() for c in tree.find_all(exp.CTE)}
+    granted = {g.lower() for g in grantable} | {g.lower().split(".")[-1] for g in grantable}
+    names: set[str] = set()
+    for table in tree.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            return False
+        name = table.name.lower()
+        if name in ctes and not table.db:
+            continue
+        full = ".".join(p.lower() for p in (table.catalog, table.db, table.name) if p)
+        if full not in granted and name not in granted:
+            return False
+        names.add(name)
+    return len(names) >= 2
+
+
 def no_ontology_join_reason(
     sql: str,
     *,
@@ -480,6 +510,10 @@ def no_ontology_join_reason(
         from dms_executor.space_ontology import check_sql_against_space, demo_join_ontology
 
         try:
+            if not _reads_two_granted_tables(sql, grantable):
+                # One table, or a table function or ungranted name: the grant,
+                # hostile-SQL and total checks decide it, with their own reasons.
+                return None
             lake = Path(warehouse) if warehouse is not None else None
             if lake is None or not lake.is_file():
                 return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
