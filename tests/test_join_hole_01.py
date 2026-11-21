@@ -571,6 +571,11 @@ DEMO_JOIN_HOLES: dict[str, str] = {
     "cross_product_with_locations": "SELECT SUM(i.quantity_kg) AS total FROM inventory i, locations l",
     "join_on_an_undeclared_column": "SELECT SUM(i.quantity_kg) AS total FROM inventory i JOIN locations l ON i.sku = l.name",
     "fan_trap_over_a_declared_link": "SELECT SUM(l.capacity_kg) AS total FROM inventory i JOIN locations l ON i.location_id = l.location_id",
+    # One table read in two places (demo verifier round): issue shape 6 served 55230.
+    "issue_shape_6_cte_read_twice": "WITH c AS (SELECT quantity_kg AS x FROM inventory) SELECT (SELECT SUM(x) FROM c) * COUNT(*) AS total FROM c",
+    "scalar_total_times_the_row_count": "SELECT (SELECT SUM(quantity_kg) FROM inventory) * COUNT(*) AS total FROM inventory",
+    "total_times_a_scalar_row_count": "SELECT SUM(quantity_kg) * (SELECT COUNT(*) FROM inventory) AS total FROM inventory",
+    "cte_total_times_a_scalar_cte_count": "WITH c AS (SELECT quantity_kg AS x FROM inventory) SELECT SUM(x) * (SELECT COUNT(*) FROM c) AS total FROM c",
 }
 
 
