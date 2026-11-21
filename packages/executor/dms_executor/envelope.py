@@ -19,7 +19,7 @@ from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 from dms_executor import executed_trace
 from dms_executor.bronze import stamp_contributing_source_watermarks
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
-from dms_executor.row_listing import row_line
+from dms_executor.row_listing import float_precision_note, row_line
 
 ALLOWED_BADGES = frozenset(
     {
@@ -1820,6 +1820,13 @@ def build_answer_envelope(
             assumptions_list.append(
                 f"rendered figure differs from query result: withheld (E14 {broken[0]})"
             )
+
+    # DECIMAL-EXACT-01 (dms#540): a binary-float figure the listing states at 15
+    # significant digits, which that float does not equal, says so.
+    if not abstained:
+        note = float_precision_note(rows_out)
+        if note and note not in assumptions_list:
+            assumptions_list.append(note)
 
     # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
     # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.

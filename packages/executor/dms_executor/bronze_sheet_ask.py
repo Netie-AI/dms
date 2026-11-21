@@ -259,12 +259,16 @@ def _grouped_top_n(
         cols = _cols(con, ident)
         if "category" not in cols or measure not in cols:
             return None
+        exact = _exact_measure(con, ident, measure)
+        if exact is None:
+            return None
+        value_sql, where_sql = exact
         rows = con.execute(
             f"""
             SELECT TRIM(CAST(category AS VARCHAR)) AS category,
-                   ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) AS "{measure}"
+                   SUM({value_sql}) AS "{measure}"
             FROM bronze."{ident}"
-            WHERE TRY_CAST("{measure}" AS DOUBLE) IS NOT NULL
+            WHERE {where_sql}
               AND category IS NOT NULL
               AND TRIM(CAST(category AS VARCHAR)) <> ''
             GROUP BY 1
@@ -287,7 +291,7 @@ def _grouped_top_n(
         rows=out_rows,
         sql_used=(
             f'SELECT TRIM(CAST(category AS VARCHAR)), '
-            f'ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) '
+            f"SUM({value_sql}) "
             f'FROM bronze."{ident}" GROUP BY 1 ORDER BY 2 DESC LIMIT {n}'
         ),
         assumptions=[
@@ -338,13 +342,17 @@ def _eq_filter_total(
         cols = _cols(con, ident)
         if col not in cols or measure not in cols:
             return None
+        exact = _exact_measure(con, ident, measure)
+        if exact is None:
+            return None
+        value_sql, where_sql = exact
         rows = con.execute(
             f"""
             SELECT TRIM(CAST("{col}" AS VARCHAR)) AS "{col}",
-                   ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) AS "{measure}"
+                   SUM({value_sql}) AS "{measure}"
             FROM bronze."{ident}"
             WHERE CAST("{col}" AS VARCHAR) = ?
-              AND TRY_CAST("{measure}" AS DOUBLE) IS NOT NULL
+              AND {where_sql}
             GROUP BY 1
             """,
             [value],
@@ -354,7 +362,7 @@ def _eq_filter_total(
 
     sql_used = (
         f'SELECT TRIM(CAST("{col}" AS VARCHAR)), '
-        f'ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) '
+        f"SUM({value_sql}) "
         f'FROM bronze."{ident}" WHERE CAST("{col}" AS VARCHAR) = ? GROUP BY 1'
     )
     out_rows = [{col: str(r[0]).strip(), measure: float(r[1])} for r in rows]
@@ -397,6 +405,45 @@ def _eq_filter_total(
         grounded_tables=[table],
         question=question,
     )
+
+
+_PLAIN_DECIMAL = r"-?[0-9]+(\.[0-9]+)?"
+_EXACT_TYPES = ("DECIMAL", "BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "UBIGINT")
+
+
+def _exact_measure(
+    con: duckdb.DuckDBPyConnection, ident: str, measure: str
+) -> tuple[str, str] | None:
+    """The measure as an exact DECIMAL expression and its row filter, or None.
+
+    DECIMAL-EXACT-01 (dms#540): a served sum is computed in DECIMAL, never as
+    a DOUBLE sum rounded to 2 places. A DECIMAL or integer column sums as it
+    is. Text, or a DOUBLE read through its shortest text, is cast at the
+    largest scale its values carry. A DOUBLE whose text has an exponent, or a
+    scale over 18, cannot be stated exactly: None, and the lane does not serve.
+    """
+    q = '"' + measure.replace('"', '""') + '"'
+    found = con.execute(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_schema = 'bronze' AND table_name = ? AND column_name = ?",
+        [ident, measure],
+    ).fetchone()
+    kind = str(found[0]).upper() if found else ""
+    if kind.startswith(_EXACT_TYPES):
+        return q, f"{q} IS NOT NULL"
+    text = f"trim(CAST({q} AS VARCHAR))"
+    plain = f"regexp_full_match({text}, '{_PLAIN_DECIMAL}')"
+    row = con.execute(
+        f"SELECT COUNT(*) FILTER (WHERE {q} IS NOT NULL AND NOT {plain}), "
+        f"COALESCE(MAX(length(split_part({text}, '.', 2))) FILTER (WHERE {plain}), 0) "
+        f'FROM bronze."{ident}"'
+    ).fetchone()
+    if row is None:
+        return None
+    bad, scale = int(row[0]), int(row[1])
+    if scale > 18 or (bad and kind in {"DOUBLE", "FLOAT", "REAL"}):
+        return None
+    return f"CAST({text} AS DECIMAL(38,{scale}))", plain
 
 
 def _cols(con: duckdb.DuckDBPyConnection, ident: str) -> set[str]:

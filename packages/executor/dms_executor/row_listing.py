@@ -17,16 +17,37 @@ from typing import Any
 LISTING_CAP = 12
 
 
-def cell_text(value: object) -> str:
-    """A cell as the answer text shows it, without float noise.
+#: Significant digits a binary float is stated with (dms#540 acceptance 3).
+FLOAT_DIGITS = 15
 
-    1610511.0500000012 prints as 1610511.05: at 15 significant digits the tail
-    collapses. 12345678901234.56 has no tail to collapse, and keeps its cents.
+
+def cell_text(value: object) -> str:
+    """A cell as the answer text shows it, never past 15 significant digits.
+
+    1610511.0500000012 prints as 1610511.05. A binary float holds 15 digits
+    for certain, so a figure it cannot hold that exactly (12345678901234.56)
+    is shown at 15 and the answer says so (``float_precision_note``). A
+    DECIMAL prints exactly.
     """
     if isinstance(value, float) and math.isfinite(value) and not value.is_integer():
-        exact, short = repr(value), format(value, ".15g")
-        return short if len(exact) - len(short) >= 3 else exact
+        return format(value, f".{FLOAT_DIGITS}g")
     return str(value)
+
+
+def float_precision_note(rows: Sequence[Mapping[str, Any]]) -> str | None:
+    """The precision reason when a float cell is not exactly its 15-digit text."""
+    for row in rows:
+        for value in row.values():
+            if (
+                isinstance(value, float)
+                and math.isfinite(value)
+                and float(format(value, f".{FLOAT_DIGITS}g")) != value
+            ):
+                return (
+                    f"precision: a binary-float figure is shown at {FLOAT_DIGITS} "
+                    "significant digits"
+                )
+    return None
 
 
 def row_line(row: Mapping[str, Any]) -> str:

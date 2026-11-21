@@ -793,9 +793,13 @@ def test_adversary_a_nan_cell_does_not_withhold_a_correct_listing() -> None:
 
 
 def test_adversary_a_figure_with_no_float_noise_keeps_every_digit() -> None:
-    from dms_executor.row_listing import cell_text
+    """dms#540 acceptance 3: a binary float is never stated past 15 significant
+    digits. 12345678901234.56 is not exactly a double; the note says so."""
+    from dms_executor.row_listing import cell_text, float_precision_note
 
-    assert cell_text(12345678901234.56) == "12345678901234.56"
+    assert cell_text(12345678901234.56) == "12345678901234.6"
+    assert float_precision_note([{"x": 12345678901234.56}])
+    assert float_precision_note([{"x": 38.9876}, {"x": 12.5}]) is None
     assert cell_text(1610511.0500000012) == "1610511.05"
     assert cell_text(0.30000000000000004) == "0.3"
     assert cell_text(38.9876) == "38.9876"
