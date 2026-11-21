@@ -1053,6 +1053,9 @@ class _JoinRule:
             raise _Refuse("set_operation")
         if root_expr.find(exp.With):
             raise _Refuse("cte_over_join")
+        why = _row_source_why(root_expr)
+        if why:
+            raise _Refuse(why)
         if root_expr.find(exp.Columns, exp.PositionalColumn):
             # COLUMNS(...) and #n name columns without a Column node, so neither
             # the link check nor the fan trap can place them over a join.
@@ -1185,21 +1188,9 @@ class _JoinRule:
             return "recursive_cte"
         if root_expr.find(*_SET_OPS):
             return "set_operation"
-        if root_expr.find(exp.UDTF):
-            return "row_generator"  # VALUES, UNNEST, LATERAL: rows from no table
-        for fn in root_expr.find_all(exp.Anonymous):
-            # sqlglot does not know this function, so nothing proves it returns
-            # one row per row. DuckDB refuses a row generator in WHERE, HAVING
-            # and QUALIFY, and takes one anywhere else in a SELECT.
-            clause = fn.find_ancestor(exp.Where, exp.Having, exp.Qualify, exp.Select)
-            if clause is None or isinstance(clause, exp.Select):
-                name = str(fn.name).lower()
-                which = f" ({name})" if name.isidentifier() else ""
-                return (
-                    f"unproven_function{which} because its effect on the number of rows "
-                    "cannot be proven, so the statement is not treated as one read of one "
-                    "table. A function with a known row effect is accepted"
-                )
+        why = _row_source_why(root_expr)
+        if why:
+            return why
         if {id(q) for q in root_expr.find_all(exp.Select)} != set(self.scope_of):
             return "not_one_read"
         base, joined = 0, False
@@ -1248,8 +1239,12 @@ class _JoinRule:
         cur: exp.Expression = col
         parent = col.parent
         while parent is not None and parent is not select:
-            if isinstance(parent, (exp.Predicate, exp.Group, exp.Order, exp.Ordered)):
+            if isinstance(parent, (exp.Predicate, exp.Group)):
                 return True
+            # ORDER BY is safe only as the statement's own ordering (the walk
+            # reaches the SELECT) or a window's. Inside an aggregate,
+            # COUNT(d.name ORDER BY s.name), the ordered value is still counted
+            # once per child row (verifier round on the routed holes).
             if isinstance(parent, (exp.Min, exp.Max)):
                 # DuckDB min(x, n) / max(x, n) return a list: not idempotent.
                 return not parent.expressions
@@ -1269,7 +1264,7 @@ class _JoinRule:
                 )
             if isinstance(parent, exp.Window):
                 return cur is not parent.this
-            if isinstance(parent, (exp.Alias, exp.Paren, exp.Tuple)):
+            if isinstance(parent, (exp.Alias, exp.Paren, exp.Tuple, exp.Order, exp.Ordered)):
                 cur, parent = parent, parent.parent
                 continue
             return False
@@ -1316,6 +1311,30 @@ class _JoinRule:
                 f"fan_trap ({label} is the one side of the join; aggregate it "
                 "before joining, or count its key with COUNT(DISTINCT key))"
             )
+
+
+def _row_source_why(root_expr: exp.Expression) -> str | None:
+    """Why a statement may add rows no table holds, or None.
+
+    VALUES, UNNEST and LATERAL are rows from no table. A function sqlglot does
+    not type proves nothing about the row count: DuckDB refuses a row generator
+    in WHERE, HAVING and QUALIFY, and takes one anywhere else in a SELECT. Both
+    the one-read path and the join path ask this (a generator in a join's
+    projection was never checked: verifier round on the routed holes).
+    """
+    if root_expr.find(exp.UDTF):
+        return "row_generator"
+    for fn in root_expr.find_all(exp.Anonymous):
+        clause = fn.find_ancestor(exp.Where, exp.Having, exp.Qualify, exp.Select)
+        if clause is None or isinstance(clause, exp.Select):
+            name = str(fn.name).lower()
+            which = f" ({name})" if name.isidentifier() else ""
+            return (
+                f"unproven_function{which} because its effect on the number of rows "
+                "cannot be proven, so the statement is not treated as one read of one "
+                "table. A function with a known row effect is accepted"
+            )
+    return None
 
 
 def _ancestors(node: exp.Expression) -> list[exp.Expression]:

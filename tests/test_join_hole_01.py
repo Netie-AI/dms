@@ -454,3 +454,106 @@ def test_routed_join_holes_abstain(
         assert f"t={wrong}" not in text and f"The total is {wrong}" not in text, text
     assert rig.cortex.executed == [], "refused SQL reached Cortex submit"
     assert (_why(rig, sql) or "").startswith("unverified_join:")
+
+
+# --- verifier round on the routed holes (#527 class, P0, on main before this track) ---
+
+#: An ORDER BY inside an aggregate was taken as a safe position for a parent
+#: column, so the fan trap never saw it. name -> (question, sql, served, truth).
+ORDERED_AGG_HOLES: dict[str, tuple[str, str, Any, Any]] = {
+    "count_parent_ordered_inside_the_aggregate": (
+        "How many districts have schools?",
+        f"SELECT COUNT(d.name ORDER BY s.name) AS t FROM {S} s JOIN {D} d ON s.district_id = d.district_id",
+        4,
+        2,
+    ),
+    "count_parent_key_ordered_inside_the_aggregate": (
+        "How many districts have schools?",
+        f"SELECT COUNT(d.district_id ORDER BY s.school_id) AS t FROM {S} s JOIN {D} d ON s.district_id = d.district_id",
+        4,
+        2,
+    ),
+    "string_agg_of_the_parent_ordered": (
+        "List the districts that have schools",
+        f"SELECT string_agg(d.name, ',' ORDER BY s.name) AS t FROM {S} s JOIN {D} d ON s.district_id = d.district_id",
+        "North,North,South,North",
+        "North,South",
+    ),
+}
+
+#: A row generator in the projection of a statement that reaches the join path
+#: (a join, or a same-column threshold subquery) was never checked there.
+#: name -> (question, sql, rows served, true row count).
+JOIN_PATH_GENERATORS: dict[str, tuple[str, str, int, int]] = {
+    "unnest_in_a_join_listing": (
+        "List the schools in the North district",
+        f"SELECT s.name, UNNEST([1, 2]) AS u FROM {S} s JOIN {D} d ON s.district_id = d.district_id WHERE d.name = 'North'",
+        6,
+        3,
+    ),
+    "unnest_behind_a_same_column_threshold": (
+        "List the schools",
+        f"SELECT name, UNNEST([1, 2]) AS u FROM {S} WHERE school_id <= (SELECT MAX(school_id) FROM {S})",
+        8,
+        4,
+    ),
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(ORDERED_AGG_HOLES))
+def test_parent_column_ordered_inside_an_aggregate_abstains(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    question, sql, wrong, true = ORDERED_AGG_HOLES[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, question)
+    assert od._oracle(rig.lake, sql) == [{"t": wrong}] and wrong != true
+    text = od._assert_abstain(env, "")
+    assert "unverified_join" in text, text
+    assert str(wrong) not in text, text
+    assert rig.cortex.executed == [], "refused SQL reached Cortex submit"
+    assert (_why(rig, sql) or "").startswith("unverified_join:fan_trap")
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(JOIN_PATH_GENERATORS))
+def test_row_generator_on_the_join_path_abstains(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    question, sql, served, true = JOIN_PATH_GENERATORS[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, question)
+    assert len(od._oracle(rig.lake, sql)) == served and served != true
+    od._assert_abstain(env, "")
+    assert rig.cortex.executed == [], "refused SQL reached Cortex submit"
+    assert _why(rig, sql) == "unverified_join:row_generator"
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_parent_column_in_the_statements_order_by_still_answers(
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """Ordering the result by a parent column repeats nothing: it still answers."""
+    sql = (
+        f"SELECT d.name AS district, COUNT(*) AS n FROM {S} s JOIN {D} d "
+        "ON s.district_id = d.district_id GROUP BY d.name ORDER BY d.name"
+    )
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, "How many schools are in each district?")
+    truth = [{"district": "North", "n": 3}, {"district": "South", "n": 1}]
+    assert od._oracle(rig.lake, sql) == truth
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert od._multiset(env["rows"]) == od._multiset(truth)
+    assert _why(rig, sql) is None
