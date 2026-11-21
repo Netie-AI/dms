@@ -1451,6 +1451,13 @@ DEMO_HOLES: dict[str, tuple[str, str]] = {
     "array_of_window_values_summed": ("SELECT list_sum(ARRAY(SELECT w FROM (SELECT SUM(quantity_kg) OVER () AS w FROM inventory))) AS total", WINDOW),
     "array_of_a_union_summed": ("SELECT list_sum(ARRAY(SELECT quantity_kg FROM inventory UNION ALL SELECT quantity_kg FROM inventory)) AS total", SET_OP),
     "two_arrays_concatenated": ("SELECT list_sum(ARRAY(SELECT quantity_kg FROM inventory) || ARRAY(SELECT quantity_kg FROM inventory)) AS total", COLLECTION),
+    # Verifier round 3: a PIVOT whose aggregate collects turns out collection columns,
+    # and a self-join is counted whatever qualifiers spell the table.
+    "pivot_list_concatenated": ("SELECT list_sum(x || x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x'))", COLLECTION),
+    "pivot_list_concatenated_by_alias": ("SELECT list_sum(p.x || p.x) AS total FROM (SELECT 'x' AS k, quantity_kg FROM inventory) PIVOT (list(quantity_kg) FOR k IN ('x')) p", COLLECTION),
+    "self_join_through_a_schema_qualifier": ("SELECT SUM(a.quantity_kg) AS total FROM inventory a, main.inventory b", "self_join_under_aggregate"),
+    "self_join_through_a_qualified_derived_table": ("SELECT SUM(a.quantity_kg) AS total FROM inventory a, (SELECT * FROM main.inventory) b", "self_join_under_aggregate"),
+    "self_join_on_a_column_through_a_qualifier": ("SELECT SUM(a.quantity_kg) AS total FROM main.inventory a JOIN inventory b ON a.category = b.category", "self_join_under_aggregate"),
 }
 
 
@@ -1570,3 +1577,34 @@ def test_array_of_rollup_rows_counted_abstains_in_the_ontology_space(
     assert od._oracle(rig.lake, f"SELECT COUNT(DISTINCT school_id) AS total FROM {T}") == [{"total": 4}]
     _assert_refused_by_the_rule(env, rig, sql, GROUPING, (5,))
     assert _join_why(rig, sql) is None, "only the guard stands in front of this one"
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_pivot_list_concatenated_abstains_in_the_ontology_space(
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """Verifier round 3: rule 16 passes it, so the guard alone refuses it. Served 8 for 4."""
+    sql = f"SELECT array_length(x || x) AS total FROM (SELECT 'x' AS k, school_id FROM {T}) PIVOT (list(DISTINCT school_id) FOR k IN ('x'))"
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, "How many schools have enrollments?")
+    assert od._oracle(rig.lake, sql) == [{"total": 8}]
+    _assert_refused_by_the_rule(env, rig, sql, COLLECTION, (8,))
+    assert _join_why(rig, sql) is None, "only the guard stands in front of this one"
+
+
+def test_a_collection_column_listed_as_it_is_passes_the_guard() -> None:
+    """Rule 4 as written: a collection may be listed as it is, also out of a PIVOT."""
+    for sql in (
+        f"SELECT x FROM (SELECT 'x' AS k, school_id FROM {T}) PIVOT (list(school_id) FOR k IN ('x'))",
+        f"SELECT x AS ids FROM (SELECT 'x' AS k, school_id FROM {T}) PIVOT (list(school_id) FOR k IN ('x'))",
+        f"SELECT l FROM (SELECT list(school_id) AS l FROM {T})",
+    ):
+        assert repeated_input_reason(sql) is None, sql
+    for sql in (
+        f"SELECT len(l) AS n FROM (SELECT list(school_id) AS l FROM {T})",
+        f"SELECT l FROM (SELECT list(school_id) AS l FROM {T}) WHERE len(l) > 1",
+    ):
+        assert (repeated_input_reason(sql) or "").startswith(f"repeated_input:{COLLECTION}"), sql

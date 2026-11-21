@@ -277,6 +277,11 @@ def _aggregate_macros() -> dict[str, bool]:
     return out
 
 
+def _pivot_kind(aggregates: list[exp.Expression]) -> str:
+    """A PIVOT whose aggregate collects (``list(x)``) turns out collection columns."""
+    return _COLLECTION if any(_collects(n) for a in aggregates for n in a.walk()) else ""
+
+
 def _any(*rels: _Rel) -> str:
     """The worst kind any column of these relations has."""
     return _worst(*(r.carried for r in rels), *(k for r in rels for k in r.cols.values()))
@@ -423,12 +428,17 @@ class _Guard:
             if not pivot.args.get("unpivot"):
                 self._pivot_reads(rel, pivot.expressions)
         if item.args.get("pivots"):
-            rel = _Rel("row_turn", {}, _any(rel), rel.reads)
+            aggs = [e for p in item.args["pivots"] for e in p.expressions]
+            rel = _Rel("row_turn", {}, _worst(_any(rel), _pivot_kind(aggs)), rel.reads)
         return self._renamed(rel, item)
 
     @staticmethod
     def _table_key(table: exp.Table) -> str:
-        return ".".join(p.lower() for p in (table.catalog, table.db, table.name) if p)
+        # The table name alone: ``inventory``, ``main.inventory`` and
+        # ``lake.main.inventory`` are one table, so a self-join spelled with
+        # qualifiers is still counted twice (verifier round 3). Two schemas
+        # holding the same name read as one too: fail closed.
+        return table.name.lower()
 
     @staticmethod
     def _pivot_reads(rel: _Rel, aggregates: list[exp.Expression]) -> None:
@@ -496,7 +506,8 @@ class _Guard:
                 inner = self.source(node.this) if node.this is not None else _Rel()
                 if not node.args.get("unpivot"):
                     self._pivot_reads(inner, list(node.args.get("using") or []))
-                rel = _Rel("row_turn", {}, _any(inner), inner.reads)
+                using = list(node.args.get("using") or [])
+                rel = _Rel("row_turn", {}, _worst(_any(inner), _pivot_kind(using)), inner.reads)
             else:
                 rel = _Rel(repeats="unrecognised_source", carried=_WINDOW)
         finally:
@@ -626,7 +637,10 @@ class _Guard:
                     bare = node.parent is select or (
                         isinstance(node.parent, exp.Alias) and node.parent.parent is select
                     )
-                    if not bare or (node.parent or node).arg_key != "expressions":
+                    # The projection item itself (the column, or its alias) must sit
+                    # in the SELECT list: listed as it is, never in WHERE or ORDER BY.
+                    item = node.parent if isinstance(node.parent, exp.Alias) else node
+                    if not bare or item.arg_key != "expressions":
                         raise _Refuse("collection_under_function")
                     continue
                 if not _aggregates(node):
