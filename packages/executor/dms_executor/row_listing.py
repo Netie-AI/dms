@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Context, Decimal
 from typing import Any
 
 #: Rows a listing shows before it is cut.
@@ -31,20 +31,38 @@ def cell_text(value: object) -> str:
     DECIMAL prints exactly.
     """
     if isinstance(value, float) and math.isfinite(value):
-        big = abs(value) >= 1e15
+        short = format(value, f".{FLOAT_DIGITS}g")
+        big = abs(float(short)) >= 1e15
         if big or not value.is_integer():
-            short = format(value, f".{FLOAT_DIGITS}g")
             # 1.2345678901234568e16 is a 17-digit figure: stated at 15, fixed point.
             return format(Decimal(short), "f") if big else short
     return str(value)
 
 
 
+class StatedFloat(float):
+    """An exact DECIMAL past 15 significant digits, rounded half up to 15.
+
+    Rows carry floats (the masker reads a Decimal cell as text). Rounding the
+    Decimal itself, not its nearest binary float, keeps the last stated digit
+    right; the type keeps the fact that digits were dropped.
+    """
+
+
+def decimal_cell(value: Decimal) -> float:
+    """A DuckDB DECIMAL as the float a row carries (dms#540)."""
+    if value.is_finite() and len(value.normalize().as_tuple().digits) > FLOAT_DIGITS:
+        rounded = Context(prec=FLOAT_DIGITS, rounding=ROUND_HALF_UP).plus(value)
+        if rounded != value:
+            return StatedFloat(rounded)
+    return float(value)
+
+
 def float_precision_note(rows: Sequence[Mapping[str, Any]]) -> str | None:
-    """The precision reason when a float cell is not exactly its 15-digit text."""
+    """The precision reason when a figure is shown at 15 digits it does not equal."""
     for row in rows:
         for value in row.values():
-            if (
+            if isinstance(value, StatedFloat) or (
                 isinstance(value, float)
                 and math.isfinite(value)
                 and float(format(value, f".{FLOAT_DIGITS}g")) != value

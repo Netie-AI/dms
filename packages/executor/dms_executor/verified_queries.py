@@ -40,7 +40,7 @@ from dms_executor.demo_warehouse import DEMO_TABLES, ensure_demo_warehouse, ware
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
 from dms_executor.grant_struct import serve_gap
 from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
-from dms_executor.row_listing import found_rows_text
+from dms_executor.row_listing import decimal_cell, found_rows_text
 from dms_executor.skills_quarantine import (
     canonical_pack_hash,
     filter_retrieved_rows,
@@ -159,7 +159,7 @@ def _cell(value: Any) -> Any:
         # DuckDB DECIMAL. A string here is invisible to E4, so a true SUM
         # reads as an uncited figure. The masker also reads a Decimal cell as
         # text and would mask its digits (dms#540: routed to dms#318).
-        return float(value)
+        return decimal_cell(value)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if hasattr(value, "isoformat"):

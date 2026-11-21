@@ -994,7 +994,12 @@ def _shows_cell(shown: str, cell: Any) -> bool:
         exponent = literal.as_tuple().exponent
         assert isinstance(exponent, int)
         have = cell if isinstance(cell, Decimal) else Decimal(repr(cell))
-        return abs(literal - have) <= Decimal(5).scaleb(min(exponent, 0) - 1)
+        tol = Decimal(5).scaleb(min(exponent, 0) - 1)
+        if isinstance(cell, float) and cell:
+            # A binary float holds 15 significant digits: a listing that states
+            # it at 15 (12345678901234600 for 1.2345678901234568e16) states it.
+            tol = max(tol, Decimal(5).scaleb(have.adjusted() - 15))
+        return abs(literal - have) <= tol
     except ArithmeticError:
         # 1e9999999 overflows the context. A figure we cannot compare is not shown.
         return False
@@ -1015,9 +1020,12 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
     # A listing line states one row, and each row is listed once: a line that
     # repeats a row while another is left out is not the result.
     used: set[int] = set()
-    for listing, record in records if numeric else []:
+    for listing, record in records:
         figures = [(col, shown) for col, shown, _ in record if col in numeric]
-        if not figures:
+        # A listing line states a whole row, so it is checked even with no
+        # numeric cell: a masked figure (DMSMASK_account_01 in the row) shown
+        # as a number on the line is not that row.
+        if not figures and not listing:
             continue
         # On a listing line the label is the row's own text, exactly. In prose
         # a label may be reworded, so it narrows the rows only when it names one.
@@ -1851,6 +1859,7 @@ def build_answer_envelope(
         column_sources=column_sources,
     )
     text = masked["text"]
+    unmasked_rows = rows_out
     rows_out = masked["rows"]
     values_out = masked["values"]
     sources = masked["sources"]
@@ -1882,7 +1891,8 @@ def build_answer_envelope(
     # DECIMAL-EXACT-01 (dms#540): a binary-float figure the listing states at 15
     # significant digits, which that float does not equal, says so.
     if not abstained:
-        note = float_precision_note(rows_out)
+        # Read before masking: a masked float cell is a token, not a figure.
+        note = float_precision_note(unmasked_rows)
         if note and note not in assumptions_list:
             assumptions_list.append(note)
 

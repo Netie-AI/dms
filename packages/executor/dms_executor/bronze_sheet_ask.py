@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from dms_executor.abstain import build_abstain
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.demo_warehouse import connect_serving
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
-from dms_executor.row_listing import found_rows_text
+from dms_executor.row_listing import decimal_cell, found_rows_text
 from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
 
@@ -263,7 +264,8 @@ def _grouped_top_n(
         if exact is None:
             return None
         value_sql, where_sql = exact
-        rows = con.execute(
+        rows = _fetch(
+            con,
             f"""
             SELECT TRIM(CAST(category AS VARCHAR)) AS category,
                    SUM({value_sql}) AS "{measure}"
@@ -275,11 +277,13 @@ def _grouped_top_n(
             ORDER BY 2 DESC
             LIMIT {n}
             """
-        ).fetchall()
+        )
+        if rows is None:
+            return None
     finally:
         con.close()
 
-    out_rows = [{"category": str(r[0]).strip(), measure: float(r[1])} for r in rows]
+    out_rows = [{"category": str(r[0]).strip(), measure: _figure(r[1])} for r in rows]
     if not out_rows:
         return None
     text = found_rows_text(out_rows, cap=None)
@@ -346,7 +350,8 @@ def _eq_filter_total(
         if exact is None:
             return None
         value_sql, where_sql = exact
-        rows = con.execute(
+        rows = _fetch(
+            con,
             f"""
             SELECT TRIM(CAST("{col}" AS VARCHAR)) AS "{col}",
                    SUM({value_sql}) AS "{measure}"
@@ -356,7 +361,9 @@ def _eq_filter_total(
             GROUP BY 1
             """,
             [value],
-        ).fetchall()
+        )
+        if rows is None:
+            return None
     finally:
         con.close()
 
@@ -365,7 +372,7 @@ def _eq_filter_total(
         f"SUM({value_sql}) "
         f'FROM bronze."{ident}" WHERE CAST("{col}" AS VARCHAR) = ? GROUP BY 1'
     )
-    out_rows = [{col: str(r[0]).strip(), measure: float(r[1])} for r in rows]
+    out_rows = [{col: str(r[0]).strip(), measure: _figure(r[1])} for r in rows]
     if not out_rows:
         # Hard rule 12: executed exact filter matched nothing. Envelope demotes.
         return build_answer_envelope(
@@ -409,6 +416,24 @@ def _eq_filter_total(
 
 _PLAIN_DECIMAL = r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)"
 
+
+
+def _fetch(
+    con: duckdb.DuckDBPyConnection, sql: str, params: list[Any] | None = None
+) -> list[Any] | None:
+    """The sum's rows, or None when DuckDB cannot compute it exactly.
+
+    A sum past DECIMAL(38) overflows. The lane then does not serve: an
+    error here used to reach the customer as a 503.
+    """
+    try:
+        return con.execute(sql, params or []).fetchall()
+    except duckdb.Error:
+        return None
+
+
+def _figure(value: Any) -> float:
+    return decimal_cell(value) if isinstance(value, Decimal) else float(value)
 
 
 _EXACT_TYPES = ("DECIMAL", "BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "UBIGINT")

@@ -644,3 +644,90 @@ def test_a_bare_dot_decimal_column_lands_decimal(tmp_path: Path) -> None:
     assert receipt.ingested == 3
     assert _describe(db, "dec540_dot")["amount"] == "DECIMAL(38,1)"
     assert _values(db, "dec540_dot", "amount") == [Decimal("0.5"), Decimal("5.0"), Decimal("-0.5")]
+
+
+# ------------------------------------------- reviewer round 3 (Opus, on b89174c)
+
+
+def _gen_sum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, table: str, csv: bytes
+) -> dict[str, Any]:
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    ingest_csv_bytes(filename=f"{table}.csv", data=csv, path=db, table_name=table, space_id=_SPACE)
+    body, model = _ask_generated(
+        monkeypatch, db, table,
+        f'SELECT category, SUM(amount) AS amount FROM bronze."{table}" GROUP BY 1',
+        "Sum the amount for each category", f"ses_{table}",
+    )
+    assert model.sql, "the generated SQL was never executed"
+    assert_envelope_valid(body)
+    return body
+
+
+@pytest.mark.parametrize(
+    ("csv", "shown", "wrong"),
+    [
+        (
+            b"category,amount\nA,5091491361419.7000\nA,0.0048\n",
+            "5091491361419.7",
+            "5091491361419.71",
+        ),
+        (
+            b"category,amount\nA,574104185242.640498\nA,0.000001\n",
+            "574104185242.64",
+            "574104185242.641",
+        ),
+    ],
+)
+def test_a_decimal_sum_past_15_digits_states_its_own_15_digit_rounding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, csv: bytes, shown: str, wrong: str
+) -> None:
+    """The exact sum is rounded once, half up, to 15 digits: never through the
+    nearest binary float first (5091491361419.7048 is ...419.70, not ...419.71)."""
+    body = _gen_sum(tmp_path, monkeypatch, "dec540_r3", csv)
+    assert body["abstained"] is False, (body["text"], body["assumptions"])
+    assert f"amount={shown}\n" in body["text"] + "\n", body["text"]
+    assert f"amount={wrong}\n" not in body["text"] + "\n"
+    assert _NOTE in body["assumptions"], body["assumptions"]
+
+
+def test_a_masked_large_figure_is_not_stated_in_the_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row cell is masked (account-shaped); the listing must not show the number."""
+    body = _gen_sum(
+        tmp_path, monkeypatch, "dec540_acct",
+        b"category,amount\nA,2000000000000003.10\nA,0.00\n",
+    )
+    masked = any(
+        isinstance(v, str) and v.startswith("DMSMASK_") for r in body["rows"] for v in r.values()
+    )
+    if not body["abstained"]:
+        assert not masked and _NOTE in body["assumptions"], body
+    assert "2000000000000000" not in body["text"] or not masked, body["text"]
+
+
+def test_a_sheet_sum_decimal_cannot_hold_declines_instead_of_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    _land_sheet_values(
+        db, ["99999999999999999999.123456789012345678", "99999999999999999999.5"]
+    )
+    env = maybe_bronze_sheet_ask(_SHEET_Q, warehouse=db, space_id=_SPACE)
+    assert env is None or env["abstained"] is True, env
+
+
+def test_a_float_just_under_1e15_is_stated_in_fixed_point() -> None:
+    from dms_executor.row_listing import cell_text
+
+    assert cell_text(999999999999999.5) == "1000000000000000"
+
+
+def test_e14_reads_a_float_to_15_significant_digits_and_no_further() -> None:
+    from dms_executor.envelope import figure_fidelity_violations
+
+    rows = [{"k": "A", "x": 1.2345678901234568e16}]
+    assert figure_fidelity_violations("  - k=A, x=12345678901234600", rows) == []
+    assert figure_fidelity_violations("  - k=A, x=12345678901234500", rows)
