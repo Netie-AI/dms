@@ -43,6 +43,25 @@ from dms_executor.manifest import ManifestMinter
 from fastapi.testclient import TestClient
 from test_onto_derive_01 import _gate_allows, _RecordingCortex, make_minter
 
+GATE_CALLS: list[str] = []
+
+
+def onto_gate(monkeypatch: pytest.MonkeyPatch, *, allow: bool = True) -> None:
+    """Cortex F5 on the ontology routes, recorded: allow, or deny every call."""
+    import dms_api.routes.ontology as onto_routes
+    from cortex_client.gate import ComplianceDecision
+
+    GATE_CALLS.clear()
+
+    def _gate(*, action: str, **_: Any) -> ComplianceDecision:
+        GATE_CALLS.append(action)
+        return ComplianceDecision(
+            allowed=allow, reason="test_allow" if allow else "test_deny", action=action
+        )
+
+    monkeypatch.setattr(onto_routes, "compliance_gate", _gate)
+
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "fde_onboard"
 CANARIES: list[str] = json.loads((FIXTURE / "CANARIES.json").read_text(encoding="utf-8"))
@@ -162,10 +181,12 @@ class Rig:
     out: Path
     model: RecordedModel = field(default_factory=RecordedModel)
 
-    def run(self, *extra: str, space: str = "Acme onboarding") -> tuple[int, dict[str, Any]]:
+    def run(
+        self, *extra: str, space: str = "Acme onboarding", out: Path | None = None
+    ) -> tuple[int, dict[str, Any]]:
         buf = io.StringIO()
         code = cli.main(
-            ["--source", str(FIXTURE), "--space", space, "--out", str(self.out), *extra],
+            ["--source", str(FIXTURE), "--space", space, "--out", str(out or self.out), *extra],
             http=self.client,
             transport=self.model,
             stdout=buf,
@@ -173,6 +194,22 @@ class Rig:
         summary = json.loads(buf.getvalue())
         assert summary["exit"] == code
         return code, summary
+
+    def schema_sha(self, space: str = "Acme onboarding") -> str:
+        """What a steward does first: an offline run, then read schema.json and its sha256."""
+        pre = self.out.parent / f"pre_{len(list(self.out.parent.glob('pre_*')))}"
+        code, summary = self.run("--stop-after", "4", space=space, out=pre)
+        assert code == 0, summary
+        import hashlib
+
+        sha = hashlib.sha256((pre / "schema.json").read_bytes()).hexdigest()
+        assert summary["schema_sha256"] == sha
+        return sha
+
+    def run_confirmed(
+        self, *extra: str, space: str = "Acme onboarding"
+    ) -> tuple[int, dict[str, Any]]:
+        return self.run("--confirm-schema", self.schema_sha(space), *extra, space=space)
 
     def manifest(self) -> dict[str, Any]:
         return json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
@@ -222,6 +259,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter)
     ensure_demo_warehouse(lake)
     get_settings.cache_clear()
     _gate_allows(monkeypatch)
+    onto_gate(monkeypatch)
     cortex = _AskCortex(warehouse=lake, payload={}, by_question=dict(QUESTIONS))
     app = create_app()
     app.state.ask_service = Executor(cortex=cortex, minter=minter, warehouse_path=lake)  # type: ignore[arg-type]
@@ -307,7 +345,7 @@ def test_manifest_holds_the_sha256_of_every_file_and_of_the_prompts(rig: Rig) ->
 
 
 def test_every_config_item_lands_proposed_and_changes_no_approved_read(rig: Rig) -> None:
-    code, summary = rig.run("--stop-after", "4")
+    code, summary = rig.run("--stop-after", "4", "--import")
     assert code == 0
     items = _onboard_items(summary["space_id"])
     kinds = {i["kind"] for i in items}
@@ -327,7 +365,7 @@ def test_every_config_item_lands_proposed_and_changes_no_approved_read(rig: Rig)
 
 
 def test_value_groups_leave_as_masks_and_stay_raw_only_in_the_store(rig: Rig) -> None:
-    code, summary = rig.run("--stop-after", "4")
+    code, summary = rig.run("--stop-after", "4", "--import")
     assert code == 0
     maps = [i for i in _onboard_items(summary["space_id"]) if i["kind"] == "value_map"]
     region = [m for m in maps if m["payload"]["column"] == "region"]
@@ -343,8 +381,9 @@ def test_value_groups_leave_as_masks_and_stay_raw_only_in_the_store(rig: Rig) ->
 def test_openvault_missing_refuses_with_a_named_reason_and_exit_3(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    sha = rig.schema_sha()
     monkeypatch.delenv("OPENVAULT_URL")
-    code, summary = rig.run()
+    code, summary = rig.run("--confirm-schema", sha)
     assert code == 3
     assert summary["reason"] == "openvault_url_missing"
     assert rig.stage(5)["status"] == "refused"
@@ -363,7 +402,7 @@ def test_openvault_unreachable_refuses_ao_ov_unreachable(rig: Rig) -> None:
         raise httpx.ConnectError("refused")
 
     rig.model = _down  # type: ignore[assignment]
-    code, summary = rig.run()
+    code, summary = rig.run_confirmed("--import")
     assert (code, summary["reason"]) == (3, "ao_ov_unreachable")
     assert rig.stage(5)["status"] == "refused"
     assert _onboard_items(summary["space_id"]), "stages 1-4 proposals still stored"
@@ -374,7 +413,7 @@ def test_openvault_unreachable_refuses_ao_ov_unreachable(rig: Rig) -> None:
 
 def test_invalid_model_output_refuses_and_stores_nothing_from_it(rig: Rig) -> None:
     rig.model = lambda url, headers, body: {"objects": "not a list"}  # type: ignore[assignment]
-    code, summary = rig.run()
+    code, summary = rig.run_confirmed("--import")
     assert (code, summary["reason"]) == (3, "ao_model_output_invalid")
     assert not [i for i in _onboard_items(summary["space_id"]) if i["kind"] in ("object", "link")]
 
@@ -386,7 +425,7 @@ def test_happy_path_every_output_pending_measured_on_the_envelope(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cortex_up(monkeypatch)
-    code, summary = rig.run()
+    code, summary = rig.run_confirmed("--import")
     assert code == 0, summary
     assert [s["status"] for s in rig.manifest()["stages"]] == ["done"] * 6
 
@@ -438,7 +477,7 @@ def test_measure_counts_a_different_answer_as_disagreeing(
     _cortex_up(monkeypatch)
     # The ask leg answers the orders question with the customers figure.
     rig.cortex.by_question[Q_ORDERS] = f"SELECT COUNT(*) AS order_count FROM {CUSTOMERS}"
-    code, _ = rig.run()
+    code, _ = rig.run_confirmed()
     assert code == 0
     measure = json.loads((rig.out / "measure.json").read_text())
     assert (measure["agrees"], measure["disagrees"]) == (1, 1)
@@ -447,7 +486,7 @@ def test_measure_counts_a_different_answer_as_disagreeing(
 
 
 def test_cortex_unreachable_refuses_the_measure(rig: Rig) -> None:
-    code, summary = rig.run()
+    code, summary = rig.run_confirmed()
     assert (code, summary["reason"]) == (3, "cortex_unreachable")
     assert rig.stage(5)["status"] == "done"
     assert rig.stage(6)["status"] == "refused"
@@ -519,7 +558,7 @@ def test_an_actor_without_a_steward_grant_is_refused_before_ingest(
 
 
 def test_a_rerun_keeps_a_revoked_proposal_revoked(rig: Rig) -> None:
-    code, summary = rig.run("--stop-after", "4")
+    code, summary = rig.run("--stop-after", "4", "--import")
     assert code == 0
     first = _onboard_items(summary["space_id"])
     revoked = first[0]["id"]
@@ -527,7 +566,7 @@ def test_a_rerun_keeps_a_revoked_proposal_revoked(rig: Rig) -> None:
     import shutil
 
     shutil.rmtree(rig.out)
-    code, again = rig.run("--stop-after", "4")
+    code, again = rig.run("--stop-after", "4", "--import")
     assert code == 0, again
     assert again["space_id"] == summary["space_id"]
     rows = _onboard_items(summary["space_id"])
@@ -565,10 +604,20 @@ def test_a_crash_in_stage_5_is_named_by_class_and_the_pack_is_still_checked(
     def _boom(*_a: Any, **_k: Any) -> Any:
         raise OverflowError("days=913377")
 
+    sha = rig.schema_sha("Crash")
     monkeypatch.setattr(fde_ai, "check_question_sql", _boom)
     buf = io.StringIO()
     code = cli.main(
-        ["--source", str(FIXTURE), "--space", "Crash", "--out", str(rig.out)],
+        [
+            "--source",
+            str(FIXTURE),
+            "--space",
+            "Crash",
+            "--out",
+            str(rig.out),
+            "--confirm-schema",
+            sha,
+        ],
         http=rig.client,
         transport=rig.model,
         stdout=buf,
@@ -597,8 +646,56 @@ def test_drop_reasons_reach_the_pack_as_codes_only(
 
     monkeypatch.setattr(fde_ai, "check_question_sql", _named)
     _cortex_up(monkeypatch)
-    code, _ = rig.run()
+    code, _ = rig.run_confirmed()
     assert code == 0
     vq = (rig.out / "proposals" / "verified_questions.json").read_text(encoding="utf-8")
     assert "880101145678" not in vq and "staff_" not in vq
     assert '"reason": "unverified_join"' in vq
+
+
+# --- parent rulings (dms#541): nothing stored without --import; a person confirms the schema ---
+
+
+def test_without_import_nothing_reaches_the_item_store(rig: Rig) -> None:
+    code, summary = rig.run("--stop-after", "4")
+    assert code == 0, summary
+    assert _onboard_items(summary["space_id"]) == []
+    assert ontology_data_store().space_profile_items(summary["space_id"]) == []
+    assert summary["imported"] is False
+    assert GATE_CALLS == []
+    packed = json.loads((rig.out / "proposals" / "column_types.json").read_text())["items"]
+    assert packed and all(p["id"] is None and p["status"] == "proposed" for p in packed)
+
+
+def test_import_goes_through_the_gate_and_stops_when_it_denies(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    onto_gate(monkeypatch, allow=False)
+    code, summary = rig.run("--stop-after", "4", "--import")
+    assert code == 3
+    assert summary["reason"].startswith("import_refused:"), summary["reason"]
+    assert GATE_CALLS == ["ontology.profile"]
+    assert _onboard_items(summary["space_id"]) == []
+    assert ontology_data_store().space_profile_items(summary["space_id"]) == []
+
+
+def test_import_calls_the_gate_for_profile_and_onboard_items(rig: Rig) -> None:
+    code, summary = rig.run("--stop-after", "4", "--import")
+    assert code == 0, summary
+    assert GATE_CALLS == ["ontology.profile", "ontology.onboard_import"]
+    assert ontology_data_store().space_profile_items(summary["space_id"])
+    assert summary["imported"] is True
+
+
+def test_stage_5_sends_nothing_without_a_confirmed_schema(rig: Rig) -> None:
+    code, summary = rig.run()
+    assert (code, summary["reason"]) == (3, "schema_not_confirmed")
+    assert rig.model.bodies == []
+    assert rig.stage(5)["status"] == "refused"
+    assert summary["schema_sha256"]
+
+
+def test_stage_5_sends_nothing_when_the_schema_differs_from_the_confirmed_one(rig: Rig) -> None:
+    code, summary = rig.run("--confirm-schema", "0" * 64)
+    assert (code, summary["reason"]) == (3, "schema_changed")
+    assert rig.model.bodies == []

@@ -4,8 +4,15 @@
 
 Stages run in order. Each writes its file(s) into the pack directory and is checked before the
 next. Stages 1-4 need no model and no network. Stage 5 calls the model through OpenVault only
-(``ao_vendor.llm.ov_client``, role alias ``ontology``, no model id). Stage 6 asks each kept
+(``ao_vendor.llm.ov_client``, role alias ``ontology``, no model id), and only after a person
+has read ``schema.json`` and named its sha256 with ``--confirm-schema``. Stage 6 asks each kept
 question through ``POST /v1/chat/ask`` on the DMS app, in this process.
+
+Stage 1 lands the files in bronze directly, as an operator-run extract (the same kind of
+write as ``scripts/load_adventureworks.py``): it is not a FastAPI mutation route, so rule 8
+does not reach it. Every item-store write goes through a gated route instead, and only with
+``--import``: ``POST /v1/ontology/data/profile`` and ``POST /v1/ontology/data/spaces/{id}/onboard``
+(steward grant, then Cortex F5, then the store). Without ``--import`` nothing is stored.
 
 The pack directory is what may leave the machine. It holds names, landed types, counts, shapes
 and PII tokens. No cell value. Raw values (value maps, SQL results) stay in the local item
@@ -173,17 +180,33 @@ class Onboard:
     def _load(self, rel: str) -> Any:
         return json.loads((self.out / rel).read_text(encoding="utf-8"))
 
-    def _store_items(self, items: list[tuple[str, dict[str, Any], dict[str, Any]]], stage: str):
-        from dms_core.control_plane.onto_data import ontology_data_store
+    def _store_items(
+        self, items: list[tuple[str, dict[str, Any], dict[str, Any]]], stage: str
+    ) -> list[dict[str, Any]]:
+        """Pending proposals of one stage. Stored only with ``--import``, and only through
+        the gated route (steward grant, then Cortex F5, then the store): rule 8.
 
-        settings = self._settings()
-        result = ontology_data_store().store_onboard(
-            items,
-            created_by=settings.dms_actor_user_id,
-            space_id=self.space_id,
-            tenant_id=settings.dms_tenant_id,
-            run={"run_id": self.run_id, "stage": stage, "tool": TOOL},
+        Without ``--import`` nothing is written to the item store; each item comes back
+        ``proposed`` with no id, for the pack to list.
+        """
+        if not self.args.do_import:
+            return [
+                {"id": None, "status": "proposed", "kind": k, "payload": dict(p)}
+                for k, p, _e in items
+            ]
+        if not items:
+            return []
+        r = self.http.post(
+            f"/v1/ontology/data/spaces/{self.space_id}/onboard",
+            json={
+                "items": [{"kind": k, "payload": p, "evidence": e} for k, p, e in items],
+                "run": {"run_id": self.run_id, "stage": stage, "tool": TOOL},
+            },
         )
+        if r.status_code != 200:
+            raise _Refuse(EXIT_REFUSED, f"import_refused:{_detail_code(r)}")
+        result = r.json()
+        self.store_info["persisted"] = bool(result.get("persisted"))
         stored = list(result.get("items") or [])
         held = set(result.get("held") or [])
         fresh = [i for i in stored if i.get("id") not in held]
@@ -233,27 +256,27 @@ class Onboard:
 
     def stage2(self) -> None:
         import dms_executor
-        from dms_api.wiring import profile_ontology_proposal
         from dms_executor.fde_pack import column_stats
 
-        settings = self._settings()
-        stored = profile_ontology_proposal(
-            actor=settings.dms_actor_user_id,
-            tenant_id=settings.dms_tenant_id,
-            space_id=self.space_id,
-        )
-        if stored.get("status") == "no_file_tables":
-            raise _Refuse(EXIT_INPUT, "no_file_tables")
         self.profile = dms_executor.profile_space(self.space_id)
+        if not self.profile.get("file_tables"):
+            raise _Refuse(EXIT_INPUT, "no_file_tables")
         self.stats = column_stats(self.space_id)
-        items = list(stored.get("items") or [])
-        self.store_info["profile_persisted"] = bool(stored.get("persisted"))
+        stored_items = 0
+        if self.args.do_import:
+            # The #514 route: steward grant, Cortex F5, then the store.
+            r = self.http.post(f"/v1/ontology/data/profile?space_id={self.space_id}")
+            if r.status_code != 200:
+                raise _Refuse(EXIT_REFUSED, f"import_refused:{_detail_code(r)}")
+            body = r.json()
+            self.store_info["profile_persisted"] = bool(body.get("persisted"))
+            stored_items = len(body.get("items") or [])
         self._done(
             2,
             tables=len(self.stats),
             keys=len(self.profile.get("keys") or []),
             links=len(self.profile.get("links") or []),
-            profile_items=len(items),
+            profile_items=stored_items,
         )
 
     def stage3(self) -> None:
@@ -306,6 +329,12 @@ class Onboard:
         from dms_executor.demo_warehouse import warehouse_path
         from dms_executor.fde_pack import LeakChecker
 
+        # Nothing is sent until a person has read schema.json and named its sha256.
+        schema_sha = hashlib.sha256((self.out / "schema.json").read_bytes()).hexdigest()
+        if not self.args.confirm_schema:
+            raise _Refuse(EXIT_REFUSED, "schema_not_confirmed")
+        if self.args.confirm_schema.strip().lower() != schema_sha:
+            raise _Refuse(EXIT_REFUSED, "schema_changed")
         client = OpenVaultOntologyClient(self.transport)
         base = {
             "schema": self._load("schema.json"),
@@ -500,7 +529,7 @@ class Onboard:
             "files": pack_files(self.out),
             "prompts": self.prompt_manifest,
             "leak_check": self.leak,
-            "store": self._store_counts(),
+            "store": {**self._store_counts(), "imported": bool(self.args.do_import)},
         }
 
     def _generated(self) -> set[str]:
@@ -578,6 +607,7 @@ class Onboard:
         return why.code, why.reason
 
     def _run_all(self, http: Any, stop: int) -> tuple[int, str | None]:
+        self.http = http
         try:
             return self._run_stages(http, stop)
         except _Refuse:
@@ -682,6 +712,20 @@ class Onboard:
         )
 
 
+def _detail_code(r: Any) -> str:
+    """The route's refusal code (``steward_grant_required``, ``gate_unavailable``, ...)."""
+    from dms_executor.fde_ai import reason_code
+
+    try:
+        detail = r.json().get("detail")
+    except ValueError:
+        detail = None
+    if isinstance(detail, dict):
+        detail = detail.get("code")
+    code = reason_code(str(detail)) if isinstance(detail, str) else "unknown_reason"
+    return code if code != "unknown_reason" else f"http_{r.status_code}"
+
+
 def _drop_row(row: dict[str, Any]) -> dict[str, Any]:
     """A drop as the pack may carry it: position or group id, and the reason code only."""
     from dms_executor.fde_ai import reason_code
@@ -707,6 +751,18 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         choices=(4, 5, 6),
         default=6,
         help="4 = offline run (no model, no ask); default 6",
+    )
+    ap.add_argument(
+        "--confirm-schema",
+        default="",
+        metavar="SHA256",
+        help="sha256 of the schema.json a person read; stage 5 sends nothing without it",
+    )
+    ap.add_argument(
+        "--import",
+        dest="do_import",
+        action="store_true",
+        help="store every proposal as pending through the gated DMS routes (needs Cortex F5)",
     )
     return ap.parse_args(argv)
 
@@ -734,6 +790,13 @@ def main(
         "leak_check": run.leak.get("status"),
         "store": run._store_counts(),
         "pack": str(run.out),
+        "imported": bool(args.do_import),
+        # What a person confirms with --confirm-schema before anything is sent.
+        "schema_sha256": (
+            hashlib.sha256((run.out / "schema.json").read_bytes()).hexdigest()
+            if (run.out / "schema.json").is_file()
+            else None
+        ),
         "manifest_sha256": (
             hashlib.sha256((run.out / "manifest.json").read_bytes()).hexdigest()
             if (run.out / "manifest.json").is_file()
