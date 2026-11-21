@@ -69,6 +69,18 @@ _PROFILE_ITEMS_OF_SPACE = f"""
 """
 
 
+class ItemRevoked(Exception):
+    """A revoked item was approved again.
+
+    No un-revoke path is defined (FDE track finding on #514/#515): a revoked
+    item stays revoked. A new proposal is the way back.
+    """
+
+    def __init__(self, item_id: str) -> None:
+        super().__init__(item_id)
+        self.item_id = item_id
+
+
 class ProfileKeyConflict(Exception):
     """A second profile key for one table would be approved (ONTO-PROFILE-01).
 
@@ -604,6 +616,8 @@ class OntologyDataStore:
         row = self._items.get(item_id)
         if row is None:
             return None
+        if row.status == "revoked":
+            raise ItemRevoked(item_id)
         self._refuse_second_profile_key([row])
         row.status = "approved"
         row.approved_by = actor
@@ -822,6 +836,11 @@ class PostgresOntologyDataStore:
         conn = self._connect()
         try:
             set_tenant_context(conn, tenant, role="steward")
+            state = conn.execute(
+                "SELECT status FROM dms.ontology_items WHERE id = %s", (item,)
+            ).fetchone()
+            if state is not None and state[0] == "revoked":
+                raise ItemRevoked(item_id)
             self._refuse_second_profile_key(conn, "i.id = %s", (item,))
             fetched = conn.execute(
                 f"""
@@ -830,7 +849,7 @@ class PostgresOntologyDataStore:
                        approved_by = %s,
                        approval_ref = %s,
                        ts = %s
-                 WHERE id = %s
+                 WHERE id = %s AND status <> 'revoked'
                 RETURNING {_ITEM_COLUMNS}
                 """,
                 (actor, ref, now, item),

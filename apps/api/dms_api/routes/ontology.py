@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from cortex_client import compliance_gate
 from dms_core.control_plane.onto_data import (
+    ItemRevoked,
     PostgresOntologyDataStore,
     ProfileKeyConflict,
     _public_item,
@@ -201,6 +202,10 @@ def approve_ontology_item(
     enforce(decision)
     try:
         row = ontology_data_store().approve(item_id, actor=settings.dms_actor_user_id)
+    except ItemRevoked:
+        raise HTTPException(
+            status_code=409, detail={"code": "item_revoked", "item_id": item_id}
+        ) from None
     except ProfileKeyConflict as conflict:
         raise HTTPException(
             status_code=409,
