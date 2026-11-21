@@ -59,7 +59,9 @@ def _register_and_ask(
     with monkeypatch.context() as before:
         if stored_before_the_check:
             # The row as it was stored before VQ-03 checked at register.
-            before.setattr(verified_queries, "space_sql_reason", lambda *_a, **_k: None)
+            before.setattr(
+                verified_queries, "space_sql_reason", lambda *_a, **_k: None, raising=False
+            )
         reg = client.post(
             "/v1/studio/verified-queries",
             json={"space_id": FINANCE, "question": Q, "sql": sql},

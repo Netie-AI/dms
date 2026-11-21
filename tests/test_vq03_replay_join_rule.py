@@ -1,3 +1,4 @@
+# ruff: noqa: F811 - the imported fixtures are used by name
 """VQ-03 (#527 class, parent ruling 1): a verified query meets rule 16 and the total guard.
 
 A certified figure that is wrong breaks rule 13 whoever wrote the SQL. Before
@@ -117,7 +118,10 @@ def _ask(client: Any, space_id: str, question: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize("name", sorted(DEMO_WRONG))
 def test_a_demo_verified_query_that_multiplies_is_refused_at_register(
-    name: str, warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    name: str,
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     sql, wrong, true = DEMO_WRONG[name]
     assert _lake_rows(warehouse, sql) == [{"total": wrong}] and wrong != true
@@ -140,7 +144,10 @@ def test_a_demo_verified_query_that_multiplies_is_refused_at_register(
 
 @pytest.mark.parametrize("name", sorted(DEMO_WRONG))
 def test_a_demo_verified_query_registered_before_the_check_abstains_at_replay(
-    name: str, warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    name: str,
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     sql, wrong, _true = DEMO_WRONG[name]
     v._gate_allows(monkeypatch)
@@ -149,7 +156,7 @@ def test_a_demo_verified_query_registered_before_the_check_abstains_at_replay(
     question = f"VQ-03 stored {name}: total?"
     with monkeypatch.context() as before:
         # The row as the parent stored it: no join rule at register.
-        before.setattr(verified_queries, "space_sql_reason", lambda *_a, **_k: None)
+        before.setattr(verified_queries, "space_sql_reason", lambda *_a, **_k: None, raising=False)
         reg = client.post(
             "/v1/studio/verified-queries",
             json={"space_id": v.FINANCE, "question": question, "sql": sql},
@@ -165,7 +172,9 @@ def test_a_demo_verified_query_registered_before_the_check_abstains_at_replay(
 
 
 def test_a_demo_verified_query_over_a_declared_link_still_serves_l0(
-    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
     v._gate_allows(monkeypatch)
     cortex = _lake_cortex(warehouse)
@@ -213,7 +222,9 @@ def test_an_ontology_space_verified_query_meets_its_ontology(
     question = f"VQ-03 onto {name} ({stored_before})?"
     with monkeypatch.context() as before:
         if stored_before:
-            before.setattr(verified_queries, "space_sql_reason", lambda *_a, **_k: None)
+            before.setattr(
+                verified_queries, "space_sql_reason", lambda *_a, **_k: None, raising=False
+            )
         reg = rig.client.post(
             "/v1/studio/verified-queries",
             json={"space_id": rig.space_id, "question": question, "sql": sql},
