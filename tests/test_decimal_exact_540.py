@@ -731,3 +731,21 @@ def test_e14_reads_a_float_to_15_significant_digits_and_no_further() -> None:
     rows = [{"k": "A", "x": 1.2345678901234568e16}]
     assert figure_fidelity_violations("  - k=A, x=12345678901234600", rows) == []
     assert figure_fidelity_violations("  - k=A, x=12345678901234500", rows)
+
+
+@pytest.mark.parametrize(
+    "csv",
+    [
+        b"category,amount\nA,100000000000000.25\nA,0.50\n",
+        b"category,amount\nA,294387790064554.01\nA,0.50\n",
+    ],
+)
+def test_a_computed_sum_the_masker_takes_is_withheld_not_served_as_a_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, csv: bytes
+) -> None:
+    """A 15-digit rounding of a DECIMAL sum reads as an account number to the
+    masker. A green answer whose figure is DMSMASK_account_01 is not served."""
+    body = _gen_sum(tmp_path, monkeypatch, "dec540_r4", csv)
+    if not body["abstained"]:
+        blob = json.dumps({k: body[k] for k in ("rows", "values", "text")})
+        assert "DMSMASK_" not in blob, body

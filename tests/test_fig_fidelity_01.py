@@ -1037,7 +1037,6 @@ def test_verifier_round4_a_reworded_label_never_takes_another_rows_figure(
     ("answer", "rows"),
     [
         ("country=my, orders=7", _MY_SG),
-        ("country=Malaysia, orders=7", [{"country": "MY", "orders": 7}]),  # one group only
         (_LISTING + "\nHighlights:\n  - country=SG leads", _MY_SG),
         (_LISTING + "\nHighlights:\n  - orders=8 is the highest", _MY_SG),
         (
@@ -1057,3 +1056,59 @@ def test_verifier_round4_a_right_answer_is_served(
     assert_envelope_valid(env)
     assert env["abstained"] is False, (env["text"], env["assumptions"])
     assert env["rows"] == rows
+
+
+# --- verifier round 5 (Opus, on 67ec9de) ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("answer", "rows"),
+    [
+        # A blank line after the Found line does not end the listing.
+        (
+            "Found 2 row(s).\n\n  - country=MY, orders=7\n  - country=MY, orders=7",
+            [{"country": "MY", "orders": 7}, {"country": "MY", "orders": 8}],
+        ),
+        (
+            "Found 2 row(s).\n\n  - country=MY, orders=7\n  - country=MY , orders=7",
+            _TWINS,
+        ),
+        (
+            "Found 1 row(s).\n\n" + "  - country=MY, orders=7\n" * 3,
+            [{"country": "MY", "orders": 7}],
+        ),
+        # A numbered list is a listing.
+        (
+            "Found 2 row(s).\n1. country=MY, orders=7\n2. country=MY, orders=7",
+            [{"country": "MY", "orders": 7}, {"country": "MY", "orders": 8}],
+        ),
+        # A label that names no returned row, even with one group, is withheld.
+        ("country=SG, orders=7", [{"country": "MY", "orders": 7}]),
+        ("country=Malaysia, orders=7", [{"country": "MY", "orders": 7}]),
+        # A 16-digit literal is not the 15-digit statement of the float.
+        ("v=123456789012345.2", [{"v": 123456789012345.67}]),
+        ("v=1234567890123456", [{"v": 1234567890123451.0}]),
+    ],
+)
+def test_verifier_round5_a_wrong_listing_is_withheld(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+    rows: list[dict[str, Any]],
+) -> None:
+    env = _ask_prose(warehouse, minter, monkeypatch, answer, rows)
+    assert_envelope_valid(env)
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN", env["text"]
+
+
+def test_verifier_round5_a_loose_list_is_served(
+    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = _ask_prose(
+        warehouse, minter, monkeypatch,
+        "Found 2 row(s).\n  - country=MY, orders=7\n\n  - country=SG, orders=8",
+        _MY_SG,
+    )
+    assert_envelope_valid(env)
+    assert env["abstained"] is False, (env["text"], env["assumptions"])
