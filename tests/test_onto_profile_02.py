@@ -879,3 +879,135 @@ def test_a_one_table_read_of_a_table_whose_approved_key_broke(
         assert_serves(env, [{"n": 7}], door)
     else:
         assert_abstains(env, "ontology_unverified", figures=True)
+
+
+# --- the loader, without the ask path (step 2) -------------------------------------------
+
+
+def _ids(items: list[dict[str, Any]]) -> set[str]:
+    return {str(i["id"]) for i in items}
+
+
+def _measure(lake: Path, onto: Any) -> list[Any]:
+    con = duckdb.connect(str(lake), read_only=True)
+    try:
+        return list(onto.verify(con))
+    finally:
+        con.close()
+
+
+def test_loader_keeps_only_approved_profile_keys_and_links_of_the_space(rig: Rig) -> None:
+    from dms_executor.onto_profile import approved_profile_items, approved_profile_ontology
+
+    space = Space(rig)
+    assert approved_profile_items(space.id) == []
+    assert approved_profile_ontology(space.id) is None
+    space.approve(space.ship_key, space.order_key, space.customer_key, space.link)
+    kept = approved_profile_items(space.id)
+    assert _ids(kept) == {space.ship_key, space.order_key, space.customer_key, space.link}
+    onto = approved_profile_ontology(space.id)
+    assert onto is not None
+    assert sorted(onto.objects) == sorted([space.ships, space.orders, space.customers])
+    assert len(onto.links) == 1
+    # a revoked item leaves; the link then loses an end and leaves with it
+    space.revoke(space.order_key)
+    assert _ids(approved_profile_items(space.id)) == {space.ship_key, space.customer_key}
+    assert approved_profile_ontology(space.id) is None
+    # a Space that is not this one, a demo Space, and no Space read nothing
+    other = Space(rig, "pz")
+    assert approved_profile_items(other.id) == []
+    for nobody in (None, "", "   ", "demo"):
+        assert approved_profile_items(nobody) == []
+
+
+def test_loader_never_returns_a_measure_grain_pii_or_another_source(rig: Rig) -> None:
+    from dms_executor.onto_profile import approved_profile_items
+
+    space = Space(rig)
+    space.approve_the_link()
+    inject(space, space.order_key, kind="measure", payload={"name": "m", "grain": space.orders})
+    inject(space, space.order_key, kind="grain", payload={"name": space.orders})
+    inject(space, space.order_key, kind="pii", payload={"table": space.orders})
+    inject(space, space.order_key, source="ao-vendor")
+    inject(space, space.link, source="model")
+    held = approved_profile_items(space.id)
+    assert _ids(held) == {space.ship_key, space.order_key, space.link}
+    assert {(i["kind"], i["source"]) for i in held} == {("object", "profile"), ("link", "profile")}
+
+
+def test_a_table_with_two_approved_keys_keeps_none_and_takes_its_links(rig: Rig) -> None:
+    from dms_executor.onto_profile import approved_profile_items, approved_profile_ontology
+
+    space = Space(rig)
+    space.approve_the_link()
+    space.approve(space.customer_key)
+    twin = add_second_key(space, space.customer_key, ["customer_id", "city"])
+    kept = _ids(approved_profile_items(space.id))
+    assert space.customer_key not in kept and twin not in kept
+    assert kept == {space.ship_key, space.order_key, space.link}
+    # the other tables are not touched by it
+    onto = approved_profile_ontology(space.id)
+    assert onto is not None and space.customers not in onto.objects
+    # two keys on the parent: both go, and the link that needs it goes too
+    add_second_key(space, space.order_key, ["order_id", "customer_id"])
+    assert _ids(approved_profile_items(space.id)) == {space.ship_key}
+    assert approved_profile_ontology(space.id) is None
+
+
+def test_a_link_is_kept_only_when_both_ends_are_kept(rig: Rig) -> None:
+    from dms_executor.onto_profile import approved_profile_items, approved_profile_ontology
+
+    space = Space(rig)
+    space.approve(space.link)
+    assert approved_profile_items(space.id) == []
+    space.approve(space.ship_key)  # child end only
+    assert _ids(approved_profile_items(space.id)) == {space.ship_key}
+    assert approved_profile_ontology(space.id) is None
+    space.approve(space.order_key)  # parent end too
+    assert _ids(approved_profile_items(space.id)) == {space.ship_key, space.order_key, space.link}
+    assert approved_profile_ontology(space.id) is not None
+    # the parent end alone does not keep the link either
+    space.revoke(space.ship_key)
+    assert _ids(approved_profile_items(space.id)) == {space.order_key}
+    assert approved_profile_ontology(space.id) is None
+
+
+def test_the_loaded_ontology_is_unverified_and_measured_again_at_every_call(rig: Rig) -> None:
+    from dms_executor.onto_profile import approved_profile_ontology
+
+    space = Space(rig)
+    space.approve_the_link()
+    first = approved_profile_ontology(space.id)
+    assert first is not None and first.verified is False
+    assert _measure(rig.lake, first) == []
+    assert first.verified is True  # measured now, against the rows as they are
+    # nothing is carried over: the next load starts unverified and is a new object
+    second = approved_profile_ontology(space.id)
+    assert second is not None and second is not first and second.verified is False
+    # a link that breaks after approval is refused at the next measurement
+    change(space, BREAKS["orphan_row"][0])
+    third = approved_profile_ontology(space.id)
+    assert third is not None and third.verified is False
+    violations = _measure(rig.lake, third)
+    assert violations and third.verified is False
+    assert any(v.check == "fk_intact" for v in violations), [v.check for v in violations]
+    # and repaired, the next load measures clean again
+    change(space, BREAKS["orphan_row"][1])
+    fourth = approved_profile_ontology(space.id)
+    assert fourth is not None and _measure(rig.lake, fourth) == [] and fourth.verified is True
+
+
+def test_the_loader_raises_when_the_item_store_cannot_be_read(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_executor.onto_profile import approved_profile_ontology
+
+    space = Space(rig)
+    space.approve_the_link()
+
+    def _boom(*_: Any, **__: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("item store down")
+
+    monkeypatch.setattr(ontology_data_store(), "space_profile_items", _boom)
+    with pytest.raises(RuntimeError):
+        approved_profile_ontology(space.id)
