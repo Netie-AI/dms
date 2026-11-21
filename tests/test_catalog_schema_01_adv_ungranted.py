@@ -317,3 +317,35 @@ def test_schema_hash_differs_between_qualified_and_bare_grants(tmp_path: Path) -
         for g in ({"orders"}, {"bronze.orders"}, {"bronze.orders", "orders"})
     }
     assert len(hashes) == 3 and "" not in hashes
+
+
+# ---- one index slot per Space, two writers ----------------------------------------
+
+
+def test_an_ingest_prewarm_does_not_displace_the_index_built_for_the_space_grants(
+    tmp_path: Path,
+) -> None:
+    """Ingest's ``note_serving_source`` builds with no grants (the default schema);
+    the ask builds with the Space's grants. Both write the Space's one slot. When
+    the prewarm finished last, the ask's next lookup found its index gone, went
+    back to ``index_pending`` and served the bare catalog (the 1 in 7 to 10 failure
+    of test_onto_scope_01 [DMS_SCHEMA_CONTEXT-extract_loop])."""
+    from dms_executor.schema_context import lookup_schema
+
+    lake = _two_schema_lake(tmp_path)
+    space = "space_adv_prewarm"
+    grant = {"bronze.orders"}
+    _forget_index(space)
+    try:
+        assert build_space_index(lake, space, grant, "duckdb") == ""
+        _schema, stamp = lookup_schema(lake, grant, "duckdb", space)
+        assert stamp == ""
+        assert read_catalog(lake, None, None)[0] != read_catalog(lake, grant, "duckdb")[0]
+        assert build_space_index(lake, space, None, None) == ""
+        schema, stamp = lookup_schema(lake, grant, "duckdb", space)
+        assert stamp == ""
+        assert "WEB" in json.dumps(schema)
+        assert "MAINONLYCANARYA" not in json.dumps(schema)
+    finally:
+        _join_workers()
+        _forget_index(space)

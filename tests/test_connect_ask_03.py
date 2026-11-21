@@ -677,7 +677,12 @@ def test_held_sql_yes_with_an_unreadable_ontology_store_abstains(
     def _unreadable(*_a: Any, **_k: Any) -> None:
         raise OSError("ontology store cannot be read")
 
+    # Both bindings: this package's ``__init__`` imports the name, and the ask
+    # path may read it through ``space_ontology`` (T8 resolver).
+    from dms_executor import space_ontology
+
     monkeypatch.setattr(de, "load_space_ontology", _unreadable)
+    monkeypatch.setattr(space_ontology, "load_space_ontology", _unreadable)
     _assert_check_unavailable(rig.confirm(token, yes=True), rig)
 
 

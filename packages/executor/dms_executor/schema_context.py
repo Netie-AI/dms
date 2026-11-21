@@ -184,6 +184,8 @@ _SPACE_INDEX: dict[str, dict[str, tuple[str, ...]]] = {}
 _SPACE_SAMPLES: dict[str, dict[str, tuple[str, ...]]] = {}
 _SPACE_CAPPED: dict[str, frozenset[str]] = {}
 _SPACE_FP: dict[str, str] = {}
+# True when the slot was built under the Space's own grants (the ask path).
+_SPACE_GRANTED: dict[str, bool] = {}
 _STOP = threading.Event()
 _WORKER_LOCK = threading.Lock()
 _WORKERS: list[threading.Thread] = []
@@ -219,10 +221,19 @@ def _remember_built(
     index: dict[str, tuple[str, ...]],
     samples: dict[str, tuple[str, ...]],
     capped: Collection[str] = (),
+    *,
+    granted: bool = True,
 ) -> None:
+    """Fill the Space's one slot. A prewarm built with no grants (ingest's
+    ``note_serving_source``) reads another catalog than the ask does, so it never
+    replaces a slot an ask-path build filled: whichever finished last used to win,
+    and the ask then found its index gone."""
     snap = {key: tuple(vals) for key, vals in index.items()}
     held = {key: tuple(vals) for key, vals in samples.items()}
     with _INDEX_LOCK:
+        if not granted and _SPACE_GRANTED.get(space_id):
+            return
+        _SPACE_GRANTED[space_id] = granted
         _SPACE_INDEX[space_id] = snap
         _SPACE_SAMPLES[space_id] = held
         _SPACE_CAPPED[space_id] = frozenset(capped)
@@ -235,6 +246,7 @@ def _forget_index(space_id: str) -> None:
         _SPACE_SAMPLES.pop(space_id, None)
         _SPACE_CAPPED.pop(space_id, None)
         _SPACE_FP.pop(space_id, None)
+        _SPACE_GRANTED.pop(space_id, None)
 
 
 def _space_fingerprint(space_id: str) -> str:
@@ -2502,7 +2514,9 @@ def build_space_index(
             "schema": plain,
         },
     )
-    _remember_built(space_id, fingerprint, values, samples, capped_keys)
+    _remember_built(
+        space_id, fingerprint, values, samples, capped_keys, granted=grantable is not None
+    )
     return ""
 
 
