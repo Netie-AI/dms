@@ -299,6 +299,13 @@ def register_verified_query(
         raise ValueError(f"sql_not_in_space:{','.join(sorted(leaked))}")
     if gap:
         raise ValueError(gap)
+    # #527 class (parent ruling 1): a certified figure that is wrong breaks rule
+    # 13 whoever wrote the SQL. The steward sees the named reason.
+    refused = space_sql_reason(
+        sql_text, space_id=space_id, warehouse=db, grantable=grantable, dialect=dialect
+    )
+    if refused:
+        raise ValueError(refused)
     qn = normalize_verified_question(q)
     syn = _synonyms_norm(synonyms)
     carried = canonical_pack_hash(pack_hash)
@@ -334,6 +341,48 @@ def register_verified_query(
         "synonyms": syn,
         "created_at": created.isoformat(),
     }
+
+
+def space_sql_reason(
+    sql_text: str,
+    *,
+    space_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+    dialect: str | None = None,
+) -> str | None:
+    """Rule 16 and TOTAL-GUARD-01 on a verified query, as the ask doors run them.
+
+    The Space's own stored ontology (or a file Space's approved profile) is
+    measured on the lake now; a demo Space meets the demo pack's ontology; any
+    other Space with none has zero verified links. Then the total guard. None
+    only when both pass. A check that cannot finish refuses.
+    """
+    from dms_executor.demo_grants import is_demo_space
+    from dms_executor.generative_ask import join_check_unavailable, no_ontology_join_reason
+    from dms_executor.space_ontology import check_sql_against_space, load_space_ontology
+
+    lake = warehouse or warehouse_path()
+    allowed = set(grantable or ())
+    try:
+        onto = None
+        if not is_demo_space(space_id):
+            onto = load_space_ontology(space_id)
+            if onto is None:
+                from dms_executor.onto_profile import approved_profile_ontology
+
+                onto = approved_profile_ontology(space_id)
+        if onto is not None:
+            why = check_sql_against_space(sql_text, onto, lake, sorted(allowed))
+        else:
+            why = no_ontology_join_reason(
+                sql_text, space_id=space_id, warehouse=lake, grantable=allowed, contract=True
+            )
+    except Exception as exc:  # noqa: BLE001 - a check that cannot finish proves no join
+        why = join_check_unavailable(exc)
+    if why:
+        return why
+    return repeated_input_reason(sql_text, dialect or SERVING_DIALECT)
 
 
 def list_verified_queries(*, space_id: str, path: Path | None = None) -> list[dict[str, Any]]:
@@ -841,11 +890,20 @@ def maybe_verified_ask(
     )
     if hit is None:
         return None
-    # TOTAL-GUARD-01: a registered statement is not a proof. One that lets an
-    # aggregate read an input twice is no hit; the question takes the normal
-    # ladder, where the same rule decides again.
-    if repeated_input_reason(hit["sql"], dialect or SERVING_DIALECT):
-        return None
+    # #527 class (parent ruling 1): a registered statement is not a proof. Rule
+    # 16 and the total guard run again at every replay, so a query registered
+    # before this check (or whose link verify() now rejects) never serves L0.
+    refused = space_sql_reason(
+        hit["sql"],
+        space_id=space_id,
+        warehouse=warehouse,
+        grantable=grantable,
+        dialect=dialect,
+    )
+    if refused:
+        from dms_executor.generative_ask import path_miss_envelope
+
+        return path_miss_envelope(question, refused, space_id=space_id, session_id=session_id)
     if submit is None or ledger_append is None:
         return None
     result = submit(hit["sql"])

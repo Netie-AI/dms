@@ -48,14 +48,22 @@ def _register_and_ask(
     warehouse: Path,
     minter,
     monkeypatch: pytest.MonkeyPatch,  # noqa: F811
+    *,
+    stored_before_the_check: bool = False,
 ):
+    from dms_executor import verified_queries
+
     _gate_allows(monkeypatch)
     cortex = _MarkerCortex()
     client = _live_client(warehouse, minter, monkeypatch, cortex)
-    reg = client.post(
-        "/v1/studio/verified-queries",
-        json={"space_id": FINANCE, "question": Q, "sql": sql},
-    )
+    with monkeypatch.context() as before:
+        if stored_before_the_check:
+            # The row as it was stored before VQ-03 checked at register.
+            before.setattr(verified_queries, "space_sql_reason", lambda *_a, **_k: None)
+        reg = client.post(
+            "/v1/studio/verified-queries",
+            json={"space_id": FINANCE, "question": Q, "sql": sql},
+        )
     assert reg.status_code == 200, reg.text
     ask = client.post(
         "/v1/chat/ask",
@@ -70,10 +78,23 @@ def test_registered_rollup_total_is_not_replayed(
     minter,
     monkeypatch: pytest.MonkeyPatch,  # noqa: F811
 ) -> None:
+    """Since VQ-03 (parent ruling 1, #527 class) the ROLLUP statement is refused
+    at register with its reason, and one stored before that abstains at replay
+    with the reason instead of falling through to the ladder."""
     good, wrong = _figures(warehouse)
     assert wrong == 2 * good, "the registered statement doubles the total"
     assert (repeated_input_reason(ROLLUP) or "").startswith("repeated_input:grouping_sets")
-    cortex, env = _register_and_ask(ROLLUP, warehouse, minter, monkeypatch)
+    _gate_allows(monkeypatch)
+    client = _live_client(warehouse, minter, monkeypatch, _MarkerCortex())
+    reg = client.post(
+        "/v1/studio/verified-queries",
+        json={"space_id": FINANCE, "question": Q, "sql": ROLLUP},
+    )
+    assert reg.status_code == 400, reg.text
+    assert str(reg.json()["detail"]).startswith("repeated_input:grouping_sets"), reg.text
+    cortex, env = _register_and_ask(
+        ROLLUP, warehouse, minter, monkeypatch, stored_before_the_check=True
+    )
     text = str(env.get("text") or "")
     # Not the stored statement, not its figure, not the verified badge for it.
     assert env.get("sql_used") != ROLLUP
@@ -84,8 +105,11 @@ def test_registered_rollup_total_is_not_replayed(
     assert cortex.submits == [] or all(
         "ROLLUP" not in str(getattr(r, "body", "")) for r in cortex.submits
     ), "the stored ROLLUP statement reached Cortex submit"
-    # The question took the normal ladder instead (no silent drop).
-    assert cortex.asks, "the question did not fall through to the ladder"
+    # A named abstain, not a silent drop to the ladder.
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, env
+    assert env["rows"] == [] and env["values"] == []
+    reasons = " ".join(map(str, env.get("assumptions") or []))
+    assert "repeated_input:grouping_sets" in reasons, reasons
 
 
 def test_registered_plain_total_still_replays_as_l0(
