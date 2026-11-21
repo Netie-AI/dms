@@ -246,8 +246,19 @@ test("at lg nothing is arbitrated: a click on a figure opens that figure, and th
   await page.mouse.click((f.left + f.right) / 2, (f.top + f.bottom) / 2);
   await expect(traced).toHaveText(f.label);
   // 6px above a figure is plain sentence at lg (no pad there): the selection must not move.
-  const other = (await figures(page, fmt(FIGURES[5][1])))[5];
-  await page.mouse.click((other.left + other.right) / 2, other.top - 6);
+  const all = await figures(page, fmt(FIGURES[5][1]));
+  const other = all[5];
+  // The point must be plain sentence: not inside any figure's own box (a figure on the line above can sit over it).
+  const y = other.top - 6;
+  let x: number | null = null;
+  for (let cx = Math.ceil(other.left); cx <= other.right; cx += 2) {
+    if (!all.some((g) => cx >= g.left && cx <= g.right && y >= g.top && y <= g.bottom)) {
+      x = cx;
+      break;
+    }
+  }
+  expect(x, "a point above the figure that is outside every figure").not.toBeNull();
+  await page.mouse.click(x!, y);
   await page.waitForTimeout(200);
   await expect(traced).toHaveText(f.label);
   // And the figure itself still answers.
