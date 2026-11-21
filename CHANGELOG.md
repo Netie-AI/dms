@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-21 - ENV-EXAMPLE-SENTINEL (#388): a placeholder left in a secret refuses boot, by name
+
+- **Sentinel.** Root `.env.example` ships `CHANGE_ME` in `DATABASE_URL` instead of `change-me`. `get_settings()` raises `placeholder_secret: <VARIABLE>` for any of `DATABASE_URL`, `CORTEX_API_KEY`, `OPENVAULT_API_KEY`, `DMS_OV_SERVICE_TOKEN` that holds it (any case, `- _ .` or space between the words, percent-encoded or not, alone or inside a URL). The message names the variable, never the value. `app = create_app()` runs at import, so `import dms_api.app` and the container entrypoint (which imports `dms_api` before migrating) both exit non-zero before any connection. No new config key.
+- **Proof, CI as the runner (no `cortex_contract` in the authoring session).** Tests alone: 24 failed, all in `tests/test_env_example_sentinel_388.py`, 4059 passed ([run 44858685949](https://github.com/Netie-AI/dms/actions/runs/44858685949), `8a1f446`). With the fix: green ([run 44860979364](https://github.com/Netie-AI/dms/actions/runs/44860979364), `215c8e5`). Guard disabled in `get_settings` (`a5f5d5a`): 9 failed, all in that file ([run 44862792154](https://github.com/Netie-AI/dms/actions/runs/44862792154)); reverted by a new commit.
+- **Verifier (Opus, did not write it): PASS-WITH-FINDINGS, no HIGH.** Left as LOW: fullwidth, zero-width and Cyrillic spellings of the sentinel are not caught (nothing ships them); `OPENVAULT_API_KEY` and `DMS_OV_SERVICE_TOKEN` are guarded in the process environment only, which is where the packages read them, not in a `.env` file; the guard scans the whole `DATABASE_URL`, so a real password such as `ChangeMe123!` is refused (fail closed, named). Not PASS.
+
 ## 2026-11-21 - TLS-HOST-VALIDATE (#387) fix 2: an all-numeric host must be a dotted IPv4 address
 
 - **Guard.** An Opus adversary found the guard took any RFC 1123 name, so `2130706433`, `999.999.999.999`, `1.2.3.4.5`, `0x7f.1` and `0.0.0.0` reached Caddy as site names while the docs say "dotted IPv4". A host whose last label is all digits now has to be four parts, 0-255, no leading zero, and not `0.0.0.0`; anything else exits 1 at the guard with a named reason. Run in the real `caddy:2-alpine` ash as well as sh, dash and bash.
