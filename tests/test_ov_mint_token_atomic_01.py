@@ -12,6 +12,7 @@ OpenVault is mocked; no network.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -193,6 +194,7 @@ def test_token_file_does_not_exist_until_register_has_answered(secret: Path) -> 
     assert len(seen) == 1
     target_existed, others = seen[0]
     assert target_existed is False, "the token file existed before OV issued a token"
+    assert len(others) == 1, "the 0600 temp file was not there while OV decided"
     for mode, size in others:
         assert size == 0
         if os.name == "posix":
@@ -307,6 +309,61 @@ def test_rename_refused_with_no_file_to_write_in_place_is_a_named_failure(
         raise PermissionError(13, "Permission denied")
 
     monkeypatch.setattr(manifest_mod.os, "replace", denied)
+    ov = _OpenVault()
+    err = _fail(ov)
+    assert err.code == OV_MINT_FAILED
+    assert "not stored" in str(err)
+    assert ov.registered is True
+    assert list(secret.parent.iterdir()) == []
+
+
+def test_fsync_refused_after_issue_still_stores_the_token(
+    secret: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OV will not issue this token twice. The bytes are already written, so a
+    filesystem that refuses fsync (some bind mounts, EINVAL) must not cost them."""
+
+    def refused(_fd: int) -> None:
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(manifest_mod.os, "fsync", refused)
+    assert _OpenVault().minter()._first_mint() == MINTED
+    assert secret.read_text(encoding="utf-8") == MINTED
+    assert [p.name for p in secret.parent.iterdir()] == [secret.name]
+    if os.name == "posix":
+        assert stat.S_IMODE(secret.stat().st_mode) == 0o600
+
+
+def test_write_error_after_issue_is_a_named_failure_not_a_raw_oserror(
+    secret: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A full disk after OV issued the token. Callers catch OpenVaultTokenError
+    only, so the abstain must be named, and no partial file may remain."""
+    real_fdopen = os.fdopen
+
+    class _FullDisk:
+        def __init__(self, fh) -> None:  # noqa: ANN001
+            self._fh = fh
+
+        def __enter__(self) -> _FullDisk:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            self._fh.close()
+            return False
+
+        def write(self, _text: str) -> int:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def flush(self) -> None:
+            return None
+
+        def fileno(self) -> int:
+            return self._fh.fileno()
+
+    monkeypatch.setattr(
+        manifest_mod.os, "fdopen", lambda fd, *a, **k: _FullDisk(real_fdopen(fd, *a, **k))
+    )
     ov = _OpenVault()
     err = _fail(ov)
     assert err.code == OV_MINT_FAILED
