@@ -33,6 +33,10 @@
 	local_certs
 	# The container's trust store is not the clients' trust store.
 	skip_install_trust
+	# A client typing an IP address sends no SNI, so Caddy has no name to choose
+	# the certificate by and the handshake fails. DMS_TLS_HOST is the only site,
+	# so name it as the default. Already checked by the ui entry guard (#387).
+	default_sni {$DMS_TLS_HOST:localhost}
 	# No HTTP/3. It would open UDP on the TLS port and advertise itself with
 	# Alt-Svc; the appliance speaks TLS over TCP only.
 	servers {

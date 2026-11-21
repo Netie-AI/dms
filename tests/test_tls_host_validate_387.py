@@ -164,12 +164,29 @@ def test_guard_is_an_allowlist_and_runs_before_caddy() -> None:
 def test_compose_default_and_caddyfile_site_are_unchanged() -> None:
     ui = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["ui"]
     assert ui["environment"]["DMS_TLS_HOST"] == "${DMS_TLS_HOST:-localhost}"
-    sites = [
-        ln for ln in CADDYFILE.read_text(encoding="utf-8").splitlines() if "DMS_TLS_HOST" in ln
+    spliced = [
+        ln.strip()
+        for ln in CADDYFILE.read_text(encoding="utf-8").splitlines()
+        if "DMS_TLS_HOST" in ln and not ln.lstrip().startswith("#")
     ]
-    assert sites == ["https://{$DMS_TLS_HOST:localhost}:8080 {"], (
-        "the host is spliced somewhere new"
-    )
+    # Exactly two splice points, both behind the entry guard: the site address and
+    # default_sni (which lets a client that sends no SNI, as one typing an IP
+    # address does, be served the certificate for the same host).
+    assert spliced == [
+        "default_sni {$DMS_TLS_HOST:localhost}",
+        "https://{$DMS_TLS_HOST:localhost}:8080 {",
+    ], "the host is spliced somewhere new"
+
+
+def test_ip_host_is_served_without_sni() -> None:
+    """An IPv4 host is admitted by the guard, so it must also be served. A TLS
+    client does not send SNI for an IP address; without ``default_sni`` Caddy has
+    no name to pick the certificate by and the handshake fails (tlsv1 alert
+    internal error). The global block must carry it, ahead of the first site."""
+    text = CADDYFILE.read_text(encoding="utf-8")
+    code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    assert "default_sni {$DMS_TLS_HOST:localhost}" in code
+    assert code.index("default_sni") < code.index("https://{$DMS_TLS_HOST")
 
 
 def test_smoke_proves_a_good_and_a_refused_host_live() -> None:
@@ -182,3 +199,4 @@ def test_smoke_proves_a_good_and_a_refused_host_live() -> None:
     assert code.count('"DMS_TLS_HOST must be') >= 3, "the refused hosts are not tied to the guard"
     assert "INJECTED" in code, "the smoke no longer sends the second-site payload"
     assert '--noproxy "${GOOD_HOST}"' in code, "F1 would ask a workstation proxy for the host"
+    assert 'pass "F2' in code and 'fail "F2' in code, "an IPv4 host is not proved live"

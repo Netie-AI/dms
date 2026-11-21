@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-21 - TLS-HOST-VALIDATE (#387): DMS_TLS_HOST is checked before Caddy reads it
+
+- **Guard.** The `ui` entry command admits only RFC 1123 labels (letters, digits, hyphens, dots; 253 total, 63 per label), which includes a dotted IPv4 address, and exits 1 before Caddy starts with one fixed line naming `DMS_TLS_HOST` and the reason, never the value. No port, no IPv6, no raw IDN (use `xn--`). On main a value with a newline and braces added a second site and a `respond` directive to the rendered config.
+- **IPv4 served.** The guard admits an IPv4 host, but a client sends no SNI for an IP address and the handshake failed (`tlsv1 alert internal error`) on main and on the carried branch. The Caddyfile global block now has `default_sni {$DMS_TLS_HOST:localhost}`. Same variable, same guard, no new key.
+- **Proof.** `tests/test_tls_host_validate_387.py`; live in the real `caddy:2-alpine` with the shipped Caddyfile and `ui` command: DNS name, `localhost`, `127.0.0.1` and `10.1.2.3` answer 200 over a certificate that verifies; a second-site payload is refused at the guard. `scripts/compose_tls_smoke.sh` sections F1, F2 and three refusals; the full smoke needs the private `cortex_contract` wheel and was not run here. Not PASS.
+
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
 - **Binding.** Apply and decline write their actor and masked `approval_ref` (and a decline's masked `decline_reason`) to the new append-only `dms.action_confirmations` row for the version, in the same transaction. `record_decision` reads them back and refuses a caller record that names another ref or actor (`ReceiptMismatch` on `approval_ref` / `actor_id`); the decision row stores the bound values.
