@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-
 from dms_core.control_plane.onto_data import PROFILE_SOURCE, ontology_data_store
 
 from dms_executor.bronze import list_bronze_tables, quote_ident
