@@ -180,3 +180,47 @@ def test_revoke_works_on_onboard_items(rig: Rig) -> None:
     )
     assert [i["id"] for i in got.json()["items"]] == [first["id"]]
     assert ontology_data_store().approved_items() == []
+
+
+# --- adversary round 1 (dms#541): re-run, diff, revoked read --------------------------
+
+
+def test_a_rerun_keeps_held_items_and_never_resurrects_a_revoked_one(rig: Rig) -> None:
+    space = rig.new_space("Onboard rerun")
+    first = store_onboard(sample_items(), created_by="fde", space_id=space, run=RUN)
+    revoked = first["items"][0]["id"]
+    _revoke(rig, revoked)
+    second = store_onboard(sample_items(), created_by="fde", space_id=space, run=RUN)
+    assert [i["id"] for i in second["items"]] == [i["id"] for i in first["items"]]
+    assert set(second["held"]) == {i["id"] for i in first["items"]}
+    assert second["version_id"] is None
+    rows = ontology_data_store().space_onboard_items(space)
+    assert len(rows) == len(sample_items())
+    assert {r["id"]: r["status"] for r in rows}[revoked] == "revoked"
+
+
+def test_an_approved_onboard_item_does_not_hide_a_new_proposal_in_the_diff(rig: Rig) -> None:
+    space = rig.new_space("Onboard diff")
+    stored = store_onboard(sample_items(), created_by="fde", space_id=space, run=RUN)
+    obj = next(i for i in stored["items"] if i["kind"] == "object")
+    _approve(rig, obj["id"])
+    store = ontology_data_store()
+    proposal = store.store_proposal(
+        {
+            "status": "proposed",
+            "terms": [{"name": "orders", "table": "orders", "key": ["order_id"]}],
+        },
+        created_by="ao",
+    )
+    diff = store.diff(proposal["version_id"])
+    assert [i["payload"]["name"] for i in diff["proposed_only"]] == ["orders"]
+    assert diff["same"] == [] and diff["changed"] == []
+    assert all(i["source"] != ONBOARD_SOURCE for i in diff["approved_only"])
+
+
+def test_revoked_items_leave_onboard_rows_out(rig: Rig) -> None:
+    space = rig.new_space("Onboard revoked read")
+    stored = store_onboard(sample_items(), created_by="fde", space_id=space, run=RUN)
+    for item in stored["items"]:
+        _revoke(rig, item["id"])
+    assert not [i for i in ontology_data_store().revoked_items() if i["source"] == ONBOARD_SOURCE]

@@ -363,7 +363,13 @@ def _diff_rows(
         version_id = max(versions.values(), key=lambda row: (row.ts, row.id)).id
     if version_id is not None:
         proposed = [row for row in proposed if row.version_id == version_id]
-    approved = [row for row in items.values() if row.status == "approved"]
+    # FDE-ONBOARD-01: an approved onboard item is served nowhere, so it must not make a
+    # new proposal of the same name look already approved.
+    approved = [
+        row
+        for row in items.values()
+        if row.status == "approved" and row.source != ONBOARD_SOURCE
+    ]
     approved_by_id = {item_identity(row.kind, row.payload): row for row in approved}
     proposed_ids: set[str] = set()
     proposed_only: list[dict[str, Any]] = []
@@ -649,18 +655,36 @@ class OntologyDataStore:
         if not items:
             return _onboard_response(space, None, [])
         now = _now()
-        version = VersionRow(
-            id=str(uuid4()),
-            tenant_id=tenant_id,
-            space_id=space,
-            source=ONBOARD_SOURCE,
-            provenance={"served": False, "run": dict(run)},
-            created_by=created_by,
-            ts=now,
-        )
-        self._versions[version.id] = version
+        held = {
+            item_identity(row.kind, row.payload): row
+            for row in self._items.values()
+            if row.source == ONBOARD_SOURCE
+            and (v := self._versions.get(row.version_id)) is not None
+            and v.space_id == space
+        }
+        version: VersionRow | None = None
         stored: list[dict[str, Any]] = []
+        kept: list[str] = []
         for kind, payload, evidence in items:
+            prior = held.get(item_identity(kind, payload))
+            if prior is not None and prior.kind == kind:
+                # A re-run never resurrects a revoked item or re-proposes an approved
+                # one: the steward's status stands. Only the run provenance is added.
+                prior.provenance = {**prior.provenance, "last_run": dict(run)}
+                kept.append(prior.id)
+                stored.append(_public_item(prior))
+                continue
+            if version is None:
+                version = VersionRow(
+                    id=str(uuid4()),
+                    tenant_id=tenant_id,
+                    space_id=space,
+                    source=ONBOARD_SOURCE,
+                    provenance={"served": False, "run": dict(run)},
+                    created_by=created_by,
+                    ts=now,
+                )
+                self._versions[version.id] = version
             row = ItemRow(
                 id=str(uuid4()),
                 tenant_id=tenant_id,
@@ -675,8 +699,11 @@ class OntologyDataStore:
                 ts=now,
             )
             self._items[row.id] = row
+            held[item_identity(kind, payload)] = row
             stored.append(_public_item(row))
-        return _onboard_response(space, version.id, stored)
+        out = _onboard_response(space, version.id if version else None, stored)
+        out["held"] = kept
+        return out
 
     def space_onboard_items(
         self, space_id: str, status: str | None = None
@@ -783,7 +810,12 @@ class OntologyDataStore:
         return [_public_item(row) for row in rows]
 
     def revoked_items(self) -> list[dict[str, Any]]:
-        rows = [row for row in self._items.values() if row.status == "revoked"]
+        """Revoked items. An onboard item is read only through ``space_onboard_items``."""
+        rows = [
+            row
+            for row in self._items.values()
+            if row.status == "revoked" and row.source != ONBOARD_SOURCE
+        ]
         rows.sort(key=lambda row: (row.ts, row.id))
         return [_public_item(row) for row in rows]
 
@@ -1084,55 +1116,84 @@ class PostgresOntologyDataStore:
         tenant_id: str = "",
         run: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """Store onboarding proposals of one Space in one transaction. Never served."""
+        """Store onboarding proposals of one Space in one transaction. Never served.
+
+        Only into the tenant this store is bound to: a different ``tenant_id`` is refused,
+        because the Space foreign key does not see RLS. A re-run keeps a held item (same
+        kind and name in this Space) with its id and status: a revoked item stays revoked.
+        """
         space = _uuid_text(space_id)
         if space is None:
             raise ValueError("an onboard proposal belongs to a Space")
         _check_onboard(items)
         if not items:
             return _onboard_response(space, None, [])
-        tenant = self._tenant(tenant_id)
+        if (tenant_id or "").strip() and _uuid_text(tenant_id) != self._tenant_id:
+            raise ValueError("tenant_mismatch: an onboard proposal is stored in the bound tenant")
+        tenant = self._tenant_id
         created = _uuid_text(created_by)
         now = datetime.now(UTC)
         ts = _iso(now)
         version_id = str(uuid4())
-        rows = [
-            ItemRow(
-                id=str(uuid4()),
-                tenant_id=tenant,
-                version_id=version_id,
-                kind=kind,
-                payload=dict(payload),
-                status="proposed",
-                source=ONBOARD_SOURCE,
-                provenance=_onboard_provenance(run, evidence),
-                created_by=created_by,
-                approved_by=None,
-                ts=ts,
-            )
-            for kind, payload, evidence in items
-        ]
         conn = self._connect()
         try:
             ensure_tenant_row(conn, tenant)
             set_tenant_context(conn, tenant, role="steward")
-            conn.execute(
-                """
-                INSERT INTO dms.ontology_versions (
-                  id, tenant_id, space_id, source, provenance, created_by, ts
-                ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
-                """,
-                (
-                    version_id,
-                    tenant,
-                    space,
-                    ONBOARD_SOURCE,
-                    json.dumps({"served": False, "run": dict(run)}),
-                    created,
-                    now,
-                ),
-            )
-            for row in rows:
+            held = {
+                item_identity(r.kind, r.payload): r
+                for r in (
+                    _item_from_db(record)
+                    for record in conn.execute(_ONBOARD_ITEMS_OF_SPACE, (space,)).fetchall()
+                )
+            }
+            out_rows: list[ItemRow] = []
+            new_rows: list[ItemRow] = []
+            kept: list[str] = []
+            for kind, payload, evidence in items:
+                prior = held.get(item_identity(kind, payload))
+                if prior is not None and prior.kind == kind:
+                    prior.provenance = {**prior.provenance, "last_run": dict(run)}
+                    conn.execute(
+                        "UPDATE dms.ontology_items SET provenance = %s::jsonb WHERE id = %s",
+                        (json.dumps(prior.provenance, default=str), prior.id),
+                    )
+                    kept.append(prior.id)
+                    out_rows.append(prior)
+                    continue
+                row = ItemRow(
+                    id=str(uuid4()),
+                    tenant_id=tenant,
+                    version_id=version_id,
+                    kind=kind,
+                    payload=dict(payload),
+                    status="proposed",
+                    source=ONBOARD_SOURCE,
+                    provenance=_onboard_provenance(run, evidence),
+                    created_by=created_by,
+                    approved_by=None,
+                    ts=ts,
+                )
+                held[item_identity(kind, payload)] = row
+                new_rows.append(row)
+                out_rows.append(row)
+            if new_rows:
+                conn.execute(
+                    """
+                    INSERT INTO dms.ontology_versions (
+                      id, tenant_id, space_id, source, provenance, created_by, ts
+                    ) VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                    """,
+                    (
+                        version_id,
+                        tenant,
+                        space,
+                        ONBOARD_SOURCE,
+                        json.dumps({"served": False, "run": dict(run)}),
+                        created,
+                        now,
+                    ),
+                )
+            for row in new_rows:
                 conn.execute(
                     """
                     INSERT INTO dms.ontology_items (
@@ -1161,7 +1222,11 @@ class PostgresOntologyDataStore:
             raise
         finally:
             conn.close()
-        return _onboard_response(space, version_id, [_public_item(r) for r in rows])
+        out = _onboard_response(
+            space, version_id if new_rows else None, [_public_item(r) for r in out_rows]
+        )
+        out["held"] = kept
+        return out
 
     def space_onboard_items(
         self, space_id: str, status: str | None = None
@@ -1404,7 +1469,12 @@ class PostgresOntologyDataStore:
                 raise ProfileKeyConflict(relation=relation, approved_item_id=str(other[0]))
 
     def revoked_items(self) -> list[dict[str, Any]]:
-        return [_public_item(row) for row in self._items_by_status("revoked")]
+        """Revoked items. An onboard item is read only through ``space_onboard_items``."""
+        return [
+            _public_item(row)
+            for row in self._items_by_status("revoked")
+            if row.source != ONBOARD_SOURCE
+        ]
 
     def diff(self, version_id: str | None = None) -> dict[str, Any]:
         tenant = self._tenant(None)
