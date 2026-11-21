@@ -23,6 +23,7 @@ import json
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -408,14 +409,17 @@ def test_happy_path_every_output_pending_measured_on_the_envelope(
     draft = json.loads((rig.out / "proposals" / "ontology_draft.json").read_text())
     assert [d["reason"] for d in draft["dropped"]] == ["unknown_table"]
 
-    # Measure: the numbers in measure.json are the envelopes' numbers.
+    # Measure: the numbers in measure.json are the envelopes' numbers, counted as agreement
+    # with the unreviewed proposal. Nothing is called correct before a steward approves.
     measure = json.loads((rig.out / "measure.json").read_text())
-    assert (measure["asked"], measure["correct"], measure["abstained"], measure["wrong"]) == (
+    assert (measure["asked"], measure["agrees"], measure["abstained"], measure["disagrees"]) == (
         2,
         2,
         0,
         0,
     )
+    assert measure["correct"] is None and measure["wrong"] is None
+    assert measure["reference"] == "proposed_sql_unreviewed"
     truth = {Q_ORDERS: ORDER_COUNT, Q_CUSTOMERS: CUSTOMER_COUNT}
     for q, n in truth.items():
         r = rig.client.post(
@@ -428,16 +432,18 @@ def test_happy_path_every_output_pending_measured_on_the_envelope(
         assert str(n) in str(env.get("text") or ""), env.get("text")
 
 
-def test_measure_counts_a_wrong_answer_as_wrong(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_measure_counts_a_different_answer_as_disagreeing(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _cortex_up(monkeypatch)
     # The ask leg answers the orders question with the customers figure.
     rig.cortex.by_question[Q_ORDERS] = f"SELECT COUNT(*) AS order_count FROM {CUSTOMERS}"
     code, _ = rig.run()
     assert code == 0
     measure = json.loads((rig.out / "measure.json").read_text())
-    assert (measure["correct"], measure["wrong"]) == (1, 1)
+    assert (measure["agrees"], measure["disagrees"]) == (1, 1)
     outcomes = {i["outcome"] for i in measure["items"]}
-    assert outcomes == {"correct", "wrong"}
+    assert outcomes == {"agrees", "disagrees"}
 
 
 def test_cortex_unreachable_refuses_the_measure(rig: Rig) -> None:
@@ -484,3 +490,115 @@ def test_a_non_empty_out_dir_is_refused(rig: Rig) -> None:
     code, summary = rig.run("--stop-after", "4")
     assert (code, summary["reason"]) == (2, "out_not_empty")
     assert (rig.out / "keep.txt").read_text(encoding="utf-8") == "mine"
+
+
+# --- adversary round 1 (dms#541) --------------------------------------------------------
+
+
+def test_rows_compare_in_column_order_with_type_classes() -> None:
+    """An adversary had swapped figures under swapped aliases counted as agreeing."""
+    assert cli._multiset([{"orders": 40, "customers": 30}]) != cli._multiset(
+        [{"orders": 30, "customers": 40}]
+    )
+    assert cli._multiset([{"n": "3"}]) != cli._multiset([{"n": 3}])
+    assert cli._multiset([{"n": True}]) != cli._multiset([{"n": "True"}])
+    assert cli._multiset([{"a": 1}, {"a": 1}]) != cli._multiset([{"a": 1}])
+    # Aliases may differ between two readings of one question; values may not.
+    assert cli._multiset([{"n": 40}]) == cli._multiset([{"order_count": Decimal("40.0")}])
+
+
+def test_an_actor_without_a_steward_grant_is_refused_before_ingest(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_ACTOR_ROLE", "viewer")
+    get_settings.cache_clear()
+    code, summary = rig.run("--stop-after", "4")
+    assert (code, summary["reason"]) == (2, "steward_grant_required")
+    assert summary["space_id"] == ""
+    assert not (rig.out / "schema.json").exists()
+
+
+def test_a_rerun_keeps_a_revoked_proposal_revoked(rig: Rig) -> None:
+    code, summary = rig.run("--stop-after", "4")
+    assert code == 0
+    first = _onboard_items(summary["space_id"])
+    revoked = first[0]["id"]
+    assert ontology_data_store().revoke(revoked, actor="steward") is not None
+    import shutil
+
+    shutil.rmtree(rig.out)
+    code, again = rig.run("--stop-after", "4")
+    assert code == 0, again
+    assert again["space_id"] == summary["space_id"]
+    rows = _onboard_items(summary["space_id"])
+    assert len(rows) == len(first)
+    assert {r["id"]: r["status"] for r in rows}[revoked] == "revoked"
+    assert again["store"]["proposed"] == 0
+    assert again["store"]["held_from_earlier_runs"] == len(first)
+
+
+def test_a_symlink_in_source_is_not_read(rig: Rig, tmp_path: Path) -> None:
+    import shutil
+
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("orders.csv", "customers.csv", "products.csv"):
+        shutil.copy(FIXTURE / name, src / name)
+    outside = tmp_path / "outside.csv"
+    outside.write_text("zz_outside_secret_hdr_7781\n1\n", encoding="utf-8")
+    (src / "linked.csv").symlink_to(outside)
+    buf = io.StringIO()
+    code = cli.main(
+        ["--source", str(src), "--space", "Symlink", "--out", str(rig.out), "--stop-after", "4"],
+        http=rig.client,
+        transport=rig.model,
+        stdout=buf,
+    )
+    assert code == 0, buf.getvalue()
+    assert "zz_outside_secret_hdr_7781" not in rig.pack_text()
+    assert json.loads(buf.getvalue())["stages"][0]["files_seen"] == 3
+
+
+def test_a_crash_in_stage_5_is_named_by_class_and_the_pack_is_still_checked(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        raise OverflowError("days=913377")
+
+    monkeypatch.setattr(fde_ai, "check_question_sql", _boom)
+    buf = io.StringIO()
+    code = cli.main(
+        ["--source", str(FIXTURE), "--space", "Crash", "--out", str(rig.out)],
+        http=rig.client,
+        transport=rig.model,
+        stdout=buf,
+    )
+    assert code == 6
+    out = json.loads(buf.getvalue())
+    assert out["reason"] == "internal_error:OverflowError"
+    assert "913377" not in buf.getvalue()
+    m = rig.manifest()
+    assert m["leak_check"]["status"] == "passed"
+    assert m["stages"][4]["status"] == "failed"
+    _assert_no_canary(rig.pack_text())
+
+
+def test_drop_reasons_reach_the_pack_as_codes_only(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A join refusal names tables; the pack keeps the code, never the names."""
+    real = fde_ai.check_question_sql
+
+    def _named(sql: str, **kw: Any) -> Any:
+        reason, info = real(sql, **kw)
+        if reason and reason.startswith("unverified_join"):
+            return "unverified_join:bronze.orders x bronze.staff_880101145678 no link", info
+        return reason, info
+
+    monkeypatch.setattr(fde_ai, "check_question_sql", _named)
+    _cortex_up(monkeypatch)
+    code, _ = rig.run()
+    assert code == 0
+    vq = (rig.out / "proposals" / "verified_questions.json").read_text(encoding="utf-8")
+    assert "880101145678" not in vq and "staff_" not in vq
+    assert '"reason": "unverified_join"' in vq

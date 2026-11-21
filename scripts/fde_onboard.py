@@ -15,7 +15,9 @@ approves or applies one: a steward does that, item by item.
 Exit codes: 0 every requested stage done; 2 usage or input; 3 a stage refused with a named
 reason (OpenVault or Cortex unreachable, key missing, model output invalid); 4 the leak check
 failed (pack files removed, ``LEAK_REFUSED.json`` holds counts only); 5 a prompt file drifted
-from its pinned sha256. stdout is one JSON object of codes and counts.
+from its pinned sha256; 6 an unexpected error, named by class only (the pack is still checked,
+and removed if the check cannot pass); 2 also when the actor holds no steward grant.
+stdout is one JSON object of codes and counts.
 
 Swap: none. Reuses the bronze ingest, the #514 profiler, the PII masker, the item store, the
 OpenVault client and the ask route. No new port, dependency or config key (rule 6).
@@ -26,11 +28,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 import uuid
 from collections import Counter
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -48,7 +51,7 @@ for _p in (
         sys.path.insert(0, str(_p))
 
 TOOL = "fde_onboard/1"
-EXIT_OK, EXIT_INPUT, EXIT_REFUSED, EXIT_LEAK, EXIT_DRIFT = 0, 2, 3, 4, 5
+EXIT_OK, EXIT_INPUT, EXIT_REFUSED, EXIT_LEAK, EXIT_DRIFT, EXIT_INTERNAL = 0, 2, 3, 4, 5, 6
 STAGE_NAMES = {
     1: "ingest",
     2: "profile",
@@ -74,27 +77,42 @@ def _stage_rows() -> list[dict[str, Any]]:
     ]
 
 
-def _norm(value: Any) -> str:
-    """One text per cell value, so ``3``, ``3.0`` and ``Decimal('3.00')`` compare equal."""
+def _cell(value: Any) -> tuple[str, str]:
+    """A cell with its type class, so ``'3'`` and ``3``, or ``True`` and ``'True'``, differ.
+
+    Numbers compare by value (``3``, ``3.0`` and ``Decimal('3.00')`` are one number). A date
+    is its ISO text, because the JSON envelope can only carry it as text.
+    """
     if value is None:
-        return "\x00null"
+        return ("null", "")
     if isinstance(value, bool):
-        return str(value)
+        return ("bool", str(value))
     if isinstance(value, int | float | Decimal):
         try:
-            d = Decimal(str(value)).normalize()
+            return ("num", format(Decimal(str(value)).normalize(), "f"))
         except InvalidOperation:
-            return str(value)
-        return format(d, "f")
-    return str(value)
+            return ("num", str(value))
+    if isinstance(value, date | datetime):
+        return ("text", value.isoformat())
+    return ("text", str(value))
 
 
-def _multiset(rows: Sequence[dict[str, Any]]) -> Counter[tuple[str, ...]]:
-    return Counter(tuple(sorted(_norm(v) for v in row.values())) for row in rows)
+def _multiset(rows: Sequence[dict[str, Any]]) -> Counter[tuple[tuple[str, str], ...]]:
+    """Rows in column order (aliases may differ, positions may not), duplicates kept."""
+    return Counter(tuple(_cell(v) for v in row.values()) for row in rows)
 
 
 def _source_files(source: Path) -> list[Path]:
-    return sorted(p for p in source.iterdir() if p.is_file() and not p.name.startswith("."))
+    """Regular files directly in ``source``. A symlink is skipped: it can point anywhere."""
+    root = source.resolve()
+    return sorted(
+        p
+        for p in source.iterdir()
+        if not p.is_symlink()
+        and p.is_file()
+        and not p.name.startswith(".")
+        and p.resolve().parent == root
+    )
 
 
 def _find_or_create_space(store: Any, name: str) -> Any:
@@ -129,6 +147,10 @@ class Onboard:
         self.leak: dict[str, Any] = {"status": "not_run"}
         self.kept_questions: list[dict[str, Any]] = []
         self.proposed = 0
+        self.held = 0
+        self.held_approved = 0
+        self.sources: dict[str, str] = {}
+        self.item_ids: set[str] = set()
 
     # ------------------------------------------------------------------ helpers
 
@@ -163,10 +185,27 @@ class Onboard:
             run={"run_id": self.run_id, "stage": stage, "tool": TOOL},
         )
         stored = list(result.get("items") or [])
-        if len(stored) != len(items) or any(i.get("status") != "proposed" for i in stored):
+        held = set(result.get("held") or [])
+        fresh = [i for i in stored if i.get("id") not in held]
+        if len(stored) != len(items) or any(i.get("status") != "proposed" for i in fresh):
             raise _Refuse(EXIT_REFUSED, "store_not_proposed")
-        self.proposed += len(stored)
+        # A re-run keeps what a steward already decided; it never sets a status itself.
+        self.proposed += len(fresh)
+        self.held += len(stored) - len(fresh)
+        self.item_ids.update(str(i["id"]) for i in stored)
+        self.held_approved += sum(
+            1 for i in stored if i.get("id") in held and i.get("status") == "approved"
+        )
         return stored
+
+    def _store_counts(self) -> dict[str, Any]:
+        """``approved`` counts only items a steward approved before this run: none is ours."""
+        return {
+            **self.store_info,
+            "proposed": self.proposed,
+            "held_from_earlier_runs": self.held,
+            "approved": self.held_approved,
+        }
 
     def _settings(self) -> Any:
         from dms_api.settings import get_settings
@@ -187,6 +226,9 @@ class Onboard:
         if ingested == 0:
             self._stage(1)["counts"] = {"files_seen": len(files), "need_attention": attention}
             raise _Refuse(EXIT_INPUT, "nothing_ingested")
+        for row in receipt.get("files") or []:
+            if row.get("table") and row.get("file"):
+                self.sources[str(row["table"])] = str(row["file"])
         self._done(1, files_seen=len(files), ingested=ingested, need_attention=attention)
 
     def stage2(self) -> None:
@@ -221,7 +263,9 @@ class Onboard:
         self.groups = value_groups(self.space_id, self.stats)
         values = value_items(self.groups)
         stored = self._store_items([*types, *values], "3")
-        self.names = NameMask([(t, list(cols)) for t, cols in self.stats.items()])
+        self.names = NameMask(
+            [(t, list(cols)) for t, cols in self.stats.items()], sources=self.sources
+        )
         n = len(types)
         # Raw rows: build_pack masks every name it writes.
         self.type_rows = [
@@ -293,7 +337,7 @@ class Onboard:
                     {"id": i["id"], "status": i["status"], "kind": k, **masked}
                     for i, (k, _raw, masked) in zip(stored, items, strict=True)
                 ],
-                "dropped": dropped,
+                "dropped": [_drop_row(d) for d in dropped],
             },
         )
         counts["ontology_items"] = len(stored)
@@ -321,13 +365,14 @@ class Onboard:
                 q.sql, space_id=self.space_id, warehouse=warehouse, tables=tables, back=names.back
             )
             if reason:
-                q_drop.append({"index": index, "reason": reason})
+                q_drop.append({"index": index, "reason": fde_ai.reason_code(reason)})
                 continue
             q_items.append(
                 (
                     "verified_query",
                     {
-                        "name": f"verified_query:{self.run_id}:{index:02d}",
+                        "name": "verified_query:"
+                        + hashlib.sha256(info["sql"].encode()).hexdigest()[:16],
                         "question": q.question,
                         "sql": info["sql"],
                         "row_count": info["row_count"],
@@ -373,7 +418,7 @@ class Onboard:
                     {"id": i["id"], "status": i["status"], **masked}
                     for i, (_k, _raw, masked) in zip(stored_v, v_items, strict=True)
                 ],
-                "dropped": v_drop,
+                "dropped": [_drop_row(d) for d in v_drop],
             },
         )
         counts["value_mappings"] = len(stored_v)
@@ -388,7 +433,10 @@ class Onboard:
         cortex = ((health.json() or {}).get("dependencies") or {}).get("cortex") or {}
         if health.status_code != 200 or not cortex.get("ok"):
             raise _Refuse(EXIT_REFUSED, "cortex_unreachable")
-        tally = Counter({"correct": 0, "abstained": 0, "wrong": 0})
+        # The only reference is the proposal's own SQL, which no steward has reviewed. So
+        # this counts agreement with it, never correctness: there is no truth to count
+        # against until a steward approves a verified question.
+        tally = Counter({"agrees": 0, "abstained": 0, "disagrees": 0})
         rows_out: list[dict[str, Any]] = []
         for q in self.kept_questions:
             r = http.post(
@@ -399,19 +447,19 @@ class Onboard:
                     "session_id": f"fde_onboard_{self.run_id}",
                 },
             )
-            outcome, badge, abstained = "wrong", None, None
+            outcome, badge, abstained = "disagrees", None, None
             if r.status_code == 200:
                 env = r.json()
                 badge, abstained = env.get("badge"), bool(env.get("abstained"))
                 try:
                     assert_envelope_valid(env)
                 except AssertionError:
-                    outcome = "wrong"
+                    outcome = "disagrees"
                 else:
                     if abstained:
                         outcome = "abstained"
                     elif _multiset(env.get("rows") or []) == _multiset(q["rows"]):
-                        outcome = "correct"
+                        outcome = "agrees"
             tally[outcome] += 1
             rows_out.append(
                 {
@@ -424,7 +472,16 @@ class Onboard:
             )
         self._write(
             "measure.json",
-            {"stage": 6, "asked": len(rows_out), **dict(tally), "items": rows_out},
+            {
+                "stage": 6,
+                "reference": "proposed_sql_unreviewed",
+                "truth": "none_until_a_steward_approves",
+                "correct": None,
+                "wrong": None,
+                "asked": len(rows_out),
+                **dict(tally),
+                "items": rows_out,
+            },
         )
         self._done(6, asked=len(rows_out), **dict(tally))
 
@@ -443,8 +500,27 @@ class Onboard:
             "files": pack_files(self.out),
             "prompts": self.prompt_manifest,
             "leak_check": self.leak,
-            "store": {**self.store_info, "proposed": self.proposed, "approved": 0},
+            "store": self._store_counts(),
         }
+
+    def _generated(self) -> set[str]:
+        """Every id, digest and timestamp this run wrote. Only these skip the leak check."""
+        from dms_executor.fde_pack import pack_files
+
+        out = {self.run_id, self.space_id, *self.item_ids}
+        out.update(str(f["sha256"]) for f in pack_files(self.out).values())
+        out.update(
+            str(f.get("sha256"))
+            for f in (self.prompt_manifest.get("files") or {}).values()
+            if f.get("sha256")
+        )
+        manifest = self.out / "manifest.json"
+        if manifest.is_file():
+            try:
+                out.add(str(json.loads(manifest.read_text(encoding="utf-8"))["created_at"]))
+            except (ValueError, KeyError):
+                pass
+        return out
 
     def finalize(self) -> None:
         """Write the manifest, then prove no source value is in any pack file. Fail closed."""
@@ -454,9 +530,9 @@ class Onboard:
             return
         checker = LeakChecker(self.space_id)
         self._write("manifest.json", self._manifest())
-        self.leak = checker.check_pack(self.out)
+        self.leak = checker.check_pack(self.out, generated=self._generated())
         self._write("manifest.json", self._manifest())
-        final = checker.check_pack(self.out)
+        final = checker.check_pack(self.out, generated=self._generated())
         if final.get("status") != "passed" or self.leak.get("status") != "passed":
             hits = {**(self.leak.get("hits") or {}), **(final.get("hits") or {})}
             unlisted = {
@@ -502,7 +578,36 @@ class Onboard:
         return why.code, why.reason
 
     def _run_all(self, http: Any, stop: int) -> tuple[int, str | None]:
+        try:
+            return self._run_stages(http, stop)
+        except _Refuse:
+            raise
+        except Exception as exc:  # noqa: BLE001 - a crash must not skip the leak gate
+            # The class name only: a message or traceback can quote a cell value.
+            reason = f"internal_error:{type(exc).__name__}"
+            for row in self.stages:
+                if row["status"] == "running":
+                    row["status"], row["reason"] = "failed", reason
+            try:
+                self.finalize()
+            except _Refuse as leak:
+                return leak.code, leak.reason
+            except Exception:  # noqa: BLE001 - cannot prove the pack clean: remove it
+                for path in self.written:
+                    path.unlink(missing_ok=True)
+                self.written = []
+            return EXIT_INTERNAL, reason
+
+    def _run_stages(self, http: Any, stop: int) -> tuple[int, str | None]:
+        from dms_core.control_plane.onto_data import ontology_data_store
+
         app = http.app
+        settings = self._settings()
+        # The same grant POST /v1/ontology/data/profile requires (#514).
+        if not ontology_data_store().holds_steward_grant(
+            role=settings.dms_actor_role, actor_id=settings.dms_actor_user_id
+        ):
+            raise _Refuse(EXIT_INPUT, "steward_grant_required")
         try:
             space = _find_or_create_space(app.state.space_store, self.args.space)
             self.space_id = str(space.id)
@@ -577,6 +682,20 @@ class Onboard:
         )
 
 
+def _drop_row(row: dict[str, Any]) -> dict[str, Any]:
+    """A drop as the pack may carry it: position or group id, and the reason code only."""
+    from dms_executor.fde_ai import reason_code
+
+    out: dict[str, Any] = {"reason": reason_code(str(row.get("reason") or ""))}
+    for key in ("kind", "index"):
+        if key in row:
+            out[key] = row[key]
+    gid = str(row.get("group_id") or "")
+    if re.fullmatch(r"g\d{3,}", gid):
+        out["group_id"] = gid
+    return out
+
+
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(prog="fde_onboard", description=__doc__.split("\n\n")[0])
     ap.add_argument("--source", required=True, help="directory of CSV or sheet files")
@@ -613,7 +732,7 @@ def main(
             for s in run.stages
         ],
         "leak_check": run.leak.get("status"),
-        "store": {**run.store_info, "proposed": run.proposed, "approved": 0},
+        "store": run._store_counts(),
         "pack": str(run.out),
         "manifest_sha256": (
             hashlib.sha256((run.out / "manifest.json").read_bytes()).hexdigest()
