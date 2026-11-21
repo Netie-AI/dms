@@ -455,6 +455,62 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
+def _reads_only(sql: str, relations: set[str]) -> bool:
+    """True when every base table ``sql`` reads (CTE names aside) is in ``relations``."""
+    try:
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
+    except Exception:  # noqa: BLE001
+        return False
+    ctes = {str(c.alias).lower() for c in tree.find_all(exp.CTE)}
+    names = {
+        t.name.lower()
+        for t in tree.find_all(exp.Table)
+        if not (t.name.lower() in ctes and not t.db)
+    }
+    return bool(names) and names <= {r.lower() for r in relations}
+
+
+def _reads_two_granted_tables(sql: str, grantable: Iterable[str]) -> bool:
+    """True when ``sql`` reads granted base tables in two or more places.
+
+    The demo Space join check (JOIN-HOLE-01) is for statements rule 16 would
+    judge in any other Space: two tables, or one table read in two places (a
+    scalar subquery that re-reads it, a CTE read twice: issue shape 6 served
+    55230 for 7890 when only distinct names were counted). A table function,
+    an ungranted name or a statement that does not parse goes to the grant and
+    hostile-SQL checks first, so their named reasons are unchanged.
+    """
+    try:
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
+    except Exception:  # noqa: BLE001
+        return False
+    if tree is None:
+        return False
+    ctes = {str(c.alias).lower() for c in tree.find_all(exp.CTE)}
+    granted = {g.lower() for g in grantable} | {g.lower().split(".")[-1] for g in grantable}
+    base: dict[str, int] = {}
+    cte_reads: dict[str, int] = {}
+    for table in tree.find_all(exp.Table):
+        if not isinstance(table.this, exp.Identifier):
+            return False
+        name = table.name.lower()
+        if name in ctes and not table.db:
+            cte_reads[name] = cte_reads.get(name, 0) + 1
+            continue
+        full = ".".join(p.lower() for p in (table.catalog, table.db, table.name) if p)
+        if full not in granted and name not in granted:
+            return False
+        base[name] = base.get(name, 0) + 1
+    if len(base) >= 2:
+        return True
+    # One table read in two places matters when something aggregates over it
+    # (a total multiplied by a re-read count); a listing that names one table
+    # twice is decided by the grant and total checks as before.
+    reread = any(n > 1 for n in base.values()) or any(n > 1 for n in cte_reads.values())
+    aggregates = tree.find(exp.AggFunc, exp.Window, exp.Anonymous, exp.List) is not None
+    return reread and aggregates
+
+
 def no_ontology_join_reason(
     sql: str,
     *,
@@ -474,7 +530,31 @@ def no_ontology_join_reason(
     from dms_executor.demo_grants import is_demo_space
 
     if is_demo_space(space_id):
-        return None
+        # A demo Space is checked against the demo pack's own declared
+        # ontology, measured on the lake now (a two-table join served 39450
+        # for 7890 with no check at all). See ``demo_join_ontology``.
+        from dms_executor.space_ontology import check_sql_against_space, demo_join_ontology
+
+        try:
+            if not _reads_two_granted_tables(sql, grantable):
+                # One table, or a table function or ungranted name: the grant,
+                # hostile-SQL and total checks decide it, with their own reasons.
+                return None
+            if serve_gap(sql, grantable=set(grantable), dialect=SERVING_DIALECT):
+                # The door's own grant check refuses it: its reason comes first.
+                return None
+            lake = Path(warehouse) if warehouse is not None else None
+            if lake is None or not lake.is_file():
+                return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+            onto = demo_join_ontology(demo_ontology(lake))
+            if not _reads_only(sql, set(onto.objects)):
+                # Not the demo pack's tables (a lake the demo ontology was never
+                # declared for: BIRD, a test or live lake with no space id). As
+                # load_verified_ontology does, keep today's behaviour there.
+                return None
+            return check_sql_against_space(sql, onto, lake, sorted(grantable))
+        except Exception:  # noqa: BLE001 - a check that cannot finish proves no join
+            return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
     empty = Ontology()
     try:
         cols = relation_columns(empty, warehouse, sorted(grantable))

@@ -838,6 +838,17 @@ def test_adversary_every_kind_of_item_filed_under_a_leaves_b_unchanged(
     a, _ta, b, tb = two_spaces(rig)
     orders_b, ships_b = tb["b_orders.csv"], tb["b_shipments.csv"]
     sql = join_sql(ships_b, orders_b)
+    # Since CATALOG-SCHEMA-01 (#518) B's bronze columns are listed, and a column
+    # line gains ``distinct=`` once the background column index is built, with
+    # no item filed at all. Wait for every index build before the baseline, so
+    # only A's items can differ (a warm-up ask alone was timing-dependent).
+    from dms_executor import schema_context
+
+    rig.ask(b, JOIN_Q, gen(sql))
+    for worker in list(schema_context._WORKERS):
+        worker.join(30)
+    assert not any(w.is_alive() for w in schema_context._WORKERS), "index build still running"
+    rig.cortex.insights.clear()
     bare = rig.ask(b, JOIN_Q, gen(sql))
     assert bare["badge"] == "ABSTAIN" and bare["rows"] == [] and bare["values"] == []
     bare_catalogs = _catalogs(rig)

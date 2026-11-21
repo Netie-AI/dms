@@ -73,6 +73,10 @@ _HINTS = {
         "an aggregate reads the rows of a set operation, so one value can be counted "
         "once per branch; aggregate the base rows"
     ),
+    "sample_under_aggregate": (
+        "an aggregate reads a sample of the rows (USING SAMPLE or TABLESAMPLE), so its "
+        "figure is not the table's; aggregate every row"
+    ),
     "row_generator_under_aggregate": (
         "an aggregate reads rows a generator repeated; aggregate the base rows"
     ),
@@ -277,6 +281,11 @@ def _aggregate_macros() -> dict[str, bool]:
     return out
 
 
+def _pivot_kind(aggregates: list[exp.Expression]) -> str:
+    """A PIVOT whose aggregate collects (``list(x)``) turns out collection columns."""
+    return _COLLECTION if any(_collects(n) for a in aggregates for n in a.walk()) else ""
+
+
 def _any(*rels: _Rel) -> str:
     """The worst kind any column of these relations has."""
     return _worst(*(r.carried for r in rels), *(k for r in rels for k in r.cols.values()))
@@ -369,6 +378,9 @@ class _Guard:
     def __init__(self) -> None:
         self.done: dict[int, _Rel] = {}
         self.open: set[int] = set()
+        #: While a LATERAL body is analysed: the worst kind of the sources
+        #: before it, which the body reads by outer reference (round 4).
+        self.outer: list[str] = []
 
     # -- row sources ------------------------------------------------------
 
@@ -423,12 +435,17 @@ class _Guard:
             if not pivot.args.get("unpivot"):
                 self._pivot_reads(rel, pivot.expressions)
         if item.args.get("pivots"):
-            rel = _Rel("row_turn", {}, _any(rel), rel.reads)
+            aggs = [e for p in item.args["pivots"] for e in p.expressions]
+            rel = _Rel("row_turn", {}, _worst(_any(rel), _pivot_kind(aggs)), rel.reads)
         return self._renamed(rel, item)
 
     @staticmethod
     def _table_key(table: exp.Table) -> str:
-        return ".".join(p.lower() for p in (table.catalog, table.db, table.name) if p)
+        # The table name alone: ``inventory``, ``main.inventory`` and
+        # ``lake.main.inventory`` are one table, so a self-join spelled with
+        # qualifiers is still counted twice (verifier round 3). Two schemas
+        # holding the same name read as one too: fail closed.
+        return table.name.lower()
 
     @staticmethod
     def _pivot_reads(rel: _Rel, aggregates: list[exp.Expression]) -> None:
@@ -496,7 +513,8 @@ class _Guard:
                 inner = self.source(node.this) if node.this is not None else _Rel()
                 if not node.args.get("unpivot"):
                     self._pivot_reads(inner, list(node.args.get("using") or []))
-                rel = _Rel("row_turn", {}, _any(inner), inner.reads)
+                using = list(node.args.get("using") or [])
+                rel = _Rel("row_turn", {}, _worst(_any(inner), _pivot_kind(using)), inner.reads)
             else:
                 rel = _Rel(repeats="unrecognised_source", carried=_WINDOW)
         finally:
@@ -516,8 +534,23 @@ class _Guard:
         items += [j.this for j in select.args.get("joins") or []]
         items += list(select.args.get("laterals") or [])
         for item in items:
-            rel = self.source(item)
-            if isinstance(item, exp.Lateral):
+            # Any derived table after the first source may read the sources
+            # before it: DuckDB binds it laterally without the keyword, and an
+            # unqualified or shadowed outer reference cannot be told apart from
+            # its own columns (rounds 5 and 6). Fail closed: it is analysed as
+            # a LATERAL, carrying the earlier sources' kinds in and out.
+            lateral = isinstance(item, exp.Lateral) or (
+                bool(rels) and isinstance(item, exp.Subquery)
+            )
+            if lateral:
+                self.outer.append(_worst(*(_any(r) for r in rels)))
+                try:
+                    rel = self.source(item)
+                finally:
+                    self.outer.pop()
+            else:
+                rel = self.source(item)
+            if lateral:
                 # A LATERAL subquery reads the sources before it, so each of its
                 # columns carries the worst kind they hold: a window value passed
                 # through it is still a window value (SUM over it served 428 for 107).
@@ -535,6 +568,13 @@ class _Guard:
                 seen = srcs.get(alias)
                 srcs[alias] = rel if seen is None else _Rel(None, {}, _any(seen, rel))
         repeats = next((r.repeats for r in rels if r.repeats), None)
+        if select.args.get("sample") is not None or any(
+            isinstance(i, exp.Expression) and i.args.get("sample") is not None for i in items
+        ):
+            # USING SAMPLE / TABLESAMPLE: an aggregate over a sample is not the
+            # table's figure (a one-table COUNT served 2 for a true 4). Listed
+            # sample rows are what they say; an aggregate over them refuses.
+            repeats = repeats or "sample"
         #: The kind of a column these sources hand on under a name not listed.
         src_loose = _worst(*(r.carried for r in rels))
         #: The worst kind any column of these sources has.
@@ -603,6 +643,8 @@ class _Guard:
             if isinstance(top, exp.Alias):
                 collections[top.alias.lower()] = _COLLECTION
 
+        outer = self.outer[-1] if self.outer else ""
+
         def col_kind(col: exp.Column, known: dict[str, str]) -> str:
             name = col.name.lower()
             table = str(col.table or "").lower()
@@ -612,21 +654,34 @@ class _Guard:
                     return rel.kind(name)
                 # Not a source of this SELECT: a struct field, a whole-row
                 # alias or an outer column. It cannot be followed.
-                return _worst(src_any, known.get(table, ""), known.get(name, ""))
+                return _worst(src_any, known.get(table, ""), known.get(name, ""), outer)
             # A source's alias used as a column is its whole row.
             row = _any(srcs[name]) if name in srcs else ""
-            return _worst(*(r.kind(name) for r in rels), known.get(name, ""), row)
+            return _worst(*(r.kind(name) for r in rels), known.get(name, ""), row, outer)
 
         # Rules 3 and 4 across SELECTs: what reads a carried value.
-        if src_any or collections:
+        if src_any or collections or outer:
             for node in own:
+                if (
+                    isinstance(node, (exp.Columns, exp.PositionalColumn))
+                    and _worst(src_any, outer) == _COLLECTION
+                ):
+                    # #1 and COLUMNS(...) name a source column without a Column
+                    # node: a collection reached that way may only be listed as
+                    # it is (round 4: array_length(#1 || #1) served 8 for 4).
+                    item = node.parent if isinstance(node.parent, exp.Alias) else node
+                    if item.parent is not select or item.arg_key != "expressions":
+                        raise _Refuse("collection_under_function")
                 if isinstance(node, exp.Column) and not isinstance(node.this, exp.Star):
                     if col_kind(node, collections) != _COLLECTION:
                         continue
                     bare = node.parent is select or (
                         isinstance(node.parent, exp.Alias) and node.parent.parent is select
                     )
-                    if not bare or (node.parent or node).arg_key != "expressions":
+                    # The projection item itself (the column, or its alias) must sit
+                    # in the SELECT list: listed as it is, never in WHERE or ORDER BY.
+                    item = node.parent if isinstance(node.parent, exp.Alias) else node
+                    if not bare or item.arg_key != "expressions":
                         raise _Refuse("collection_under_function")
                     continue
                 if not _aggregates(node):

@@ -3,7 +3,11 @@
 An uploaded file declares no key, so a key here comes from measurement alone.
 This module counts. It calls no model, ranks nothing by a column name, and
 proposes no measure, grain or aggregate. What it returns is a proposal for a
-steward: nothing in it is read by the ask path.
+steward: a proposed or revoked item is read by nothing.
+
+ONTO-PROFILE-02 (dms#515): ``approved_profile_ontology`` hands the ask path the
+keys and links a steward approved for one Space, unverified. Approval is not
+trust: the ask path measures them against the rows as they are at every ask.
 
 Privacy: the result carries counts, table names, column names and landed
 types. No cell value is selected, returned or logged. A failed measurement is
@@ -23,10 +27,12 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+from dms_core.control_plane.onto_data import PROFILE_SOURCE, ontology_data_store
 
 from dms_executor.bronze import list_bronze_tables, quote_ident
-from dms_executor.demo_grants import canonical_space_id
+from dms_executor.demo_grants import canonical_space_id, is_demo_space
 from dms_executor.demo_warehouse import connect_serving, warehouse_path
+from dms_executor.ontology import Ontology
 
 PROFILER = "onto_profile/1"
 
@@ -369,3 +375,81 @@ def profile_space(space_id: str, *, path: Path | None = None) -> dict[str, Any]:
     out["links"] = links
     out["observations"] = observations
     return out
+
+
+# --------------------------------------------------------------------------
+# ONTO-PROFILE-02: the approved profile items of one Space, for the ask path
+# --------------------------------------------------------------------------
+
+#: The only kinds this loader reads. A measure, grain or pii item never enters.
+_ASK_KINDS = frozenset({"object", "link"})
+
+
+def approved_profile_items(space_id: str | None) -> list[dict[str, Any]]:
+    """Approved ``profile`` keys and links of one Space, oldest first.
+
+    Only this Space, only source ``profile``, only status ``approved``, only
+    kinds ``object`` and ``link``. A table that holds more than one approved
+    key has none here: ``Ontology.add_object`` would keep the last one applied
+    in silence, so both are dropped and the table is keyless. A link is kept
+    only when both its ends are still among the kept keys.
+
+    Raises when the item store cannot be read; the caller names that abstain.
+    """
+    if is_demo_space(space_id):
+        return []
+    space = canonical_space_id(str(space_id)).strip()
+    if not space:
+        return []
+    rows = [
+        row
+        for row in ontology_data_store().space_profile_items(space, "approved")
+        if str(row.get("source") or "") == PROFILE_SOURCE
+        and str(row.get("status") or "") == "approved"
+        and str(row.get("kind") or "") in _ASK_KINDS
+        and isinstance(row.get("payload"), dict)
+    ]
+    keys: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row["kind"] != "object":
+            continue
+        payload = row["payload"]
+        name, relation = str(payload.get("name") or ""), str(payload.get("relation") or "")
+        # A profile key is named after its table. One that is not could shadow
+        # another table's object by name, so it is not read.
+        if name and name == relation:
+            keys.setdefault(name.lower(), []).append(row)
+    kept = {name: held[0] for name, held in keys.items() if len(held) == 1}
+    ends = {str(row["payload"]["name"]) for row in kept.values()}
+    out = list(kept.values())
+    for row in rows:
+        if row["kind"] != "link":
+            continue
+        payload = row["payload"]
+        if payload.get("one_to_one"):
+            continue  # a profile never proposes one: it would skip a measurement
+        if str(payload.get("from_object") or "") in ends and str(
+            payload.get("to_object") or ""
+        ) in ends:
+            out.append(row)
+    out.sort(key=lambda row: (str(row.get("ts") or ""), str(row.get("id") or "")))
+    return out
+
+
+def approved_profile_ontology(space_id: str | None) -> Ontology | None:
+    """The ontology a steward approved for a file Space, unverified, or None.
+
+    None when no approved link has both its keys approved: keys alone license
+    no join, so the Space then reads exactly as it does with no profile item.
+    Nothing here measures or marks anything verified. ``Ontology.verify`` runs
+    on the ask path, against the lake as it is at that ask.
+
+    Raises when the item store cannot be read.
+    """
+    items = approved_profile_items(space_id)
+    if not any(row["kind"] == "link" for row in items):
+        return None
+    onto = Ontology.from_store(items)
+    if not onto.objects or not onto.links:
+        return None
+    return onto

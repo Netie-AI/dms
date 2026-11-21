@@ -245,7 +245,16 @@ def _cleanup_live_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_chat_ask_post_categoty_certified_oracle_ranks(
     minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch, question: str
 ) -> None:
-    """POST /v1/chat/ask — synonym phrases stay L0 with corrected warehouse ranks."""
+    """POST /v1/chat/ask: the certified VQ-01 answer, named as a price of #527.
+
+    JOIN-HOLE-01 (#527, routed P0): a demo Space's joins now meet rule 16
+    against the demo pack's declared ontology. Rule 16 refuses a derived table
+    over a join wholesale, and VQ-01's SQL joins transactions to
+    (SELECT DISTINCT sku, category FROM inventory). This certified answer served
+    L0_CERTIFIED with the oracle ranks on the parent and now abstains. Named,
+    not widened (orchestrator ruling); whether a certified demo answer is
+    exempt is a founder decision (#417 DEMO-SCOPE-01).
+    """
     cortex = _StubCortex(_certified_response(_ORACLE_RANKS, sql=_CERTIFIED_SQL))
     client = _live_client(minter, monkeypatch, cortex)
     body = client.post(
@@ -253,13 +262,13 @@ def test_chat_ask_post_categoty_certified_oracle_ranks(
         json={"question": question, "session_id": "ses_vq01"},
     ).json()
 
-    assert_vq01_category_sales_envelope(body)
-    assert body["badge"] == "L0_CERTIFIED"
-    assert body["audit_id"] == "aud_vq01_http"
+    assert body["badge"] == "ABSTAIN", (body["badge"], body.get("text"))
+    assert body["abstained"] is True and body["rows"] == [] and body["values"] == []
+    assert "unverified_join:derived_table_over_join" in str(body.get("text") or "") + " ".join(
+        str(a) for a in body.get("assumptions") or []
+    ), (body.get("text"), body.get("assumptions"))
     assert len(cortex.asks) == 1
     assert cortex.asks[0].question == question
-    sql = (body.get("sql_used") or "").lower()
-    assert "distinct" in sql
     _cleanup_live_env(monkeypatch)
 
 
