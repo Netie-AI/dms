@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-21 - Track T1 (#178), evening: verifier rounds 6 and 7, demo routing settled
+
+- **TOTAL-GUARD-01 (#531).** Round 6: an unqualified or shadowed outer reference in a later derived table was missed by alias detection; every derived table after the first source is now analysed as a LATERAL (9262703). Round 7: nested laterals keep the outermost kind, and a later VALUES or table-function source that reads an outer collection or window value refuses (4518564). Named price: an aggregate over a later derived table refuses once the first source carries a window value.
+- **JOIN-HOLE-01 (#527), demo Spaces.** The demo-ontology check runs only for statements made of demo-pack tables (b20db54: custom and test lakes with no Space id keep today's behaviour, as load_verified_ontology does), on any re-read of a demo table or a join of two (66eb576, 59ee1df), with the grant reason first on the generate doors and always on the contract door, which runs no serve_gap (044b74b: a catalog-qualified cross product served 39450 for 7890 there). Redteam A-013, A-021, A-025 and D-005, served confidently wrong on main, now hold; their strict xfails are removed. Named price, founder decision (#417): the certified VQ-01 demo answer "top 3 category sales" abstains `derived_table_over_join`.
+
 ## 2026-11-21 - Track T1 (#178), later the same day: verifier rounds 3 to 5, demo Spaces, #515 and #516
 
 - **TOTAL-GUARD-01 (#531).** Opus verifier rounds 3, 4 and 5 each found a way past the guard; each is fixed with envelope tests that fail on the parent guard. A PIVOT whose aggregate collects, and a qualified self-join (`inventory` and `main.inventory`): 8 for 4 in the ontology Space, 55230 for 7890 in demo Spaces (0c19e9b). A collection reached by `#1` or `COLUMNS()`, and through a LATERAL body's outer reference (090eff7). A derived table that reads an earlier source without the LATERAL keyword, which DuckDB binds laterally (a51b71b). Routed: an aggregate over `USING SAMPLE` or `TABLESAMPLE` (COUNT served 2 for 4) abstains `sample_under_aggregate` (46f77bf). Rule 4 now lets a collection column be listed as it is, as its text says. Named new abstains: `list_sort(list(x))`, and one table read twice through a third under an aggregate (the table key is now the name alone).
