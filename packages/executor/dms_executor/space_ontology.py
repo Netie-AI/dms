@@ -1113,6 +1113,13 @@ class _JoinRule:
             raise _Refuse(why)
         if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
             raise _Refuse("set_operation")
+        if any(a.columns for a in root_expr.find_all(exp.TableAlias)):
+            # ``FROM t x(a, b)`` renames t's columns by position, and nothing
+            # here maps the list: the link check, the self filter and the fan
+            # trap would compare the names the SQL chose, not the columns read
+            # (``schools s(district_id, school_id) JOIN districts`` served 1
+            # for 3; adversary round on the self semi-join).
+            raise _Refuse("column_alias_list")
         if root_expr.find(exp.With):
             raise _Refuse("cte_over_join")
         why = _row_source_why(root_expr)

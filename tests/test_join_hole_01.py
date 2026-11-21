@@ -841,3 +841,71 @@ def test_an_ontology_space_self_filter_across_two_columns_abstains(
     assert (_why(rig, sql) or "").startswith("unverified_join:")
     assert "unverified_join" in od._reasons(env), env.get("assumptions")
     assert f"total={wrong}" not in str(env.get("text") or "")
+
+
+#: Adversary round 2 on the self semi-join: a column alias list renames a table's
+#: columns by position, so a cross-column filter or a wrong-column join reads as
+#: matching names. name -> (sql, the wrong figure served at f2a0b70).
+ONTO_COLUMN_ALIAS_LISTS: dict[str, tuple[str, int]] = {
+    "in_over_a_renamed_inner_table": (
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} s WHERE s.school_id IN "
+        f"(SELECT school_id FROM {od.SCHOOLS} t(district_id, school_id))",
+        2,
+    ),
+    "exists_over_a_renamed_inner_table": (
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} s WHERE EXISTS (SELECT 1 FROM "
+        f"{od.SCHOOLS} t(district_id, school_id) WHERE t.school_id = s.school_id)",
+        2,
+    ),
+    "in_from_a_renamed_outer_table": (
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} s(district_id, school_id) "
+        f"WHERE s.district_id IN (SELECT district_id FROM {od.SCHOOLS})",
+        2,
+    ),
+    # Older, on main too: WRONG_JOIN_SQL with the columns renamed to fit the link.
+    "wrong_join_disguised_by_renamed_columns": (
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} s(district_id, school_id) "
+        f"JOIN {od.DISTRICTS} d ON s.district_id = d.district_id WHERE d.name = 'North'",
+        1,
+    ),
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(ONTO_COLUMN_ALIAS_LISTS))
+def test_a_column_alias_list_over_two_tables_abstains(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql, wrong = ONTO_COLUMN_ALIAS_LISTS[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, Q)
+    assert od._oracle(rig.lake, sql) == [{"total": wrong}]
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    assert (_why(rig, sql) or "") == "unverified_join:column_alias_list"
+    assert "unverified_join:column_alias_list" in od._reasons(env), env.get("assumptions")
+    assert f"total={wrong}" not in str(env.get("text") or "")
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+def test_a_demo_column_alias_list_over_a_self_filter_abstains(
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    sql = (
+        "SELECT SUM(quantity_kg) AS total FROM inventory i WHERE i.location_id IN "
+        "(SELECT location_id FROM inventory j(location_id))"
+    )
+    env, figure, truth = _demo(sql, door, space_id, tmp_path, monkeypatch, minter)
+    assert figure != truth, (figure, truth)  # j(location_id) renames sku: matches nothing
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    assert "unverified_join:column_alias_list" in od._reasons(env), env.get("assumptions")
