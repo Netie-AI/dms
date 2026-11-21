@@ -14,6 +14,7 @@ import type {
   OntologyObject,
   OntologySummary,
   RunsBody,
+  SpaceOntologyBody,
   SpaceSummary,
   TrustRunDetailItem,
   TrustSummary,
@@ -223,12 +224,20 @@ export async function fetchOntology(signal?: AbortSignal): Promise<OntologyBundl
     getJson<SectionBody<"metrics", OntologyMetric>>("/v1/ontology/metrics", signal),
     getJson<{
       ok: boolean;
+      hint?: string;
+      error?: string;
       nodes?: OntologyGraphNode[];
       edges?: OntologyGraphEdge[];
     }>("/v1/ontology/graph", signal),
   ]);
+  // Each endpoint degrades on its own. One that failed means the bundle is
+  // incomplete, so say so instead of rendering the empty remainder as truth.
+  const failed = [objects, links, actions, functions, metrics, graph].find((b) => b.ok === false);
   return {
-    summary,
+    summary:
+      summary.ok === false || !failed
+        ? summary
+        : { ...summary, ok: false, hint: failed.hint, error: failed.error },
     objects: section(objects, "object_types"),
     links: section(links, "link_types"),
     actions: section(actions, "action_types"),
@@ -236,6 +245,14 @@ export async function fetchOntology(signal?: AbortSignal): Promise<OntologyBundl
     metrics: section(metrics, "metrics"),
     graph: { nodes: graph.nodes ?? [], edges: graph.edges ?? [] },
   };
+}
+
+/** Read-only. The derive route is a mutation and is never called from the UI. */
+export function fetchSpaceOntology(
+  spaceId: string,
+  signal?: AbortSignal,
+): Promise<SpaceOntologyBody> {
+  return getJson<SpaceOntologyBody>(`/v1/spaces/${encodeURIComponent(spaceId)}/ontology`, signal);
 }
 
 /* ── Trust ──────────────────────────────────────────────────────────────── */

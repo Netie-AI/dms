@@ -232,6 +232,52 @@ export type OntologyBundle = {
   graph: { nodes: OntologyGraphNode[]; edges: OntologyGraphEdge[] };
 };
 
+/* ── A Space's derived ontology — the shape space_ontology.ontology_view builds ── */
+
+export type SpaceOntologyViolation = { check: string; subject: string; detail: string };
+
+export type SpaceOntologyObject = {
+  name: string;
+  source_table: string;
+  key: string[];
+  attributes: { name: string; type: string }[];
+  status: "verified" | "unverified";
+  violations: SpaceOntologyViolation[];
+};
+
+export type SpaceOntologyLink = {
+  name: string;
+  from: string;
+  from_columns: string[];
+  to: string;
+  to_columns: string[];
+  cardinality: string | null;
+  max_fanout: number | null;
+  status: "verified" | "unverified";
+  violations: SpaceOntologyViolation[];
+};
+
+export type SpaceOntologyView = {
+  version_id: string;
+  version_status: string;
+  /** false for a proposed version: it is shown, but it does not answer yet. */
+  answers_asks: boolean;
+  source: { kind: string; host: string; database: string; schema: string };
+  measured_at: string;
+  verified: boolean;
+  objects: SpaceOntologyObject[];
+  links: SpaceOntologyLink[];
+  measures: unknown[];
+  measures_note: string;
+};
+
+export type SpaceOntologyBody = {
+  space_id: string;
+  derived: boolean;
+  ontologies?: SpaceOntologyView[];
+  reason?: string;
+};
+
 /* ── Trust — the evidence behind the badges ── */
 
 export type TrustTotals = {

@@ -172,7 +172,7 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
         data-testid="studio-chat-plan"
         disabled={busy || !draft.trim()}
         onClick={() => void plan(draft)}
-        className="mt-2 border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white disabled:opacity-50"
+        className="mt-2 border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white max-lg:hover:text-[var(--color-on-accent)] disabled:opacity-50"
       >
         {busy ? "Working..." : "Show plan"}
       </button>
@@ -277,7 +277,7 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
               data-testid="studio-chat-confirm"
               disabled={!canConfirm}
               onClick={() => void confirm()}
-              className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+              className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white max-lg:text-[var(--color-on-accent)] disabled:opacity-50"
             >
               Confirm and run
             </button>

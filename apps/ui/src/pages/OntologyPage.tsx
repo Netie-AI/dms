@@ -9,6 +9,8 @@ import {
   StatTile,
 } from "@/components/PageShell";
 import { fetchOntology } from "@/lib/api";
+import { neighbourhood } from "@/lib/spaceOntology";
+import { useIsLg } from "@/lib/viewport";
 import { useAsync } from "@/lib/useAsync";
 import type {
   OntologyBundle,
@@ -141,6 +143,91 @@ function OntologyMap({
   );
 }
 
+/* ── Neighbourhood (phone) ─────────────────────────────────────────────────
+ * Below lg the ring is a scrolling canvas of unreadable, untappable boxes. This
+ * is the same graph as a list: pick an object, see its direct links, tap one to
+ * move there. No canvas, no zoom.
+ */
+const TAP = "min-h-11 w-full text-left";
+
+function OntologyNeighbourhood({
+  nodes,
+  edges,
+}: {
+  nodes: OntologyGraphNode[];
+  edges: OntologyGraphEdge[];
+}) {
+  const [centre, setCentre] = useState<string | null>(null);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const current = centre ? byId.get(centre) : undefined;
+
+  if (!current) {
+    return (
+      <ul className="border border-[var(--color-line)] bg-[var(--color-surface)]/60">
+        {nodes.map((n) => (
+          <li key={n.id} className="border-t border-[var(--color-line)] first:border-t-0">
+            <button
+              type="button"
+              onClick={() => setCentre(n.id)}
+              className={`${TAP} flex items-center justify-between gap-3 px-3.5 py-2`}
+            >
+              <span className="min-w-0 break-all font-medium">{n.label}</span>
+              <span className="shrink-0 text-xs text-[var(--color-ink-muted)]">
+                {neighbourhood(n.id, edges).length} links
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  const near = neighbourhood(current.id, edges);
+  return (
+    <div className="border border-[var(--color-line)] bg-[var(--color-surface)]/60">
+      <button
+        type="button"
+        onClick={() => setCentre(null)}
+        className={`${TAP} border-b border-[var(--color-line)] px-3.5 py-2 text-sm text-[var(--color-accent)]`}
+      >
+        ← All object types
+      </button>
+      <div className="px-3.5 py-3">
+        <h3 className="break-all font-[family-name:var(--font-display)] text-xl font-semibold">
+          {current.label}
+        </h3>
+        <p className="mt-1 text-sm text-[var(--color-ink-muted)]">
+          {current.property_count} props · pk {current.primary_key}
+        </p>
+      </div>
+      <p className="px-3.5 pb-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-ink-muted)]">
+        Links ({near.length})
+      </p>
+      <ul>
+        {near.map((n) => (
+          <li key={n.edgeId} className="border-t border-[var(--color-line)]">
+            <button
+              type="button"
+              onClick={() => setCentre(n.other)}
+              className={`${TAP} px-3.5 py-2`}
+            >
+              <span className="block break-all font-medium">{byId.get(n.other)?.label ?? n.other}</span>
+              <span className="block break-all font-mono text-xs text-[var(--color-ink-muted)]">
+                {n.via} · {n.cardinality}
+              </span>
+            </button>
+          </li>
+        ))}
+        {!near.length && (
+          <li className="border-t border-[var(--color-line)] px-3.5 py-3 text-sm text-[var(--color-ink-muted)]">
+            This object type has no links.
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
 /* ── Objects ─────────────────────────────────────────────────────────────── */
 
 function ObjectCard({
@@ -160,7 +247,7 @@ function ObjectCard({
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        className="flex w-full items-start justify-between gap-3 px-3.5 py-3 text-left hover:bg-[var(--color-paper-2)]/40"
+        className="flex w-full items-start justify-between gap-3 px-3.5 py-3 text-left max-lg:min-h-11 hover:bg-[var(--color-paper-2)]/40"
       >
         <div className="min-w-0">
           <p className="font-medium text-[var(--color-ink)]">
@@ -231,7 +318,7 @@ function ObjectCard({
                     <button
                       type="button"
                       onClick={() => onMetric(m)}
-                      className="border border-[var(--color-line)] px-2 py-0.5 font-mono text-[11px] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                      className="border border-[var(--color-line)] px-2 py-0.5 font-mono text-[11px] max-lg:min-h-11 hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
                     >
                       {m}
                     </button>
@@ -256,7 +343,7 @@ function MetricRow({ metric }: { metric: OntologyMetric }) {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left hover:bg-[var(--color-paper-2)]/40"
+        className="flex w-full items-center justify-between gap-3 px-3.5 py-2.5 text-left max-lg:min-h-11 hover:bg-[var(--color-paper-2)]/40"
       >
         <span className="font-mono text-sm">{metric.id}</span>
         <span className="flex flex-wrap items-center gap-1.5">
@@ -299,6 +386,7 @@ export function OntologyPage() {
   const [query, setQuery] = useState("");
   const [openObject, setOpenObject] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const isLg = useIsLg();
 
   const counts = data?.summary.counts;
   const degraded = data ? data.summary.ok === false : false;
@@ -324,6 +412,8 @@ export function OntologyPage() {
 
   return (
     <Page>
+      {/* Shared components set 10-11px labels; below lg lift them to the 12px floor. */}
+      <div className="max-lg:[&_[class*='text-[10px]']]:!text-xs max-lg:[&_[class*='text-[11px]']]:!text-xs">
       <PageHeader
         phase="Ontology · Cortex registry"
         title="Ontology"
@@ -332,13 +422,35 @@ export function OntologyPage() {
           <button
             type="button"
             onClick={reload}
-            className="h-9 border border-[var(--color-line)] px-3 text-sm hover:border-[var(--color-accent)]"
+            className="h-9 border border-[var(--color-line)] px-3 text-sm hover:border-[var(--color-accent)] max-lg:h-11"
           >
             Refresh
           </button>
         }
       />
 
+      {degraded && !isLg ? (
+        <div
+          role="status"
+          data-testid="ontology-unavailable"
+          className="mt-6 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-4 py-6"
+        >
+          <p className="font-semibold text-[var(--color-danger)]">Ontology unavailable</p>
+          <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
+            Object types, links, metrics and actions come from the Cortex engine, and it did not
+            answer. Nothing is shown here until it does.
+          </p>
+          <p className="mt-2 text-sm">
+            {data?.summary.hint ?? "Start the engine on :8010, then Refresh."}
+          </p>
+          {data?.summary.error && (
+            <p className="mt-2 break-all font-mono text-xs text-[var(--color-ink-muted)]">
+              {data.summary.error}
+            </p>
+          )}
+        </div>
+      ) : (
+      <>
       {degraded && (
         <DependencyNotice
           tone="danger"
@@ -372,13 +484,19 @@ export function OntologyPage() {
         />
       ) : null}
 
-      <div className="mt-7 flex flex-wrap items-center gap-2 border-b border-[var(--color-line)]">
+      <div className="mt-7 flex flex-col border-b border-[var(--color-line)] lg:flex-row lg:flex-wrap lg:items-center lg:gap-2">
+        <div
+          role="tablist"
+          className="flex flex-nowrap overflow-x-auto lg:contents"
+        >
         {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
+            role="tab"
+            aria-selected={tab === t.id}
             onClick={() => setTab(t.id)}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium ${
+            className={`-mb-px border-b-2 px-3 py-2 text-sm font-medium max-lg:min-h-11 max-lg:shrink-0 max-lg:whitespace-nowrap ${
               tab === t.id
                 ? "border-[var(--color-accent)] text-[var(--color-ink)]"
                 : "border-transparent text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
@@ -387,12 +505,13 @@ export function OntologyPage() {
             {t.label}
           </button>
         ))}
+        </div>
         <input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Filter objects, properties, metrics…"
-          className="ml-auto mb-1.5 h-8 w-full max-w-xs border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-2.5 text-sm"
+          className="mb-1.5 h-8 w-full max-w-xs border max-lg:my-2 max-lg:h-11 max-lg:max-w-none max-lg:text-base lg:ml-auto border-[var(--color-line)] bg-[var(--color-surface)]/60 px-2.5 text-sm"
         />
       </div>
 
@@ -424,15 +543,26 @@ export function OntologyPage() {
         {tab === "map" && (
           <Section
             title="Object map"
-            description="Click an object to reveal the join keys and cardinality on its links."
+            description={
+              isLg
+                ? "Click an object to reveal the join keys and cardinality on its links."
+                : "Tap an object to see what it links to, then tap a link to move there."
+            }
           >
-            <OntologyMap
-              nodes={data?.graph.nodes ?? []}
-              edges={data?.graph.edges ?? []}
-              selected={selectedNode}
-              onSelect={setSelectedNode}
-            />
-            <ul className="mt-3 divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
+            {isLg ? (
+              <OntologyMap
+                nodes={data?.graph.nodes ?? []}
+                edges={data?.graph.edges ?? []}
+                selected={selectedNode}
+                onSelect={setSelectedNode}
+              />
+            ) : (
+              <OntologyNeighbourhood
+                nodes={data?.graph.nodes ?? []}
+                edges={data?.graph.edges ?? []}
+              />
+            )}
+            <ul className="mt-3 max-lg:hidden divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
               {(data?.links ?? []).map((l) => (
                 <li key={l.id} className="flex flex-wrap justify-between gap-2 px-3 py-2">
                   <span className="font-mono text-xs">
@@ -538,6 +668,9 @@ export function OntologyPage() {
           </Section>
         )}
       </AsyncBoundary>
+      </>
+      )}
+      </div>
     </Page>
   );
 }

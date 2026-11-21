@@ -131,7 +131,7 @@ export function AnswerDetails({
   if (notes.length === 0 && children == null) return null;
   return (
     <details data-testid="answer-details" className="mt-4">
-      <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+      <summary className="cursor-pointer text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)] max-lg:flex max-lg:items-center max-lg:gap-2 max-lg:text-xs max-lg:before:content-['▸'] [details[open]>&]:max-lg:before:content-['▾']">
         Details
       </summary>
       {notes.length > 0 && (

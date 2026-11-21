@@ -63,15 +63,19 @@ describe("sourcePanel", () => {
 });
 
 describe("STUDIO-MOBILE-01 layout wiring", () => {
-  it("Chat Sources overlays below lg and keeps the 22rem dock at lg", () => {
+  it("Chat Sources is a bottom sheet below lg and keeps the 22rem dock at lg", () => {
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
     expect(panel).toMatch(/max-lg:fixed/);
     expect(panel).toMatch(/w-\[22rem\]/);
-    expect(panel).toMatch(/max-lg:w-\[min\(22rem,calc\(100%-2\.75rem\)\)\]/);
+    // IPHONE-PWA-02: a right-hand drawer is a two-handed reach; the sheet rises from the thumb zone.
+    expect(panel).toMatch(/max-lg:inset-x-0 max-lg:bottom-0/);
+    expect(panel).toMatch(/max-lg:max-h-\[75%\]/);
     expect(panel).toMatch(/data-testid="source-panel-open"/);
     expect(panel).toMatch(/min-h-11/);
     const ctx = readFileSync(join(here, "../context/AppContext.tsx"), "utf8");
-    expect(ctx).toMatch(/sourcesStartOpen/);
+    // Two separate states (the lg dock, the phone sheet), derived per reader from its own width.
+    expect(ctx).toMatch(/useState\(true\);\s*const \[sheetOpen, setSheetOpen\] = useState\(false\)/);
+    expect(ctx).toMatch(/export function useSourcePanelOpen/);
     expect(ctx).toMatch(/shouldExpandSourcesDock/);
     const shell = readFileSync(join(here, "../components/AppShell.tsx"), "utf8");
     expect(shell).toMatch(/source-panel-slot/);
@@ -101,10 +105,80 @@ describe("STUDIO-MOBILE-03 TopBar phone clip", () => {
     expect(bar).not.toMatch(/topbar-title/);
   });
 
-  it("Chat heading keeps right padding so Sources does not sit on the h1", () => {
+  it("phone Sources opener lives in the chat composer, not fixed over the h1 or a banner", () => {
+    // IPHONE-PWA-01 replaced the fixed button + 8rem right gutter: the button
+    // covered the demo banner and the gutter cost a third of a 390px screen.
     const chat = readFileSync(join(here, "../pages/ChatPage.tsx"), "utf8");
-    expect(chat).toMatch(/max-lg:pr-32/);
+    expect(chat).toMatch(/!isLg && !sourcePanelOpen && <SourcesOpenButton \/>/);
+    expect(chat).not.toMatch(/max-lg:pr-32/);
     const panel = readFileSync(join(here, "../components/SourcePanel.tsx"), "utf8");
-    expect(panel).toMatch(/max-lg:top-12/);
+    const opener = panel.slice(
+      panel.indexOf("export function SourcesOpenButton"),
+      panel.indexOf("export function SourcePanel"),
+    );
+    expect(opener).toMatch(/data-testid="source-panel-open"/);
+    expect(opener).not.toMatch(/max-lg:fixed/);
+    // The backdrop still starts below the top bar.
+    expect(panel).toMatch(/fixed inset-0 top-12/);
+  });
+
+  /** public/sw.js run with a stub worker scope, so its pure helpers can be called. */
+  const loadSw = () => {
+    const src = readFileSync(join(here, "../../public/sw.js"), "utf8");
+    const scope = { addEventListener: () => undefined, location: { origin: "http://x" }, skipWaiting: () => undefined };
+    return {
+      src,
+      ...(new Function("self", `${src}\n;return { isNever, isAsset, isAppShell, storable };`)(scope) as {
+        isNever: (p: string) => boolean;
+        isAsset: (r: { headers: { get: (k: string) => string | null } }) => boolean;
+        isAppShell: (html: string) => boolean;
+        storable: (r: { ok: boolean; redirected: boolean; headers: { get: (k: string) => string | null } }) => boolean;
+      }),
+    };
+  };
+  const res = (type: string | null, extra: object = {}) => ({
+    ok: true,
+    redirected: false,
+    headers: { get: (k: string) => (k.toLowerCase() === "content-type" ? type : null) },
+    ...extra,
+  });
+
+  it("the offline shell never caches an answer path", () => {
+    const { src, isNever } = loadSw();
+    // The routed path is reduced (decoded, slashes, dots, case) before the /api /v1 /health test.
+    for (const p of ["/api/x", "/api", "/v1/spaces", "/health", "/healthz", "/API/health", "/v1%2Fspaces", "/x/..%2Fapi%2Fhealth"]) {
+      expect(isNever(p), p).toBe(true);
+    }
+    for (const p of ["/", "/library", "/spaces", "/apiary", "/assets/index-abc.js"]) expect(isNever(p), p).toBe(false);
+    // And the fetch handler really leaves such a request to the network.
+    expect(src).toMatch(/if \(isNever\(url\.pathname\)\) return;/);
+  });
+
+  it("the shell keeps its home-indicator padding (cannot be measured in a browser test)", () => {
+    // Emulated devices report no safe-area inset, so this is a source pin by necessity.
+    const css = readFileSync(join(here, "../index.css"), "utf8");
+    expect(css).toMatch(/#root \{[^}]*env\(safe-area-inset-bottom\)/);
+    const html = readFileSync(join(here, "../../index.html"), "utf8");
+    expect(html).toMatch(/viewport-fit=cover/);
+  });
+
+  it("the offline shell never stores HTML as an asset, a redirect as the shell, or a dead build", () => {
+    // Verified on a production build (the missing-asset, prune and file-URL cases) by e2e-sw; these keep
+    // the guards from being dropped without a browser.
+    const { src, isAsset, isAppShell, storable } = loadSw();
+    expect(isAsset(res("text/html"))).toBe(false);
+    expect(isAsset(res(null))).toBe(false);
+    expect(isAsset(res("text/javascript; charset=utf-8"))).toBe(true);
+    expect(storable(res("text/html", { redirected: true }))).toBe(false);
+    expect(storable(res("text/html", { ok: false }))).toBe(false);
+    expect(storable(res("text/html"))).toBe(true);
+    // A page that is not the app (no marker) is never the shell, even with a module entry.
+    expect(isAppShell('<script type="module" src="/assets/index-a.js"></script>')).toBe(false);
+    expect(
+      isAppShell('<meta name="dms-shell" content="1"><script type="module" crossorigin src="/assets/index-a.js"></script>'),
+    ).toBe(true);
+    expect(src).toMatch(/res\.ok && !res\.redirected && isAsset\(res\)/);
+    expect(src).toMatch(/storable\(res\) \? refreshShell\(res\)/);
+    expect(src).toMatch(/!html\.includes\(path\)\) await cache\.delete\(req\)/);
   });
 });

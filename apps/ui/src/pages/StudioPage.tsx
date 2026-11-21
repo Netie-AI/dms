@@ -4,6 +4,8 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { useApp } from "@/context/AppContext";
+import { chatVisibilityLine, isRefused } from "@/lib/receiptLines";
+import { lgMedia } from "@/lib/viewport";
 import {
   describeApiError,
   fetchLibraryTree,
@@ -39,6 +41,9 @@ type Receipt = {
   summary?: string | null;
   per_class?: Record<string, number> | null;
   files?: FileRow[] | null;
+  serving_sync?: string | null;
+  serving_sync_detail?: string | null;
+  chat_can_see_it?: boolean | null;
 };
 
 /** AGI-BUYER-WALK-01 (#236). Keep in lockstep with tests/fixtures/buyer_walk/questions.yaml. */
@@ -67,7 +72,13 @@ export function StudioPage() {
   const { setActivity, activeSpaceId } = useApp();
   const navigate = useNavigate();
 
+  const receiptRef = useRef<HTMLDivElement | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
+  // On a phone the receipt lands far below the Add files button: bring it to the top of the screen.
+  // (At lg it is already in view and the page is left alone.)
+  useEffect(() => {
+    if (receipt && !lgMedia()?.matches) receiptRef.current?.scrollIntoView({ block: "start" });
+  }, [receipt]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [vqQuestion, setVqQuestion] = useState("");
@@ -349,7 +360,7 @@ export function StudioPage() {
             title="Add CSV or Excel files"
             disabled={busy}
             onClick={() => fileInput.current?.click()}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-accent)] text-xl font-semibold leading-none text-white hover:opacity-90 disabled:opacity-50"
+            className="flex h-10 w-10 items-center justify-center rounded-full max-lg:h-11 max-lg:w-11 bg-[var(--color-accent)] text-xl font-semibold leading-none text-white max-lg:text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-50"
           >
             {busy ? "…" : "+"}
           </button>
@@ -404,7 +415,7 @@ export function StudioPage() {
           <p className="font-medium text-[var(--color-ink)]">
             Refuse / ABSTAIN demo: {BUYER_WALK_REFUSE}
           </p>
-          <p className="mt-1 text-[var(--color-ink-muted)]">{BUYER_WALK_REFUSE_WHY}</p>
+          <p className="mt-1 text-[var(--color-ink-muted)] max-lg:text-[var(--color-ink)]">{BUYER_WALK_REFUSE_WHY}</p>
           <button
             type="button"
             onClick={() => navigate("/", { state: { draftQuestion: BUYER_WALK_REFUSE } })}
@@ -420,7 +431,7 @@ export function StudioPage() {
       <input
         ref={fileInput}
         type="file"
-        accept=".csv,.xlsx,.xlsm,.tsv"
+        accept=".csv,.xlsx,.xlsm"
         multiple
         className="hidden"
         disabled={busy}
@@ -451,7 +462,7 @@ export function StudioPage() {
           <button
             type="button"
             onClick={askAboutSelection}
-            className="border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white"
+            className="border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white max-lg:hover:text-[var(--color-on-accent)]"
           >
             Ask about these →
           </button>
@@ -596,7 +607,7 @@ export function StudioPage() {
             type="button"
             disabled={vqBusy || !vqQuestion.trim() || !vqSql.trim()}
             onClick={() => void registerCertified()}
-            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white max-lg:text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-50"
           >
             {vqBusy ? "Registering…" : "Register for this Space"}
           </button>
@@ -616,11 +627,25 @@ export function StudioPage() {
       </div>
 
       {receipt && (
-        <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 text-sm">
-          <p className="font-medium text-[var(--color-ink)]">
+        <div
+          ref={receiptRef}
+          data-testid="ingest-receipt"
+          className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 text-sm"
+        >
+          <p data-testid="receipt-summary" className="font-medium text-[var(--color-ink)]">
             {receipt.summary ??
               `Receipt · ${receipt.files_seen} files · ${receipt.ingested} ingested · ${attention} need attention`}
           </p>
+          {/* PHONE-PATH-01 B1: the API said it cannot confirm Chat sees this; say it in words. */}
+          {receipt.chat_can_see_it === false && (
+            <p
+              data-testid="receipt-chat-visibility"
+              role="status"
+              className="mt-1 text-[var(--color-ink)] [overflow-wrap:anywhere] lg:hidden"
+            >
+              {chatVisibilityLine(receipt)}
+            </p>
+          )}
           {receipt.per_class && (
             <p className="mt-1 text-[var(--color-ink-muted)]">
               {Object.entries(receipt.per_class)
@@ -646,7 +671,18 @@ export function StudioPage() {
                       key={`${f.file}-${f.classification ?? ""}`}
                       className="border-b border-[var(--color-line)]/70"
                     >
-                      <td className="py-2 pr-3 font-medium text-[var(--color-ink)]">{f.file}</td>
+                      <td className="py-2 pr-3 font-medium text-[var(--color-ink)]">
+                        {f.file}
+                        {/* PHONE-PATH-01 B5: at 390px the Reason column is off screen. */}
+                        {isRefused(f) && (f.reason || f.fix) && (
+                          <span
+                            data-testid="receipt-row-reason"
+                            className="mt-1 block w-[min(18rem,70vw)] font-normal [overflow-wrap:anywhere] lg:hidden"
+                          >
+                            Not ingested: {[f.reason, f.fix].filter(Boolean).join(" — ")}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2 pr-3 tabular-nums text-[var(--color-ink-muted)]">
                         {f.classification ?? "—"}
                       </td>

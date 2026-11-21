@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useApp } from "@/context/AppContext";
+import { useIsLg } from "@/lib/viewport";
 import {
   postSqlSource,
   type SqlSourceKind,
@@ -26,6 +27,7 @@ export function SqlSourcePanel({
   onExtracted?: () => void | Promise<void>;
 }) {
   const { setActivity } = useApp();
+  const isLg = useIsLg();
   const passwordRef = useRef<HTMLInputElement | null>(null);
   const [kind, setKind] = useState<SqlSourceKind>("sqlserver");
   const [host, setHost] = useState("");
@@ -200,7 +202,7 @@ export function SqlSourcePanel({
               value={tables}
               onChange={(e) => setTables(e.target.value)}
               className={FIELD}
-              placeholder="orders, customers -- blank = all visible"
+              placeholder={isLg ? "orders, customers -- blank = all visible" : "orders, customers"}
               data-testid="sql-source-tables"
             />
           </label>
@@ -241,7 +243,7 @@ export function SqlSourcePanel({
             type="submit"
             disabled={busy || !host.trim() || !database.trim() || !user.trim()}
             data-testid="sql-source-submit"
-            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white max-lg:text-[var(--color-on-accent)] hover:opacity-90 disabled:opacity-50"
           >
             {busy ? "Extracting…" : "Extract into bronze"}
           </button>
