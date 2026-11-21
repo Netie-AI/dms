@@ -104,6 +104,24 @@ services:
           [ "$${#label}" -le 63 ] || refuse "a label longer than 63 characters"
         done
         unset IFS
+        # An all-numeric last label is no DNS name: it is a host only as a dotted
+        # IPv4 address (four parts, 0-255, no leading zero, not 0.0.0.0). Caddy
+        # would otherwise take 2130706433 or 999.999.999.999 for a site name.
+        case "$${host##*.}" in
+          *[!0-9]*) ;;
+          *)
+            [ "$$host" != "0.0.0.0" ] || refuse "the unspecified address 0.0.0.0"
+            n=0
+            IFS=.
+            for part in $$host; do
+              n=$$((n + 1))
+              case "$$part" in 0[0-9]*) refuse "an IPv4 part with a leading zero" ;; esac
+              { [ "$${#part}" -le 3 ] && [ "$$part" -le 255 ]; } || refuse "an IPv4 part above 255"
+            done
+            unset IFS
+            [ "$$n" -eq 4 ] || refuse "a number that is not a dotted IPv4 address"
+            ;;
+        esac
         exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     environment:
       DMS_TLS_MODE: ${DMS_TLS_MODE:-internal}

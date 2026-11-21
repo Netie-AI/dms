@@ -39,6 +39,8 @@ GOOD = [
     "192.168.1.20",
     "xn--mnchen-3ya.example",  # an IDN in its ASCII (punycode) form
     "3com.example",
+    "1.2.3.4.example",  # numeric labels are fine when the last label is a name
+    "255.255.255.255",
     "a" * 63 + ".example",
     ".".join(["a" * 61] * 4),  # 247 characters, labels of 61
     ".".join(["a" * 63] * 3 + ["a" * 61]),  # exactly 253 characters
@@ -84,6 +86,16 @@ REFUSED = {
     "label of 64": "a" * 64 + ".example",
     "254 characters": ".".join(["a" * 62] * 4) + ".bb",
     "import": "localhost\nimport /etc/caddy/tls/*",
+    # An all-numeric last label is a host only as a dotted IPv4 address.
+    "numeric, not IPv4 (999)": "999.999.999.999",
+    "numeric, five parts": "1.2.3.4.5",
+    "numeric, one part (decimal IPv4)": "2130706433",
+    "numeric, two parts": "0x7f.1",
+    "numeric, three parts": "1.2.3",
+    "numeric zero": "0",
+    "unspecified address": "0.0.0.0",
+    "leading zero part": "010.1.1.1",
+    "part of 256": "256.1.1.1",
 }
 
 

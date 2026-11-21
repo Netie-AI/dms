@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-21 - TLS-HOST-VALIDATE (#387) fix 2: an all-numeric host must be a dotted IPv4 address
+
+- **Guard.** An Opus adversary found the guard took any RFC 1123 name, so `2130706433`, `999.999.999.999`, `1.2.3.4.5`, `0x7f.1` and `0.0.0.0` reached Caddy as site names while the docs say "dotted IPv4". A host whose last label is all digits now has to be four parts, 0-255, no leading zero, and not `0.0.0.0`; anything else exits 1 at the guard with a named reason. Run in the real `caddy:2-alpine` ash as well as sh, dash and bash.
+- **Known and accepted (LOW).** With `default_sni`, a client that sends no SNI (a scanner on the bare IP) now gets the configured host's certificate, so the host name is visible; before, the handshake failed. A wrong SNI is still refused. An upper-case host is lowercased in the site address but kept as typed in `default_sni`; handshakes with no SNI and with an upper-case SNI both worked live.
+
 ## 2026-11-21 - TLS-HOST-VALIDATE (#387): DMS_TLS_HOST is checked before Caddy reads it
 
 - **Guard.** The `ui` entry command admits only RFC 1123 labels (letters, digits, hyphens, dots; 253 total, 63 per label), which includes a dotted IPv4 address, and exits 1 before Caddy starts with one fixed line naming `DMS_TLS_HOST` and the reason, never the value. No port, no IPv6, no raw IDN (use `xn--`). On main a value with a newline and braces added a second site and a `respond` directive to the rendered config.
