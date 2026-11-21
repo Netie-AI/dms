@@ -73,6 +73,10 @@ _HINTS = {
         "an aggregate reads the rows of a set operation, so one value can be counted "
         "once per branch; aggregate the base rows"
     ),
+    "sample_under_aggregate": (
+        "an aggregate reads a sample of the rows (USING SAMPLE or TABLESAMPLE), so its "
+        "figure is not the table's; aggregate every row"
+    ),
     "row_generator_under_aggregate": (
         "an aggregate reads rows a generator repeated; aggregate the base rows"
     ),
@@ -556,6 +560,13 @@ class _Guard:
                 seen = srcs.get(alias)
                 srcs[alias] = rel if seen is None else _Rel(None, {}, _any(seen, rel))
         repeats = next((r.repeats for r in rels if r.repeats), None)
+        if select.args.get("sample") is not None or any(
+            isinstance(i, exp.Expression) and i.args.get("sample") is not None for i in items
+        ):
+            # USING SAMPLE / TABLESAMPLE: an aggregate over a sample is not the
+            # table's figure (a one-table COUNT served 2 for a true 4). Listed
+            # sample rows are what they say; an aggregate over them refuses.
+            repeats = repeats or "sample"
         #: The kind of a column these sources hand on under a name not listed.
         src_loose = _worst(*(r.carried for r in rels))
         #: The worst kind any column of these sources has.

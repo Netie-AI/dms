@@ -1658,3 +1658,31 @@ def test_guard_new_abstains_in_listings_are_named() -> None:
         f"SELECT COLUMNS('l') FROM (SELECT list(school_id) AS l FROM {T})",
     ):
         assert repeated_input_reason(sql) is None, sql
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} USING SAMPLE 2 ROWS",
+        f"SELECT COUNT(*) AS total FROM (SELECT * FROM {od.SCHOOLS} USING SAMPLE 2 ROWS)",
+        f"SELECT COUNT(*) AS total FROM {od.SCHOOLS} TABLESAMPLE 2 ROWS",
+    ],
+)
+def test_an_aggregate_over_a_sample_abstains(
+    sql: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    """Routed by the parent orchestrator (P0 in this class): a one-table total that is
+    not the table's total. Served 2 for a true 4 through every door on the parent."""
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, "How many schools are there?")
+    assert od._oracle(rig.lake, sql) == [{"total": 2}]
+    assert od._oracle(rig.lake, f"SELECT COUNT(*) AS total FROM {od.SCHOOLS}") == [{"total": 4}]
+    _assert_refused_by_the_rule(env, rig, sql, "sample_under_aggregate", (2,))
+    assert _join_why(rig, sql) is None, "only the guard stands in front of this one"
+    # Sampled rows listed as they are pass the guard.
+    assert repeated_input_reason(f"SELECT * FROM {od.SCHOOLS} USING SAMPLE 2 ROWS") is None
