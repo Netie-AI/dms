@@ -445,6 +445,20 @@ def _blocked_kind(exc: BaseException) -> str | None:
     return None
 
 
+class BronzeNames(list):  # type: ignore[type-arg]
+    """Bronze table names, with the source each one landed from (dms#304).
+
+    A list, so every caller that reads names is unchanged. ``sources`` is read
+    by the grant preflight only.
+    """
+
+    sources: list[str]
+
+    def __init__(self, names: list[str], sources: list[str]) -> None:
+        super().__init__(names)
+        self.sources = sources
+
+
 def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[str]]:
     """Measured bronze names for the Space. Snapshot on failure, never invent 75."""
     import httpx
@@ -470,11 +484,15 @@ def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[st
         print("bronze\tBLOCKED\tnot a list: using pack snapshot")
         return "snapshot", []
     names: list[str] = []
+    sources: list[str] = []
     seen: set[str] = set()
     for row in rows:
         label = ""
         if isinstance(row, dict):
             label = str(row.get("table") or row.get("name") or "").strip()
+            source = str(row.get("source") or row.get("ref") or "").strip()
+            if source:
+                sources.append(source)
         elif isinstance(row, str):
             label = row.strip()
         if not label:
@@ -487,7 +505,7 @@ def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[st
             continue
         seen.add(key)
         names.append(label)
-    return "ok", names
+    return "ok", BronzeNames(names, sources)
 
 
 def run_exact(

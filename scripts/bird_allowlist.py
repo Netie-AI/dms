@@ -114,8 +114,20 @@ def _stems(raw: Any, where: str) -> frozenset[str]:
     return frozenset(out)
 
 
+#: The ten tables the scan flagged (dms#304 acceptance 4), as
+#: scripts/pii_mask_check.py pins them. The fixture must name exactly these.
+FLAGGED_TABLES = frozenset(
+    {"schools", "member", "client", "patient", "player", "drivers", "users", "posts",
+     "posthistory", "comments"}
+)
+
+
 def flagged_tables(path: Path = FLAGGED_COLUMNS) -> frozenset[str]:
-    """Tables with a nonzero scan cell, from the committed counts-only fixture."""
+    """Tables with a nonzero scan cell, from the committed counts-only fixture.
+
+    A fixture that names any other set is refused: a cut-down file would let
+    a flagged table pass the grant preflight.
+    """
     try:
         with path.open(encoding="utf-8", newline="") as handle:
             names = {
@@ -128,6 +140,10 @@ def flagged_tables(path: Path = FLAGGED_COLUMNS) -> frozenset[str]:
     names.discard("")
     if not names:
         raise AllowlistError(f"no flagged {BRONZE_PREFIX}* table in {path.name}: refusing to run")
+    if names != FLAGGED_TABLES:
+        raise AllowlistError(
+            f"{path.name} flags {sorted(names)}, not the scan's {sorted(FLAGGED_TABLES)}"
+        )
     return frozenset(names)
 
 
@@ -250,6 +266,16 @@ def _parse(sql: str, dialect: str) -> Any:
     from sqlglot import parse_one
 
     return parse_one(sql, read=sqlglot_dialect(dialect))
+
+
+def _gap_stem(part: str) -> str:
+    """A relation serve_gap names, as the table stem: ``bronze.public_users`` is ``users``."""
+    stem = _fold(part).strip()
+    if stem.startswith("bronze."):
+        stem = stem[len("bronze.") :]
+    if stem.startswith("public_"):
+        stem = stem[len("public_") :]
+    return stem
 
 
 def _unlisted_tables(tree: Any, allowlist: TableAllowlist) -> tuple[str, ...]:
@@ -381,13 +407,19 @@ def classify(sql: str, allowlist: TableAllowlist, *, dialect: str) -> Exclusion 
             return Exclusion(EXCLUDED_TABLE + UNPARSED, f"shape_check_error:{type(exc).__name__}")
         opaque = ""
     if gap:
-        name = gap[len("ungranted:") :] if gap.startswith("ungranted:") else ""
-        # A name that is not a plain identifier, or that is a listed table read
-        # from another schema, is not printed as if it were that table.
-        if _plain(name) and name not in _NO_TABLE and name.casefold() not in allowlist.tables:
-            tables = tuple(sorted({name.casefold(), *unlisted}))
-            return Exclusion(EXCLUDED_TABLE + name, gap, columns, tables)
-        return Exclusion(EXCLUDED_TABLE + UNPARSED, gap, columns, unlisted or (UNPARSED,))
+        listed = gap[len("ungranted:") :] if gap.startswith("ungranted:") else ""
+        # serve_gap names every ungranted relation, comma-separated. A name that
+        # is not a plain identifier, or that is a listed table read from another
+        # schema, is not printed as if it were that table.
+        named = [
+            stem
+            for stem in (_gap_stem(part) for part in listed.split(","))
+            if _plain(stem) and stem not in _NO_TABLE and stem not in allowlist.tables
+        ]
+        tables = tuple(sorted({*named, *unlisted})) or (UNPARSED,)
+        if named:
+            return Exclusion(EXCLUDED_TABLE + named[0], gap, columns, tables)
+        return Exclusion(EXCLUDED_TABLE + UNPARSED, gap, columns, tables)
     if opaque:
         return Exclusion(EXCLUDED_TABLE + UNPARSED, f"unmodelled_function:{opaque}", columns)
     if columns:
@@ -399,12 +431,14 @@ def exclusion_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """n both ways and the excluded counts by table and by column."""
     by_table: Counter[str] = Counter()
     by_column: Counter[str] = Counter()
-    excluded = gold_error = 0
+    excluded = gold_error = skipped = 0
     for row in rows:
         reason = str(row.get("exclusion") or "")
         if not reason:
-            # The main score line drops a gold error from n. So does this one.
+            # The main score lines drop a gold error, and a skipped case, from
+            # n. So does this one.
             gold_error += str(row.get("verdict") or "") == "GOLD_ERROR"
+            skipped += "SKIP" in (row.get("exact"), row.get("generative"))
             continue
         excluded += 1
         if reason.startswith(EXCLUDED_TABLE):
@@ -416,9 +450,10 @@ def exclusion_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             by_column[str(column)] += 1
     return {
         "n": len(rows),
-        "n_without_excluded": len(rows) - excluded - gold_error,
+        "n_without_excluded": len(rows) - excluded - gold_error - skipped,
         "excluded": excluded,
         "gold_error": gold_error,
+        "skipped": skipped,
         "excluded_by_table": dict(sorted(by_table.items())),
         "excluded_by_column": dict(sorted(by_column.items())),
     }
@@ -456,7 +491,11 @@ def _tokens(name: str) -> list[str] | None:
     if not text.isascii():
         return None
     pieces = "".join(ch if ch.isalnum() or ch == "_" else " " for ch in text).split()
-    return pieces + [_copy_stem(piece) for piece in pieces]
+    return (
+        pieces
+        + [_copy_stem(piece) for piece in pieces]
+        + [_COPY_NUMBER.sub("", _COLLISION_SUFFIX.sub("", piece)) for piece in pieces]
+    )
 
 
 # DMS's own collision rename (bronze._claim_table_name: ``<stem[:31]>_<8 hex>``),
@@ -515,7 +554,11 @@ def grant_preflight(status: str, names: Sequence[Any], allowlist: TableAllowlist
     labels = [str(raw or "").strip() for raw in names]
     if not any(labels):
         return "the Space lists no table, so no flagged grant can be ruled out"
-    hits = flagged_grant_names(names, allowlist.flagged)
+    # A sheet or SQL pull lands under a name DMS picks (users_Sheet1,
+    # dbo_users_<hex>); the source it came from (users.xlsx, ...#dbo.users)
+    # still names the table. fetch_bronze carries those beside the names.
+    sources = [str(src) for src in getattr(names, "sources", ()) if src]
+    hits = flagged_grant_names([*names, *sources], allowlist.flagged)
     if hits:
         return "flagged table grantable on this Space: " + ", ".join(sorted(hits))
     return None

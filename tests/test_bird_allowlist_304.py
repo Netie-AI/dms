@@ -364,7 +364,7 @@ def test_question_on_listed_tables_only_is_scored(sql: str) -> None:
         ("SELECT id FROM gender NATURAL JOIN comments", "excluded_table:comments"),
         ("SELECT id FROM gender EXCEPT SELECT id FROM drivers", "excluded_table:drivers"),
         ("SELECT id FROM other.gender", "excluded_table:(unparsed)"),
-        ("SELECT id FROM bronze.public_client", "excluded_table:public_client"),
+        ("SELECT id FROM bronze.public_client", "excluded_table:client"),
         ('SELECT id FROM "Gender"', "excluded_table:(unparsed)"),
         ('SELECT id FROM "cli ent"', "excluded_table:(unparsed)"),
         (
@@ -533,6 +533,7 @@ def test_table_reason_wins_and_the_column_is_still_counted() -> None:
         "n_without_excluded": 2 - 1,
         "excluded": 2,
         "gold_error": 0,
+        "skipped": 0,
         "excluded_by_table": {"client": 1},
         "excluded_by_column": {"superhero.full_name": 2},
     }
@@ -785,6 +786,7 @@ def test_minidev_labels_each_question_once_and_never_asks_an_excluded_one(tmp_pa
         "n_without_excluded": 1,
         "excluded": 4,
         "gold_error": 0,
+        "skipped": 0,
         "excluded_by_table": {"(unparsed)": 1, "client": 1, "users": 1},
         "excluded_by_column": {"widgets.price": 2},
     }
@@ -932,3 +934,100 @@ def test_counts_drop_gold_errors_and_count_every_unlisted_table() -> None:
     assert counts["n"] == 3 and counts["excluded"] == 1 and counts["gold_error"] == 1
     assert counts["n_without_excluded"] == 1
     assert counts["excluded_by_table"] == {"posts": 1, "users": 1}
+
+
+# --- second verifier round (Opus, on 70f52b9) ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "bronze.dbo_users_8fa81536",  # SQL pull from dbo, collision-renamed
+        "bronze.codebase_community_posts_5c1f80f8",
+        "bronze.main_users2",
+        "bronze.dbo_users__1_",
+    ],
+)
+def test_preflight_blocks_a_flagged_table_pulled_from_another_schema(name: str) -> None:
+    got = _mod().grant_preflight("ok", ["bronze.public_gender", name], _allow(ALLOWED))
+    assert got is not None and name in got, got
+
+
+def test_preflight_blocks_a_sheet_named_after_its_flagged_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """users.xlsx lands as users_Sheet1: the name cannot tell it from users_badges,
+    the source it came from can."""
+    import httpx
+
+    body = {
+        "tables": [
+            {"table": "bronze.public_gender", "source": "gender.csv"},
+            {"table": "bronze.users_Sheet1", "source": "users.xlsx"},
+        ]
+    }
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(body))
+    status, names = score_bird.fetch_bronze(URL, score_bird.BIRD_SPACE, 1.0)
+    assert status == "ok" and list(names) == ["bronze.public_gender", "bronze.users_Sheet1"]
+    got = _mod().grant_preflight(status, names, _allow(ALLOWED))
+    assert got is not None and "users.xlsx" in got, got
+
+
+def test_preflight_passes_sources_that_name_no_flagged_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    body = {"tables": [{"table": "bronze.public_gender", "source": "sqlserver://h/db#dbo.gender"}]}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(body))
+    status, names = score_bird.fetch_bronze(URL, score_bird.BIRD_SPACE, 1.0)
+    assert _mod().grant_preflight(status, names, _allow(ALLOWED)) is None
+
+
+def test_a_join_of_unlisted_tables_is_labelled_by_table_not_unparsed() -> None:
+    got = _mod().classify(
+        "SELECT COUNT(*) FROM users u JOIN posts p ON p.owner = u.id",
+        _allow(ALLOWED),
+        dialect="duckdb",
+    )
+    assert got is not None and got.reason in {"excluded_table:posts", "excluded_table:users"}, got
+    assert set(got.tables) == {"posts", "users"}
+
+
+@pytest.mark.parametrize(
+    ("sql", "label", "tables"),
+    [
+        (
+            "WITH posts AS (SELECT * FROM posts) SELECT * FROM posts JOIN users ON 1=1",
+            None,
+            {"posts", "users"},
+        ),
+        ("SELECT * FROM bronze.public_users", "excluded_table:users", {"users"}),
+    ],
+)
+def test_excluded_tables_names_each_table_once(
+    sql: str, label: str | None, tables: set[str]
+) -> None:
+    got = _mod().classify(sql, _allow(ALLOWED), dialect="duckdb")
+    assert got is not None and set(got.tables) == tables, got
+    if label:
+        assert got.reason == label, got
+
+
+def test_a_cut_down_flagged_fixture_is_refused(tmp_path: Path) -> None:
+    src = Path(__file__).parent / "fixtures" / "pii_hold" / "flagged_columns.csv"
+    lines = src.read_text(encoding="utf-8").splitlines()
+    cut = tmp_path / "flagged_columns.csv"
+    cut.write_text(
+        "\n".join([lines[0], *[ln for ln in lines[1:] if ",bronze.public_client," in ln]])
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(_mod().AllowlistError):
+        _mod().flagged_tables(cut)
+
+
+def test_a_skipped_case_is_not_counted_as_scored() -> None:
+    rows = [{"exact": "SKIP"}, {"exclusion": "excluded_table:users"}, {"exact": "OK"}]
+    counts = _mod().exclusion_counts(rows)
+    assert counts["skipped"] == 1 and counts["n_without_excluded"] == 1, counts
