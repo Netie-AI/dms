@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from dms_executor.abstain import build_abstain
 from dms_executor.bronze import bronze_table_for_sheet
 from dms_executor.demo_warehouse import connect_serving
 from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+from dms_executor.row_listing import decimal_cell, found_rows_text
 from dms_executor.stated_values import dropped_stated_value_reason
 from dms_executor.warehouse_identity import ingest_warehouse_path, serving_warehouse_path
 
@@ -258,28 +260,33 @@ def _grouped_top_n(
         cols = _cols(con, ident)
         if "category" not in cols or measure not in cols:
             return None
-        rows = con.execute(
+        exact = _exact_measure(con, ident, measure)
+        if exact is None:
+            return None
+        value_sql, where_sql = exact
+        rows = _fetch(
+            con,
             f"""
             SELECT TRIM(CAST(category AS VARCHAR)) AS category,
-                   ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) AS "{measure}"
+                   SUM({value_sql}) AS "{measure}"
             FROM bronze."{ident}"
-            WHERE TRY_CAST("{measure}" AS DOUBLE) IS NOT NULL
+            WHERE {where_sql}
               AND category IS NOT NULL
               AND TRIM(CAST(category AS VARCHAR)) <> ''
             GROUP BY 1
             ORDER BY 2 DESC
             LIMIT {n}
             """
-        ).fetchall()
+        )
+        if rows is None:
+            return None
     finally:
         con.close()
 
-    out_rows = [{"category": str(r[0]).strip(), measure: float(r[1])} for r in rows]
+    out_rows = [{"category": str(r[0]).strip(), measure: _figure(r[1])} for r in rows]
     if not out_rows:
         return None
-    text = f"Found {len(out_rows)} row(s).\n" + "\n".join(
-        f"  - category={r['category']}, {measure}={r[measure]}" for r in out_rows
-    )
+    text = found_rows_text(out_rows, cap=None)
     return build_answer_envelope(
         answer_id=f"ans_bronze_{ident}",
         text=text,
@@ -288,7 +295,7 @@ def _grouped_top_n(
         rows=out_rows,
         sql_used=(
             f'SELECT TRIM(CAST(category AS VARCHAR)), '
-            f'ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) '
+            f"SUM({value_sql}) "
             f'FROM bronze."{ident}" GROUP BY 1 ORDER BY 2 DESC LIMIT {n}'
         ),
         assumptions=[
@@ -339,26 +346,33 @@ def _eq_filter_total(
         cols = _cols(con, ident)
         if col not in cols or measure not in cols:
             return None
-        rows = con.execute(
+        exact = _exact_measure(con, ident, measure)
+        if exact is None:
+            return None
+        value_sql, where_sql = exact
+        rows = _fetch(
+            con,
             f"""
             SELECT TRIM(CAST("{col}" AS VARCHAR)) AS "{col}",
-                   ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) AS "{measure}"
+                   SUM({value_sql}) AS "{measure}"
             FROM bronze."{ident}"
             WHERE CAST("{col}" AS VARCHAR) = ?
-              AND TRY_CAST("{measure}" AS DOUBLE) IS NOT NULL
+              AND {where_sql}
             GROUP BY 1
             """,
             [value],
-        ).fetchall()
+        )
+        if rows is None:
+            return None
     finally:
         con.close()
 
     sql_used = (
         f'SELECT TRIM(CAST("{col}" AS VARCHAR)), '
-        f'ROUND(SUM(TRY_CAST("{measure}" AS DOUBLE)), 2) '
+        f"SUM({value_sql}) "
         f'FROM bronze."{ident}" WHERE CAST("{col}" AS VARCHAR) = ? GROUP BY 1'
     )
-    out_rows = [{col: str(r[0]).strip(), measure: float(r[1])} for r in rows]
+    out_rows = [{col: str(r[0]).strip(), measure: _figure(r[1])} for r in rows]
     if not out_rows:
         # Hard rule 12: executed exact filter matched nothing. Envelope demotes.
         return build_answer_envelope(
@@ -379,9 +393,7 @@ def _eq_filter_total(
             grounded_tables=[table],
             question=question,
         )
-    text = f"Found {len(out_rows)} row(s).\n" + "\n".join(
-        f"  - {col}={r[col]}, {measure}={r[measure]}" for r in out_rows
-    )
+    text = found_rows_text(out_rows, cap=None)
     return build_answer_envelope(
         answer_id=f"ans_bronze_{ident}",
         text=text,
@@ -400,6 +412,68 @@ def _eq_filter_total(
         grounded_tables=[table],
         question=question,
     )
+
+
+_PLAIN_DECIMAL = r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)"
+
+
+
+def _fetch(
+    con: duckdb.DuckDBPyConnection, sql: str, params: list[Any] | None = None
+) -> list[Any] | None:
+    """The sum's rows, or None when DuckDB cannot compute it exactly.
+
+    A sum past DECIMAL(38) overflows. The lane then does not serve: an
+    error here used to reach the customer as a 503.
+    """
+    try:
+        return con.execute(sql, params or []).fetchall()
+    except duckdb.Error:
+        return None
+
+
+def _figure(value: Any) -> float:
+    return decimal_cell(value) if isinstance(value, Decimal) else float(value)
+
+
+_EXACT_TYPES = ("DECIMAL", "BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT", "UBIGINT")
+
+
+def _exact_measure(
+    con: duckdb.DuckDBPyConnection, ident: str, measure: str
+) -> tuple[str, str] | None:
+    """The measure as an exact DECIMAL expression and its row filter, or None.
+
+    DECIMAL-EXACT-01 (dms#540): a served sum is computed in DECIMAL, never as
+    a DOUBLE sum rounded to 2 places. A DECIMAL or integer column sums as it
+    is. Text, or a DOUBLE read through its shortest text, is cast at the
+    largest scale its values carry. A DOUBLE whose text has an exponent, or a
+    scale over 18, cannot be stated exactly: None, and the lane does not serve.
+    A value that reads as a number but not as a plain decimal (1e3, inf) is the
+    same: counting it inexactly or dropping it would serve a wrong total.
+    """
+    q = '"' + measure.replace('"', '""') + '"'
+    found = con.execute(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_schema = 'bronze' AND table_name = ? AND column_name = ?",
+        [ident, measure],
+    ).fetchone()
+    kind = str(found[0]).upper() if found else ""
+    if kind.startswith(_EXACT_TYPES):
+        return q, f"{q} IS NOT NULL"
+    text = f"trim(CAST({q} AS VARCHAR))"
+    plain = f"regexp_full_match({text}, '{_PLAIN_DECIMAL}')"
+    row = con.execute(
+        f"SELECT COUNT(*) FILTER (WHERE TRY_CAST({text} AS DOUBLE) IS NOT NULL AND NOT {plain}), "
+        f"COALESCE(MAX(length(split_part({text}, '.', 2))) FILTER (WHERE {plain}), 0) "
+        f'FROM bronze."{ident}"'
+    ).fetchone()
+    if row is None:
+        return None
+    bad, scale = int(row[0]), int(row[1])
+    if scale > 18 or bad:
+        return None
+    return f"CAST({text} AS DECIMAL(38,{scale}))", plain
 
 
 def _cols(con: duckdb.DuckDBPyConnection, ident: str) -> set[str]:

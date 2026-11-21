@@ -1,0 +1,315 @@
+{
+ "answer_id": "ans_cq_cost_by_destination",
+ "text": "Found 20 row(s).\n  - location_code=WH-00, total_cost_myr=1610511.DMSMASK_phone_01\n  - location_code=WH-01, total_cost_myr=1578918.DMSMASK_phone_02\n  - location_code=WH-02, total_cost_myr=1517620.660000002\n  - location_code=WH-03, total_cost_myr=1000.5\n  - location_code=WH-04, total_cost_myr=1001.5\n  - location_code=WH-05, total_cost_myr=1002.5\n  - location_code=WH-06, total_cost_myr=1003.5\n  - location_code=WH-07, total_cost_myr=1004.5\n  - location_code=WH-08, total_cost_myr=1005.5\n  - location_code=WH-09, total_cost_myr=1006.5\n  - location_code=WH-10, total_cost_myr=1007.5\n  - location_code=WH-11, total_cost_myr=1008.5",
+ "values": [
+  {
+   "id": "v0",
+   "value": 1610511.0500000012,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v1",
+   "value": 1578918.4499999997,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v2",
+   "value": 1517620.660000002,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v3",
+   "value": 1000.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v4",
+   "value": 1001.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v5",
+   "value": 1002.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v6",
+   "value": 1003.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v7",
+   "value": 1004.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v8",
+   "value": 1005.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v9",
+   "value": 1006.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v10",
+   "value": 1007.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v11",
+   "value": 1008.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v12",
+   "value": 1009.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v13",
+   "value": 1010.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v14",
+   "value": 1011.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v15",
+   "value": 1012.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v16",
+   "value": 1013.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v17",
+   "value": 1014.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v18",
+   "value": 1015.5,
+   "label": "total_cost_myr"
+  },
+  {
+   "id": "v19",
+   "value": 1016.5,
+   "label": "total_cost_myr"
+  }
+ ],
+ "badge": "L1_GOVERNED_METRIC",
+ "abstained": false,
+ "sql_used": "SELECT l.location_code, SUM(s.cost_myr) AS total_cost_myr FROM shipments s JOIN locations l ON s.destination_location_id = l.location_id GROUP BY l.location_code",
+ "assumptions": [
+  "governed metric cq_cost_by_destination",
+  "executed via Cortex submit"
+ ],
+ "as_of": "2026-11-20T01:32:31Z",
+ "contributing_sources": [],
+ "drillthrough_token": null,
+ "audit_id": "led_pack",
+ "ask_mode": "live",
+ "demo_fallback_used": false,
+ "space_id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+ "session_id": "ses_fig",
+ "rows": [
+  {
+   "location_code": "WH-00",
+   "total_cost_myr": 1610511.0500000012
+  },
+  {
+   "location_code": "WH-01",
+   "total_cost_myr": 1578918.4499999997
+  },
+  {
+   "location_code": "WH-02",
+   "total_cost_myr": 1517620.660000002
+  },
+  {
+   "location_code": "WH-03",
+   "total_cost_myr": 1000.5
+  },
+  {
+   "location_code": "WH-04",
+   "total_cost_myr": 1001.5
+  },
+  {
+   "location_code": "WH-05",
+   "total_cost_myr": 1002.5
+  },
+  {
+   "location_code": "WH-06",
+   "total_cost_myr": 1003.5
+  },
+  {
+   "location_code": "WH-07",
+   "total_cost_myr": 1004.5
+  },
+  {
+   "location_code": "WH-08",
+   "total_cost_myr": 1005.5
+  },
+  {
+   "location_code": "WH-09",
+   "total_cost_myr": 1006.5
+  },
+  {
+   "location_code": "WH-10",
+   "total_cost_myr": 1007.5
+  },
+  {
+   "location_code": "WH-11",
+   "total_cost_myr": 1008.5
+  },
+  {
+   "location_code": "WH-12",
+   "total_cost_myr": 1009.5
+  },
+  {
+   "location_code": "WH-13",
+   "total_cost_myr": 1010.5
+  },
+  {
+   "location_code": "WH-14",
+   "total_cost_myr": 1011.5
+  },
+  {
+   "location_code": "WH-15",
+   "total_cost_myr": 1012.5
+  },
+  {
+   "location_code": "WH-16",
+   "total_cost_myr": 1013.5
+  },
+  {
+   "location_code": "WH-17",
+   "total_cost_myr": 1014.5
+  },
+  {
+   "location_code": "WH-18",
+   "total_cost_myr": 1015.5
+  },
+  {
+   "location_code": "WH-19",
+   "total_cost_myr": 1016.5
+  }
+ ],
+ "chart": null,
+ "suggestions": [],
+ "route": "governed_metric",
+ "grounded_tables": [
+  "shipments",
+  "locations"
+ ],
+ "audit_receipt": {
+  "include": {
+   "status": "rows",
+   "row_count": 20,
+   "rows": [
+    {
+     "location_code": "WH-00",
+     "total_cost_myr": 1610511.0500000012
+    },
+    {
+     "location_code": "WH-01",
+     "total_cost_myr": 1578918.4499999997
+    },
+    {
+     "location_code": "WH-02",
+     "total_cost_myr": 1517620.660000002
+    },
+    {
+     "location_code": "WH-03",
+     "total_cost_myr": 1000.5
+    },
+    {
+     "location_code": "WH-04",
+     "total_cost_myr": 1001.5
+    },
+    {
+     "location_code": "WH-05",
+     "total_cost_myr": 1002.5
+    },
+    {
+     "location_code": "WH-06",
+     "total_cost_myr": 1003.5
+    },
+    {
+     "location_code": "WH-07",
+     "total_cost_myr": 1004.5
+    },
+    {
+     "location_code": "WH-08",
+     "total_cost_myr": 1005.5
+    },
+    {
+     "location_code": "WH-09",
+     "total_cost_myr": 1006.5
+    },
+    {
+     "location_code": "WH-10",
+     "total_cost_myr": 1007.5
+    },
+    {
+     "location_code": "WH-11",
+     "total_cost_myr": 1008.5
+    },
+    {
+     "location_code": "WH-12",
+     "total_cost_myr": 1009.5
+    },
+    {
+     "location_code": "WH-13",
+     "total_cost_myr": 1010.5
+    },
+    {
+     "location_code": "WH-14",
+     "total_cost_myr": 1011.5
+    },
+    {
+     "location_code": "WH-15",
+     "total_cost_myr": 1012.5
+    },
+    {
+     "location_code": "WH-16",
+     "total_cost_myr": 1013.5
+    },
+    {
+     "location_code": "WH-17",
+     "total_cost_myr": 1014.5
+    },
+    {
+     "location_code": "WH-18",
+     "total_cost_myr": 1015.5
+    },
+    {
+     "location_code": "WH-19",
+     "total_cost_myr": 1016.5
+    }
+   ],
+   "why": "executed result rows that produced the certified figures (query grain / LIMIT); not a claim of full-table completeness"
+  },
+  "exclude": {
+   "status": "na",
+   "reasons": [],
+   "why": "N/A: no WHERE/HAVING/FILTER in executed SQL; none excluded at result grain"
+  },
+  "unsure": {
+   "status": "none",
+   "abstained": false,
+   "badge": "L1_GOVERNED_METRIC",
+   "why": "not abstained; badge=L1_GOVERNED_METRIC"
+  }
+ },
+ "served_route": "l1_governed_metric",
+ "ladder_rung": "l1",
+ "served_attribution": "none",
+ "model_calls": 0,
+ "lane": "curated"
+}

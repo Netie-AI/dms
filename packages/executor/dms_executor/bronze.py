@@ -507,6 +507,13 @@ def ingest_csv_bytes(
         # the ingest looked rejected and had in fact deleted something.
         staging = f"_ing_{ingest_id.replace('-', '')[:16]}"
         con.execute(f'DROP TABLE IF EXISTS bronze."{staging}"')
+        # DECIMAL-EXACT-01 (dms#540): a column the sniffer types as a binary
+        # float is read as its text, then typed DECIMAL(38, s) when every value
+        # is a plain decimal. 0.1 + 0.2 is then 0.3, not 0.30000000000000004.
+        float_cols = _sniffed_float_columns(con, tmp)
+        text_types = "".join(
+            f", '{c.replace(chr(39), chr(39) * 2)}': 'VARCHAR'" for c in float_cols
+        )[2:]
         # Provenance: _src is STRUCT(ref_id, row)[] — joins concatenate arrays
         # DuckDB: 'row' is reserved in struct_pack(:=); use struct literal instead.
         con.execute(
@@ -522,10 +529,11 @@ def ingest_csv_bytes(
               auto_detect := true,
               delim := ',',
               quote := '\"',
-              sample_size := -1
+              sample_size := -1{f", types := {{{text_types}}}" if text_types else ""}
             ) AS src
             """
         )
+        kept_float = _type_float_columns(con, f'bronze."{staging}"', float_cols)
         # Parse succeeded — only now is it safe to replace the previous table.
         # Swap and record as one transaction. Ensuring the registry exists fixes
         # the reported symptom, but the class is that a step *after* an
@@ -574,15 +582,77 @@ def ingest_csv_bytes(
             note_serving_source(db, space_id)
         except Exception:  # noqa: BLE001 -- ingest must not fail closed on the index
             pass
+    reasons = [{"file": filename, "reason": collision_note}] if collision_note else []
+    reasons += [
+        {"file": filename, "reason": f"column {col} kept DOUBLE: {why}"}
+        for col, why in kept_float.items()
+    ]
     return IngestReceipt(
         files_seen=files_seen,
         ingested=n,
         quarantined=0,
-        reasons=([{"file": filename, "reason": collision_note}] if collision_note else []),
+        reasons=reasons,
         ingest_id=ingest_id,
         source_ref_id=ref_id,
         table=table_qual,
     )
+
+
+#: Largest scale a CSV decimal column is typed with (dms#540 acceptance 1).
+CSV_DECIMAL_MAX_SCALE = 18
+_FLOAT_SNIFFED = frozenset({"DOUBLE", "FLOAT", "REAL"})
+
+
+def _sniffed_float_columns(con: Any, csv_path: Path) -> list[str]:
+    """Columns DuckDB's CSV sniffer would type as a binary float."""
+    rows = con.execute(
+        f"""
+        DESCRIBE SELECT * FROM read_csv(
+          '{csv_path.as_posix()}', header := true, auto_detect := true,
+          delim := ',', quote := '\"', sample_size := -1
+        )
+        """
+    ).fetchall()
+    return [str(r[0]) for r in rows if str(r[1]).upper() in _FLOAT_SNIFFED]
+
+
+def _type_float_columns(con: Any, rel: str, cols: list[str]) -> dict[str, str]:
+    """Type each column (read as text) DECIMAL(38, s), or DOUBLE with the reason.
+
+    DECIMAL only when every non-NULL value is a plain decimal (``-12.50``)
+    and the largest scale is at most ``CSV_DECIMAL_MAX_SCALE``. Anything else
+    (an exponent, ``nan``, a wider scale) keeps the type the sniffer gave it,
+    and the reason is returned for the receipt. Nothing is rounded.
+    """
+    kept: dict[str, str] = {}
+    plain = r"[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)"
+    for col in cols:
+        q = '"' + col.replace('"', '""') + '"'
+        t = f"trim({q})"
+        row = con.execute(
+            f"SELECT COUNT(*) FILTER (WHERE NOT regexp_full_match({t}, '{plain}')), "
+            f"COALESCE(MAX(length(split_part({t}, '.', 2))), 0), "
+            f"COALESCE(MAX(length(ltrim(split_part({t}, '.', 1), '+-'))), 0) "
+            f"FROM {rel} WHERE {q} IS NOT NULL"
+        ).fetchone()
+        bad, scale, whole = (int(v) for v in row) if row else (1, 0, 0)
+        why = None
+        if bad:
+            why = "a value is not a plain decimal (exponent, nan, hex or text)"
+        elif scale > CSV_DECIMAL_MAX_SCALE:
+            why = f"scale {scale} is over {CSV_DECIMAL_MAX_SCALE}"
+        elif whole + scale > 38:
+            why = f"a value has {whole + scale} digits; DECIMAL holds 38"
+        if why:
+            # CAST, not TRY_CAST: a value the sniffer typed DOUBLE that DOUBLE
+            # cannot read (0x10) fails the ingest, as it did before, rather
+            # than landing as NULL.
+            con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE DOUBLE USING CAST({q} AS DOUBLE)")
+            kept[col] = why
+            continue
+        target = f"DECIMAL(38,{scale})"
+        con.execute(f"ALTER TABLE {rel} ALTER {q} TYPE {target} USING CAST({t} AS {target})")
+    return kept
 
 
 def write_bronze_rows(

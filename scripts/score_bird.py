@@ -32,6 +32,17 @@ SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from bird_allowlist import (  # noqa: E402
+    AllowlistError,
+    TableAllowlist,
+    allowlist_lines,
+    allowlist_meta,
+    allowlist_self_check,
+    classify,
+    exclusion_counts,
+    grant_preflight,
+    load_table_allowlist,
+)
 from score_bound import (  # noqa: E402
     bound_line,
     bound_pct,
@@ -192,6 +203,34 @@ def judge_case(
     return ("OK" if res.verdict == "LAYER" else res.verdict), res.reason
 
 
+def excluded_row(
+    case: dict[str, Any], allowlist: TableAllowlist | None, path: str
+) -> dict[str, Any] | None:
+    """The named-ABSTAIN row for a case the allowlist excludes, else None (#304).
+
+    Pack gold SQL runs on the DuckDB oracle, so it is read in that dialect.
+    """
+    if allowlist is None:
+        return None
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    found = classify(str(case.get("gold_sql") or ""), allowlist, dialect=SERVING_DIALECT)
+    if found is None:
+        return None
+    return {
+        "id": str(case["id"]),
+        path: "ABSTAIN",
+        f"{path}_badge": "ABSTAIN",
+        f"{path}_reason": found.reason,
+        "exclusion": found.reason,
+        "exclusion_detail": found.detail,
+        "excluded_columns": list(found.columns),
+        "excluded_tables": list(found.tables),
+        "rows": 0,
+        "expect": str(case.get("expect") or "answered"),
+    }
+
+
 def _path_report(
     name: str, tallies: dict[str, int], n: int, *, oracle: bool = True
 ) -> dict[str, Any]:
@@ -350,11 +389,16 @@ def self_check(path: Path = DEFAULT_PACK) -> int:
     if mini_errs:
         print("FAIL: " + "; ".join(mini_errs))
         return EXIT_FAIL
+    allow_errs = allowlist_self_check()
+    if allow_errs:
+        print("FAIL: " + "; ".join(allow_errs))
+        return EXIT_FAIL
     print(
         f"PASS: bird pack {len(ids)} cases, leftover traps {len(leftover)}, "
         "judge fail-closed. bronze may grow. not a live measurement."
     )
     print("PASS: minidev grader plants. not a live Mini-Dev score.")
+    print("PASS: table allowlist plants (dms#304). fail closed. not a BIRD score.")
     print_honesty(pack["honesty"])
     return EXIT_PASS
 
@@ -401,6 +445,20 @@ def _blocked_kind(exc: BaseException) -> str | None:
     return None
 
 
+class BronzeNames(list):  # type: ignore[type-arg]
+    """Bronze table names, with the source each one landed from (dms#304).
+
+    A list, so every caller that reads names is unchanged. ``sources`` is read
+    by the grant preflight only.
+    """
+
+    sources: list[str]
+
+    def __init__(self, names: list[str], sources: list[str]) -> None:
+        super().__init__(names)
+        self.sources = sources
+
+
 def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[str]]:
     """Measured bronze names for the Space. Snapshot on failure, never invent 75."""
     import httpx
@@ -426,19 +484,28 @@ def fetch_bronze(base: str, space_id: str, timeout: float) -> tuple[str, list[st
         print("bronze\tBLOCKED\tnot a list: using pack snapshot")
         return "snapshot", []
     names: list[str] = []
+    sources: list[str] = []
     seen: set[str] = set()
     for row in rows:
         label = ""
         if isinstance(row, dict):
             label = str(row.get("table") or row.get("name") or "").strip()
-        elif row:
-            label = str(row).strip()
+            source = str(row.get("source") or row.get("ref") or "").strip()
+            if source:
+                sources.append(source)
+        elif isinstance(row, str):
+            label = row.strip()
+        if not label:
+            # dms#304: a row with no readable name is not "no table". The
+            # grant preflight cannot rule out a flagged table it cannot read.
+            print("bronze\tBLOCKED\ta row has no table name: list not readable")
+            return "snapshot", []
         key = label.lower()
-        if not label or key in seen:
+        if key in seen:
             continue
         seen.add(key)
         names.append(label)
-    return "ok", names
+    return "ok", BronzeNames(names, sources)
 
 
 def run_exact(
@@ -446,12 +513,19 @@ def run_exact(
     space_id: str,
     bronze_names: list[str] | None = None,
     oracle_db: Path | None = None,
+    allowlist: TableAllowlist | None = None,
 ) -> tuple[dict[str, int], list[dict[str, Any]], int]:
     tallies = _tally()
     rows: list[dict[str, Any]] = []
     skipped = 0
     for case in pack["questions"]:
         qid = str(case["id"])
+        out = excluded_row(case, allowlist, "exact")
+        if out is not None:
+            tallies["ABSTAIN"] += 1
+            rows.append(out)
+            print(f"{qid}\texact\tABSTAIN\tABSTAIN\t{out['exclusion']}\tno model call")
+            continue
         expect = case_expect(case, bronze_names)
         if expect is None:
             skipped += 1
@@ -482,6 +556,7 @@ def run_live(
     timeout: float,
     bronze_names: list[str] | None,
     oracle_db: Path | None = None,
+    allowlist: TableAllowlist | None = None,
 ) -> tuple[str, dict[str, int], list[dict[str, Any]], int]:
     """Return (ok|blocked, tallies, per-case, skipped). blocked does not invent PASS."""
     tallies = _tally()
@@ -489,6 +564,12 @@ def run_live(
     skipped = 0
     for case in pack["questions"]:
         qid = str(case["id"])
+        out = excluded_row(case, allowlist, "generative")
+        if out is not None:
+            tallies["ABSTAIN"] += 1
+            rows.append(out)
+            print(f"{qid}\tlive\tABSTAIN\tABSTAIN\t{out['exclusion']}\tno model call")
+            continue
         expect = case_expect(case, bronze_names)
         if expect is None:
             skipped += 1
@@ -586,13 +667,23 @@ def _scored_n(pack_n: int, skipped: int) -> int:
     return max(pack_n - skipped, 0)
 
 
-def ab_offline(oracle_db: Path | None = None) -> int:
+def _allowlist_report(
+    allowlist: TableAllowlist | None, cases: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Allowlist block for the artifact, printed as it is built (#304)."""
+    block = {**allowlist_meta(allowlist), **exclusion_counts(cases)}
+    for line in allowlist_lines(block, block):
+        print(line)
+    return block
+
+
+def ab_offline(oracle_db: Path | None = None, allowlist: TableAllowlist | None = None) -> int:
     pack = load_bird()
     space = os.environ.get("BIRD_SPACE_ID", "").strip() or BIRD_SPACE
     snapshot = as_tables(pack["honesty"].get("attached_tables"))
     print("SCORE-BIRD-01 A/B exact-match only (no live Studio). generative=BLOCKED.")
     print_honesty(pack["honesty"], measured=snapshot)
-    exact_t, cases, skipped = run_exact(pack, space, snapshot, oracle_db)
+    exact_t, cases, skipped = run_exact(pack, space, snapshot, oracle_db, allowlist)
     n = _scored_n(len(pack["questions"]), skipped)
     exact_r = _path_report("exact_match", exact_t, n, oracle=oracle_db is not None)
     exact_r["skipped"] = skipped
@@ -606,6 +697,7 @@ def ab_offline(oracle_db: Path | None = None) -> int:
         "pack": "bird_minidev",
         "space_id": space,
         "oracle_db": str(oracle_db) if oracle_db else None,
+        "allowlist": _allowlist_report(allowlist, cases),
         "honesty": pack["honesty"],
         "measured_tables": snapshot,
         "leftover_remaining": leftover_remaining(len(snapshot)),
@@ -628,7 +720,15 @@ def ab_offline(oracle_db: Path | None = None) -> int:
     return EXIT_BLOCKED
 
 
-def live(url: str, timeout: float, space_id: str, oracle_db: Path | None = None) -> int:
+def live(
+    url: str,
+    timeout: float,
+    space_id: str,
+    oracle_db: Path | None = None,
+    allowlist: TableAllowlist | None = None,
+) -> int:
+    """`allowlist` labels the questions; the CLI always passes the committed
+    file. The grant preflight runs either way, before any ask (#304)."""
     pack = load_bird()
     snapshot = as_tables(pack["honesty"].get("attached_tables"))
     print("SCORE-BIRD-01 live A/B: exact-match pack vs POST /v1/chat/ask (GEN-01).")
@@ -636,10 +736,20 @@ def live(url: str, timeout: float, space_id: str, oracle_db: Path | None = None)
     print(f"DMS_API_BASE={url}")
     print(f"oracle_db={oracle_db if oracle_db else 'none (rows not judged: NO_ORACLE)'}")
     bronze_status, measured = fetch_bronze(url, space_id, timeout)
+    try:
+        blocked = grant_preflight(bronze_status, measured, allowlist or load_table_allowlist())
+    except AllowlistError as exc:
+        blocked = f"table allowlist unusable: {exc}"
+    if blocked:
+        print(f"preflight\tBLOCKED\t{blocked}")
+        print("VERDICT: BLOCKED before any ask. No question was sent. Not COMPLETE.")
+        return EXIT_BLOCKED
     names = measured if bronze_status == "ok" and measured else snapshot
     print_honesty(pack["honesty"], measured=names)
-    exact_t, exact_cases, skip_e = run_exact(pack, space_id, names, oracle_db)
-    status, live_t, live_cases, skip_g = run_live(pack, space_id, url, timeout, names, oracle_db)
+    exact_t, exact_cases, skip_e = run_exact(pack, space_id, names, oracle_db, allowlist)
+    status, live_t, live_cases, skip_g = run_live(
+        pack, space_id, url, timeout, names, oracle_db, allowlist
+    )
     pack_n = len(pack["questions"])
     has_oracle = oracle_db is not None
     exact_r = _path_report("exact_match", exact_t, _scored_n(pack_n, skip_e), oracle=has_oracle)
@@ -656,6 +766,7 @@ def live(url: str, timeout: float, space_id: str, oracle_db: Path | None = None)
             "pack": "bird_minidev",
             "space_id": space_id,
             "oracle_db": str(oracle_db) if oracle_db else None,
+            "allowlist": _allowlist_report(allowlist, exact_cases),
             "honesty": pack["honesty"],
             "measured_tables": names,
             "leftover_remaining": leftover,
@@ -678,11 +789,23 @@ def live(url: str, timeout: float, space_id: str, oracle_db: Path | None = None)
     oracle_error = exact_r["oracle_error"] + gen_r["oracle_error"]
     no_oracle = exact_r["no_oracle"] + gen_r["no_oracle"]
     invalid = exact_r["invalid"] + gen_r["invalid"]
+    allow_block = _allowlist_report(allowlist, live_cases)
+    applied = bool(allow_block["applied"])
+    # Skips and excluded questions are not scored. Nothing scored is not a pass.
+    none_scored = applied and gen_r["n"] - allow_block["excluded"] <= 0
+    # A refuse trap that was not sent cannot show a WRONG. That is a skipped
+    # check, so the run is not a pass either.
+    traps_unsent = sum(
+        1 for row in live_cases if row.get("exclusion") and row.get("expect") in REFUSE
+    )
+    allow_block["refuse_traps_unsent"] = traps_unsent
+    none_scored = none_scored or traps_unsent > 0
     report = {
         "kind": "dms.score_bird",
         "pack": "bird_minidev",
         "space_id": space_id,
         "oracle_db": str(oracle_db) if oracle_db else None,
+        "allowlist": allow_block,
         "honesty": pack["honesty"],
         "measured_tables": names,
         "leftover_remaining": leftover,
@@ -692,7 +815,11 @@ def live(url: str, timeout: float, space_id: str, oracle_db: Path | None = None)
         "oracle_error": oracle_error,
         "no_oracle": no_oracle,
         "invalid": invalid,
-        "passed": wrong == 0 and oracle_error == 0 and no_oracle == 0 and invalid == 0,
+        "passed": wrong == 0
+        and oracle_error == 0
+        and no_oracle == 0
+        and invalid == 0
+        and not none_scored,
         "complete": False,
         "cases": list(by_id.values()),
     }
@@ -707,6 +834,14 @@ def live(url: str, timeout: float, space_id: str, oracle_db: Path | None = None)
         print(
             f"VERDICT: NOT SCORED. NO_ORACLE={no_oracle} INVALID={invalid}. "
             "Rows not judged against gold SQL; no OK count claimed. Not COMPLETE."
+        )
+        return EXIT_BLOCKED
+    if none_scored:
+        print(
+            f"VERDICT: NOT SCORED. scored={max(gen_r['n'] - allow_block['excluded'], 0)} "
+            f"excluded={allow_block['excluded']} refuse_traps_unsent={traps_unsent}. "
+            "An excluded ABSTAIN is not a pass and an unsent trap is a skipped check. "
+            "Not COMPLETE."
         )
         return EXIT_BLOCKED
     for line in pass_lines(exact_r["answered"], gen_r["answered"], leftover):
@@ -783,6 +918,12 @@ def main(argv: list[str]) -> int:
         from bird_minidev import run_minidev_cli
 
         return run_minidev_cli(args, dict(os.environ))
+    try:
+        allowlist = load_table_allowlist()
+    except AllowlistError as exc:
+        print(f"CONFIG: table allowlist unusable: {exc}")
+        print("VERDICT: CONFIG")
+        return EXIT_CONFIG
     space = (args.space or os.environ.get("BIRD_SPACE_ID") or BIRD_SPACE).strip()
     if args.live:
         try:
@@ -791,9 +932,9 @@ def main(argv: list[str]) -> int:
             print(f"CONFIG: {exc}")
             print("VERDICT: CONFIG")
             return EXIT_CONFIG
-        return live(url, args.timeout, space, args.oracle_db)
+        return live(url, args.timeout, space, args.oracle_db, allowlist)
     if args.ab:
-        return ab_offline(args.oracle_db)
+        return ab_offline(args.oracle_db, allowlist)
     print(
         "usage: python scripts/score_bird.py --self-check | --ab | --live | "
         "--minidev JSON --live | --compare A B\n"

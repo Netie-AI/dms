@@ -112,6 +112,7 @@ from dms_executor.route_stamp import (
     freeze_route,
     stamp_route,
 )
+from dms_executor.row_listing import found_rows_text
 from dms_executor.schema_context import (
     SCHEMA_CONTEXT_ENVELOPE_KEY,
     SCHEMA_INDEX_STAMP_KEY,
@@ -984,11 +985,7 @@ def _l2_envelope(
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
-    text += f"Found {len(out_rows)} row(s)."
-    if out_rows:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
-        )
+    text += found_rows_text(out_rows)
     # Same row-based builder as the Cortex contract path when Cortex omits chart.
     chart = chart_from_rows(out_rows)
     env = build_answer_envelope(

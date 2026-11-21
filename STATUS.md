@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, DEF-VALIDATE-02
+**Last updated:** 2026-11-21, track T3: #508, #304, #540 (PR #539)
 **Remote:** https://github.com/Netie-AI/dms
 **Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
@@ -43,6 +43,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
+| T3 answer fidelity: #508 E14 (unmask variant PR-a needs founder yes), #304 BIRD preflight (31 names blocked on Platform), #540 exact decimal | #539 |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
