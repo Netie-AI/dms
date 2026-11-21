@@ -2,6 +2,26 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-21 - DECIMAL-EXACT-01 (#540): a certified figure is computed in exact decimal
+
+- **Ingest.** A CSV or sheet column the sniffer types as a binary float lands as `DECIMAL(38,s)` (s = largest observed scale, at most 18) when every value is a plain decimal (`+5.25`, `.5`, `5.` included). Otherwise it keeps DOUBLE and the receipt says why (`column x kept DOUBLE: ...`). A value DOUBLE cannot read (`0x10`) still quarantines the file.
+- **Sums.** The bronze sheet lane sums in DECIMAL, not `ROUND(SUM(DOUBLE), 2)`. A value that reads as a number but not as a plain decimal (`1e3`), or a sum past DECIMAL(38), makes the lane decline rather than drop the value or return a 503. 0.1 + 0.2 is 0.3 in text and rows on the generated and sheet paths, and `0.30000000000000004` appears nowhere in the envelope.
+- **Floats.** A binary float is never stated past 15 significant digits (fixed point at 1e15 and above). A DECIMAL past 15 digits is rounded once, half up, to 15 (`StatedFloat`). Either way the envelope carries `precision: a binary-float figure is shown at 15 significant digits`. A true DOUBLE source still serves.
+- **Open, routed.** Rows carry floats because the masker reads a Decimal cell as text and masks its digits; exact display past 15 digits needs the masker to treat Decimal as a number, which narrows masking (#318). Acceptance 4: nothing infers minor units; no way to declare a scale exists.
+- **Tests.** `tests/test_decimal_exact_540.py` through `POST /v1/chat/ask`; 11 of the first 13 fail on main and on 96f9979, each later round red first; mutations red. Reviewed by an Opus agent that did not build it (three rounds).
+
+## 2026-11-21 - BIRD-ALLOWLIST-01 (#304): the scorer's preflight, loader and counts
+
+- **Preflight.** Blocks a flagged table in any casing, schema or prefix, and under the names DMS gives a copy: a collision rename (`public_users_1a2b3c4d`, `dbo_users_8fa81536`), a number (`schools2`), underscores (`post_history`). A table's registry source is read too, reduced to the table it names (`...#dbo.users`). An empty grants list blocks. Grants are not required to be on the allowlist: with the committed list empty, that blocked every legitimate live run (5 tests on main).
+- **Loader.** Pins scan file, sha256, 31 zero-hit tables, held `{trans, yearmonth}` and the ten flagged tables in code.
+- **Counts.** `n_without_excluded` drops GOLD_ERROR and SKIP like the main lines; every unlisted table a question reads is counted; labels name a parsed table.
+- **Open.** The 31 zero-hit table names exist only in Platform's `pii_counts.csv` (not reachable here); `tables: []`. An Excel sheet copy of a flagged table (`users_Sheet1`, source `users_Sheet1.csv`) passes: batch ingest does not record the workbook (routed). `schools_view` passes.
+
+## 2026-11-21 - FIG-FIDELITY-01 (#508): verifier rounds 3 and 4
+
+- **E14.** A bullet label is compared with its raw text ("MY" and "MY " are two groups); each listed line uses its row once; a listing longer than the result fails; an exponent literal states the cell to the unit; a prose label names a row exactly, ignoring case, or by its longest leading row label, and one that names no row of a many-group column withholds. Summary bullets below the listing are prose. A listing line is checked on every pair, so a figure masked in its row cannot be shown as a number.
+- **Timing.** `test_conn_pool_01` deadline p95 over 10 interleaved isolated runs: branch 7.289 s, main 7.296 s (p = 0.66); the one full-suite miss (7.503 s) is load on a 0.2 s margin that main has too.
+
 ## 2026-11-20 - FIG-FIDELITY-01 (#508): verifier rounds
 
 - **Verifier.** An Opus verifier that did not build the fix returned PASS WITH NITS twice. Fixed from its findings, each with a test that failed first: a padded or punctuated label (`"KL "`, `"Acme Sdn Bhd,"`) no longer withholds a correct listing (a bullet line equal to the row writer's own line states that row); a figure under a near-twin label (`"MY"` vs `"MY "`) is withheld; a label cell reading `col=` is read pair by pair and withheld; `rate=1e9999999` abstains instead of a 5xx; a mask that touches a decimal (`212.5551234`) is counted and the answer withheld; masking a long text is linear again (16000 phone shapes 0.08 s, was 38.7 s).
