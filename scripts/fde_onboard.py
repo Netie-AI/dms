@@ -68,6 +68,8 @@ STAGE_NAMES = {
     6: "measure",
 }
 LEAK_FILE = "LEAK_REFUSED.json"
+#: The onboard route takes at most 500 items per request.
+IMPORT_BATCH = 500
 
 
 class _Refuse(Exception):
@@ -196,19 +198,23 @@ class Onboard:
             ]
         if not items:
             return []
-        r = self.http.post(
-            f"/v1/ontology/data/spaces/{self.space_id}/onboard",
-            json={
-                "items": [{"kind": k, "payload": p, "evidence": e} for k, p, e in items],
-                "run": {"run_id": self.run_id, "stage": stage, "tool": TOOL},
-            },
-        )
-        if r.status_code != 200:
-            raise _Refuse(EXIT_REFUSED, f"import_refused:{_detail_code(r)}")
-        result = r.json()
-        self.store_info["persisted"] = bool(result.get("persisted"))
-        stored = list(result.get("items") or [])
-        held = set(result.get("held") or [])
+        stored: list[dict[str, Any]] = []
+        held: set[str] = set()
+        for start in range(0, len(items), IMPORT_BATCH):
+            chunk = items[start : start + IMPORT_BATCH]
+            r = self.http.post(
+                f"/v1/ontology/data/spaces/{self.space_id}/onboard",
+                json={
+                    "items": [{"kind": k, "payload": p, "evidence": e} for k, p, e in chunk],
+                    "run": {"run_id": self.run_id, "stage": stage, "tool": TOOL},
+                },
+            )
+            if r.status_code != 200:
+                raise _Refuse(EXIT_REFUSED, f"import_refused:{_detail_code(r)}")
+            result = r.json()
+            self.store_info["persisted"] = bool(result.get("persisted"))
+            stored.extend(result.get("items") or [])
+            held.update(result.get("held") or [])
         fresh = [i for i in stored if i.get("id") not in held]
         if len(stored) != len(items) or any(i.get("status") != "proposed" for i in fresh):
             raise _Refuse(EXIT_REFUSED, "store_not_proposed")
@@ -280,15 +286,27 @@ class Onboard:
         )
 
     def stage3(self) -> None:
-        from dms_executor.fde_pack import NameMask, type_items, value_groups, value_items
+        from dms_executor.fde_pack import (
+            NameMask,
+            data_header_tables,
+            type_items,
+            value_groups,
+            value_items,
+        )
 
         types = type_items(self.stats)
         self.groups = value_groups(self.space_id, self.stats)
         values = value_items(self.groups)
         stored = self._store_items([*types, *values], "3")
+        # A table whose header row reads as data (a CSV with no header line) would send
+        # its first row out as column names: every name of it is tokenised.
+        data_headers = data_header_tables(self.stats)
         self.names = NameMask(
-            [(t, list(cols)) for t, cols in self.stats.items()], sources=self.sources
+            [(t, list(cols)) for t, cols in self.stats.items()],
+            sources=self.sources,
+            force={c for t in data_headers for c in self.stats[t]},
         )
+        self.data_header_tables = len(data_headers)
         n = len(types)
         # Raw rows: build_pack masks every name it writes.
         self.type_rows = [
@@ -298,7 +316,12 @@ class Onboard:
         self.group_rows = []
         for group, item in zip(self.groups, stored[n:], strict=True):
             self.group_rows.append({**group, "id": item["id"], "status": item["status"]})
-        self._done(3, column_types=len(types), value_groups=len(self.groups))
+        self._done(
+            3,
+            column_types=len(types),
+            value_groups=len(self.groups),
+            tables_with_data_headers=self.data_header_tables,
+        )
 
     def stage4(self) -> None:
         from dms_executor.fde_pack import build_pack
@@ -329,15 +352,17 @@ class Onboard:
         from dms_executor.demo_warehouse import warehouse_path
         from dms_executor.fde_pack import LeakChecker
 
-        # Nothing is sent until a person has read schema.json and named its sha256.
-        schema_sha = hashlib.sha256((self.out / "schema.json").read_bytes()).hexdigest()
+        # Nothing is sent until a person has read schema.json and named its sha256. The
+        # payload is parsed from the very bytes that were hashed (read once), so a file
+        # changed after the check cannot be what is sent.
+        schema_bytes = (self.out / "schema.json").read_bytes()
         if not self.args.confirm_schema:
             raise _Refuse(EXIT_REFUSED, "schema_not_confirmed")
-        if self.args.confirm_schema.strip().lower() != schema_sha:
+        if self.args.confirm_schema.strip().lower() != hashlib.sha256(schema_bytes).hexdigest():
             raise _Refuse(EXIT_REFUSED, "schema_changed")
         client = OpenVaultOntologyClient(self.transport)
         base = {
-            "schema": self._load("schema.json"),
+            "schema": json.loads(schema_bytes),
             "profile": self._load("profile.json"),
             "samples": self._load("samples.masked.json"),
         }
@@ -418,9 +443,17 @@ class Onboard:
             self.kept_questions.append(
                 {"id": item["id"], "question": item["payload"]["question"], "rows": rows}
             )
+        # Totals only. Which question was kept, and why one was dropped, is data-dependent:
+        # an adversarial model can read one bit of a cell per question from that pattern.
+        # The kept questions live in the item store (--import), never in the pack.
         self._write(
             "proposals/verified_questions.json",
-            {"stage": 5, "prompt": "02_verified_questions.md", "items": q_pack, "dropped": q_drop},
+            {
+                "stage": 5,
+                "prompt": "02_verified_questions.md",
+                "kept": len(q_pack),
+                "dropped": len(q_drop),
+            },
         )
         counts["questions_kept"] = len(q_pack)
         counts["questions_dropped"] = len(q_drop)
@@ -465,8 +498,9 @@ class Onboard:
         # The only reference is the proposal's own SQL, which no steward has reviewed. So
         # this counts agreement with it, never correctness: there is no truth to count
         # against until a steward approves a verified question.
-        tally = Counter({"agrees": 0, "abstained": 0, "disagrees": 0})
-        rows_out: list[dict[str, Any]] = []
+        tally = Counter(
+            {"agrees": 0, "abstained": 0, "disagrees": 0, "invalid_envelope": 0, "http_error": 0}
+        )
         for q in self.kept_questions:
             r = http.post(
                 "/v1/chat/ask",
@@ -476,29 +510,21 @@ class Onboard:
                     "session_id": f"fde_onboard_{self.run_id}",
                 },
             )
-            outcome, badge, abstained = "disagrees", None, None
+            outcome = "http_error"
             if r.status_code == 200:
                 env = r.json()
-                badge, abstained = env.get("badge"), bool(env.get("abstained"))
                 try:
                     assert_envelope_valid(env)
                 except AssertionError:
-                    outcome = "disagrees"
+                    outcome = "invalid_envelope"
                 else:
-                    if abstained:
+                    if env.get("abstained"):
                         outcome = "abstained"
                     elif _multiset(env.get("rows") or []) == _multiset(q["rows"]):
                         outcome = "agrees"
+                    else:
+                        outcome = "disagrees"
             tally[outcome] += 1
-            rows_out.append(
-                {
-                    "id": q["id"],
-                    "outcome": outcome,
-                    "http_status": r.status_code,
-                    "badge": badge,
-                    "abstained": abstained,
-                }
-            )
         self._write(
             "measure.json",
             {
@@ -507,12 +533,11 @@ class Onboard:
                 "truth": "none_until_a_steward_approves",
                 "correct": None,
                 "wrong": None,
-                "asked": len(rows_out),
+                "asked": len(self.kept_questions),
                 **dict(tally),
-                "items": rows_out,
             },
         )
-        self._done(6, asked=len(rows_out), **dict(tally))
+        self._done(6, asked=len(self.kept_questions), **dict(tally))
 
     # ------------------------------------------------------------------ manifest + leak gate
 

@@ -64,7 +64,9 @@ def onto_gate(monkeypatch: pytest.MonkeyPatch, *, allow: bool = True) -> None:
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "fde_onboard"
-CANARIES: list[str] = json.loads((FIXTURE / "CANARIES.json").read_text(encoding="utf-8"))
+CANARIES: list[str] = json.loads(
+    (FIXTURE.parent / "fde_onboard_canaries.json").read_text(encoding="utf-8")
+)
 
 _spec = importlib.util.spec_from_file_location(
     "fde_onboard_cli", ROOT / "scripts" / "fde_onboard.py"
@@ -425,6 +427,15 @@ def test_happy_path_every_output_pending_measured_on_the_envelope(
     rig: Rig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _cortex_up(monkeypatch)
+    real_check = fde_ai.check_question_sql
+    seen: list[str | None] = []
+
+    def _spy(sql: str, **kw: Any) -> Any:
+        reason, info = real_check(sql, **kw)
+        seen.append(reason)
+        return reason, info
+
+    monkeypatch.setattr(fde_ai, "check_question_sql", _spy)
     code, summary = rig.run_confirmed("--import")
     assert code == 0, summary
     assert [s["status"] for s in rig.manifest()["stages"]] == ["done"] * 6
@@ -436,12 +447,17 @@ def test_happy_path_every_output_pending_measured_on_the_envelope(
         assert body["role"] == "ontology"
         assert not {"model", "provider", "strict"} & set(body)
 
+    # The pack carries totals only; the drop reasons are seen locally (the echo is dropped
+    # before the SQL check, so 5 of the 6 questions reach it).
     vq = json.loads((rig.out / "proposals" / "verified_questions.json").read_text())
-    assert {d["index"]: d["reason"] for d in vq["dropped"]} == EXPECTED_DROPS
-    assert [i["question"] for i in vq["items"]] == [Q_ORDERS, Q_CUSTOMERS]
-    assert all(i["status"] == "proposed" for i in vq["items"])
+    assert (vq["kept"], vq["dropped"]) == (2, 4)
+    assert set(vq) == {"stage", "prompt", "kept", "dropped"}
+    assert [r for r in seen if r] == [EXPECTED_DROPS[i] for i in (2, 3, 4)]
+    assert len(seen) == 5
 
     items = _onboard_items(summary["space_id"])
+    kept = [i for i in items if i["kind"] == "verified_query"]
+    assert [i["payload"]["question"] for i in kept] == [Q_ORDERS, Q_CUSTOMERS]
     assert all(i["status"] == "proposed" and i["approved_by"] is None for i in items)
     kinds = {i["kind"] for i in items}
     assert {"object", "link", "column_type", "value_map", "verified_query"} <= kinds
@@ -481,8 +497,7 @@ def test_measure_counts_a_different_answer_as_disagreeing(
     assert code == 0
     measure = json.loads((rig.out / "measure.json").read_text())
     assert (measure["agrees"], measure["disagrees"]) == (1, 1)
-    outcomes = {i["outcome"] for i in measure["items"]}
-    assert outcomes == {"agrees", "disagrees"}
+    assert "items" not in measure
 
 
 def test_cortex_unreachable_refuses_the_measure(rig: Rig) -> None:
@@ -632,10 +647,8 @@ def test_a_crash_in_stage_5_is_named_by_class_and_the_pack_is_still_checked(
     _assert_no_canary(rig.pack_text())
 
 
-def test_drop_reasons_reach_the_pack_as_codes_only(
-    rig: Rig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A join refusal names tables; the pack keeps the code, never the names."""
+def test_the_pack_carries_question_totals_only(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifier: which question was kept or dropped, and why, spells one bit per question."""
     real = fde_ai.check_question_sql
 
     def _named(sql: str, **kw: Any) -> Any:
@@ -648,9 +661,14 @@ def test_drop_reasons_reach_the_pack_as_codes_only(
     _cortex_up(monkeypatch)
     code, _ = rig.run_confirmed()
     assert code == 0
-    vq = (rig.out / "proposals" / "verified_questions.json").read_text(encoding="utf-8")
-    assert "880101145678" not in vq and "staff_" not in vq
-    assert '"reason": "unverified_join"' in vq
+    vq_text = (rig.out / "proposals" / "verified_questions.json").read_text(encoding="utf-8")
+    assert "880101145678" not in vq_text and "staff_" not in vq_text
+    vq = json.loads(vq_text)
+    assert set(vq) == {"stage", "prompt", "kept", "dropped"}
+    for q, _sql in QUESTIONS:
+        assert q not in vq_text
+    measure = json.loads((rig.out / "measure.json").read_text())
+    assert "items" not in measure
 
 
 # --- parent rulings (dms#541): nothing stored without --import; a person confirms the schema ---
@@ -699,3 +717,134 @@ def test_stage_5_sends_nothing_when_the_schema_differs_from_the_confirmed_one(ri
     code, summary = rig.run("--confirm-schema", "0" * 64)
     assert (code, summary["reason"]) == (3, "schema_changed")
     assert rig.model.bodies == []
+
+
+# --- verifier rounds (dms#541) --------------------------------------------------------------
+
+
+def test_an_invalid_envelope_is_its_own_outcome(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    import dms_executor.envelope as envelope_mod
+
+    _cortex_up(monkeypatch)
+    sha = rig.schema_sha()
+
+    def _invalid(_env: Any) -> None:
+        raise AssertionError("E1")
+
+    monkeypatch.setattr(envelope_mod, "assert_envelope_valid", _invalid)
+    code, _ = rig.run("--confirm-schema", sha)
+    assert code == 0
+    measure = json.loads((rig.out / "measure.json").read_text())
+    assert (measure["invalid_envelope"], measure["agrees"], measure["disagrees"]) == (2, 0, 0)
+
+
+def test_a_csv_without_a_header_row_does_not_send_its_first_row_as_names(
+    rig: Rig, tmp_path: Path
+) -> None:
+    import shutil
+
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in ("orders.csv", "customers.csv", "products.csv"):
+        shutil.copy(FIXTURE / name, src / name)
+    first = ["Tan Ah Kow", "Jalan Sultan Ismail 88", "8812345.67"]
+    rows = [first] + [
+        [f"Lim Bee {c}", f"Jalan Ampang {n}", f"{n}000.25"]
+        for n, c in zip(range(10, 30), "ABCDEFGHIJKLMNOPQRST", strict=True)
+    ]
+    (src / "payroll.csv").write_text("\n".join(",".join(r) for r in rows) + "\n", "utf-8")
+    buf = io.StringIO()
+    code = cli.main(
+        ["--source", str(src), "--space", "Headerless", "--out", str(rig.out), "--stop-after", "4"],
+        http=rig.client,
+        transport=rig.model,
+        stdout=buf,
+    )
+    assert code == 0, buf.getvalue()
+    text = rig.pack_text()
+    for value in first:
+        assert value not in text, value
+    assert rig.stage(3)["counts"]["tables_with_data_headers"] == 1
+    # The fixture's real headers still leave as names: the rule is measured, not blanket.
+    schema = json.loads((rig.out / "schema.json").read_text())
+    names = {c["name"] for t in schema["tables"] for c in t["columns"]}
+    assert {"order_id", "sku", "unit_price", "region"} <= names
+
+
+def test_a_model_invented_group_id_never_reaches_the_pack(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = rig.model.__call__
+
+    def _model(url: str, headers: dict[str, str], body: dict[str, Any]) -> Any:
+        out = real(url, headers, body)
+        if "decisions" in out:
+            out["decisions"].append(
+                {"group_id": "zed.secret@acme.test", "same": True, "target": "V01", "reason": "x"}
+            )
+        return out
+
+    rig.model = _model  # type: ignore[assignment]
+    code, _ = rig.run_confirmed()
+    assert code in (0, 3)
+    vm = (rig.out / "proposals" / "value_mappings.json").read_text(encoding="utf-8")
+    assert "zed.secret" not in vm and "acme.test" not in vm
+
+
+def test_the_cli_refuses_a_store_answer_that_is_not_proposed(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ontology_data_store()
+    real = store.store_onboard
+
+    def _approved(*a: Any, **k: Any) -> dict[str, Any]:
+        out = real(*a, **k)
+        for item in out["items"]:
+            item["status"] = "approved"
+        return out
+
+    monkeypatch.setattr(store, "store_onboard", _approved)
+    code, summary = rig.run("--stop-after", "4", "--import")
+    assert (code, summary["reason"]) == (3, "store_not_proposed")
+
+
+def test_what_is_sent_is_the_confirmed_schema_bytes(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verifier D1: schema.json rewritten after the sha check must not be what is sent."""
+    import ao_vendor.llm.ov_client as ov
+
+    sha = rig.schema_sha()
+    out = rig.out
+    real_init = ov.OpenVaultOntologyClient.__init__
+
+    def _swap(self: Any, *a: Any, **k: Any) -> None:
+        path = out / "schema.json"
+        path.write_text(json.dumps({"injected": "after_confirm"}), encoding="utf-8")
+        real_init(self, *a, **k)
+
+    monkeypatch.setattr(ov.OpenVaultOntologyClient, "__init__", _swap)
+    rig.run("--confirm-schema", sha)
+    assert rig.model.bodies
+    for body in rig.model.bodies:
+        assert "after_confirm" not in json.dumps(body)
+
+
+def test_an_import_of_more_than_500_items_is_sent_in_batches(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real = fde_pack.type_items
+
+    def _many(stats: Any) -> Any:
+        base = real(stats)
+        kind, payload, evidence = base[0]
+        extra = [
+            (kind, {**payload, "name": f"{payload['name']}:{n}"}, evidence) for n in range(520)
+        ]
+        return base + extra
+
+    monkeypatch.setattr(fde_pack, "type_items", _many)
+    code, summary = rig.run("--stop-after", "4", "--import")
+    assert code == 0, summary
+    assert len(_onboard_items(summary["space_id"])) > 520
+    assert GATE_CALLS.count("ontology.onboard_import") == 2

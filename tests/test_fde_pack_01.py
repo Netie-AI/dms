@@ -24,7 +24,9 @@ from dms_executor import ingest_batch, profile_space
 from dms_executor.demo_warehouse import ensure_demo_warehouse
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fde_onboard"
-CANARIES: list[str] = json.loads((FIXTURE / "CANARIES.json").read_text(encoding="utf-8"))
+CANARIES: list[str] = json.loads(
+    (FIXTURE.parent / "fde_onboard_canaries.json").read_text(encoding="utf-8")
+)
 SPACE = "fde-test-space"
 
 

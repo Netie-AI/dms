@@ -146,6 +146,10 @@ ALLOWED_NUMBER_KEYS = frozenset(
         "held_from_earlier_runs",
         "agrees",
         "disagrees",
+        "invalid_envelope",
+        "http_error",
+        "kept",
+        "dropped",
         # stage 5 proposals: a position in the model's list, a count of variants
         "index",
         "variants",
@@ -268,11 +272,16 @@ class NameMask:
         tables: Sequence[tuple[str, Sequence[str]]] = (),
         *,
         sources: Mapping[str, str] | None = None,
+        force: Collection[str] = (),
     ) -> None:
         self._token_of: dict[str, str] = {}
         self._raw_of: dict[str, str] = {}
         self._source_text: dict[str, str] = {}
         self._pattern: tuple[int, re.Pattern[str] | None] = (-1, None)
+        #: Names tokenised because their table's header row reads as data
+        #: (``data_header_tables``). Replaced as whole atoms or whole words only.
+        self._forced = frozenset(force)
+        self._forced_re: re.Pattern[str] | None = None
         for table, columns in tables:
             bare = table.rpartition(".")[2]
             origin = (sources or {}).get(table)
@@ -299,7 +308,7 @@ class NameMask:
         known = self._token_of.get(name)
         if known is not None:
             return known
-        if not _reserved(name) and not _scanner_changes(name):
+        if name not in self._forced and not _reserved(name) and not _scanner_changes(name):
             return name
         return self._assign(name)
 
@@ -308,10 +317,26 @@ class NameMask:
         return f"{schema}{dot}{self.out(bare)}"
 
     def text(self, text: str) -> str:
-        """``text`` with every masked raw name replaced by its token, in one pass."""
+        """``text`` with every masked raw name replaced by its token, in one pass.
+
+        A forced name (a header that reads as data, which can be a short common word)
+        is replaced only as a whole atom or a whole word, never inside another word.
+        """
+        exact = self._token_of.get(text)
+        if exact is not None:
+            return exact
+        if self._forced:
+            if self._forced_re is None:
+                alts = "|".join(re.escape(r) for r in sorted(self._forced, key=len, reverse=True))
+                self._forced_re = re.compile(rf"(?<![A-Za-z0-9_])(?:{alts})(?![A-Za-z0-9_])")
+            text = self._forced_re.sub(lambda m: self._assign(m.group(0)), text)
         size = len(self._token_of) + len(self._source_text)
         if self._pattern[0] != size:
-            raws = sorted({*self._token_of, *self._source_text}, key=len, reverse=True)
+            raws = sorted(
+                {*(r for r in self._token_of if r not in self._forced), *self._source_text},
+                key=len,
+                reverse=True,
+            )
             pat = re.compile("|".join(re.escape(r) for r in raws)) if raws else None
             self._pattern = (size, pat)
         pat = self._pattern[1]
@@ -327,6 +352,44 @@ class NameMask:
 
     def tokens(self) -> dict[str, str]:
         return dict(self._raw_of)
+
+
+def _coarse(shape_text: str) -> str:
+    """``shape:U1L2S1U1L2`` -> ``ULSUL``: the character classes, counts dropped."""
+    return re.sub(r"\d+", "", shape_text.removeprefix("shape:")).rstrip("+")
+
+
+def _reads_as_value(name: str) -> bool:
+    """A header that parses as a number or an ISO-like date is a value, not a name."""
+    text = name.strip()
+    return bool(
+        re.fullmatch(r"[-+]?\d+(?:[.,]\d+)*", text)
+        or re.fullmatch(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}", text)
+    )
+
+
+def data_header_tables(stats: Mapping[str, Mapping[str, Mapping[str, Any]]]) -> set[str]:
+    """Tables whose header row reads as a data row (a CSV with no header line).
+
+    Bronze reads every CSV with a header, so a headerless file lands its first data row
+    as column names, and names leave the machine as schema. Measured, no word list: a
+    column counts when its name parses as a value, or when the set of character classes
+    of the name (upper, lower, space, digit, each punctuation mark) equals that of a value
+    the column holds. More than half the columns -> flagged, and every name of that table
+    is tokenised.
+    """
+    flagged: set[str] = set()
+    for table, cols in stats.items():
+        if not cols:
+            continue
+        hits = 0
+        for name, st in cols.items():
+            classes = {frozenset(_coarse(str(s.get("shape", "")))) for s in st.get("shapes") or []}
+            if _reads_as_value(name) or frozenset(_coarse(shape(name))) in classes:
+                hits += 1
+        if hits * 2 > len(cols):
+            flagged.add(table)
+    return flagged
 
 
 # --- column stats ------------------------------------------------------------------------
