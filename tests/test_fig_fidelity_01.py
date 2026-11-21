@@ -269,7 +269,9 @@ OUT_SERVED, OUT_WITHHELD = "served", "withheld"
         (0.30000000000000004, OUT_SERVED),
         (3.141592653589793, OUT_SERVED),
         (900101.145678, OUT_SERVED),  # IC shape across the point
-        (4111.111111111111, OUT_WITHHELD),  # card-like run in the fraction
+        # dms#540: a float prints at 15 significant digits (4111.11111111111), no
+        # longer a 16-digit card run, so it serves with the precision note.
+        (4111.111111111111, OUT_SERVED),
         (1e-07, OUT_SERVED),
         (1.5e16, OUT_SERVED),
     ],

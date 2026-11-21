@@ -249,14 +249,16 @@ def _client(db: Path, model: Any, monkeypatch: pytest.MonkeyPatch) -> TestClient
     return TestClient(app)
 
 
-def _ask(client: TestClient, question: str, sid: str) -> dict[str, Any]:
+def _ask(
+    client: TestClient, question: str, sid: str, ask_path: str = "generative"
+) -> dict[str, Any]:
     resp = client.post(
         "/v1/chat/ask",
         json={
             "question": question,
             "space_id": _SPACE,
             "session_id": sid,
-            "ask_path": "generative",
+            "ask_path": ask_path,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -300,7 +302,7 @@ def test_generated_sum_of_point1_and_point2_is_point3(
     try:
         body = _ask(
             _client(db, model, monkeypatch),
-            "What is the total amount by category?",
+            "Sum the amount for each category",
             "ses_dec540_gen",
         )
     finally:
@@ -358,7 +360,8 @@ def test_sheet_lane_through_the_route_sums_in_decimal(
     _grant(monkeypatch, (f"bronze.{ident}",))
     model = _Model(db, "SELECT 1")
     try:
-        body = _ask(_client(db, model, monkeypatch), _SHEET_Q, "ses_dec540_sheet")
+        client = _client(db, model, monkeypatch)
+        body = _ask(client, _SHEET_Q, "ses_dec540_sheet", ask_path="product")
     finally:
         from dms_api import settings as settings_mod
 
@@ -411,3 +414,123 @@ def test_true_float_source_renders_at_15_digits_with_precision_note(
     assert "0.3" in text
     assert _NOISE not in text
     assert _NOTE in body["assumptions"]
+
+
+# ------------------------------------------- a legitimate float source still answers
+
+
+def _land_declared_float(db: Path, table: str) -> None:
+    from dms_executor.bronze import type_bronze_columns, write_bronze_rows
+
+    write_bronze_rows(
+        table=f"bronze.{table}",
+        columns=["k", "x"],
+        rows=[["big", "12345678901234.56"], ["noise", "0.30000000000000004"]],
+        path=db,
+    )
+    typed = type_bronze_columns(
+        table=f"bronze.{table}",
+        declared={"x": ("double precision", None, None)},
+        path=db,
+    )
+    assert typed is not None
+    assert _describe(db, table)["x"] == "DOUBLE"
+
+
+def _ask_generated(
+    monkeypatch: pytest.MonkeyPatch, db: Path, table: str, sql: str, question: str, sid: str
+) -> tuple[dict[str, Any], _Model]:
+    _flags(monkeypatch, db, sheet=False)
+    _grant(monkeypatch, (f"bronze.{table}",))
+    model = _Model(db, sql)
+    try:
+        body = _ask(_client(db, model, monkeypatch), question, sid)
+    finally:
+        from dms_api import settings as settings_mod
+
+        settings_mod.get_settings.cache_clear()
+    return body, model
+
+
+def test_sql_source_declared_float_select_is_served_at_15_digits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    _land_declared_float(db, "dec540_decl")
+    body, model = _ask_generated(
+        monkeypatch,
+        db,
+        "dec540_decl",
+        'SELECT k, x FROM bronze."dec540_decl" ORDER BY k',
+        "List each key and its x value",
+        "ses_dec540_decl",
+    )
+    assert model.sql
+    assert body["abstained"] is False, body["text"]
+    assert body["badge"] != "ABSTAIN"
+    assert len(body["rows"]) == 2
+    text = body["text"]
+    assert "12345678901234.6" in text
+    assert "12345678901234.56" not in text
+    assert _NOISE not in text
+    assert _NOTE in body["assumptions"]
+
+
+def test_sql_source_declared_float_sum_is_served_at_15_digits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    _land_declared_float(db, "dec540_decl_sum")
+    body, model = _ask_generated(
+        monkeypatch,
+        db,
+        "dec540_decl_sum",
+        'SELECT SUM(x) AS x FROM bronze."dec540_decl_sum"',
+        "Sum the x value",
+        "ses_dec540_decl_sum",
+    )
+    assert model.sql
+    assert body["abstained"] is False, body["text"]
+    assert len(body["rows"]) == 1
+    assert isinstance(body["rows"][0]["x"], float)
+    # 12345678901234.56 + 0.3 is 12345678901234.86 as a binary float; the text
+    # never states more than 15 significant digits of it.
+    import re
+
+    figures = re.findall(r"\d[\d,]*\.?\d*", body["text"])
+    sig = [f.replace(",", "").replace(".", "").lstrip("0") for f in figures]
+    assert any(s.startswith("123456789012") for s in sig), body["text"]
+    assert all(len(s) <= 15 for s in sig), body["text"]
+    assert _NOTE in body["assumptions"]
+
+
+def test_sheet_lane_on_a_double_measure_still_serves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
+    db = ensure_demo_warehouse(tmp_path / "wh.duckdb")
+    ident = bronze_table_for_sheet("cf98e431_p50_01_sales_messy.xlsx", "Sales").split(".", 1)[-1]
+    con = duckdb.connect(str(db))
+    try:
+        con.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+        con.execute(f'CREATE TABLE bronze."{ident}" (category VARCHAR, sales_value_myr DOUBLE)')
+        con.execute(
+            f"""INSERT INTO bronze."{ident}" VALUES
+              ('Electronics', 1545366.40), ('Home', 1199018.49),
+              ('Sports', 400000.00), ('Misc', 100.00)"""
+        )
+    finally:
+        con.close()
+    env = maybe_bronze_sheet_ask(
+        "In cf98e431_p50_01_sales_messy.xlsx sheet Sales, what are the top 3 "
+        "categories by sales_value_myr?",
+        warehouse=db,
+        space_id=_SPACE,
+    )
+    assert env is not None
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["badge"] == "L0_CERTIFIED"
+    assert [r["category"] for r in env["rows"]] == ["Electronics", "Home", "Sports"]
+    assert Decimal(str(env["rows"][0]["sales_value_myr"])) == Decimal("1545366.40")
+    assert "1545366.4" in env["text"]
