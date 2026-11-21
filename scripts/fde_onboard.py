@@ -1,12 +1,13 @@
 """FDE-ONBOARD-01 (dms#541): onboard a customer's files into a Space, draft its configuration.
 
-    python scripts/fde_onboard.py --source <dir> --space <name> --out <pack> [--stop-after N]
+    python scripts/fde_onboard.py --source <dir> --space <space id> --out <pack> [options]
 
 Stages run in order. Each writes its file(s) into the pack directory and is checked before the
 next. Stages 1-4 need no model and no network. Stage 5 calls the model through OpenVault only
 (``ao_vendor.llm.ov_client``, role alias ``ontology``, no model id), and only after a person
-has read ``schema.json`` and named its sha256 with ``--confirm-schema``. Stage 6 asks each kept
-question through ``POST /v1/chat/ask`` on the DMS app, in this process.
+has read the files listed in ``send_manifest.json`` and named its sha256 with
+``--confirm-pack``. Stage 6 asks each kept question through ``POST /v1/chat/ask`` on the
+DMS app, in this process. The Space must already exist: the CLI creates none.
 
 Stage 1 lands the files in bronze directly, as an operator-run extract (the same kind of
 write as ``scripts/load_adventureworks.py``): it is not a FastAPI mutation route, so rule 8
@@ -70,6 +71,22 @@ STAGE_NAMES = {
 LEAK_FILE = "LEAK_REFUSED.json"
 #: The onboard route takes at most 500 items per request.
 IMPORT_BATCH = 500
+#: What each fixed prompt is sent with: user-message key -> pack file. Nothing else is
+#: sent; send_manifest.json records it with the sha256 of each file and prompt.
+SEND_CALLS: tuple[tuple[str, dict[str, str]], ...] = (
+    (
+        "01_ontology_draft.md",
+        {"schema": "schema.json", "profile": "profile.json", "samples": "samples.masked.json"},
+    ),
+    (
+        "02_verified_questions.md",
+        {"schema": "schema.json", "profile": "profile.json", "samples": "samples.masked.json"},
+    ),
+    (
+        "03_value_mappings.md",
+        {"schema": "schema.json", "value_groups": "proposals/value_groups.json"},
+    ),
+)
 
 
 class _Refuse(Exception):
@@ -122,14 +139,6 @@ def _source_files(source: Path) -> list[Path]:
         and not p.name.startswith(".")
         and p.resolve().parent == root
     )
-
-
-def _find_or_create_space(store: Any, name: str) -> Any:
-    want = name.strip().casefold()
-    for space in store.list_spaces():
-        if str(space.name).strip().casefold() == want:
-            return space
-    return store.create(name.strip())
 
 
 class Onboard:
@@ -309,13 +318,12 @@ class Onboard:
         self.data_header_tables = len(data_headers)
         n = len(types)
         # Raw rows: build_pack masks every name it writes.
+        # The pack rows carry no store id: these files are sent, and what a person confirms
+        # in a dry run must be byte for byte what an --import run sends. Ids stay in the store.
         self.type_rows = [
-            {"id": i["id"], "status": i["status"], "kind": i["kind"], **i["payload"]}
-            for i in stored[:n]
+            {"status": "proposed", "kind": i["kind"], **i["payload"]} for i in stored[:n]
         ]
-        self.group_rows = []
-        for group, item in zip(self.groups, stored[n:], strict=True):
-            self.group_rows.append({**group, "id": item["id"], "status": item["status"]})
+        self.group_rows = [{**group, "status": "proposed"} for group in self.groups]
         self._done(
             3,
             column_types=len(types),
@@ -340,8 +348,35 @@ class Onboard:
             path = self.out / rel
             if path not in self.written:
                 self.written.append(path)
-        self._done(4, files=len(built.get("files") or []))
+        self._write("send_manifest.json", self._send_manifest())
+        self._done(4, files=len(built.get("files") or []) + 1)
         self.finalize()  # the gate before anything is sent
+
+    def _send_manifest(self) -> dict[str, Any]:
+        """Every byte stage 5 will send: the files of each call and the prompt text.
+
+        A person reads these files and confirms the sha256 of this manifest with
+        ``--confirm-pack``. Stage 5 then sends only bytes that match it.
+        """
+        files = {}
+        for rel in sorted({rel for _p, parts in SEND_CALLS for rel in parts.values()}):
+            data = (self.out / rel).read_bytes()
+            files[rel] = {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+        prompts = (self.prompt_manifest.get("files") or {}) if self.prompt_manifest else {}
+        return {
+            "format": "fde_send/1",
+            "files": files,
+            "calls": [
+                {
+                    "prompt": {
+                        "name": name,
+                        "sha256": str((prompts.get(name) or {}).get("sha256") or ""),
+                    },
+                    "user_message": dict(parts),
+                }
+                for name, parts in SEND_CALLS
+            ],
+        }
 
     def _tables_raw(self) -> dict[str, set[str]]:
         return {t: set(cols) for t, cols in self.stats.items()}
@@ -352,20 +387,35 @@ class Onboard:
         from dms_executor.demo_warehouse import warehouse_path
         from dms_executor.fde_pack import LeakChecker
 
-        # Nothing is sent until a person has read schema.json and named its sha256. The
-        # payload is parsed from the very bytes that were hashed (read once), so a file
-        # changed after the check cannot be what is sent.
-        schema_bytes = (self.out / "schema.json").read_bytes()
-        if not self.args.confirm_schema:
-            raise _Refuse(EXIT_REFUSED, "schema_not_confirmed")
-        if self.args.confirm_schema.strip().lower() != hashlib.sha256(schema_bytes).hexdigest():
-            raise _Refuse(EXIT_REFUSED, "schema_changed")
+        # Nothing is sent until a person has named the sha256 of send_manifest.json, which
+        # lists every file and prompt stage 5 sends. Each file is read once, checked against
+        # the manifest, and parsed from those bytes: a file changed after the check cannot
+        # be what is sent.
+        manifest_bytes = (self.out / "send_manifest.json").read_bytes()
+        if not self.args.confirm_pack:
+            raise _Refuse(EXIT_REFUSED, "pack_not_confirmed")
+        if self.args.confirm_pack.strip().lower() != hashlib.sha256(manifest_bytes).hexdigest():
+            raise _Refuse(EXIT_REFUSED, "pack_changed")
+        send = json.loads(manifest_bytes)
+        confirmed: dict[str, Any] = {}
+        for rel, meta in (send.get("files") or {}).items():
+            data = (self.out / rel).read_bytes()
+            if hashlib.sha256(data).hexdigest() != meta.get("sha256"):
+                raise _Refuse(EXIT_REFUSED, "pack_changed")
+            confirmed[rel] = json.loads(data)
+        for call in send.get("calls") or []:
+            name = str((call.get("prompt") or {}).get("name"))
+            text = self.prompts.get(name, "")
+            if hashlib.sha256(text.encode()).hexdigest() != (call.get("prompt") or {}).get(
+                "sha256"
+            ):
+                raise _Refuse(EXIT_REFUSED, "pack_changed")
+
+        def payload(prompt: str) -> dict[str, Any]:
+            parts = next(c["user_message"] for c in send["calls"] if c["prompt"]["name"] == prompt)
+            return {key: confirmed[rel] for key, rel in parts.items()}
+
         client = OpenVaultOntologyClient(self.transport)
-        base = {
-            "schema": json.loads(schema_bytes),
-            "profile": self._load("profile.json"),
-            "samples": self._load("samples.masked.json"),
-        }
         tables = self._tables_raw()
         names = self.names
         counts: dict[str, int] = {}
@@ -375,7 +425,7 @@ class Onboard:
             client,
             "01_ontology_draft",
             self.prompts["01_ontology_draft.md"],
-            base,
+            payload("01_ontology_draft.md"),
             fde_ai.OntologyDraftOut,
         )
         items, dropped = fde_ai.ontology_items(draft, back=names.back, tables=tables)
@@ -402,7 +452,7 @@ class Onboard:
             client,
             "02_verified_questions",
             self.prompts["02_verified_questions.md"],
-            {**base, "ontology_draft": self._load("proposals/ontology_draft.json")},
+            payload("02_verified_questions.md"),
             fde_ai.VerifiedQuestionsOut,
         )
         leak = LeakChecker(self.space_id)
@@ -463,7 +513,7 @@ class Onboard:
             client,
             "03_value_mappings",
             self.prompts["03_value_mappings.md"],
-            {"schema": base["schema"], "value_groups": self._load("proposals/value_groups.json")},
+            payload("03_value_mappings.md"),
             fde_ai.ValueMappingsOut,
         )
         by_id = {str(g["group_id"]): g for g in self.groups}
@@ -664,7 +714,10 @@ class Onboard:
         ):
             raise _Refuse(EXIT_INPUT, "steward_grant_required")
         try:
-            space = _find_or_create_space(app.state.space_store, self.args.space)
+            space = app.state.space_store.get(str(self.args.space).strip())
+            if space is None:
+                # Creating a Space is a DMS write: it belongs to the gated API or the UI.
+                raise _Refuse(EXIT_REFUSED, "space_not_found")
             self.space_id = str(space.id)
             binding = getattr(app.state, "space_store_binding", None)
             self.store_info["space_persisted"] = bool(getattr(binding, "persistent", False))
@@ -768,7 +821,9 @@ def _drop_row(row: dict[str, Any]) -> dict[str, Any]:
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(prog="fde_onboard", description=__doc__.split("\n\n")[0])
     ap.add_argument("--source", required=True, help="directory of CSV or sheet files")
-    ap.add_argument("--space", required=True, help="Space name (found by name, else created)")
+    ap.add_argument(
+        "--space", required=True, help="id of an existing Space (create it in the UI or API)"
+    )
     ap.add_argument("--out", required=True, help="pack directory, must be new or empty")
     ap.add_argument(
         "--stop-after",
@@ -778,10 +833,10 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help="4 = offline run (no model, no ask); default 6",
     )
     ap.add_argument(
-        "--confirm-schema",
+        "--confirm-pack",
         default="",
         metavar="SHA256",
-        help="sha256 of the schema.json a person read; stage 5 sends nothing without it",
+        help="sha256 of the send_manifest.json a person read; stage 5 sends nothing without it",
     )
     ap.add_argument(
         "--import",
@@ -816,10 +871,10 @@ def main(
         "store": run._store_counts(),
         "pack": str(run.out),
         "imported": bool(args.do_import),
-        # What a person confirms with --confirm-schema before anything is sent.
-        "schema_sha256": (
-            hashlib.sha256((run.out / "schema.json").read_bytes()).hexdigest()
-            if (run.out / "schema.json").is_file()
+        # What a person confirms with --confirm-pack before anything is sent.
+        "send_manifest_sha256": (
+            hashlib.sha256((run.out / "send_manifest.json").read_bytes()).hexdigest()
+            if (run.out / "send_manifest.json").is_file()
             else None
         ),
         "manifest_sha256": (

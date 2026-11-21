@@ -183,12 +183,21 @@ class Rig:
     out: Path
     model: RecordedModel = field(default_factory=RecordedModel)
 
+    def space_id(self, name: str) -> str:
+        """A Space created as a steward does, through the Spaces store. The CLI creates none."""
+        app = self.client.app
+        for space in app.state.space_store.list_spaces():
+            if space.name == name:
+                return str(space.id)
+        return str(app.state.space_store.create(name).id)
+
     def run(
         self, *extra: str, space: str = "Acme onboarding", out: Path | None = None
     ) -> tuple[int, dict[str, Any]]:
         buf = io.StringIO()
+        sid = self.space_id(space)
         code = cli.main(
-            ["--source", str(FIXTURE), "--space", space, "--out", str(out or self.out), *extra],
+            ["--source", str(FIXTURE), "--space", sid, "--out", str(out or self.out), *extra],
             http=self.client,
             transport=self.model,
             stdout=buf,
@@ -198,20 +207,23 @@ class Rig:
         return code, summary
 
     def schema_sha(self, space: str = "Acme onboarding") -> str:
-        """What a steward does first: an offline run, then read schema.json and its sha256."""
+        """What a steward does first: an offline run, then read what would be sent.
+
+        Returns the sha256 of send_manifest.json, the value ``--confirm-pack`` takes.
+        """
         pre = self.out.parent / f"pre_{len(list(self.out.parent.glob('pre_*')))}"
         code, summary = self.run("--stop-after", "4", space=space, out=pre)
         assert code == 0, summary
         import hashlib
 
-        sha = hashlib.sha256((pre / "schema.json").read_bytes()).hexdigest()
-        assert summary["schema_sha256"] == sha
+        sha = hashlib.sha256((pre / "send_manifest.json").read_bytes()).hexdigest()
+        assert summary["send_manifest_sha256"] == sha
         return sha
 
     def run_confirmed(
         self, *extra: str, space: str = "Acme onboarding"
     ) -> tuple[int, dict[str, Any]]:
-        return self.run("--confirm-schema", self.schema_sha(space), *extra, space=space)
+        return self.run("--confirm-pack", self.schema_sha(space), *extra, space=space)
 
     def manifest(self) -> dict[str, Any]:
         return json.loads((self.out / "manifest.json").read_text(encoding="utf-8"))
@@ -356,10 +368,12 @@ def test_every_config_item_lands_proposed_and_changes_no_approved_read(rig: Rig)
     assert all(i["source"] == ONBOARD_SOURCE for i in items)
     assert summary["store"]["approved"] == 0
     assert not [i for i in ontology_data_store().approved_items() if i["source"] == ONBOARD_SOURCE]
-    # The stage 3 proposals the pack lists are the stored ones, still proposed.
+    # The stage 3 proposals the pack lists are the stored ones (by name), still proposed.
     packed = json.loads((rig.out / "proposals" / "column_types.json").read_text())["items"]
-    stored = {i["id"]: i for i in items}
-    assert packed and all(stored[p["id"]]["status"] == "proposed" for p in packed)
+    stored = {i["payload"]["name"]: i for i in items if i["kind"] == "column_type"}
+    assert packed and len(packed) == len(stored)
+    assert all(p["status"] == "proposed" and "id" not in p for p in packed)
+    assert all(i["status"] == "proposed" for i in stored.values())
     unit_price = [
         i for i in items if i["payload"].get("name") == "column_type:bronze.products.unit_price"
     ]
@@ -385,7 +399,7 @@ def test_openvault_missing_refuses_with_a_named_reason_and_exit_3(
 ) -> None:
     sha = rig.schema_sha()
     monkeypatch.delenv("OPENVAULT_URL")
-    code, summary = rig.run("--confirm-schema", sha)
+    code, summary = rig.run("--confirm-pack", sha)
     assert code == 3
     assert summary["reason"] == "openvault_url_missing"
     assert rig.stage(5)["status"] == "refused"
@@ -603,7 +617,16 @@ def test_a_symlink_in_source_is_not_read(rig: Rig, tmp_path: Path) -> None:
     (src / "linked.csv").symlink_to(outside)
     buf = io.StringIO()
     code = cli.main(
-        ["--source", str(src), "--space", "Symlink", "--out", str(rig.out), "--stop-after", "4"],
+        [
+            "--source",
+            str(src),
+            "--space",
+            rig.space_id("Symlink"),
+            "--out",
+            str(rig.out),
+            "--stop-after",
+            "4",
+        ],
         http=rig.client,
         transport=rig.model,
         stdout=buf,
@@ -627,10 +650,10 @@ def test_a_crash_in_stage_5_is_named_by_class_and_the_pack_is_still_checked(
             "--source",
             str(FIXTURE),
             "--space",
-            "Crash",
+            rig.space_id("Crash"),
             "--out",
             str(rig.out),
-            "--confirm-schema",
+            "--confirm-pack",
             sha,
         ],
         http=rig.client,
@@ -682,7 +705,7 @@ def test_without_import_nothing_reaches_the_item_store(rig: Rig) -> None:
     assert summary["imported"] is False
     assert GATE_CALLS == []
     packed = json.loads((rig.out / "proposals" / "column_types.json").read_text())["items"]
-    assert packed and all(p["id"] is None and p["status"] == "proposed" for p in packed)
+    assert packed and all("id" not in p and p["status"] == "proposed" for p in packed)
 
 
 def test_import_goes_through_the_gate_and_stops_when_it_denies(
@@ -707,15 +730,15 @@ def test_import_calls_the_gate_for_profile_and_onboard_items(rig: Rig) -> None:
 
 def test_stage_5_sends_nothing_without_a_confirmed_schema(rig: Rig) -> None:
     code, summary = rig.run()
-    assert (code, summary["reason"]) == (3, "schema_not_confirmed")
+    assert (code, summary["reason"]) == (3, "pack_not_confirmed")
     assert rig.model.bodies == []
     assert rig.stage(5)["status"] == "refused"
-    assert summary["schema_sha256"]
+    assert summary["send_manifest_sha256"]
 
 
 def test_stage_5_sends_nothing_when_the_schema_differs_from_the_confirmed_one(rig: Rig) -> None:
-    code, summary = rig.run("--confirm-schema", "0" * 64)
-    assert (code, summary["reason"]) == (3, "schema_changed")
+    code, summary = rig.run("--confirm-pack", "0" * 64)
+    assert (code, summary["reason"]) == (3, "pack_changed")
     assert rig.model.bodies == []
 
 
@@ -732,7 +755,7 @@ def test_an_invalid_envelope_is_its_own_outcome(rig: Rig, monkeypatch: pytest.Mo
         raise AssertionError("E1")
 
     monkeypatch.setattr(envelope_mod, "assert_envelope_valid", _invalid)
-    code, _ = rig.run("--confirm-schema", sha)
+    code, _ = rig.run("--confirm-pack", sha)
     assert code == 0
     measure = json.loads((rig.out / "measure.json").read_text())
     assert (measure["invalid_envelope"], measure["agrees"], measure["disagrees"]) == (2, 0, 0)
@@ -755,7 +778,16 @@ def test_a_csv_without_a_header_row_does_not_send_its_first_row_as_names(
     (src / "payroll.csv").write_text("\n".join(",".join(r) for r in rows) + "\n", "utf-8")
     buf = io.StringIO()
     code = cli.main(
-        ["--source", str(src), "--space", "Headerless", "--out", str(rig.out), "--stop-after", "4"],
+        [
+            "--source",
+            str(src),
+            "--space",
+            rig.space_id("Headerless"),
+            "--out",
+            str(rig.out),
+            "--stop-after",
+            "4",
+        ],
         http=rig.client,
         transport=rig.model,
         stdout=buf,
@@ -824,7 +856,7 @@ def test_what_is_sent_is_the_confirmed_schema_bytes(
         real_init(self, *a, **k)
 
     monkeypatch.setattr(ov.OpenVaultOntologyClient, "__init__", _swap)
-    rig.run("--confirm-schema", sha)
+    rig.run("--confirm-pack", sha)
     assert rig.model.bodies
     for body in rig.model.bodies:
         assert "after_confirm" not in json.dumps(body)
@@ -848,3 +880,75 @@ def test_an_import_of_more_than_500_items_is_sent_in_batches(
     assert code == 0, summary
     assert len(_onboard_items(summary["space_id"])) > 520
     assert GATE_CALLS.count("ontology.onboard_import") == 2
+
+
+# --- parent rulings, round 3 (dms#541): confirm every byte sent; the CLI creates no Space ----
+
+
+def test_a_changed_sample_after_confirming_sends_nothing(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N1: samples.masked.json is sent too, so it is inside what a person confirms."""
+    sha = rig.schema_sha()
+    real = fde_pack.masked_samples
+
+    def _changed(space_id: str, names: Any, **kw: Any) -> dict[str, Any]:
+        out = real(space_id, names, **kw)
+        out["max_rows"] = int(out["max_rows"]) + 1
+        return out
+
+    monkeypatch.setattr(fde_pack, "masked_samples", _changed)
+    code, summary = rig.run("--confirm-pack", sha)
+    assert (code, summary["reason"]) == (3, "pack_changed")
+    assert rig.model.bodies == []
+
+
+def test_the_send_manifest_lists_every_byte_that_is_sent(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import hashlib
+
+    _cortex_up(monkeypatch)
+    code, _ = rig.run_confirmed()
+    assert code == 0
+    send = json.loads((rig.out / "send_manifest.json").read_text(encoding="utf-8"))
+    files = {rel: json.loads((rig.out / rel).read_text(encoding="utf-8")) for rel in send["files"]}
+    for rel, meta in send["files"].items():
+        assert hashlib.sha256((rig.out / rel).read_bytes()).hexdigest() == meta["sha256"]
+    assert len(rig.model.bodies) == len(send["calls"]) == 3
+    for body, call in zip(rig.model.bodies, send["calls"], strict=True):
+        system, user = body["messages"][0]["content"], json.loads(body["messages"][1]["content"])
+        assert hashlib.sha256(system.encode()).hexdigest() == call["prompt"]["sha256"]
+        assert user == {key: files[rel] for key, rel in call["user_message"].items()}
+
+
+def test_the_space_must_exist_the_cli_creates_none(rig: Rig) -> None:
+    buf = io.StringIO()
+    code = cli.main(
+        [
+            "--source",
+            str(FIXTURE),
+            "--space",
+            "00000000-0000-0000-0000-00000000dead",
+            "--out",
+            str(rig.out),
+            "--stop-after",
+            "4",
+        ],
+        http=rig.client,
+        transport=rig.model,
+        stdout=buf,
+    )
+    out = json.loads(buf.getvalue())
+    assert (code, out["reason"]) == (3, "space_not_found")
+    names = [s.name for s in rig.client.app.state.space_store.list_spaces()]
+    assert "00000000-0000-0000-0000-00000000dead" not in names
+    assert not (rig.out / "schema.json").exists()
+
+
+def test_the_gate_action_name_is_pinned(rig: Rig) -> None:
+    """Cortex F5 does not check the action name (it evaluates the template only), so the
+    name DMS sends is pinned here: a rename must be a deliberate change."""
+    code, _ = rig.run("--stop-after", "4", "--import")
+    assert code == 0
+    assert GATE_CALLS == ["ontology.profile", "ontology.onboard_import"]

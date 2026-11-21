@@ -936,6 +936,7 @@ def pack_files(out_dir: Path) -> dict[str, dict[str, Any]]:
 PACK_FILES = frozenset(
     {
         "manifest.json",
+        "send_manifest.json",
         "schema.json",
         "profile.json",
         "samples.masked.json",
