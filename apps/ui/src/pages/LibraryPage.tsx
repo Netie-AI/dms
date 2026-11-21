@@ -320,11 +320,11 @@ export function LibraryPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-[var(--color-line)] px-8 py-5 max-lg:px-4 max-lg:py-3">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
+      <div className="shrink-0 border-b border-[var(--color-line)] px-8 py-5 max-lg:px-4 max-lg:py-3 max-lg:short:flex max-lg:short:items-center max-lg:short:gap-3 max-lg:short:py-1">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)] max-lg:hidden">
           U2 · Space repository
         </p>
-        <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+        <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight max-lg:mt-0 max-lg:text-2xl max-lg:short:text-xl">
           Library
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)] max-lg:hidden">
@@ -332,20 +332,20 @@ export function LibraryPage() {
           expand Sources / Bronze / Warehouse / Silver / Gold like DbGate. Excel stays source-only.
         </p>
         {dbOk === false && (
-          <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
+          <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)] max-lg:short:mt-0 max-lg:short:flex-1 max-lg:short:py-1">
             Postgres sources need <code className="font-mono">DATABASE_URL</code>. Warehouse + bronze
             still browse the local DuckDB lake.
           </p>
         )}
-        {err && <p className="mt-3 text-sm text-[var(--color-danger)]">{err}</p>}
+        {err && <p className="mt-3 text-sm text-[var(--color-danger)] max-lg:short:mt-0">{err}</p>}
       </div>
 
-      <div className="flex min-h-0 flex-1 max-lg:flex-col">
+      <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:short:flex-row">
         <aside
           data-testid="library-tree"
-          className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:max-h-[40%] max-lg:w-full max-lg:border-r-0 max-lg:border-b"
+          className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:max-h-[60%] max-lg:w-full max-lg:border-r-0 max-lg:border-b max-lg:short:max-h-none max-lg:short:w-56 max-lg:short:border-r max-lg:short:border-b-0"
         >
-          <div className="border-b border-[var(--color-line)] px-2 py-2">
+          <div className="border-b border-[var(--color-line)] px-2 py-2 max-lg:short:py-1">
             <input
               type="search"
               value={filter}

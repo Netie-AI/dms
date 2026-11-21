@@ -220,9 +220,14 @@ export function ChatPage() {
           <div className={`mx-auto ${chatWidth} space-y-4`}>
             <div className="flex items-center justify-between gap-3">
               <p className="truncate text-xs text-[var(--color-ink-muted)]">
-                Session {sessionId}
-                {askMode === "demo" ? " · demo warehouse" : ""}
-                {askQueueDepth > 0 ? ` · queue ${askQueueDepth}` : ""}
+                {/* The id is for support on a desk; on a phone it only pushes the useful words out of the line. */}
+                {[
+                  isLg ? `Session ${sessionId}` : null,
+                  askMode === "demo" ? "demo warehouse" : null,
+                  askQueueDepth > 0 ? `queue ${askQueueDepth}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
               </p>
               <button
                 type="button"
@@ -283,7 +288,7 @@ export function ChatPage() {
         )}
       </div>
 
-      <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3 max-lg:py-2">
+      <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3 max-lg:py-2 max-lg:short:py-1">
         <div className={`mx-auto flex ${chatWidth} flex-col gap-2`}>
           {/* Desktop: the chip spans the composer. Phone: the top bar names the Space and Sources carries the count. */}
           {isLg && <ScopeChip />}

@@ -168,7 +168,7 @@ export function SpacesPage() {
             onKeyDown={(e) => {
               if (e.key === "Enter") void submit();
             }}
-            placeholder="e.g. Q4 close, Supplier audit, Procurement"
+            placeholder={isLg ? "e.g. Q4 close, Supplier audit, Procurement" : "e.g. Q4 close, Supplier audit"}
             className="h-10 min-w-[16rem] flex-1 border border-[var(--color-line)] bg-[var(--color-surface)] px-3 text-sm"
           />
           <button

@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* A landscape phone: short, and (with max-lg:) narrower than lg. Used only as max-lg:short:. */
+@custom-variant short (@media (max-height: 30rem));
+
 @theme {
   --font-sans: "Figtree", ui-sans-serif, sans-serif;
   --font-display: "Fraunces", ui-serif, Georgia, serif;

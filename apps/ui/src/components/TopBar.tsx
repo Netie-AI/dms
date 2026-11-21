@@ -45,7 +45,7 @@ export function TopBar({ inert = false }: { inert?: boolean }) {
     <header
       // An open drawer or Sources sheet is modal: the top bar behind it takes no focus or taps.
       inert={inert}
-      className="relative z-40 flex h-12 min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
+      className="relative z-40 flex h-12 max-lg:short:h-[45px] min-w-0 shrink-0 items-center gap-2 overflow-visible border-b border-[var(--color-line)] bg-[var(--color-panel)]/90 px-2 backdrop-blur-sm lg:gap-3 lg:px-3">
       <button
         ref={toggle}
         type="button"
