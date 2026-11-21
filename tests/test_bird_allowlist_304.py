@@ -252,7 +252,7 @@ def test_loader_accepts_a_well_formed_file(tmp_path: Path) -> None:
     [
         {"tables": ["bronze.public_gender", "bronze.public_client"]},  # flagged by the scan
         {"tables": ["bronze.public_gender", "bronze.public_trans"]},  # held
-        {"tables": ["bronze.public_gender", "bronze.public_superhero", "bronze.public_hair"]},
+        {"tables": [f"bronze.public_t{i:02d}" for i in range(32)]},  # more than the scan's 31
         {"tables": ["bronze.public_gender", "bronze.public_gender"]},
         {"tables": ["gender"]},
         {"tables": ["bronze.public_Gender"]},
@@ -302,7 +302,7 @@ def test_loader_refuses_a_key_written_twice(tmp_path: Path) -> None:
         mod.load_table_allowlist(twice)
     nested = tmp_path / "nested.yaml"
     nested.write_text(
-        text.replace("zero_hit_tables: 2", "zero_hit_tables: 2\n  zero_hit_tables: 99"),
+        text.replace("zero_hit_tables: 31", "zero_hit_tables: 31\n  zero_hit_tables: 99"),
         encoding="utf-8",
     )
     assert "zero_hit_tables: 99" in nested.read_text(encoding="utf-8")
