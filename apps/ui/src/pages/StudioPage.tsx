@@ -39,6 +39,9 @@ type Receipt = {
   summary?: string | null;
   per_class?: Record<string, number> | null;
   files?: FileRow[] | null;
+  serving_sync?: string | null;
+  serving_sync_detail?: string | null;
+  chat_can_see_it?: boolean | null;
 };
 
 /** AGI-BUYER-WALK-01 (#236). Keep in lockstep with tests/fixtures/buyer_walk/questions.yaml. */
@@ -420,7 +423,7 @@ export function StudioPage() {
       <input
         ref={fileInput}
         type="file"
-        accept=".csv,.xlsx,.xlsm,.tsv"
+        accept=".csv,.xlsx,.xlsm"
         multiple
         className="hidden"
         disabled={busy}
@@ -616,11 +619,27 @@ export function StudioPage() {
       </div>
 
       {receipt && (
-        <div className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 text-sm">
+        <div
+          data-testid="ingest-receipt"
+          className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4 text-sm"
+        >
           <p className="font-medium text-[var(--color-ink)]">
             {receipt.summary ??
               `Receipt · ${receipt.files_seen} files · ${receipt.ingested} ingested · ${attention} need attention`}
           </p>
+          {/* PHONE-PATH-01 B1: the API said it cannot confirm Chat sees this; say it in words. */}
+          {receipt.chat_can_see_it === false && (
+            <p
+              data-testid="receipt-chat-visibility"
+              className="mt-1 text-[var(--color-ink)] lg:hidden"
+            >
+              {receipt.ingested === 0
+                ? "Nothing was ingested, so Chat cannot see this upload."
+                : `Not confirmed that Chat can see this upload${
+                    receipt.serving_sync_detail ? `: ${receipt.serving_sync_detail}` : ""
+                  }.`}
+            </p>
+          )}
           {receipt.per_class && (
             <p className="mt-1 text-[var(--color-ink-muted)]">
               {Object.entries(receipt.per_class)
@@ -646,7 +665,18 @@ export function StudioPage() {
                       key={`${f.file}-${f.classification ?? ""}`}
                       className="border-b border-[var(--color-line)]/70"
                     >
-                      <td className="py-2 pr-3 font-medium text-[var(--color-ink)]">{f.file}</td>
+                      <td className="py-2 pr-3 font-medium text-[var(--color-ink)]">
+                        {f.file}
+                        {/* PHONE-PATH-01 B5: at 390px the Reason column is off screen. */}
+                        {!f.table && (f.reason || f.fix) && (
+                          <span
+                            data-testid="receipt-row-reason"
+                            className="mt-1 block w-[min(18rem,70vw)] font-normal [overflow-wrap:anywhere] lg:hidden"
+                          >
+                            Not ingested: {[f.reason, f.fix].filter(Boolean).join(" — ")}
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2 pr-3 tabular-nums text-[var(--color-ink-muted)]">
                         {f.classification ?? "—"}
                       </td>
