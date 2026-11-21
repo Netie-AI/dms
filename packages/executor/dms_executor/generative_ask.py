@@ -517,6 +517,7 @@ def no_ontology_join_reason(
     space_id: str | None,
     warehouse: Path | None,
     grantable: Iterable[str],
+    contract: bool = False,
 ) -> str | None:
     """CONNECT-ASK-03: the Space join rule for a Space that has no ontology.
 
@@ -540,8 +541,11 @@ def no_ontology_join_reason(
                 # One table, or a table function or ungranted name: the grant,
                 # hostile-SQL and total checks decide it, with their own reasons.
                 return None
-            if serve_gap(sql, grantable=set(grantable), dialect=SERVING_DIALECT):
+            if not contract and serve_gap(sql, grantable=set(grantable), dialect=SERVING_DIALECT):
                 # The door's own grant check refuses it: its reason comes first.
+                # The contract door runs no serve_gap on sql_used, so there the
+                # join check always runs (a catalog-qualified cross product
+                # served 39450 for 7890 through it).
                 return None
             lake = Path(warehouse) if warehouse is not None else None
             if lake is None or not lake.is_file():

@@ -1515,6 +1515,7 @@ class Executor:
                 space_id=space_id,
                 warehouse=self._warehouse or warehouse_path(),
                 grantable=readable,
+                contract=True,
             )
             if join_why:
                 env = path_miss_envelope(

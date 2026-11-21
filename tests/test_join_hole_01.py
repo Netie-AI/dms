@@ -640,3 +640,26 @@ def test_a_demo_space_join_over_a_declared_link_still_answers(
     assert figure, "the demo lake has inventory at locations"
     assert env["badge"] != "ABSTAIN" and env["abstained"] is False, (env.get("text"), env.get("assumptions"))
     assert od._multiset(env["rows"]) == od._multiset(figure)
+
+
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+def test_a_catalog_qualified_demo_join_abstains_on_the_contract_door(
+    space_id: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    """Demo verifier round: serve_gap refuses catalog-qualified names, so the demo
+    check stood aside, and the contract door runs no serve_gap on sql_used: the
+    cross product was served 39450 for 7890. The contract door now always runs it."""
+    sql = (
+        "SELECT SUM(i.quantity_kg) AS total FROM connect_ask_03.main.inventory i, "
+        "connect_ask_03.main.locations l"
+    )
+    env, figure, truth = _demo(sql, "contract", space_id, tmp_path, monkeypatch, minter)
+    assert figure and figure != truth, (figure, truth)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    text = str(env.get("text") or "")
+    assert "unverified_join" in od._reasons(env) + " " + text, (env.get("assumptions"), text)
+    assert str(figure[0]["total"]) not in text, text
