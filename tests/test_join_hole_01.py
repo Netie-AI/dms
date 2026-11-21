@@ -253,8 +253,39 @@ def test_controls_refused_before_still_abstain(
     _assert_join_abstain(env, rig, (wrong,))
 
 
+#: One-table reads rule 16 passes and TOTAL-GUARD-01's proof (dms#531 class change
+#: after verifier round 8) does not: a PIVOT is not proven. Named cost.
+PROOF_ABSTAINS = ("pivot_of_a_derived_table",)
+
+
 @pytest.mark.parametrize("door", DOORS)
-@pytest.mark.parametrize("name", sorted(od.JOIN_HOLE_ONE_READ))
+@pytest.mark.parametrize("name", PROOF_ABSTAINS)
+def test_one_read_the_proof_refuses_is_named(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    from dms_executor.total_guard import repeated_input_reason
+
+    sql = od.JOIN_HOLE_ONE_READ[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, "List the enrollments")
+    oracle = od._oracle(rig.lake, sql)
+    assert oracle, name
+    assert _why(rig, sql) is None  # rule 16 passes it
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True
+    assert env["rows"] == [] and env["values"] == []
+    assert (repeated_input_reason(sql) or "").startswith("repeated_input:unproven_single_read")
+    assert "repeated_input:unproven_single_read" in od._reasons(env), env.get("assumptions")
+    assert rig.cortex.executed == []
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize(
+    "name", sorted(n for n in od.JOIN_HOLE_ONE_READ if n not in PROOF_ABSTAINS)
+)
 def test_one_read_of_one_table_still_answers(
     name: str,
     door: str,
@@ -682,3 +713,88 @@ def test_a_demo_self_cross_product_listing_abstains(
     assert len(rows) == 49, len(rows)
     assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
     assert env["rows"] == [] and env["values"] == []
+
+
+# --- a semi-join of a table against itself (parent ruling 2, #527 class) ------------
+
+#: name -> sql. Correct on the demo lake, refused ``inventory has no declared link``
+#: since 66eb576: a filter of a table by itself cannot repeat a row.
+DEMO_SAME_TABLE_FILTERS: dict[str, str] = {
+    "correlated_exists_against_itself": "SELECT COUNT(*) AS total FROM inventory i WHERE EXISTS (SELECT 1 FROM inventory j WHERE j.sku = i.sku AND j.quantity_kg > 1000)",
+    "in_over_the_same_table": "SELECT SUM(quantity_kg) AS total FROM inventory WHERE sku IN (SELECT sku FROM inventory WHERE category = 'RAW')",
+    "in_over_the_same_table_by_location": "SELECT COUNT(*) AS total FROM inventory WHERE location_id IN (SELECT location_id FROM inventory WHERE quantity_kg > 1000)",
+    "not_exists_against_itself": "SELECT COUNT(*) AS total FROM inventory i WHERE NOT EXISTS (SELECT 1 FROM inventory j WHERE j.sku = i.sku AND j.quantity_kg > 1000)",
+}
+#: Still refused: not a filter of a table by itself, or not the allowed subquery.
+DEMO_SAME_TABLE_STILL_REFUSED: dict[str, str] = {
+    "uncorrelated_exists_on_itself": "SELECT COUNT(*) AS total FROM inventory i WHERE EXISTS (SELECT 1 FROM inventory j WHERE j.quantity_kg > 1000)",
+    "in_over_an_aggregate_of_itself": "SELECT SUM(quantity_kg) AS total FROM inventory WHERE quantity_kg IN (SELECT MAX(quantity_kg) FROM inventory)",
+    "in_over_another_table_without_a_link": "SELECT SUM(quantity_kg) AS total FROM inventory WHERE location_id IN (SELECT location_id FROM transactions)",
+    "self_join_summed": "SELECT SUM(a.quantity_kg) AS total FROM inventory a JOIN inventory b ON a.sku = b.sku",
+}
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+@pytest.mark.parametrize("name", sorted(DEMO_SAME_TABLE_FILTERS))
+def test_a_demo_table_filtered_by_itself_answers(
+    name: str,
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    sql = DEMO_SAME_TABLE_FILTERS[name]
+    env, figure, _truth = _demo(sql, door, space_id, tmp_path, monkeypatch, minter)
+    assert figure and figure[0]["total"] not in (None, 0), figure
+    assert env["badge"] != "ABSTAIN" and env["abstained"] is False, (env.get("text"), env.get("assumptions"))
+    assert od._multiset(env["rows"]) == od._multiset(figure)
+    assert str(figure[0]["total"]) in str(env.get("text") or "") or f"{float(figure[0]['total']):g}" in str(env.get("text") or "")
+
+
+@pytest.mark.parametrize("door", ["generate", "contract"])
+@pytest.mark.parametrize("space_id", [None, ca.DEMO_FINANCE])
+@pytest.mark.parametrize("name", sorted(DEMO_SAME_TABLE_STILL_REFUSED))
+def test_a_demo_subquery_that_is_not_a_self_filter_still_abstains(
+    name: str,
+    space_id: str | None,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+) -> None:
+    sql = DEMO_SAME_TABLE_STILL_REFUSED[name]
+    env, _figure, _truth = _demo(sql, door, space_id, tmp_path, monkeypatch, minter)
+    assert env["badge"] == "ABSTAIN" and env["abstained"] is True, (env["badge"], env.get("text"))
+    assert env["rows"] == [] and env["values"] == []
+    reasons = od._reasons(env) + " " + str(env.get("text") or "")
+    assert "unverified_join" in reasons or "repeated_input" in reasons, reasons
+
+
+_SN = "CAST(students AS INTEGER)"
+#: The same shape in a SQL-source Space with an ontology, no link needed.
+ONTO_SAME_TABLE_FILTERS: dict[str, str] = {
+    "in_over_the_same_table": f"SELECT SUM({_SN}) AS total FROM {od.ENROLL} WHERE school_id IN (SELECT school_id FROM {od.ENROLL} WHERE {_SN} > 25)",
+    "correlated_exists_against_itself": f"SELECT COUNT(*) AS total FROM {od.ENROLL} e WHERE EXISTS (SELECT 1 FROM {od.ENROLL} f WHERE f.school_id = e.school_id AND CAST(f.students AS INTEGER) > 25)",
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("name", sorted(ONTO_SAME_TABLE_FILTERS))
+def test_an_ontology_space_table_filtered_by_itself_answers(
+    name: str,
+    door: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    minter: ManifestMinter,  # noqa: F811
+    store: OntologyStore,  # noqa: F811
+) -> None:
+    sql = ONTO_SAME_TABLE_FILTERS[name]
+    rig, env = _ask(door, sql, tmp_path, monkeypatch, minter, Q)
+    oracle = od._oracle(rig.lake, sql)
+    assert oracle and oracle[0]["total"], oracle
+    assert _why(rig, sql) is None
+    assert env["badge"] == "L2_VALIDATED", (env["badge"], env.get("text"), env.get("assumptions"))
+    assert od._multiset(env["rows"]) == od._multiset(oracle)
+    assert f"total={oracle[0]['total']}" in str(env.get("text") or "") or f"The total is {oracle[0]['total']}." in str(env.get("text") or "")

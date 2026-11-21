@@ -944,7 +944,8 @@ class _JoinRule:
     * WHERE may hold only these subqueries, each over ONE table with no
       grouping or nesting: ``[NOT] EXISTS`` correlated only by verified-link
       equalities; ``col IN (SELECT col ...)`` uncorrelated on a verified link;
-      ``col <op> (SELECT AGG(same col) ...)`` uncorrelated.
+      ``col <op> (SELECT AGG(same col) ...)`` uncorrelated. A semi-join of a
+      table against itself needs no link (``_same_table``).
 
     Anything else refuses. Some correct SQL refuses too (a derived table
     grouped on the key, CAST on both join sides, USING, a CTE compared with
@@ -1058,7 +1059,8 @@ class _JoinRule:
                 ):
                     raise _Refuse("correlated_subquery")
                 (_na, ra), (_nb, rb) = self.col(conj.this, inner), self.col(conj.expression, inner)
-                self.link_for({(ra[0], ra[1], rb[0], rb[1])})
+                if not _same_table(ra, rb):
+                    self.link_for({(ra[0], ra[1], rb[0], rb[1])})
                 linked = True
             if not linked:
                 # Not tied to the outer row by a verified link, the EXISTS is one
@@ -1077,7 +1079,8 @@ class _JoinRule:
                 raise _Refuse("subquery_shape")
             _n, ra = self.col(left, root)
             _m, rb = self.col(proj, inner)
-            self.link_for({(ra[0], ra[1], rb[0], rb[1])})
+            if not _same_table(ra, rb):
+                self.link_for({(ra[0], ra[1], rb[0], rb[1])})
             return sub
         if isinstance(c, _COMPARISONS):
             subs = [x for x in (c.this, c.expression) if isinstance(x, exp.Subquery)]
@@ -1370,6 +1373,19 @@ class _JoinRule:
                 f"fan_trap ({label} is the one side of the join; aggregate it "
                 "before joining, or count its key with COUNT(DISTINCT key))"
             )
+
+
+def _same_table(a: tuple[str, str], b: tuple[str, str]) -> bool:
+    """A semi-join of a table against itself (dms#527, parent ruling 2).
+
+    ``[NOT] EXISTS`` correlated on, or ``col IN (SELECT col ...)`` over, the
+    same base table the filtered column belongs to. It keeps or drops rows of
+    that table and cannot repeat one: the subquery's rows never reach the
+    select list or an aggregate (``_simple_inner`` keeps it to one table, no
+    grouping, no nesting; the EXISTS projection reads the inner table only).
+    No second table is related, so no link is needed.
+    """
+    return bool(a[0]) and a[0] == b[0]
 
 
 def _row_source_why(root_expr: exp.Expression) -> str | None:
