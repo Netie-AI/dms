@@ -268,14 +268,20 @@ def _parse(sql: str, dialect: str) -> Any:
     return parse_one(sql, read=sqlglot_dialect(dialect))
 
 
-def _gap_stem(part: str) -> str:
-    """A relation serve_gap names, as the table stem: ``bronze.public_users`` is ``users``."""
-    stem = _fold(part).strip()
-    if stem.startswith("bronze."):
-        stem = stem[len("bronze.") :]
-    if stem.startswith("public_"):
-        stem = stem[len("public_") :]
-    return stem
+def _tree_tables(tree: Any) -> dict[str, str]:
+    """Each spelling a relation has in the parse tree, folded, mapped to its stem."""
+    from sqlglot import exp
+
+    out: dict[str, str] = {}
+    for table in tree.find_all(exp.Table):
+        stem = _table_stem(table)
+        name = _fold(table.name)
+        out[name] = stem
+        if table.db:
+            out[f"{_fold(table.db)}.{name}"] = stem
+            if table.catalog:
+                out[f"{_fold(table.catalog)}.{_fold(table.db)}.{name}"] = stem
+    return out
 
 
 def _unlisted_tables(tree: Any, allowlist: TableAllowlist) -> tuple[str, ...]:
@@ -397,25 +403,32 @@ def classify(sql: str, allowlist: TableAllowlist, *, dialect: str) -> Exclusion 
         return Exclusion(EXCLUDED_TABLE + UNPARSED, f"checker_error:{type(exc).__name__}")
     columns: tuple[str, ...] = ()
     unlisted: tuple[str, ...] = ()
+    spelled: dict[str, str] = {}
     try:
         tree = _parse(text, dialect)
         opaque = _unmodelled(tree)
         columns = _column_hits(tree, allowlist)
         unlisted = _unlisted_tables(tree, allowlist)
+        spelled = _tree_tables(tree)
     except Exception as exc:  # noqa: BLE001
         if not gap:
             return Exclusion(EXCLUDED_TABLE + UNPARSED, f"shape_check_error:{type(exc).__name__}")
         opaque = ""
     if gap:
         listed = gap[len("ungranted:") :] if gap.startswith("ungranted:") else ""
-        # serve_gap names every ungranted relation, comma-separated. A name that
-        # is not a plain identifier, or that is a listed table read from another
-        # schema, is not printed as if it were that table.
-        named = [
-            stem
-            for stem in (_gap_stem(part) for part in listed.split(","))
-            if _plain(stem) and stem not in _NO_TABLE and stem not in allowlist.tables
-        ]
+        # serve_gap names every ungranted relation, comma-separated. A part is
+        # named only when it is a relation the parse tree holds (a quoted
+        # "users,posts" is one name, not two), under that relation's stem. A
+        # name that is not a plain identifier, or a listed table read from
+        # another schema, is not printed as if it were that table.
+        named = sorted(
+            {
+                stem
+                for stem in (spelled.get(_fold(part).strip()) for part in listed.split(","))
+                if stem and _plain(stem) and stem not in _NO_TABLE
+                and stem not in allowlist.tables
+            }
+        )
         tables = tuple(sorted({*named, *unlisted})) or (UNPARSED,)
         if named:
             return Exclusion(EXCLUDED_TABLE + named[0], gap, columns, tables)
@@ -538,6 +551,20 @@ def flagged_grant_names(names: Iterable[Any], flagged: Iterable[str]) -> list[st
     return hits
 
 
+def _source_table(source: str) -> str:
+    """The table a registry source names: after "#" for a SQL pull (the part
+    after the last "."), else the file's base name without its extension.
+
+    ``...#california_schools.frpm`` is ``frpm``: the database name around it
+    is not a table, and matching it would block legitimate grants.
+    """
+    text = source.strip()
+    if "#" in text:
+        return text.rsplit("#", 1)[1].rsplit(".", 1)[-1]
+    base = re.split(r"[\\/]", text)[-1]
+    return base.rsplit(".", 1)[0] if "." in base else base
+
+
 def grant_preflight(status: str, names: Sequence[Any], allowlist: TableAllowlist) -> str | None:
     """None when the Space's tables were read and none is flagged.
 
@@ -557,7 +584,7 @@ def grant_preflight(status: str, names: Sequence[Any], allowlist: TableAllowlist
     # A sheet or SQL pull lands under a name DMS picks (users_Sheet1,
     # dbo_users_<hex>); the source it came from (users.xlsx, ...#dbo.users)
     # still names the table. fetch_bronze carries those beside the names.
-    sources = [str(src) for src in getattr(names, "sources", ()) if src]
+    sources = [_source_table(str(src)) for src in getattr(names, "sources", ()) if src]
     hits = flagged_grant_names([*names, *sources], allowlist.flagged)
     if hits:
         return "flagged table grantable on this Space: " + ", ".join(sorted(hits))

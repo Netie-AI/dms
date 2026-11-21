@@ -953,24 +953,44 @@ def test_preflight_blocks_a_flagged_table_pulled_from_another_schema(name: str) 
     assert got is not None and name in got, got
 
 
-def test_preflight_blocks_a_sheet_named_after_its_flagged_source(
+def test_preflight_blocks_a_table_whose_sql_source_is_flagged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """users.xlsx lands as users_Sheet1: the name cannot tell it from users_badges,
-    the source it came from can."""
+    """A SQL pull lands under a name DMS picks; its source names the table it read."""
     import httpx
 
     body = {
         "tables": [
             {"table": "bronze.public_gender", "source": "gender.csv"},
-            {"table": "bronze.users_Sheet1", "source": "users.xlsx"},
+            {"table": "bronze.pulled_t1", "source": "sqlserver://h/db#dbo.users"},
         ]
     }
     monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(body))
     status, names = score_bird.fetch_bronze(URL, score_bird.BIRD_SPACE, 1.0)
-    assert status == "ok" and list(names) == ["bronze.public_gender", "bronze.users_Sheet1"]
+    assert status == "ok" and list(names) == ["bronze.public_gender", "bronze.pulled_t1"]
     got = _mod().grant_preflight(status, names, _allow(ALLOWED))
-    assert got is not None and "users.xlsx" in got, got
+    assert got is not None and "users" in got, got
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "mysql://db:3306/california_schools#california_schools.frpm",
+        "postgresql://h:5432/users#public.gender",
+        "postgresql://posts-db.internal:5432/bird#public.gender",
+        "exports/users/gender.csv",
+        "C:\\Users\\alice\\bird\\gender.csv",
+    ],
+)
+def test_preflight_reads_only_the_table_a_source_names(
+    monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    import httpx
+
+    body = {"tables": [{"table": "bronze.public_gender", "source": source}]}
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp(body))
+    status, names = score_bird.fetch_bronze(URL, score_bird.BIRD_SPACE, 1.0)
+    assert _mod().grant_preflight(status, names, _allow(ALLOWED)) is None
 
 
 def test_preflight_passes_sources_that_name_no_flagged_table(
@@ -1031,3 +1051,21 @@ def test_a_skipped_case_is_not_counted_as_scored() -> None:
     rows = [{"exact": "SKIP"}, {"exclusion": "excluded_table:users"}, {"exact": "OK"}]
     counts = _mod().exclusion_counts(rows)
     assert counts["skipped"] == 1 and counts["n_without_excluded"] == 1, counts
+
+
+@pytest.mark.parametrize(
+    ("sql", "label", "tables"),
+    [
+        ('SELECT * FROM "users,posts"', "excluded_table:(unparsed)", None),
+        ("SELECT * FROM public_users", "excluded_table:public_users", {"public_users"}),
+        ('SELECT * FROM "Users" JOIN posts ON 1=1', "excluded_table:posts", {"posts", "users"}),
+        ("SELECT * FROM users JOIN posts ON 1=1", "excluded_table:posts", {"posts", "users"}),
+    ],
+)
+def test_the_label_names_a_table_the_statement_reads(
+    sql: str, label: str, tables: set[str] | None
+) -> None:
+    got = _mod().classify(sql, _allow(ALLOWED), dialect="duckdb")
+    assert got is not None and got.reason == label, got
+    if tables is not None:
+        assert set(got.tables) == tables, got
