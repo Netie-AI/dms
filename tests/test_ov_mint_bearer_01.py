@@ -298,7 +298,7 @@ def test_first_mint_refused_by_ov_is_missing_and_writes_no_token(
         ov.minter().fetch_intermediate()
     assert ei.value.code == OV_TOKEN_MISSING
     assert ov.paths() == ["/keys/services"]
-    assert secret.read_text(encoding="utf-8") == ""
+    assert not secret.exists(), "OV-MINT-TOKEN-ATOMIC-01: no file, not an empty one"
     ov.assert_no_admin()
 
 
@@ -351,7 +351,7 @@ def test_first_mint_rejects_register_echo_with_wrong_case(
     with pytest.raises(OpenVaultTokenError) as ei:
         ov.minter().fetch_intermediate()
     assert ei.value.code == "ov_mint_failed"
-    assert secret.read_text(encoding="utf-8") == ""
+    assert not secret.exists(), "OV-MINT-TOKEN-ATOMIC-01: no file, not an empty one"
     assert "/keys/intermediate" not in ov.paths()
 
 
