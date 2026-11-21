@@ -848,7 +848,8 @@ def _scalar_aggregate(node: exp.Expression) -> bool:
     if _collects(node):
         return False
     if isinstance(node, exp.Anonymous):
-        return False not in _aggregate_returns().get(str(node.name).lower(), frozenset({True}))
+        # Each overload's flag says "returns a collection"; scalar when none does.
+        return True not in _aggregate_returns().get(str(node.name).lower(), frozenset({True}))
     return isinstance(node, _SCALAR_AGGS)
 
 
@@ -866,6 +867,9 @@ class _Proof:
             if any(node.args.get(k) for k in ("joins", "laterals")):
                 raise _Unproven
             return self.query(node.this, scope)
+        ref = _table_form(node)
+        if ref is not None:
+            return self.source(ref, scope, {})
         if not isinstance(node, exp.Select):
             raise _Unproven  # set operations, VALUES, anything else
         scope = self._scope(node, scope)
@@ -919,6 +923,9 @@ class _Proof:
     def source(
         self, item: exp.Expression, scope: dict[str, exp.CTE], reads: dict[str, int]
     ) -> bool:
+        ref = _table_form(item)
+        if ref is not None:
+            return self.source(ref, scope, reads)
         if isinstance(item, exp.Table):
             held = ("sample", "pivots", "joins", "laterals", "rows_from")
             if any(item.args.get(k) for k in held):
@@ -1012,6 +1019,33 @@ class _Proof:
                 return False
             walker = walker.parent
         return True
+
+
+def _table_form(node: exp.Expression) -> exp.Table | None:
+    """DuckDB ``TABLE t`` (``SELECT * FROM t``), as sqlglot reads its two spellings."""
+    named = ""
+    if (
+        isinstance(node, exp.Alias)
+        and isinstance(node.this, exp.Column)
+        and not node.this.this.quoted
+        and node.this.name.upper() == "TABLE"
+        and not node.this.table
+    ):
+        named = str(node.alias)
+    elif (
+        isinstance(node, exp.Table)
+        and isinstance(node.this, exp.Identifier)
+        and not node.this.quoted
+        and node.name.upper() == "TABLE"
+        and not node.db
+        and node.alias
+    ):
+        named = str(node.alias)
+    if not named:
+        return None
+    ref = exp.to_table(named)
+    ref.parent = node
+    return ref
 
 
 def _row_values(agg: exp.Expression, *, nested_ok: bool) -> None:
