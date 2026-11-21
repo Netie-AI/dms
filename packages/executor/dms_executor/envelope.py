@@ -1051,7 +1051,7 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
             for at in fits
             if all(cell_text(row_list[at][col]) == shown for col, shown in figures)
         ]
-        match = (exact or fits or [None])[0]
+        match: int | None = (exact or fits)[0] if (exact or fits) else None
         if match is None:
             out.append("b: a listed row shows a figure its row does not hold")
             break
