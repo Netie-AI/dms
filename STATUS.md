@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-20, track T1 on `claude/integration-epic-178` (PR #532, do not merge)
+**Last updated:** 2026-11-21, track T1 on `claude/integration-epic-178` (PR #532, do not merge)
 **Remote:** https://github.com/Netie-AI/dms
 **Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
 
@@ -43,8 +43,8 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
-| P0 JOIN-HOLE-01 (#527): every relation a FROM names is counted; an uncorrelated EXISTS over a second table abstains `uncorrelated_subquery` | #532 |
-| P0 TOTAL-GUARD-01 (#531): an aggregate that can read one value twice abstains `repeated_input`. Open: scalar arithmetic (`SUM(x)+SUM(x)`) | #532 |
+| T1 track #532 (do not merge): P0 #527 join holes and #531 total guard (verifier round 3 open), #524 Yes re-enters the door, #528 check that raises abstains, #523 Space-scoped items (founder: clause 8, outcome 3), #518 catalog schemas. #515, #516 building | #532 |
+| Open by name: scalar arithmetic (`SUM(x)+SUM(x)`); `date_function` class (43 of 238 one-table statements reported, not re-measured here), routed | #532 |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
