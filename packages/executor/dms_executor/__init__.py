@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -96,7 +97,9 @@ from dms_executor.envelope import (
     reserved_as_of_abstain,
 )
 from dms_executor.generative_ask import (
+    join_check_unavailable,
     maybe_generative_ask,
+    no_ontology_join_reason,
     path_miss_envelope,
     untyped_numeric_reason,
     with_served_attribution,
@@ -147,6 +150,7 @@ from dms_executor.name_echo import (
     note_turn_grants,
     turn_grants,
 )
+from dms_executor.onto_profile import profile_space
 from dms_executor.openvault_discovery import local_start_command, probe_openvault
 from dms_executor.pipeline_loader import (
     load_pipeline_by_name,
@@ -183,6 +187,7 @@ from dms_executor.space_ontology import (
 from dms_executor.sql_currency import tables_read as tables_read_by_sql
 from dms_executor.sql_currency import tables_read_checked as tables_read_checked_by_sql
 from dms_executor.sql_loop import apply_sql_credit, extract_dialect
+from dms_executor.total_guard import repeated_input_reason
 from dms_executor.triage import classify_bytes, classify_grid
 from dms_executor.verified_queries import (
     list_verified_queries,
@@ -246,6 +251,10 @@ def default_readable_tables(granted: list[str], *, space_id: str | None) -> list
     return list(granted)
 
 
+# CONNECT-ASK-04: the statement a Yes confirmed, for the one ask that re-runs it.
+_HELD_STATEMENT: ContextVar[str | None] = ContextVar("dms_held_statement", default=None)
+
+
 def _insights_compute_seam(
     cortex: Any,
     question: str,
@@ -262,6 +271,12 @@ def _insights_compute_seam(
     run because this stays a callable — ``maybe_generative_ask`` returns
     early on ``compute is None`` before paraphrase and _UNSURE_ASK.
     """
+    held = _HELD_STATEMENT.get()
+    if held is not None:
+        # CONNECT-ASK-04: a Yes on held SQL. No model writes anything; the
+        # confirmed statement stands where generated SQL stands, so every
+        # check after generation reads it exactly as it reads model SQL.
+        return {"query_sql": held, "plan_source": "ontology_plan"}
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return None
@@ -1248,9 +1263,28 @@ class Executor:
                 env = attach_cascade(bronze_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
-        from dms_executor.ontology import Ontology, onto_from_data_enabled
+        from dms_executor.ontology import onto_from_data_enabled
 
-        data_onto = Ontology.from_store() if onto_from_data_enabled() else None
+        data_onto = None
+        if onto_from_data_enabled():
+            # ONTO-SCOPE-01: the ontology of the asking Space. Its derived
+            # ontology wins alone; otherwise the items approved for it. Never
+            # every approved item of the install.
+            from dms_executor.onto_scope import ask_ontology
+
+            try:
+                data_onto = ask_ontology(space_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("ontology items unreadable for %s: %s", space_id, exc)
+                env = path_miss_envelope(
+                    question,
+                    f"{REASON_STORE_UNAVAILABLE}: the ontology store could not "
+                    "be read, so no join can be checked",
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
         space_onto = None
         if data_onto is None and allow_gen and not is_demo_space(space_id):
             # ONTO-DERIVE-01: the Space's own stored ontology, never the demo
@@ -1259,6 +1293,14 @@ class Executor:
             # be a silent downgrade.
             try:
                 space_onto = load_space_ontology(space_id)
+                if space_onto is None:
+                    # ONTO-PROFILE-02: a file Space has no derived ontology.
+                    # Its steward-approved keys and links answer instead,
+                    # unverified here and measured at this ask. Never merged
+                    # into a derived one.
+                    from dms_executor.onto_profile import approved_profile_ontology
+
+                    space_onto = approved_profile_ontology(space_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("ontology store unreadable for %s: %s", space_id, exc)
                 env = path_miss_envelope(
@@ -1452,12 +1494,42 @@ class Executor:
         if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
             # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
             # Its SQL answers only if it passes the same rule generation does.
-            join_why = check_sql_against_space(
-                sql_used, space_onto, self._warehouse or warehouse_path(), readable
+            try:
+                join_why = check_sql_against_space(
+                    sql_used, space_onto, self._warehouse or warehouse_path(), readable
+                )
+            except Exception as exc:  # noqa: BLE001 - CONNECT-ASK-05
+                join_why = join_check_unavailable(exc)
+            if join_why:
+                env = path_miss_envelope(
+                    question, join_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
+        elif sql_used and not getattr(resp, "abstained", False):
+            # CONNECT-ASK-03: no ontology is zero verified links, not no rule.
+            # With DMS_ONTO_FROM_DATA=1 this guard has no Space ontology
+            # either, so a non-demo Space fails closed here.
+            join_why = no_ontology_join_reason(
+                sql_used,
+                space_id=space_id,
+                warehouse=self._warehouse or warehouse_path(),
+                grantable=readable,
+                contract=True,
             )
             if join_why:
                 env = path_miss_envelope(
                     question, join_why, space_id=space_id, session_id=session_id
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
+        if sql_used and not getattr(resp, "abstained", False):
+            # TOTAL-GUARD-01: the contract ask's SQL meets the same class rule
+            # as generated SQL, last, so only a would-be serve is refused.
+            repeat_why = repeated_input_reason(sql_used, self.dialect or SERVING_DIALECT)
+            if repeat_why:
+                env = path_miss_envelope(
+                    question, repeat_why, space_id=space_id, session_id=session_id
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
@@ -1665,7 +1737,124 @@ class Executor:
         return env
 
     def _run_held_sql(self, pending: dict[str, Any]) -> dict[str, Any]:
-        """Execute SQL the user confirmed. Grant and read-only checks run again."""
+        """A Yes on held SQL re-enters the ask door where generated SQL enters it.
+
+        CONNECT-ASK-04. There is no list of checks here. The confirmed statement
+        is handed to ``live_ask`` in place of the generate leg, so it meets every
+        gate generated SQL meets, with the grants and the Space ontology read
+        now, and is served only from a Cortex submit with a ledger entry. The one
+        gate the Yes answers is the ``def_validate`` reconfirm that parked it.
+        The parked grant list is not read. Nothing runs on a local cursor.
+        """
+        from dms_executor.abstain import _envelope_reason
+        from dms_executor.def_validate import answered_reconfirm
+        from dms_executor.envelope import assert_envelope_valid
+
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        if is_demo_space(space_id):
+            return self._run_held_sql_demo(pending)
+        sql = str(pending.get("sql") or "").strip()
+        code = str(pending.get("reason_code") or "").strip()
+        question = str(
+            pending.get("suggested_question") or pending.get("question") or ""
+        ).strip()
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        raw_tables = pending.get("tables")
+        provenance = f"yes:definition:{code}"
+
+        def abstain(reason: str) -> dict[str, Any]:
+            env = build_abstain(
+                reason=reason,
+                question=question,
+                stage="reconfirm_yes",
+                answer_id="ans_reconfirm_yes",
+                text=(
+                    "I cannot run that query against the granted tables, "
+                    "so I am not answering it."
+                ),
+                abstain_reason=reason,
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[reason],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
+            return env
+
+        try:
+            # CONNECT-ASK-03 wording, kept: a store that cannot say whether this
+            # Space has an ontology proves no join. The door reads it again.
+            load_space_ontology(space_id)
+        except Exception:  # noqa: BLE001 - a store we cannot read proves no join
+            return abstain("unverified_join:check_unavailable")
+        held = _HELD_STATEMENT.set(sql)
+        try:
+            with answered_reconfirm(
+                sql=sql, code=code, definition=str(pending.get("definition") or "")
+            ):
+                env = self.live_ask(
+                    question,
+                    space_id=space_id,
+                    session_id=session_id,
+                    tables=list(raw_tables) if isinstance(raw_tables, list) else None,
+                    # The generate door only: no certified lane, no contract ask.
+                    ask_path="generative",
+                )
+        finally:
+            _HELD_STATEMENT.reset(held)
+        if env.get("abstained") is True or str(env.get("badge") or "") == "ABSTAIN":
+            # The door's own reason, under the Yes wording. Some abstains carry
+            # it only as their first assumption.
+            reason = _envelope_reason(env)
+            if reason == "unspecified":
+                noted = [str(a).strip() for a in env.get("assumptions") or [] if str(a).strip()]
+                reason = noted[0] if noted else "not_answered"
+            return abstain(reason)
+        # The door may serve only the statement the user confirmed, and only
+        # from Cortex. The trace goes back as it was for the caller's audit row.
+        trace = executed_trace.take()
+        executed_trace.begin()
+        for statement, count in trace.statements:
+            executed_trace.record(statement, count)
+        for entry_id, seq in trace.ledger:
+            executed_trace.record_ledger(entry_id, seq)
+        ran = {statement.strip() for statement, _count in trace.statements}
+        if ran != {sql} or not trace.ledger:
+            return abstain("held_sql_not_served")
+        env["assumptions"] = [*(env.get("assumptions") or []), provenance]
+        env["reconfirm_accepted"] = True
+        env["provenance"] = provenance
+        route = env.get("served_route")
+        try:
+            grants: set[str] | None = set(self.grantable_tables(space_id=space_id))
+        except Exception:  # noqa: BLE001 - the answer stands; the example is not stored
+            grants = None
+        if grants is not None:
+            maybe_save_checked_sql(
+                question=question,
+                sql=sql,
+                space_id=space_id,
+                warehouse=self._warehouse,
+                grantable=grants,
+                dialect=self.dialect,
+                provenance=provenance,
+                served_route=route.strip() if isinstance(route, str) else "",
+                abstained=False,
+            )
+        return env
+
+    def _run_held_sql_demo(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """A Yes on held SQL in the demo Space. Unchanged by CONNECT-ASK-04 (clause 9).
+
+        Grant and read-only checks run again, then the statement runs on the
+        local demo warehouse. No non-demo Space reaches this.
+        """
         from datetime import UTC, datetime
 
         from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
@@ -1722,6 +1911,19 @@ class Executor:
         )
         if gap or why:
             return abstain(gap or why or "ungranted")
+        # TOTAL-GUARD-01: a Yes is not a proof either. Held SQL in the demo Space
+        # meets the same class rule as generated SQL before it runs. A non-demo
+        # Space re-enters the ask door (CONNECT-ASK-04), which runs it there.
+        repeat_why = repeated_input_reason(sql, self.dialect or SERVING_DIALECT)
+        if repeat_why:
+            return abstain(repeat_why)
+        # JOIN-HOLE-01: the demo Space's joins meet the demo pack's declared
+        # ontology, as on the ask doors.
+        join_why = no_ontology_join_reason(
+            sql, space_id=space_id, warehouse=self._warehouse, grantable=grantable
+        )
+        if join_why:
+            return abstain(join_why)
         warehouse = self._warehouse
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")
@@ -2112,6 +2314,7 @@ __all__ = [
     "warehouse_path",
     "serving_sync_state",
     "infer_contract",
+    "profile_space",
     "intersect_space_grants",
     "get_serving_engine",
     "hide_echo",

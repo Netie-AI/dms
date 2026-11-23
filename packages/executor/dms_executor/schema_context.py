@@ -184,6 +184,8 @@ _SPACE_INDEX: dict[str, dict[str, tuple[str, ...]]] = {}
 _SPACE_SAMPLES: dict[str, dict[str, tuple[str, ...]]] = {}
 _SPACE_CAPPED: dict[str, frozenset[str]] = {}
 _SPACE_FP: dict[str, str] = {}
+# True when the slot was built under the Space's own grants (the ask path).
+_SPACE_GRANTED: dict[str, bool] = {}
 _STOP = threading.Event()
 _WORKER_LOCK = threading.Lock()
 _WORKERS: list[threading.Thread] = []
@@ -219,10 +221,19 @@ def _remember_built(
     index: dict[str, tuple[str, ...]],
     samples: dict[str, tuple[str, ...]],
     capped: Collection[str] = (),
+    *,
+    granted: bool = True,
 ) -> None:
+    """Fill the Space's one slot. A prewarm built with no grants (ingest's
+    ``note_serving_source``) reads another catalog than the ask does, so it never
+    replaces a slot an ask-path build filled: whichever finished last used to win,
+    and the ask then found its index gone."""
     snap = {key: tuple(vals) for key, vals in index.items()}
     held = {key: tuple(vals) for key, vals in samples.items()}
     with _INDEX_LOCK:
+        if not granted and _SPACE_GRANTED.get(space_id):
+            return
+        _SPACE_GRANTED[space_id] = granted
         _SPACE_INDEX[space_id] = snap
         _SPACE_SAMPLES[space_id] = held
         _SPACE_CAPPED[space_id] = frozenset(capped)
@@ -235,6 +246,7 @@ def _forget_index(space_id: str) -> None:
         _SPACE_SAMPLES.pop(space_id, None)
         _SPACE_CAPPED.pop(space_id, None)
         _SPACE_FP.pop(space_id, None)
+        _SPACE_GRANTED.pop(space_id, None)
 
 
 def _space_fingerprint(space_id: str) -> str:
@@ -325,6 +337,16 @@ def _ident(name: str) -> bool:
 
 def _quote(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+def _quote_relation(name: str) -> str:
+    """A catalog dataset name as SQL: ``schema.table`` is two identifiers.
+
+    ``read_catalog`` only names identifiers, so a dot is always the schema
+    separator. Quoting the whole name as one identifier would read a table
+    literally called ``"bronze.orders"``, or a same-named table elsewhere.
+    """
+    return ".".join(_quote(part) for part in name.split("."))
 
 
 def _text(value: Any) -> str:
@@ -1247,7 +1269,7 @@ def _fk_if_present(col: ColumnFact, chosen_ids: set[tuple[str, str]]) -> ColumnF
     target = col.foreign_key
     if "." not in target:
         return col
-    table, _, name = target.partition(".")
+    table, _, name = target.rpartition(".")
     if (table, name) in chosen_ids:
         return col
     return replace(col, foreign_key="")
@@ -1912,7 +1934,7 @@ def build_schema_context(
     for ref, value, fuzzy, span_id, got in hint_rows:
         if not _cleared(value, got):
             continue
-        hint_table, hint_column = ref.split(".", 1)
+        hint_table, hint_column = ref.rsplit(".", 1)
         hint_out.append(HintFact(hint_table, hint_column, value, fuzzy, span_id))
 
     _remember_index(space_id, index)
@@ -2137,7 +2159,7 @@ def _bounded_read(
     tail = " ORDER BY 1" if distinct else ""
     try:
         rows = con.execute(
-            f"{head} {cell} FROM {_quote(table)} "
+            f"{head} {cell} FROM {_quote_relation(table)} "
             f"WHERE {_quote(column)} IS NOT NULL{tail} LIMIT {int(limit)}"
         ).fetchall()
     except Exception:  # noqa: BLE001
@@ -2158,7 +2180,7 @@ def _count_distinct(con: Any, table: str, column: str) -> int | None:
     try:
         row = con.execute(
             f"SELECT COUNT(DISTINCT CAST({_quote(column)} AS VARCHAR)) "
-            f"FROM {_quote(table)} WHERE {_quote(column)} IS NOT NULL"
+            f"FROM {_quote_relation(table)} WHERE {_quote(column)} IS NOT NULL"
         ).fetchone()
     except Exception:  # noqa: BLE001
         return None
@@ -2243,58 +2265,113 @@ def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[st
     return out
 
 
+# The serving engine's default schema. A bare granted name lives here.
+_DEFAULT_SCHEMA = "main"
+# Written by the bronze writer on every row: row lineage, not customer columns.
+_WRITER_COLUMNS = frozenset({"_src", "_ingest_id"})
+
+
+def _grants_by_schema(grantable: set[str] | None) -> dict[str, set[str] | None]:
+    """The schemas the granted names point at, each with its own grants.
+
+    A bare name is in the default schema. ``schema.table`` is in ``schema``.
+    Not filtering (``None``) reads the default schema, as before. A table is
+    judged only against the grants of its own schema: ``relation_gap`` lets a
+    bare ``orders`` resolve to a granted ``bronze.orders``, which is right for
+    SQL and wrong for a catalog row that is ``main.orders``.
+    """
+    if grantable is None:
+        return {_DEFAULT_SCHEMA: None}
+    out: dict[str, set[str] | None] = {}
+    for name in grantable:
+        schema, dot, table = str(name or "").strip().rpartition(".")
+        if not dot:
+            schema = _DEFAULT_SCHEMA
+        if not _ident(schema) or not _ident(table):
+            continue
+        held = out.setdefault(schema.lower(), set())
+        if held is not None:
+            held.add(table if schema.lower() == _DEFAULT_SCHEMA else f"{schema}.{table}")
+    return out
+
+
 def read_catalog(
     serving: Path | None,
     grantable: set[str] | None,
     dialect: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Names, types, keys, and row-count estimates. No table-body reads."""
+    """Names, types, keys, and row-count estimates. No table-body reads.
+
+    Reads the schemas the grants name and no other. A default-schema table
+    keeps its bare name. Any other table is named ``schema.table``, as its
+    grant names it, so two schemas never share a dataset or a fingerprint.
+    """
     named = _dialect(dialect)
     body: dict[str, Any] = {"datasets": [], "relationships": []}
     if named:
         body["dialect"] = named
     if serving is None or not Path(serving).is_file():
         return "", body
+    grants = _grants_by_schema(grantable)
+    schemas = sorted(grants)
+    if not schemas:
+        return "", body
+    marks = ", ".join("?" for _ in schemas)
     try:
         con = _open_serving(Path(serving))
     except Exception:  # noqa: BLE001
         return "", body
+
+    def _name(schema: Any, table: Any) -> str:
+        if str(schema).lower() == _DEFAULT_SCHEMA:
+            return str(table)
+        return f"{schema}.{table}"
+
     try:
         rows = con.execute(
-            "SELECT table_name, column_name, data_type "
-            "FROM information_schema.columns WHERE table_schema = 'main' "
-            "ORDER BY table_name, ordinal_position"
+            "SELECT table_schema, table_name, column_name, data_type "
+            f"FROM information_schema.columns WHERE lower(table_schema) IN ({marks}) "
+            "ORDER BY table_schema, table_name, ordinal_position",
+            schemas,
         ).fetchall()
         sizes: dict[str, int] = {}
         try:
-            for table_name, estimate in con.execute(
-                "SELECT table_name, estimated_size FROM duckdb_tables() "
-                "WHERE schema_name = 'main'"
+            for schema_name, table_name, estimate in con.execute(
+                "SELECT schema_name, table_name, estimated_size FROM duckdb_tables() "
+                f"WHERE lower(schema_name) IN ({marks})",
+                schemas,
             ).fetchall():
-                sizes[str(table_name)] = int(estimate or 0)
+                sizes[_name(schema_name, table_name)] = int(estimate or 0)
         except Exception:  # noqa: BLE001
             sizes = {}
         keys: dict[str, set[str]] = {}
         try:
             constraints = con.execute(
-                "SELECT table_name, constraint_type, constraint_column_names "
-                "FROM duckdb_constraints() WHERE schema_name = 'main'"
+                "SELECT schema_name, table_name, constraint_type, constraint_column_names "
+                f"FROM duckdb_constraints() WHERE lower(schema_name) IN ({marks})",
+                schemas,
             ).fetchall()
         except Exception:  # noqa: BLE001
             constraints = []
-        for table_name, kind, cols in constraints:
+        for schema_name, table_name, kind, cols in constraints:
             if _text(kind).upper() != "PRIMARY KEY":
                 continue
-            table = str(table_name)
+            table = _name(schema_name, table_name)
             keys.setdefault(table, set()).update(_constraint_names(cols))
         grouped: dict[str, list[dict[str, Any]]] = {}
         fp_rows: list[tuple[str, str, str]] = []
-        for table_name, column_name, data_type in rows:
-            table = str(table_name)
+        for schema_name, table_name, column_name, data_type in rows:
+            schema = str(schema_name)
             column_name_text = str(column_name)
-            if not _ident(table) or not _ident(column_name_text):
+            if not _ident(schema) or not _ident(str(table_name)):
                 continue
-            if _granted(table, grantable, dialect=named) is not None:
+            if not _ident(column_name_text):
+                continue
+            table = _name(schema, table_name)
+            in_default = schema.lower() == _DEFAULT_SCHEMA
+            if not in_default and column_name_text in _WRITER_COLUMNS:
+                continue
+            if _granted(table, grants.get(schema.lower(), set()), dialect=named) is not None:
                 continue
             data = str(data_type or "")
             fp_rows.append((table, column_name_text, data))
@@ -2437,7 +2514,9 @@ def build_space_index(
             "schema": plain,
         },
     )
-    _remember_built(space_id, fingerprint, values, samples, capped_keys)
+    _remember_built(
+        space_id, fingerprint, values, samples, capped_keys, granted=grantable is not None
+    )
     return ""
 
 

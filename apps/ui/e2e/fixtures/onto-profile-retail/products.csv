@@ -1,0 +1,26 @@
+product_id,product_name,unit_price,category
+P01,Product 01,11.75,paint
+P02,Product 02,13.00,garden
+P03,Product 03,14.25,lighting
+P04,Product 04,15.50,tools
+P05,Product 05,16.75,paint
+P06,Product 06,18.00,garden
+P07,Product 07,19.25,lighting
+P08,Product 08,20.50,tools
+P09,Product 09,21.75,paint
+P10,Product 10,23.00,garden
+P11,Product 11,24.25,lighting
+P12,Product 12,25.50,tools
+P13,Product 13,26.75,paint
+P14,Product 14,28.00,garden
+P15,Product 15,29.25,lighting
+P16,Product 16,30.50,tools
+P17,Product 17,31.75,paint
+P18,Product 18,33.00,garden
+P19,Product 19,34.25,lighting
+P20,Product 20,35.50,tools
+P21,Product 21,36.75,paint
+P22,Product 22,38.00,garden
+P23,Product 23,39.25,lighting
+P24,Product 24,40.50,tools
+P25,Product 25,41.75,paint
