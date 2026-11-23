@@ -7,7 +7,9 @@ from typing import Any
 
 import psycopg
 from cortex_client import compliance_gate
+from dms_core.control_plane.action_types import actions_enabled
 from dms_core.control_plane.proposals import (
+    ActionRequiresApply,
     ConflictError,
     StaleTokenError,
     confirm_proposal_version,
@@ -19,8 +21,12 @@ from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
+from dms_api.routes.actions import router as actions_router
 
 router = APIRouter(prefix="/v1/amend", tags=["amend"])
+# ACT-02 governed actions. Matches nothing unless DMS_ACTIONS=1, and is never in
+# the OpenAPI schema, so with the flag off this router is the one main ships.
+router.include_router(actions_router)
 
 #: What confirming a proposal actually does today.
 #:
@@ -131,6 +137,10 @@ def propose(
         client=cortex,
     )
     enforce(decision)
+    if actions_enabled() and body.diff.get("kind") == "action":
+        # An action diff is only written by /actions/proposals, checked against the
+        # code registry. One forged here would read as an action and skip every check.
+        raise HTTPException(status_code=422, detail="action_kind_reserved")
 
     diff = dict(body.diff)
     if body.summary:
@@ -236,5 +246,7 @@ def confirm(
             }
     except StaleTokenError as exc:
         raise HTTPException(status_code=409, detail="stale_token") from exc
+    except ActionRequiresApply as exc:
+        raise HTTPException(status_code=409, detail="action_requires_apply") from exc
     except ConflictError as exc:
         raise HTTPException(status_code=409, detail="conflict") from exc
