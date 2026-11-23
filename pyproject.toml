@@ -44,11 +44,25 @@ sources = [
   "pyodbc>=5.1",
   "PyMySQL>=1.1",
 ]
+# CCA-LLM: the ask-path recogniser (packages/executor/dms_executor/cca/proposer.py)
+# when DMS_CCA_PROPOSER=anthropic. Optional because the shipped default is the
+# word list, which needs no credential and no network. The swap scenario is the
+# one ports.py already states for model_provider: this adapter is one
+# implementation of ModelProviderPort's job, and CortexProposer in the same
+# module is the other, for when Cortex serves /v1/contract/classify and the key
+# lives there instead.
+llm = [
+  "anthropic>=1.0",
+]
 dev = [
   "pytest>=8.0",
   "mypy>=1.8",
   "ruff>=0.3",
   "import-linter>=2.0",
+  # Exercises the proposer's credential path: with the SDK absent the adapter
+  # fails on the import instead, and the test that matters - a missing key must
+  # refuse rather than quietly become the word list - never runs.
+  "anthropic>=1.0",
   # scripts/brief.py writes the pptx and tests/test_insights_brief.py reads it back.
   # Declared here rather than guarded with a skip: the deck read-back is the gate that
   # asserts the artifact the customer receives (R-0001), and a skipped test is a failing
