@@ -119,6 +119,7 @@ releases/                signed manifests (bytes live on GH Releases / Drive)
 ## Agent contract
 
 Read `CLAUDE.md` and `.cursorrules` before editing.
+Merge tiers (`tier:fast` / `tier:full`): see [CLAUDE.md](CLAUDE.md#merge-tiers).
 
 ## Docs
 
