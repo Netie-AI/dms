@@ -66,9 +66,6 @@ from cortex_client.models import (
 )
 
 CONTRACT_MAJOR = 1
-#: Reconfirm suggestion only. Smaller than freeroute complete()'s default 600
-#: so a forward of this field does not reserve the answer's token budget.
-SUGGESTION_MAX_TOKENS = 64
 
 # Not AskPayload wire fields. A sample list must not ride out beside masked.
 _SAMPLE_KEYS = frozenset({"values", "samples"})
@@ -302,13 +299,16 @@ class CortexClient:
             sql_feedback=sql_feedback,
         )
 
-    def complete(self, prompt: str, *, max_tokens: int = SUGGESTION_MAX_TOKENS) -> str:
+    def complete(self, prompt: str) -> str:
         """One generate completion for a suggested question. Not the answer ladder.
 
         A dead engine or a refused generate returns ``""``. Nothing is filled in.
         Skipped when this ask already used ``insights_call_cap`` generate posts,
         so the suggestion cannot take a call the answer still needs.
-        ``max_tokens`` is sent on this POST only.
+
+        The body is ``InsightsAskIn`` only. No ``max_tokens``: contract 1.9.0
+        does not declare it, and Cortex answers an undeclared field with 422
+        ``unknown_request_fields`` (WIRE-CONFORM-01, #276).
         """
         from cortex_client.compute import insights_call_cap, note_model_call, recorded_model_calls
 
@@ -323,7 +323,6 @@ class CortexClient:
                 generate=True,
                 api_key=self.api_key,
                 timeout=min(2.0, float(self.timeout)),
-                max_tokens=max_tokens,
             )
         except Exception:
             return ""
