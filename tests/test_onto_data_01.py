@@ -331,3 +331,27 @@ class _FakeCortex:
             audit_id="aud-onto-data",
             route="abstain",
         )
+
+
+def test_a_revoked_item_cannot_be_approved_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reported by the FDE track: approve() had no state check, so a revoked item
+    went straight back to approved and governed the next ask. No un-revoke path
+    is defined, so the refusal stands: 409 item_revoked, the item stays revoked,
+    and the next ask does not see it."""
+    monkeypatch.setenv("DMS_ONTO_FROM_DATA", "1")
+    _forbid_demo(monkeypatch)
+    _gate_allows(monkeypatch)
+    client = TestClient(create_app())
+    _install_compile(monkeypatch)
+    item_id = client.post("/v1/ontology/data/compile").json()["items"][0]["id"]
+    assert client.post(f"/v1/ontology/data/items/{item_id}/approve").status_code == 200
+    assert client.post(f"/v1/ontology/data/items/{item_id}/revoke").status_code == 200
+    again = client.post(f"/v1/ontology/data/items/{item_id}/approve")
+    assert again.status_code == 409, again.text
+    assert again.json()["detail"] == {"code": "item_revoked", "item_id": item_id}
+    store = ontology_data_store()
+    row = store.get_item(item_id)
+    assert row is not None and row.status == "revoked"
+    seen = _ask_ontologies(monkeypatch)
+    assert seen and "Customer" not in seen[0].objects
+    assert Ontology.from_store().objects == {}

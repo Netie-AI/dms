@@ -202,6 +202,11 @@ CONTROLS: tuple[str, ...] = ("B-026", "C-033", "D-037", "E-002", "E-017", "E-065
 # as the xfail list. The marker comes off because the assert now holds.
 LANE_OFF_HOLDS: tuple[str, ...] = ("B-049", "B-051", "E-067", "E-069")
 
+# Fixed by JOIN-HOLE-01 (#527): demo Spaces now meet rule 16 against the demo
+# pack's declared ontology, so these fan-out and NOT IN joins abstain. They
+# XPASSed under strict=True; the marker comes off, the same assert holds.
+FIXED_BY_DEMO_JOIN_RULE: tuple[str, ...] = ("A-013", "A-025", "D-005")
+
 _BY_FAMILY: dict[str, list[str]] = {
     "a": ["A-013", "A-021", "A-025"],
     "b": ["B-012", "B-026", "B-044", "B-045", "B-049", "B-051", "B-054", "B-057"],
@@ -257,6 +262,7 @@ def _wrong_params() -> list[Any]:
             marks=pytest.mark.xfail(strict=True, reason=f"{issue}: {diff}"),
         )
         for cid, (issue, diff) in WRONG.items()
+        if cid not in FIXED_BY_DEMO_JOIN_RULE
     ]
 
 
@@ -278,6 +284,20 @@ def test_gate_does_not_serve_confident_wrong_answer(
 
 @pytest.mark.parametrize("cid", LANE_OFF_HOLDS)
 def test_sheet_lane_off_is_not_a_confident_wrong_answer(
+    cid: str, served: dict[str, dict[str, Any]]
+) -> None:
+    rec = served[cid]
+    env = rec.get("envelope") or {}
+    verdict = rec["mechanical"]["verdict"]
+    assert verdict != "HARNESS_ERROR", rec["mechanical"]["reasons"]
+    assert verdict != "WRONG", (
+        f"served badge={env.get('badge')} route={env.get('route')}: "
+        f"{rec['mechanical']['reasons'][:2]}"
+    )
+
+
+@pytest.mark.parametrize("cid", FIXED_BY_DEMO_JOIN_RULE)
+def test_demo_join_rule_holds_where_the_gate_served_wrong(
     cid: str, served: dict[str, dict[str, Any]]
 ) -> None:
     rec = served[cid]
