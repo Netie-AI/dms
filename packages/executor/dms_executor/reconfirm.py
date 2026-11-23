@@ -306,25 +306,6 @@ def _existing_suggestion(env: dict[str, Any]) -> str:
     return ""
 
 
-def _call_complete(fn: Callable[..., Any], prompt: str) -> Any:
-    """Pass a small max_tokens when the completer accepts it. No canned text."""
-    import inspect
-
-    from cortex_client.client import SUGGESTION_MAX_TOKENS
-
-    accepts = False
-    try:
-        params = inspect.signature(fn).parameters
-        accepts = "max_tokens" in params or any(
-            item.kind is inspect.Parameter.VAR_KEYWORD for item in params.values()
-        )
-    except (TypeError, ValueError):
-        accepts = False
-    if accepts:
-        return fn(prompt, max_tokens=SUGGESTION_MAX_TOKENS)
-    return fn(prompt)
-
-
 def complete_with_model(cortex: Any, prompt: str) -> str:
     """One completion. Not ``compute_insights``: that is the answer ladder.
 
@@ -339,7 +320,7 @@ def complete_with_model(cortex: Any, prompt: str) -> str:
     if not callable(fn):
         return ""
     try:
-        return _text_from_payload(_call_complete(fn, prompt))
+        return _text_from_payload(fn(prompt))
     except Exception:
         return ""
 
