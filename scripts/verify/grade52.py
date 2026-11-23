@@ -86,6 +86,7 @@ import argparse
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -184,6 +185,27 @@ _RULE_STAMPS = {
     "oracle": "oracle",
 }
 _AI_STAMPS = frozenset({"generate_sql", "model_sql", "ai"})
+# Ladder rungs that serve model SQL. Cortex's plan+SQL ladder (cortex-contract
+# 1.5.0 ``plan_sql_rung``, copied verbatim into ``ladder_rung``): ``plan``,
+# ``error-fed-retry-<N>``, ``stronger-model``; its ``reconfirm`` is a refusal.
+# DMS's own ladder after a failed check: ``self_correct``, ``richer_context``,
+# ``stronger_tier``. Attribution only: no bucket changes, so GRADER_VERSION
+# stays.
+_LADDER_AI_RUNGS = frozenset(
+    {"plan", "stronger-model", "self_correct", "richer_context", "stronger_tier"}
+)
+_CORTEX_RETRY_RUNG = re.compile(r"^error-fed-retry-[1-9][0-9]*$")
+
+
+def _ai_stamp(text: str) -> bool:
+    """A model-SQL stamp: DMS's own, or a Cortex ladder rung that served."""
+    return (
+        text in _AI_STAMPS
+        or text in _LADDER_AI_RUNGS
+        or _CORTEX_RETRY_RUNG.match(text) is not None
+    )
+
+
 _RULE_PATHS = frozenset({"L0", "L1", "compile", "ladder", "oracle"})
 # OpenVault per-caller cap. The armed pacer stays under both. It does not raise them.
 _OV_REQ_PER_MIN = 20
@@ -688,7 +710,7 @@ def _field_claim(text: str, *, unknown_if_other: bool) -> str | None:
         return "compile"
     if text in _RULE_STAMPS:
         return _RULE_STAMPS[text]
-    if text in _AI_STAMPS:
+    if _ai_stamp(text):
         return "ai"
     if unknown_if_other:
         return "unknown"
@@ -776,7 +798,7 @@ def _stamped_path(env: Mapping[str, Any]) -> str:
     if model and not ontology:
         claims.append("ai")
     kinds = set(claims)
-    if kinds == {"ai"} and model and (origin in _AI_STAMPS or rung in _AI_STAMPS):
+    if kinds == {"ai"} and model and (_ai_stamp(origin) or _ai_stamp(rung)):
         return "ai"
     if len(kinds) == 1:
         only = next(iter(kinds))
@@ -851,6 +873,31 @@ def _model_call_count(env: Mapping[str, Any]) -> int:
 def _pin_mismatch(requested: str, served: str) -> bool:
     """True when both sides are set and they differ. A missing request is not a mismatch."""
     return bool(requested) and bool(served) and requested != served
+
+
+# SERVED-ATTR-01 (#305): the capture names where ``model_requested`` came from.
+# Only Cortex's own route stamp counts; a capture without this marker carried
+# the DMS pin constant, which never left DMS.
+REQUESTED_FROM_CORTEX_STAMP = "cortex_stamp"
+
+
+def _no_model_request(calls: Any, path: Any) -> bool:
+    """A case that made no Insights call, or served L1, carries no requested model."""
+    if isinstance(calls, bool) or not isinstance(calls, int):
+        return True
+    return calls < 1 or path == "L1"
+
+
+def _block_requested(block: Mapping[str, Any]) -> str | None:
+    """``model_requested`` for one case: Cortex's stamp from the capture, else None.
+
+    An older capture without the source marker is unknown, never the DMS pin.
+    """
+    if block.get("model_requested_source") != REQUESTED_FROM_CORTEX_STAMP:
+        return None
+    if _no_model_request(block.get("insights_calls"), block.get("serve_path")):
+        return None
+    return _stamp_text(block, "model_requested") or None
 
 
 def grade_case(
@@ -1293,13 +1340,11 @@ def grade_envelopes(
             row["id"] = qid
             row["pack_gold_served"] = qid in flagged
             block = served_by_id.get(qid) or {}
-            row["model_requested"] = _stamp_text(block, "model_requested") or _stamp_text(
-                env, "model_requested"
-            )
+            row["model_requested"] = _block_requested(block)
             row["served_model"] = _stamp_text(block, "served_model") or _stamp_text(
                 env, "served_model"
             )
-            row["pin_mismatch"] = _pin_mismatch(row["model_requested"], row["served_model"])
+            row["pin_mismatch"] = _pin_mismatch(row["model_requested"] or "", row["served_model"])
             cases.append(row)
     finally:
         con.close()
@@ -2237,16 +2282,34 @@ def _model_reported(payload: Mapping[str, Any]) -> bool:
     )
 
 
-def _served_block(
-    env: Mapping[str, Any],
-    payloads: Sequence[Any],
-    *,
-    model_requested: str = "",
-) -> dict[str, Any]:
-    """Per question: served route, model SQL, rows, answer text, Insights reason."""
+def cortex_requested(payload: Mapping[str, Any]) -> str | None:
+    """The model id Cortex asked OpenVault for on one Insights call, or None.
+
+    Read from Cortex's FreeRoute stamp on ``generative.stamp``: ``model_requested``
+    (strict pin) else ``requested``. DMS strips ``model`` from the Insights
+    body, so the DMS pin constant is never this value.
+    """
+    gen = payload.get("generative")
+    stamp = gen.get("stamp") if isinstance(gen, Mapping) else None
+    if not isinstance(stamp, Mapping):
+        return None
+    for key in ("model_requested", "requested"):
+        raw = stamp.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, Any]:
+    """Per question: served route, model SQL, rows, answer text, Insights reason.
+
+    ``model_requested`` is Cortex's stamp for the call whose SQL was kept, else
+    the last stamped call. None with no call, no stamp, or an L1 serve.
+    """
     from cortex_client.compute import insights_fail_reason, insights_query_sql
 
     model_sql: str | None = None
+    requested: str | None = None
     fail: str | None = None
     calls = 0
     reported = False
@@ -2255,20 +2318,28 @@ def _served_block(
             continue
         calls += 1
         reported = reported or _model_reported(payload)
+        asked = cortex_requested(payload)
         sql = str(payload.get("query_sql") or "").strip() or insights_query_sql(payload)
         if sql:
             model_sql = sql
+            requested = asked
+        elif model_sql is None:
+            requested = asked or requested
         fail = fail or insights_fail_reason(payload)
     rows = env.get("rows")
+    path = serve_path(env, model_sql)
+    if _no_model_request(calls, path):
+        requested = None
     return {
         "route": served_route(env, model_sql),
-        "serve_path": serve_path(env, model_sql),
+        "serve_path": path,
         "model_sql": model_sql,
         "sql_used": env.get("sql_used"),
         "row_count": len(rows) if isinstance(rows, list) else None,
         "text": env.get("text"),
         "served_model": env.get("served_model"),
-        "model_requested": model_requested,
+        "model_requested": requested,
+        "model_requested_source": REQUESTED_FROM_CORTEX_STAMP if requested else None,
         "insights_calls": calls,
         "model_reported": reported,
         "insights_fail": fail,
@@ -2424,9 +2495,6 @@ def _armed_ask(
     app.dependency_overrides[get_settings] = lambda: settings
     client = TestClient(app)
     records: list[dict[str, Any]] = []
-    from cortex_client.strict_pin import pin_config
-
-    requested_model = pin_config().model
     pacer = _ArmedPacer()
     original_request = _install_pacer(pacer)
     try:
@@ -2452,9 +2520,7 @@ def _armed_ask(
             record = {
                 "id": qid,
                 "env": env,
-                "served": _served_block(
-                    env, cortex.payloads, model_requested=requested_model
-                ),
+                "served": _served_block(env, cortex.payloads),
             }
             why = armed_violation(record, stub)
             if why:
@@ -3281,6 +3347,26 @@ def self_test() -> dict[str, str]:
         raise SystemExit("self-test: ontology_ranking with a model was not rule/compile")
     if serve_path({"ladder_rung": "ontology_compile", "served_model": "some-model"}) != "compile":
         raise SystemExit("self-test: ontology_compile with a model was not compile")
+    for rung in (
+        "plan",
+        "error-fed-retry-1",
+        "error-fed-retry-12",
+        "stronger-model",
+        "self_correct",
+        "richer_context",
+        "stronger_tier",
+    ):
+        cortex = {"badge": "L2_VALIDATED", "ladder_rung": rung, "served_model": "some-model"}
+        if serve_path(cortex) != "ai":
+            raise SystemExit(f"self-test: Cortex rung {rung} with a model was not AI")
+        if serve_path({"ladder_rung": rung, "served_model": ""}) != "unattributed":
+            raise SystemExit(f"self-test: Cortex rung {rung} without a model was attributed")
+        mixed = {"badge": "L1_GOVERNED_METRIC", "ladder_rung": rung, "served_model": "m"}
+        if serve_path(mixed) != "unattributed":
+            raise SystemExit(f"self-test: a rule badge beside rung {rung} was not unattributed")
+    for rung in ("reconfirm", "error-fed-retry-0", "error-fed-retry-x", "planned"):
+        if serve_path({"ladder_rung": rung, "served_model": "some-model"}) != "unattributed":
+            raise SystemExit(f"self-test: rung {rung} was called AI")
     model_answer = {
         "badge": "L2_VALIDATED",
         "plan_origin": "generate_sql",
