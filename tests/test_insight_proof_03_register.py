@@ -996,7 +996,14 @@ _OPAQUE_HEADLINE = "2 of 4 Territory.zone values (NORTH, SOUTH) carry 86.4 pct o
 _OPAQUE_LABELS = ("NORTH", "SOUTH", "86.4")
 
 
-@pytest.mark.parametrize("kind", sorted(_OPAQUE_VIEWS))
+# The macro case is covered by its own test below: since INS-PROOF-01 verify round
+# 10 (#485), main refuses the whole run on a warehouse that holds a user macro
+# (user_macro_present), so a macro-backed view is never served, pinned or
+# previewed, and the pre-mark control step this test runs cannot apply to it.
+_TABLE_FUNCTION_KINDS = [k for k in sorted(_OPAQUE_VIEWS) if k != "macro"]
+
+
+@pytest.mark.parametrize("kind", _TABLE_FUNCTION_KINDS)
 def test_a_view_over_a_table_function_never_shows_marked_values_in_the_pin_lifecycle(
     flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
@@ -1067,6 +1074,79 @@ def test_a_view_over_a_table_function_never_shows_marked_values_in_the_pin_lifec
     new_submits = w.cortex.submits[len(before):]
     assert not any("territory" in str(s).casefold() or "sales.tv" in str(s).casefold()
                    for s in new_submits)
+
+
+def test_a_view_over_a_macro_never_shows_marked_values_in_the_pin_lifecycle(
+    flag_on: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 8, macro case, under main's round 10 rule: a user macro refuses the whole
+    run (user_macro_present). A pin made before the macro existed, and a token
+    previewed before it, must still never show the marked values once the view reads
+    the macro and the column is marked PII."""
+    wh = _seed_sales(tmp_path / "lake_macro.duckdb")
+    _update(wh, "CREATE VIEW Sales.TV AS SELECT territory_id, upper(name) AS zone "
+                "FROM Sales.Territory")
+    w = _build(monkeypatch, wh, approved_store=True,
+               grants={**_B_GRANTS, "Sales.TV": "TRUE"})
+    for it in w.onto.approved:
+        if it["id"] == "item_obj_territory":
+            it["payload"]["relation"] = "Sales.TV"
+            it["payload"]["attributes"] = ["territory_id", "zone"]
+
+    # Control, before the macro and the mark: an ordinary pinnable insight.
+    iid = _insight_id(w, _OPAQUE_HEADLINE)
+    pre = w.preview(iid)
+    assert pre.status_code == 200, pre.text
+    assert pre.json()["envelope"]["text"] == _OPAQUE_HEADLINE
+    got = w.confirm(pre.json()["token"])
+    assert got.status_code == 200, got.text
+    asset_id = str(got.json()["asset_id"])
+    assert w.pins().json()["pins"][0]["headline"] == _OPAQUE_HEADLINE
+    late = w.preview(iid)  # a second token, previewed before the macro and the mark
+    assert late.status_code == 200, late.text
+
+    # The view now reads a user macro, and the column it reads is marked PII.
+    _update(wh, "CREATE MACRO tm() AS TABLE SELECT territory_id, upper(name) AS zone "
+                "FROM Sales.Territory")
+    _update(wh, "CREATE OR REPLACE VIEW Sales.TV AS SELECT territory_id, zone FROM tm()")
+    w.onto.approved.append(_pii_item())  # Sales.Territory.name, which the macro reads
+    before = list(w.cortex.submits)
+    pinned_before = len(w.cortex.events("insight.pinned"))
+
+    # /run: refused as a whole, nothing over the view is served.
+    ran = w.run()
+    assert ran.status_code == 200, ran.text
+    body = ran.json()
+    assert body["insights"] == []
+    codes = {r.get("candidate"): r.get("code") for r in body.get("refused", [])}
+    assert codes == {"warehouse": "user_macro_present"}
+
+    # Confirm with the token minted before the macro and the mark: nothing new is pinned.
+    late_confirm = w.confirm(late.json()["token"])
+    assert late_confirm.status_code != 200, late_confirm.text
+    assert len(w.cortex.events("insight.pinned")) == pinned_before
+
+    # Replay: ABSTAIN, no values, zero submits.
+    res = w.replay(asset_id)
+    assert res.status_code == 200, res.text
+    env = res.json()["envelope"]
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["values"] == [] and env["rows"] == [] and env["sql_used"] is None
+    assert_envelope_valid(env)
+    assert res.json()["verdict"] == "definition_changed"
+
+    # GET /pins: listed, headline withheld.
+    listed = w.pins()
+    pins = listed.json()["pins"]
+    assert len(pins) == 1 and pins[0]["asset_id"] == asset_id
+    assert pins[0]["headline"] is None and pins[0]["headline_withheld"]
+
+    for text in (ran.text, late_confirm.text, res.text, listed.text):
+        for label in _OPAQUE_LABELS:
+            assert label not in text
+    new_submits = w.cortex.submits[len(before):]
+    assert not any("territory" in str(x).casefold() or "sales.tv" in str(x).casefold()
+                   for x in new_submits)
 
 
 # INS-PROOF-01 verify round 9 (MEDIUM): DuckDB renames the second of two equal
