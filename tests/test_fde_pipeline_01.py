@@ -88,3 +88,12 @@ def test_tenant_file_refuses_inline_password(tmp_path: Path) -> None:
     p.write_text("tenant: x\nsource: {kind: postgresql, database: d, password: hunter2}\n")
     with pytest.raises(SystemExit, match="password_env"):
         fp.TenantSpec.load(p)
+
+
+def test_ungraded_dms_questions_fail_the_run() -> None:
+    tally = {"CORRECT": 3, "WRONG": 0, "ABSTAIN": 1, "RECONFIRM": 0, "ERROR": 2}
+    ev = {"fidelity": {"gold_ok": 4, "mismatch": 0, "ids": []}, "dms": {"tally": tally}}
+    assert fp.eval_failures(ev, expect_keys=False) == ["DMS ERROR=2 (not graded)"]
+    rep = {"tenant": "x", "engine": "mysql", "status": "OK", "failures": ["e"], "eval": ev}
+    rep["eval"]["dms"]["answered"] = 3
+    assert "(+2 error)" in fp.fleet_markdown([rep])

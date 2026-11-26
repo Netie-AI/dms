@@ -699,6 +699,9 @@ def eval_failures(ev: dict[str, Any], *, expect_keys: bool) -> list[str]:
     dms = ev.get("dms") or {}
     if dms.get("tally", {}).get("WRONG"):
         fails.append(f"DMS WRONG={dms['tally']['WRONG']}")
+    if dms.get("tally", {}).get("ERROR"):
+        # No answer envelope came back, so the question was never graded.
+        fails.append(f"DMS ERROR={dms['tally']['ERROR']} (not graded)")
     return fails
 
 
@@ -836,6 +839,7 @@ def fleet_markdown(reports: list[dict[str, Any]]) -> str:
                 a=dms["tally"]["ABSTAIN"],
                 rc=dms["tally"]["RECONFIRM"],
             )
+            + (f" (+{dms['tally']['ERROR']} error)" if dms["tally"].get("ERROR") else "")
             if dms
             else "SKIPPED"
         )
