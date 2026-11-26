@@ -115,7 +115,6 @@ def mismatch_envelope(
         block["reason_code"] = REASON
         if definition:
             block["definition"] = definition
-    env["abstain_reason"] = REASON
     return env
 
 
