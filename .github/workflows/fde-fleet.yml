@@ -1,0 +1,162 @@
+name: FDE fleet
+
+# FDE-PIPELINE-01: the forward-deploy pipeline (scripts/fde/fde_pipeline.py) run on a
+# fleet of seeded tenants: connect, extract through dms_executor.db_connector with a
+# SELECT-only login, profile, ontology draft, generated question pack with gold,
+# fidelity and key checks, per-tenant and fleet reports. DMS answer accuracy needs a
+# live model and an OpenVault-issued key, so it runs from the box (--dms armed),
+# not here; FLEET.md says SKIPPED for it rather than a pass.
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "packages/executor/dms_executor/db_connector.py"
+      - "packages/executor/dms_executor/bronze.py"
+      - "scripts/fde/**"
+      - "scripts/verify/fde_scenarios.py"
+      - "tests/fde_scenarios/**"
+      - "tests/test_fde_pipeline_01.py"
+      - ".github/workflows/fde-fleet.yml"
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: "40 19 * * *" # 03:40 MYT: a fresh seed every night
+  workflow_dispatch:
+    inputs:
+      tenants:
+        description: "generated tenants for the offline fleet"
+        default: "200"
+
+concurrency:
+  group: fde-fleet-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev,sources]"
+      - name: Pipeline unit tests
+        run: python -m pytest tests/test_fde_pipeline_01.py -q
+      - name: Generated fleet (fixed seed, then this run's seed)
+        run: |
+          N="${{ github.event.inputs.tenants || '200' }}"
+          python scripts/fde/fde_pipeline.py factory --n "$N" --seed 7 --out work/t_fixed
+          python scripts/fde/fde_pipeline.py factory --n "$N" --seed "${{ github.run_number }}" --out work/t_run
+          python scripts/fde/fde_pipeline.py run --tenants work/t_fixed work/t_run --work work/run --workers 4 --expect-keys > work/run.log
+          head -n 4 work/run/FLEET.md >> "$GITHUB_STEP_SUMMARY"
+          sed -n '/^## Failures/,$p;/^No failures/p;/^Wall time/p' work/run/FLEET.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fde-fleet-offline
+          path: |
+            work/run/FLEET.md
+            work/run/fleet.json
+
+  open-engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-only-postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-only-mysql
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pci-only-mysql" --health-interval 5s --health-retries 30
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: ci-only-mariadb
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev,sources]"
+      - name: Read-only logins
+        run: |
+          RO="ro-$(openssl rand -hex 12)"; echo "::add-mask::$RO"; echo "FDE_RO_PASSWORD=$RO" >> "$GITHUB_ENV"
+          PGPASSWORD=ci-only-postgres psql -h 127.0.0.1 -U postgres -c "CREATE ROLE fde_ro LOGIN PASSWORD '$RO'"
+          python - <<PY
+          import pymysql
+          for port, pw in ((3306, "ci-only-mysql"), (3307, "ci-only-mariadb")):
+              con = pymysql.connect(host="127.0.0.1", port=port, user="root", password=pw, autocommit=True)
+              con.cursor().execute("CREATE USER 'fde_ro'@'%%' IDENTIFIED BY %s", ("$RO",))
+              con.close()
+          PY
+      - name: Factory (12 tenants per engine, plus 2 at 40x rows on PostgreSQL)
+        run: |
+          common="--n 12 --seed 7 --host 127.0.0.1 --read-user fde_ro --read-password-env FDE_RO_PASSWORD --grant-readonly fde_ro"
+          FDE_SOURCE_PASSWORD=ci-only-postgres python scripts/fde/fde_pipeline.py factory $common --engine postgresql --user postgres --out work/t_pg
+          FDE_SOURCE_PASSWORD=ci-only-mysql python scripts/fde/fde_pipeline.py factory $common --engine mysql --port 3306 --user root --out work/t_mysql
+          FDE_SOURCE_PASSWORD=ci-only-mariadb python scripts/fde/fde_pipeline.py factory $common --engine mysql --port 3307 --user root --out work/t_mariadb
+          FDE_SOURCE_PASSWORD=ci-only-postgres python scripts/fde/fde_pipeline.py factory --n 2 --seed 21 --rows-scale 40 --host 127.0.0.1 --read-user fde_ro --read-password-env FDE_RO_PASSWORD --grant-readonly fde_ro --engine postgresql --user postgres --out work/t_pg_scale
+          # MariaDB tenants share names with MySQL ones; keep their reports apart.
+          for f in work/t_mariadb/*.yaml; do sed -i 's/_mysql$/_mariadb/' "$f"; done
+      - name: Pipeline, SELECT-only login
+        run: |
+          python scripts/fde/fde_pipeline.py run --tenants work/t_mysql work/t_mariadb --work work/run_mysql --workers 4 --expect-keys > work/mysql.log
+          # PostgreSQL key reads for a SELECT-only login need FDE-PG-KEYS-01 (#545);
+          # until it lands the pipeline infers keys from the data and keys are not enforced.
+          python scripts/fde/fde_pipeline.py run --tenants work/t_pg work/t_pg_scale --work work/run_pg --workers 4 > work/pg.log
+          for d in run_mysql run_pg; do sed -n '/^| tenant/,$p' "work/$d/FLEET.md" >> "$GITHUB_STEP_SUMMARY"; echo >> "$GITHUB_STEP_SUMMARY"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fde-fleet-engines
+          path: |
+            work/run_*/FLEET.md
+            work/run_*/fleet.json
