@@ -118,7 +118,7 @@ def space_sources(space_id: str, store: SpaceStoreDep, settings: SettingsDep) ->
 class OntologySourceIn(BaseModel):
     """A source connection for a keys-only catalog read. Never stored, never echoed."""
 
-    kind: Literal["sqlserver", "mysql", "postgresql"]
+    kind: Literal["sqlserver", "mysql", "postgresql", "sqlite"]
     host: str
     database: str
     user: str
