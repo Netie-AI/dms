@@ -49,6 +49,7 @@ ABSTAIN_STAGES = frozenset(
         "generated",
         "generative",
         "governed_metric",
+        "insight_proof",
         "insights_budget",
         "openvault",
         "reconfirm_direct",
