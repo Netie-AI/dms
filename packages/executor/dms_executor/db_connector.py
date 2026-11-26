@@ -385,6 +385,42 @@ _FK_MYSQL = (
 )
 
 
+# PostgreSQL reads keys from pg_catalog, not INFORMATION_SCHEMA. The standard views
+# show a constraint only to a role that owns the table or holds a privilege other
+# than SELECT, so the SELECT-only login an extract should use read zero primary and
+# zero foreign keys (measured on PostgreSQL 17, FDE-PG-KEYS-01). pg_constraint has
+# no such filter; has_table_privilege keeps the answer to tables this login can
+# read, the same set list_source_tables returns. unnest(conkey, confkey) pairs each
+# child column with its parent column by position, so a composite key maps
+# column-for-column instead of by ORDINAL_POSITION of the parent's unique index.
+_PK_POSTGRES = (
+    "SELECT n.nspname, c.relname, a.attname, k.ord "
+    "FROM pg_catalog.pg_constraint con "
+    "JOIN pg_catalog.pg_class c ON c.oid = con.conrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+    "CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord) "
+    "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum "
+    "WHERE con.contype = 'p' AND has_table_privilege(c.oid, 'SELECT') "
+    "ORDER BY n.nspname, c.relname, k.ord"
+)
+_FK_POSTGRES = (
+    "SELECT con.conname, n.nspname, c.relname, a.attname, "
+    "       pn.nspname, pc.relname, pa.attname, k.ord "
+    "FROM pg_catalog.pg_constraint con "
+    "JOIN pg_catalog.pg_class c ON c.oid = con.conrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+    "JOIN pg_catalog.pg_class pc ON pc.oid = con.confrelid "
+    "JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace "
+    "CROSS JOIN LATERAL unnest(con.conkey, con.confkey) "
+    "  WITH ORDINALITY AS k(attnum, fattnum, ord) "
+    "JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum "
+    "JOIN pg_catalog.pg_attribute pa ON pa.attrelid = pc.oid AND pa.attnum = k.fattnum "
+    "WHERE con.contype = 'f' "
+    "  AND has_table_privilege(c.oid, 'SELECT') AND has_table_privilege(pc.oid, 'SELECT') "
+    "ORDER BY con.conname, n.nspname, c.relname, k.ord"
+)
+
+
 def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys:
     """Primary and foreign keys the source declares, from its own catalog.
 
@@ -395,10 +431,11 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
     params: tuple[Any, ...]
     if cfg.kind == "mysql":
         pk_sql, fk_sql, params = _PK_MYSQL, _FK_MYSQL, (cfg.database,)
+    elif cfg.kind == "postgresql":
+        # Not the MySQL TABLE_SCHEMA = database filter, and not INFORMATION_SCHEMA
+        # (blind to a SELECT-only login); see _PK_POSTGRES.
+        pk_sql, fk_sql, params = _PK_POSTGRES, _FK_POSTGRES, ()
     else:
-        # PostgreSQL INFORMATION_SCHEMA matches the SQL Server shape (constraint
-        # type PRIMARY KEY + REFERENTIAL_CONSTRAINTS). Do not reuse the MySQL
-        # TABLE_SCHEMA = database filter.
         pk_sql, fk_sql, params = _PK_SQLSERVER, _FK_SQLSERVER, ()
     skip = _SYSTEM_SCHEMAS[cfg.kind]
 

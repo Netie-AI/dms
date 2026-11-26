@@ -1,0 +1,174 @@
+name: FDE engines
+
+# FDE-SCENARIOS-01: load the five company packs into real source engines and pull
+# them back out through dms_executor.db_connector (extract-only) with a SELECT-only
+# login. Every gold answer must survive the landing unchanged. This measures the
+# connector, not DMS answer accuracy (that needs a live model; see
+# docs/fde/RUNBOOK.md and scripts/verify/fde_scenarios.py --live).
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "packages/executor/dms_executor/db_connector.py"
+      - "packages/executor/dms_executor/bronze.py"
+      - "scripts/verify/fde_scenarios.py"
+      - "scripts/fde/**"
+      - "tests/fde_scenarios/**"
+      - ".github/workflows/fde-engines.yml"
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: fde-engines-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  open-engines:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-only-postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-only-mysql
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pci-only-mysql" --health-interval 5s --health-retries 30
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: ci-only-mariadb
+        ports: ["3307:3306"]
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized" --health-interval 5s --health-retries 30
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev,sources]"
+      - name: Pack self-test (stack-free)
+        run: python scripts/verify/fde_scenarios.py --self-test
+      - name: Read-only logins
+        run: |
+          RO="ro-$(openssl rand -hex 12)"; echo "::add-mask::$RO"; echo "FDE_RO_PW=$RO" >> "$GITHUB_ENV"
+          PGPASSWORD=ci-only-postgres psql -h 127.0.0.1 -U postgres -c "CREATE ROLE fde_ro LOGIN PASSWORD '$RO'"
+          python - <<PY
+          import pymysql
+          for port, pw in ((3306, "ci-only-mysql"), (3307, "ci-only-mariadb")):
+              con = pymysql.connect(host="127.0.0.1", port=port, user="root", password=pw, autocommit=True)
+              con.cursor().execute("CREATE USER 'fde_ro'@'%%' IDENTIFIED BY %s", ("$RO",))
+              con.close()
+          PY
+      - name: Load (PostgreSQL 16, MySQL 8, MariaDB 11)
+        run: |
+          FDE_SOURCE_PASSWORD=ci-only-postgres python scripts/verify/fde_scenarios.py --load postgresql --user postgres --grant-readonly fde_ro
+          FDE_SOURCE_PASSWORD=ci-only-mysql python scripts/verify/fde_scenarios.py --load mysql --port 3306 --user root --grant-readonly fde_ro
+          FDE_SOURCE_PASSWORD=ci-only-mariadb python scripts/verify/fde_scenarios.py --load mysql --port 3307 --user root --grant-readonly fde_ro
+      - name: Extract fidelity, SELECT-only login
+        run: |
+          FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity mysql --port 3306 --user fde_ro --expect-keys
+          FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity mysql --port 3307 --user fde_ro --expect-keys
+          # PostgreSQL: answers must survive; key discovery for a SELECT-only login is
+          # not enforced on main (information_schema hides constraints from it).
+          # FDE-PG-KEYS-01 turns --expect-keys on here once it lands.
+          FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity postgresql --user fde_ro
+
+  sqlserver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Ci-only-Mssql-2026!"
+        ports: ["1433:1433"]
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: ODBC Driver 18
+        run: |
+          if ! odbcinst -q -d 2>/dev/null | grep -q "ODBC Driver 18 for SQL Server"; then
+            curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/$(lsb_release -rs)/prod $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/mssql-release.list
+            sudo apt-get update
+            sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+          fi
+          odbcinst -q -d
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev,sources]"
+      - name: Wait for SQL Server, create SELECT-only login
+        run: |
+          RO="Ro-$(openssl rand -hex 12)!"; echo "::add-mask::$RO"; echo "FDE_RO_PW=$RO" >> "$GITHUB_ENV"
+          python - <<PY
+          import time, pyodbc
+          cs = ("DRIVER={ODBC Driver 18 for SQL Server};SERVER=127.0.0.1,1433;DATABASE=master;"
+                "UID=sa;PWD={Ci-only-Mssql-2026!};Encrypt=no;TrustServerCertificate=yes;")
+          for i in range(60):
+              try:
+                  con = pyodbc.connect(cs, autocommit=True, timeout=5)
+                  break
+              except pyodbc.Error:
+                  time.sleep(3)
+          else:
+              raise SystemExit("SQL Server did not come up")
+          con.cursor().execute("CREATE LOGIN fde_ro WITH PASSWORD = '$RO', CHECK_POLICY = OFF")
+          PY
+      - name: Load (SQL Server 2022)
+        env:
+          FDE_SOURCE_PASSWORD: "Ci-only-Mssql-2026!"
+        run: python scripts/verify/fde_scenarios.py --load sqlserver --port 1433 --user sa --grant-readonly fde_ro
+      - name: Extract fidelity, SELECT-only login
+        run: FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity sqlserver --port 1433 --user fde_ro --expect-keys
+      - name: FDE pipeline fleet (6 generated tenants, SELECT-only login)
+        run: |
+          FDE_SOURCE_PASSWORD="Ci-only-Mssql-2026!" python scripts/fde/fde_pipeline.py factory --n 6 --seed 7 --engine sqlserver --host 127.0.0.1 --port 1433 --user sa --read-user fde_ro --read-password-env FDE_RO_PW --grant-readonly fde_ro --out work/t_mssql
+          python scripts/fde/fde_pipeline.py run --tenants work/t_mssql --work work/run_mssql --workers 3 --expect-keys > work/mssql.log
+          sed -n '/^| tenant/,$p' work/run_mssql/FLEET.md >> "$GITHUB_STEP_SUMMARY"

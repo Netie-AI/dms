@@ -1,0 +1,176 @@
+company: manufacturing
+title: Sinar Precision Components (discrete manufacturing)
+glossary:
+  scrap rate: "scrap_qty / (good_qty + scrap_qty) on production_runs"
+  unplanned downtime: "downtime_events whose reason has downtime_reasons.planned = 0"
+  remaining quantity: "work_orders.qty_planned minus good_qty already produced on that work order"
+questions:
+  - id: mf01_scrap_by_plant_q1
+    question: What was the scrap rate at each plant in Q1 2026? Show it as a percent with two decimals.
+    gold_sql: |
+      SELECT pl.name AS plant,
+             ROUND(100.0 * SUM(r.scrap_qty) / SUM(r.good_qty + r.scrap_qty), 2) AS scrap_rate_pct
+      FROM production_runs r
+      JOIN machines m ON m.machine_id = r.machine_id
+      JOIN plants pl ON pl.plant_id = m.plant_id
+      WHERE r.run_date BETWEEN DATE '2026-01-01' AND DATE '2026-03-31'
+      GROUP BY pl.name
+  - id: mf02_worst_unplanned_downtime_mar
+    question: Which machine lost the most hours to unplanned downtime in March 2026, and how many hours (1 decimal)?
+    ordered: true
+    gold_sql: |
+      SELECT m.machine_code,
+             ROUND(SUM(DATE_DIFF('minute', d.start_ts, d.end_ts)) / 60.0, 1) AS hours
+      FROM downtime_events d
+      JOIN downtime_reasons dr ON dr.reason_code = d.reason_code
+      JOIN machines m ON m.machine_id = d.machine_id
+      WHERE dr.planned = 0
+        AND d.start_ts >= TIMESTAMP '2026-03-01 00:00:00' AND d.start_ts < TIMESTAMP '2026-04-01 00:00:00'
+      GROUP BY m.machine_code
+      ORDER BY hours DESC
+      LIMIT 1
+  - id: mf03_good_units_by_family_2025
+    question: How many good units did we produce per product family in 2025?
+    gold_sql: |
+      SELECT p.family, SUM(r.good_qty) AS good_units
+      FROM production_runs r
+      JOIN work_orders w ON w.wo_id = r.wo_id
+      JOIN products p ON p.product_code = w.product_code
+      WHERE r.run_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY p.family
+  - id: mf04_on_time_completion_by_plant
+    question: For completed work orders, what percent finished on time at each plant? On time means the last production run was on or before the due date. Two decimals.
+    gold_sql: |
+      WITH last_run AS (
+        SELECT wo_id, MAX(run_date) AS last_date FROM production_runs GROUP BY wo_id
+      )
+      SELECT pl.name AS plant,
+             ROUND(100.0 * SUM(CASE WHEN lr.last_date <= w.due_date THEN 1 ELSE 0 END) / COUNT(*), 2) AS on_time_pct
+      FROM work_orders w
+      JOIN last_run lr ON lr.wo_id = w.wo_id
+      JOIN plants pl ON pl.plant_id = w.plant_id
+      WHERE w.status = 'completed'
+      GROUP BY pl.name
+  - id: mf05_component_requirements
+    question: To finish the remaining quantity on all in-progress work orders, how many units of each component do we still need? Top 10 components by units needed.
+    ordered: true
+    gold_sql: |
+      WITH made AS (
+        SELECT wo_id, SUM(good_qty) AS good FROM production_runs GROUP BY wo_id
+      ), remaining AS (
+        SELECT w.wo_id, w.product_code, w.qty_planned - COALESCE(m.good, 0) AS rem
+        FROM work_orders w LEFT JOIN made m ON m.wo_id = w.wo_id
+        WHERE w.status = 'in_progress'
+      )
+      SELECT b.component_code, SUM(r.rem * b.qty_per) AS units_needed
+      FROM remaining r JOIN bom b ON b.product_code = r.product_code
+      WHERE r.rem > 0
+      GROUP BY b.component_code
+      ORDER BY units_needed DESC, b.component_code
+      LIMIT 10
+  - id: mf06_material_cost_top5
+    question: Which 5 products have the highest standard material cost per unit based on the bill of materials?
+    ordered: true
+    gold_sql: |
+      SELECT b.product_code, ROUND(SUM(b.qty_per * c.unit_cost), 2) AS material_cost
+      FROM bom b JOIN components c ON c.component_code = b.component_code
+      GROUP BY b.product_code
+      ORDER BY material_cost DESC, b.product_code
+      LIMIT 5
+  - id: mf07_throughput_by_machine_type
+    question: Average good units per run hour by machine type, across all runs. One decimal.
+    gold_sql: |
+      SELECT m.machine_type,
+             ROUND(SUM(r.good_qty) / (SUM(r.run_minutes) / 60.0), 1) AS good_per_hour
+      FROM production_runs r JOIN machines m ON m.machine_id = r.machine_id
+      GROUP BY m.machine_type
+  - id: mf08_worst_shift_2025
+    question: Which shift had the highest scrap rate in 2025?
+    ordered: true
+    gold_sql: |
+      SELECT shift, ROUND(100.0 * SUM(scrap_qty) / SUM(good_qty + scrap_qty), 2) AS scrap_rate_pct
+      FROM production_runs
+      WHERE run_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY shift
+      ORDER BY scrap_rate_pct DESC
+      LIMIT 1
+  - id: mf09_cancelled_wo_by_plant_2025
+    question: How many work orders created in 2025 were cancelled, per plant?
+    gold_sql: |
+      SELECT pl.name AS plant, COUNT(*) AS cancelled
+      FROM work_orders w JOIN plants pl ON pl.plant_id = w.plant_id
+      WHERE w.status = 'cancelled' AND w.created_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY pl.name
+  - id: mf10_top_defects_2026
+    question: What are the top 3 defect types by number of defects found in inspections this year (2026)?
+    ordered: true
+    gold_sql: |
+      SELECT q.defect_type, SUM(q.defects_found) AS defects
+      FROM quality_inspections q JOIN production_runs r ON r.run_id = q.run_id
+      WHERE q.defect_type IS NOT NULL AND r.run_date >= DATE '2026-01-01'
+      GROUP BY q.defect_type
+      ORDER BY defects DESC, q.defect_type
+      LIMIT 3
+  - id: mf11_idle_machines_june
+    question: Which machines had no production runs at all in the first two weeks of May 2026 (1 to 14 May)?
+    gold_sql: |
+      SELECT m.machine_code FROM machines m
+      WHERE NOT EXISTS (
+        SELECT 1 FROM production_runs r WHERE r.machine_id = m.machine_id
+          AND r.run_date BETWEEN DATE '2026-05-01' AND DATE '2026-05-14')
+  - id: mf12_planned_vs_unplanned_h1
+    question: Planned versus unplanned downtime hours by plant for the first half of 2026 (1 decimal).
+    gold_sql: |
+      SELECT pl.name AS plant,
+             ROUND(SUM(CASE WHEN dr.planned = 1 THEN DATE_DIFF('minute', d.start_ts, d.end_ts) ELSE 0 END) / 60.0, 1) AS planned_hours,
+             ROUND(SUM(CASE WHEN dr.planned = 0 THEN DATE_DIFF('minute', d.start_ts, d.end_ts) ELSE 0 END) / 60.0, 1) AS unplanned_hours
+      FROM downtime_events d
+      JOIN downtime_reasons dr ON dr.reason_code = d.reason_code
+      JOIN machines m ON m.machine_id = d.machine_id
+      JOIN plants pl ON pl.plant_id = m.plant_id
+      WHERE d.start_ts >= TIMESTAMP '2026-01-01 00:00:00' AND d.start_ts < TIMESTAMP '2026-07-01 00:00:00'
+      GROUP BY pl.name
+  - id: mf13_overproduced_wos
+    question: How many completed work orders produced more good units than planned, per plant?
+    gold_sql: |
+      SELECT pl.name AS plant, COUNT(*) AS overproduced
+      FROM work_orders w
+      JOIN (SELECT wo_id, SUM(good_qty) AS good FROM production_runs GROUP BY wo_id) m ON m.wo_id = w.wo_id
+      JOIN plants pl ON pl.plant_id = w.plant_id
+      WHERE w.status = 'completed' AND m.good > w.qty_planned
+      GROUP BY pl.name
+  - id: mf14_shah_alam_monthly_h1
+    question: Monthly good output at the Shah Alam plant for January through June 2026.
+    ordered: true
+    gold_sql: |
+      SELECT STRFTIME(r.run_date, '%Y-%m') AS month, SUM(r.good_qty) AS good_units
+      FROM production_runs r
+      JOIN machines m ON m.machine_id = r.machine_id
+      JOIN plants pl ON pl.plant_id = m.plant_id
+      WHERE pl.name = 'Shah Alam' AND r.run_date BETWEEN DATE '2026-01-01' AND DATE '2026-06-30'
+      GROUP BY 1 ORDER BY 1
+  - id: mf15_breakdown_count_by_type
+    question: Count of breakdown events by machine type in 2025.
+    gold_sql: |
+      SELECT m.machine_type, COUNT(*) AS breakdowns
+      FROM downtime_events d JOIN machines m ON m.machine_id = d.machine_id
+      WHERE d.reason_code = 'BRK'
+        AND d.start_ts >= TIMESTAMP '2025-01-01 00:00:00' AND d.start_ts < TIMESTAMP '2026-01-01 00:00:00'
+      GROUP BY m.machine_type
+  - id: mf16_defect_rate_by_plant_2026
+    question: Inspection defect rate per plant in 2026, defects found per 100 inspected units, two decimals.
+    gold_sql: |
+      SELECT pl.name AS plant,
+             ROUND(100.0 * SUM(q.defects_found) / SUM(q.inspected_qty), 2) AS defects_per_100
+      FROM quality_inspections q
+      JOIN production_runs r ON r.run_id = q.run_id
+      JOIN machines m ON m.machine_id = r.machine_id
+      JOIN plants pl ON pl.plant_id = m.plant_id
+      WHERE r.run_date >= DATE '2026-01-01'
+      GROUP BY pl.name
+  - id: mf17_underperforming_line
+    question: Which line is underperforming?
+    expect: clarify
+  - id: mf18_vietnam_plant
+    question: What's the scrap rate at our Vietnam plant this year?
+    expect: refuse
