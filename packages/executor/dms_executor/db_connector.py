@@ -1,4 +1,5 @@
-"""Live source-database connector - SQL Server / Azure SQL (ODBC), MySQL, PostgreSQL.
+"""Live source-database connector - SQL Server / Azure SQL (ODBC), MySQL, PostgreSQL,
+and SQLite files (stdlib ``sqlite3``, read-only, only under ``DMS_SQLITE_SOURCE_ROOT``).
 
 Rows are pulled with the source's own driver and landed through
 ``write_bronze_rows``. Nothing here uses DuckDB's ``ATTACH``/``INSTALL``
@@ -17,6 +18,7 @@ asserts that on this file's source text.
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -33,7 +35,7 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 
-SourceKind = Literal["sqlserver", "mysql", "postgresql"]
+SourceKind = Literal["sqlserver", "mysql", "postgresql", "sqlite"]
 
 #: Ceiling on a single pull. ``write_bronze_rows`` materialises every row in
 #: memory before the INSERT, so an unbounded pull against a production table is
@@ -41,7 +43,17 @@ SourceKind = Literal["sqlserver", "mysql", "postgresql"]
 DEFAULT_MAX_ROWS = 500_000
 
 DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
-_DEFAULT_PORTS: dict[str, int] = {"sqlserver": 1433, "mysql": 3306, "postgresql": 5432}
+_DEFAULT_PORTS: dict[str, int] = {
+    "sqlserver": 1433,
+    "mysql": 3306,
+    "postgresql": 5432,
+    "sqlite": 0,
+}
+
+#: SQLite sources are files on the DMS host. Off unless this names a directory; a
+#: path outside it (after resolving symlinks and ``..``) is refused, so an API caller
+#: cannot point the connector at an arbitrary file (FDE-SQLITE-SOURCE-01).
+SQLITE_ROOT_ENV = "DMS_SQLITE_SOURCE_ROOT"
 
 
 class SourceConnectionError(RuntimeError):
@@ -76,6 +88,12 @@ class SourceConfig:
     def __post_init__(self) -> None:
         if self.kind not in _DEFAULT_PORTS:
             raise ValueError(f"unsupported source kind: {self.kind!r}")
+        if self.kind == "sqlite":
+            # database is the file path; host is not used. "#" would split the
+            # provenance string ``<describe>#<schema>.<table>`` in the wrong place.
+            if not self.database or "#" in self.database:
+                raise ValueError("database (the SQLite file path) is required")
+            return
         if not self.host or not self.database:
             raise ValueError("host and database are required")
 
@@ -85,6 +103,8 @@ class SourceConfig:
 
     def describe(self) -> str:
         """Credential-free provenance string, safe to store and display."""
+        if self.kind == "sqlite":
+            return f"sqlite:///{self.database.lstrip('/')}"
         return f"{self.kind}://{self.host}:{self.resolved_port}/{self.database}"
 
 
@@ -159,12 +179,14 @@ class SourceKeys:
         for pull in pulls:
             qualified = pull.source.split("#", 1)[1]
             schema, _, name = qualified.partition(".")
-            tables.append({
-                "schema": schema,
-                "table": name,
-                "path": pull.bronze_table,
-                "truncated": pull.truncated,
-            })
+            tables.append(
+                {
+                    "schema": schema,
+                    "table": name,
+                    "path": pull.bronze_table,
+                    "truncated": pull.truncated,
+                }
+            )
         return {
             "source": source,
             "tables": tables,
@@ -177,9 +199,7 @@ class SourceKeys:
                     "to_table": fk.to_table,
                     "to_column": fk.to_column,
                 }
-                for fk in sorted(
-                    self.foreign_keys, key=lambda f: (f.name, f.from_table, f.ordinal)
-                )
+                for fk in sorted(self.foreign_keys, key=lambda f: (f.name, f.from_table, f.ordinal))
             ],
         }
 
@@ -223,6 +243,43 @@ def _sqlserver_connection_string(cfg: SourceConfig) -> str:
         f"Connection Timeout={int(cfg.connect_timeout)}",
     ]
     return ";".join(parts) + ";"
+
+
+def sqlite_source_path(database: str) -> Path:
+    """The SQLite file for ``database``, inside ``DMS_SQLITE_SOURCE_ROOT``, or refuse."""
+    import os
+
+    root_raw = os.environ.get(SQLITE_ROOT_ENV, "").strip()
+    if not root_raw:
+        raise SourceConnectionError(
+            f"SQLite sources are off; set {SQLITE_ROOT_ENV} to the directory that holds them"
+        )
+    root = Path(root_raw).resolve()
+    candidate = Path(database)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    resolved = candidate.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise SourceConnectionError(f"SQLite file is outside {SQLITE_ROOT_ENV}")
+    if not resolved.is_file():
+        raise SourceConnectionError("SQLite file not found")
+    return resolved
+
+
+def _sqlite_connect(cfg: SourceConfig) -> Any:
+    """Read-only by URI (``mode=ro``): the connector never writes the customer's file."""
+    import sqlite3
+    from urllib.parse import quote
+
+    path = sqlite_source_path(cfg.database)
+    try:
+        con = sqlite3.connect(
+            f"file:{quote(str(path))}?mode=ro", uri=True, timeout=cfg.connect_timeout
+        )
+        con.execute("PRAGMA query_only = ON")
+    except Exception as exc:
+        raise SourceConnectionError(f"could not open {cfg.describe()}") from exc
+    return con
 
 
 @contextmanager
@@ -276,6 +333,8 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
             )
         except Exception as exc:
             raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+    elif cfg.kind == "sqlite":
+        con = _sqlite_connect(cfg)
     else:
         raise SourceConnectionError(f"unsupported source kind: {cfg.kind!r}")
     try:
@@ -291,6 +350,7 @@ _SYSTEM_SCHEMAS: dict[str, set[str]] = {
     "sqlserver": {"sys", "INFORMATION_SCHEMA", "guest", "db_owner", "db_accessadmin"},
     "mysql": {"mysql", "information_schema", "performance_schema", "sys"},
     "postgresql": {"pg_catalog", "information_schema", "pg_toast"},
+    "sqlite": {"temp"},
 }
 
 
@@ -308,13 +368,19 @@ def _run_query(con: Any, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, .
 
 def list_source_tables(cfg: SourceConfig, *, con: Any | None = None) -> list[SourceTable]:
     """Base tables this login can see, system schemas excluded."""
-    if cfg.kind == "mysql":
+    if cfg.kind == "sqlite":
+        sql = (
+            "SELECT 'main', name FROM sqlite_master "
+            "WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name"
+        )
+        params: tuple[Any, ...] = ()
+    elif cfg.kind == "mysql":
         sql = (
             "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
             "WHERE TABLE_TYPE = 'BASE TABLE' AND TABLE_SCHEMA = %s "
             "ORDER BY TABLE_SCHEMA, TABLE_NAME"
         )
-        params: tuple[Any, ...] = (cfg.database,)
+        params = (cfg.database,)
     else:
         # SQL Server and PostgreSQL: database is not a schema. MySQL's filter
         # TABLE_SCHEMA = database would find zero tables on bird_minidev/public.
@@ -421,6 +487,56 @@ _FK_POSTGRES = (
 )
 
 
+def _sqlite_keys(cfg: SourceConfig, con: Any) -> SourceKeys:
+    """PKs from ``pragma_table_info``, FKs from ``pragma_foreign_key_list``.
+
+    SQLite lets an FK omit the parent columns (``REFERENCES parent``), meaning the
+    parent's primary key; those are filled from the parent's PK by position.
+    """
+    tables = list_source_tables(cfg, con=con)
+    pks: dict[str, list[str]] = {}
+    for t in tables:
+        rows = _run_query(
+            con,
+            "SELECT name, pk FROM pragma_table_info(?) WHERE pk > 0 ORDER BY pk",
+            (t.name,),
+        )
+        if rows:
+            pks[t.qualified] = [str(r[0]) for r in rows]
+    known = {t.name.lower(): t for t in tables}
+    fks: list[ForeignKey] = []
+    for t in tables:
+        rows = _run_query(
+            con,
+            'SELECT id, seq, "table", "from", "to" FROM pragma_foreign_key_list(?) '
+            "ORDER BY id, seq",
+            (t.name,),
+        )
+        for fk_id, seq, parent, child_col, parent_col in rows:
+            target = known.get(str(parent).lower())
+            if target is None:
+                continue  # parent not visible: a claim we cannot name, so not made
+            if parent_col is None:
+                parent_pk = pks.get(target.qualified, [])
+                if int(seq) >= len(parent_pk):
+                    continue
+                parent_col = parent_pk[int(seq)]
+            fks.append(
+                ForeignKey(
+                    name=f"{t.name}_fk{fk_id}",
+                    from_table=t.qualified,
+                    from_column=str(child_col),
+                    to_table=target.qualified,
+                    to_column=str(parent_col),
+                    ordinal=int(seq) + 1,
+                )
+            )
+    return SourceKeys(
+        primary_keys={k: tuple(v) for k, v in pks.items()},
+        foreign_keys=tuple(fks),
+    )
+
+
 def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys:
     """Primary and foreign keys the source declares, from its own catalog.
 
@@ -428,6 +544,11 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
     invented; the database already says what identifies a row and what relates to
     what. These are handed to the ontology compiler as claims to be measured.
     """
+    if cfg.kind == "sqlite":
+        if con is not None:
+            return _sqlite_keys(cfg, con)
+        with connect(cfg) as opened:
+            return _sqlite_keys(cfg, opened)
     params: tuple[Any, ...]
     if cfg.kind == "mysql":
         pk_sql, fk_sql, params = _PK_MYSQL, _FK_MYSQL, (cfg.database,)
@@ -556,6 +677,8 @@ def list_source_column_types(
     not name exactly the fetched columns): the pull then lands untyped and the
     receipt says so. Declared, never inferred from the values.
     """
+    if cfg.kind == "sqlite":
+        return _sqlite_column_types(con, target, columns)
     placeholder = "?" if cfg.kind == "sqlserver" else "%s"
     try:
         rows = _run_query(
@@ -572,6 +695,36 @@ def list_source_column_types(
         prec = int(row[2]) if isinstance(row[2], int) else None
         scale = int(row[3]) if isinstance(row[3], int) else None
         out[row[0]] = (row[1], prec, scale)
+    if set(out) != set(columns):
+        return None
+    return out
+
+
+_SQLITE_DECL = re.compile(r"^\s*([A-Za-z][A-Za-z ]*?)\s*(?:\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\))?\s*$")
+
+
+def _sqlite_column_types(
+    con: Any, target: SourceTable, columns: list[str]
+) -> dict[str, tuple[str, int | None, int | None]] | None:
+    """Declared types from ``pragma_table_info``: ``NUMERIC(12,2)`` -> ("numeric", 12, 2).
+
+    A column declared with no type, or with one this cannot read, is left out, which
+    lands the pull untyped and says so. SQLite stores values by affinity, so the
+    bronze typing step still checks every value converts exactly before typing.
+    """
+    try:
+        rows = _run_query(con, "SELECT name, type FROM pragma_table_info(?)", (target.name,))
+    except Exception:  # noqa: BLE001 - an unreadable catalog is "undeclared"
+        return None
+    out: dict[str, tuple[str, int | None, int | None]] = {}
+    for name, decl in rows:
+        m = _SQLITE_DECL.match(str(decl or ""))
+        if not m:
+            return None
+        kind = " ".join(m.group(1).lower().split())
+        prec = int(m.group(2)) if m.group(2) else None
+        scale = int(m.group(3)) if m.group(3) else (0 if prec is not None else None)
+        out[str(name)] = (kind, prec, scale)
     if set(out) != set(columns):
         return None
     return out
@@ -688,8 +841,13 @@ def ingest_source_table(
     with connect(cfg) as con:
         target = _resolve(cfg, con, schema, table)
         return _pull_one(
-            cfg, con, target,
-            max_rows=max_rows, path=path, space_id=space_id, bronze_table=bronze_table,
+            cfg,
+            con,
+            target,
+            max_rows=max_rows,
+            path=path,
+            space_id=space_id,
+            bronze_table=bronze_table,
         )
 
 
@@ -753,9 +911,7 @@ def ingest_source_database(
             reserved[claim[0]] = (source, space_id)
             claims.append(claim)
         pulls = [
-            _pull_one(
-                cfg, con, t, max_rows=max_rows, path=path, space_id=space_id, claimed=claim
-            )
+            _pull_one(cfg, con, t, max_rows=max_rows, path=path, space_id=space_id, claimed=claim)
             for t, claim in zip(wanted, claims, strict=True)
         ]
     source = cfg.describe()
