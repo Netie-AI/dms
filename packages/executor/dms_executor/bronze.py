@@ -6,7 +6,8 @@ import hashlib
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -585,6 +586,71 @@ def ingest_csv_bytes(
     )
 
 
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _varchar_text(value: Any) -> str | None | bool:
+    """The text DuckDB's VARCHAR cast gives ``value`` on the executemany path.
+
+    Returns ``False`` for a value whose cast is not reproduced here exactly, so the
+    caller keeps the row-at-a-time path for that table (FDE-BULK-LAND-01). Covered
+    shapes were checked against DuckDB's own cast: str, int64, naive datetime,
+    date, finite plain-notation float and Decimal (``-0.00`` lands as ``0.00``).
+    """
+    if value is None:
+        return None
+    kind = type(value)
+    if kind is str:
+        return value
+    if kind is int:
+        return str(value) if _INT64_MIN <= value <= _INT64_MAX else False
+    if kind is datetime:
+        if value.tzinfo is not None:
+            return False
+        text = value.strftime("%Y-%m-%d %H:%M:%S")
+        if value.microsecond:
+            text += f".{value.microsecond:06d}".rstrip("0")
+        return text
+    if kind is date:
+        return value.isoformat()
+    if kind is float:
+        text = repr(value)
+        return False if ("e" in text or "n" in text) else text
+    if kind is Decimal:
+        if not value.is_finite():
+            return False
+        text = str(abs(value) if value.is_zero() else value)
+        return False if "E" in text else text
+    return False
+
+
+def _bulk_text_columns(rows: list[list[Any]], width: int) -> list[list[str | None]] | None:
+    """Column-major text for a columnar insert, or None to keep executemany."""
+    cols: list[list[str | None]] = [[] for _ in range(width)]
+    for row in rows:
+        if len(row) != width:
+            return None
+        for i, value in enumerate(row):
+            text = _varchar_text(value)
+            if text is False:
+                return None
+            cols[i].append(text)  # type: ignore[arg-type]
+    return cols
+
+
+def _insert_text_columns(con: Any, cols: list[list[str | None]], names: list[str]) -> None:
+    """One INSERT ... SELECT from an Arrow table. Row order is preserved, so the
+    ``row_number()`` provenance below numbers rows as the executemany path did."""
+    import pyarrow as pa
+
+    batch = pa.table({f"c{i}": pa.array(col, type=pa.string()) for i, col in enumerate(cols)})
+    con.register("_bronze_bulk", batch)
+    try:
+        con.execute("INSERT INTO _bronze_raw SELECT * FROM _bronze_bulk")
+    finally:
+        con.unregister("_bronze_bulk")
+
+
 def write_bronze_rows(
     *,
     table: str,
@@ -614,10 +680,14 @@ def write_bronze_rows(
         con.execute(f"DROP TABLE IF EXISTS {rel}")
         con.execute(f"CREATE TEMP TABLE _bronze_raw ({col_defs})")
         if rows:
-            con.executemany(
-                f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * len(columns))})",
-                rows,
-            )
+            text_cols = _bulk_text_columns(rows, len(columns))
+            if text_cols is not None:
+                _insert_text_columns(con, text_cols, columns)
+            else:
+                con.executemany(
+                    f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * len(columns))})",
+                    rows,
+                )
         con.execute(
             f"""
             CREATE TABLE {rel} AS
