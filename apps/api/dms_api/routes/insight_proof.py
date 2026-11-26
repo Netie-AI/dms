@@ -14,12 +14,19 @@ appends to the ledger, so no decision is a 503 and a deny is a 403
 The route never reads ``DMS_DEMO_FALLBACK`` or a demo pack, never returns a
 batch-level "complete", and passes every string it returns through
 ``redact_secrets``. It reaches the executor only through ``dms_api.wiring``.
+
+INS-PROOF-03 adds the steward pin routes under ``/pins``: preview, confirm (a
+single-use token), replay and revoke, plus the list. Every one calls the gate
+first and fails closed the same way, before any submit, ledger call or write.
+Who may confirm is F5's decision; there is no local policy (rule 8). Nothing is
+pinned, replayed or applied without a steward's request.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,7 +34,7 @@ from cortex_client import compliance_gate
 from cortex_client.insights import redact_secrets
 from dms_core.ask import ExecutedTrace
 from dms_core.control_plane.ask_audit import AskAuditRecord, AskAuditStorePort
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -250,3 +257,308 @@ def insight_proof_run(
         "scope": run.scope,
     }
     return JSONResponse(_redacted(jsonable_encoder(out), key))
+
+
+# --------------------------------------------------------------------------
+# INS-PROOF-03 - steward pins
+# --------------------------------------------------------------------------
+
+#: Closed: register refusal code -> HTTP status. Anything unlisted is a 409.
+PIN_STATUS: dict[str, int] = {
+    "insight_not_found": 404,
+    "pin_not_found": 404,
+    "confirm_token_unknown": 409,
+    "confirm_token_used": 409,
+    "confirm_token_expired": 410,
+    "stale_preview": 409,
+    "already_pinned": 409,
+    "measure_not_approved": 409,
+    "scored_write_blocked": 409,
+    "not_pinned": 409,
+    "ledger_append_failed": 503,
+    "ledger_receipt_invalid": 503,
+    "cortex_unavailable": 503,
+    "cortex_submit_failed": 503,
+    "ledger_receipt_unrecorded": 503,
+    "steward_identity_unset": 403,
+    "steward_identity_invalid": 403,
+    "pin_commit_failed": 500,
+    "pin_commit_unknown": 500,
+    "revoke_commit_failed": 500,
+    "revoke_commit_unknown": 500,
+}
+
+#: The shipped ``settings.dms_actor_user_id``. DR-0004 Option A names one
+#: configured steward; while the default stands, no steward is configured and a
+#: pin may not claim one approved it (ACT-02 refuses the same case).
+DEFAULT_ACTOR = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+
+
+def _is_shipped_default(actor: object) -> bool:
+    """Is ``actor`` the shipped default, in any spelling ``uuid.UUID`` accepts?
+
+    A string compare lets hyphenless, braced and ``urn:uuid:`` spellings of the
+    default through (the ACT-02 MEDIUM); compare the parsed UUIDs instead.
+    """
+    text = str(actor or "").strip()
+    if not text:
+        return True
+    try:
+        return uuid.UUID(text) == uuid.UUID(DEFAULT_ACTOR)
+    except ValueError:
+        return False
+
+
+def _steward_refusal(actor: object) -> JSONResponse | None:
+    """403 when no steward can be named on the ledger; None when one can.
+
+    Confirm, replay and revoke each append an entry whose actor is the
+    configured steward (DR-0004 Option A), so each refuses the shipped default
+    in every spelling (``steward_identity_unset``) and an actor that is not a
+    UUID, such as an email address (``steward_identity_invalid``, as ACT-02
+    refuses it), before the gate, the token or any submit or append.
+    """
+    if _is_shipped_default(actor):
+        return JSONResponse(
+            {"ok": False, "code": "steward_identity_unset",
+             "message": "No steward is configured (DMS_ACTOR_USER_ID is the shipped "
+                        "default), so no pin can say a steward approved it."},
+            status_code=403,
+        )
+    try:
+        uuid.UUID(str(actor).strip())
+    except ValueError:
+        return JSONResponse(
+            {"ok": False, "code": "steward_identity_invalid",
+             "message": "DMS_ACTOR_USER_ID is not a UUID, so it cannot name the steward "
+                        "on the ledger."},
+            status_code=403,
+        )
+    return None
+
+
+class PinPreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    space_id: str | None = None
+    insight_id: str = Field(pattern=r"^ins_[0-9a-f]{16}$")
+
+
+class PinConfirmIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=1, max_length=128)
+
+
+def _undecided(decision: Any, cortex: Any) -> JSONResponse | None:
+    """After ``compliance_gate``: no decision is a 503, a deny is a 403 (enforce)."""
+    if not decision.allowed:
+        if getattr(decision, "reason", None) in NO_DECISION_REASONS:
+            return _unavailable(
+                "compliance gate gave no decision; nothing was run",
+                getattr(cortex, "api_key", None),
+            )
+        enforce(decision, mutation=True)
+    return None
+
+
+def _pin_refusal(res: dict[str, Any], key: str | None) -> JSONResponse:
+    code = str(res.get("code") or "")
+    if code == "off":
+        # The flag was turned off after the app was built: behave as unmounted.
+        raise HTTPException(status_code=404, detail="Not Found")
+    body = {k: v for k, v in res.items() if k not in ("trace", "envelope")}
+    # A suffixed code (``ledger_receipt_invalid:repeated``) maps by its base.
+    status = PIN_STATUS.get(code, PIN_STATUS.get(code.split(":", 1)[0], 409))
+    return JSONResponse(_redacted(jsonable_encoder(body), key), status_code=status)
+
+
+def _f5_metadata(action: str, space_id: str | None) -> dict[str, Any]:
+    """The metadata every pin route sends with ``compliance_gate``, as ``/run`` does.
+
+    Each route names the one configured actor (DR-0004 Option A), the identity the
+    ledger append, ``approved_by`` and the audit row carry. ``compliance_gate``
+    puts only ``filled_template`` and ``actor`` on the wire, so the Space goes in
+    ``filled_template``, where F5 can scope the task by it.
+    """
+    return {"task_id": action, "space_id": space_id, "filled_template": {"space_id": space_id}}
+
+
+def _known_space(store: Any, space_id: str | None) -> None:
+    if space_id is not None and store.get(space_id) is None:
+        raise HTTPException(status_code=404, detail="space_not_found")
+
+
+@router.post("/pins/preview")
+def insight_proof_pin_preview(
+    body: PinPreviewIn,
+    settings: SettingsDep,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+) -> Any:
+    _known_space(store, body.space_id)
+    if cortex is None:
+        return _unavailable("Cortex client not configured", None)
+    key = getattr(cortex, "api_key", None)
+    decision = compliance_gate(
+        action="insight_proof.pin.preview",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.pin.preview", body.space_id),
+        client=cortex,
+    )
+    if (stop := _undecided(decision, cortex)) is not None:
+        return stop
+    take_executed(ask)
+    res = wiring.preview_pin(ask, space_id=body.space_id, insight_id=body.insight_id)
+    take_executed(ask)
+    if not res.get("ok"):
+        return _pin_refusal(res, key)
+    out = {k: res[k] for k in ("envelope", "proof", "token", "expires_at")}
+    return JSONResponse(_redacted(jsonable_encoder(out), key))
+
+
+@router.post("/pins/confirm")
+def insight_proof_pin_confirm(
+    body: PinConfirmIn,
+    settings: SettingsDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+    audit: AskAuditDep,
+) -> Any:
+    if cortex is None:
+        return _unavailable("Cortex client not configured", None)
+    key = getattr(cortex, "api_key", None)
+    if (stop := _steward_refusal(settings.dms_actor_user_id)) is not None:
+        # Before the gate and the token: nothing is spent, submitted or appended.
+        return stop
+    space_id = wiring.pin_owner_space(ask, token=body.token)
+    decision = compliance_gate(
+        action="insight_proof.pin.confirm",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.pin.confirm", space_id),
+        client=cortex,
+    )
+    if (stop := _undecided(decision, cortex)) is not None:
+        return stop
+    take_executed(ask)
+    asked_at = datetime.now(UTC)
+    res = wiring.confirm_pin(ask, cortex, token=body.token, actor=settings.dms_actor_user_id)
+    take_executed(ask)
+    if not res.get("ok"):
+        return _pin_refusal(res, key)
+    confirm = _ConfirmingStore(audit)
+    record_ask(
+        confirm,  # type: ignore[arg-type]
+        settings,
+        question="insight:" + str(res["insight_id"]),
+        space_id=space_id,
+        asked_at=asked_at,
+        envelope=res["envelope"],
+        executed=res["trace"],
+    )
+    out = {k: res[k] for k in ("asset_id", "insight_id", "approved_at", "approved_by",
+                               "expected_result_hash", "ledger_entry_id")}
+    # The pin and its ledger entry are committed; a dropped audit row is reported,
+    # never hidden (INS-PROOF-02 rule g, applied to the confirm).
+    out["audit_recorded"] = confirm.ok
+    if not confirm.ok:
+        logger.error("insight pin %s committed without its audit row", res["asset_id"])
+    return JSONResponse(_redacted(jsonable_encoder(out), key))
+
+
+@router.post("/pins/{asset_id}/replay")
+def insight_proof_pin_replay(
+    asset_id: str,
+    settings: SettingsDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+    audit: AskAuditDep,
+) -> Any:
+    if cortex is None:
+        return _unavailable("Cortex client not configured", None)
+    key = getattr(cortex, "api_key", None)
+    if (stop := _steward_refusal(settings.dms_actor_user_id)) is not None:
+        return stop
+    space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
+    decision = compliance_gate(
+        action="insight_proof.replay",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.replay", space_id),
+        client=cortex,
+    )
+    if (stop := _undecided(decision, cortex)) is not None:
+        return stop
+    take_executed(ask)
+    asked_at = datetime.now(UTC)
+    res = wiring.replay_pin(ask, cortex, asset_id, actor=settings.dms_actor_user_id)
+    take_executed(ask)
+    if not res.get("ok"):
+        return _pin_refusal(res, key)
+    confirm = _ConfirmingStore(audit)
+    record_ask(
+        confirm,  # type: ignore[arg-type]
+        settings,
+        question="insight:" + str(res["insight_id"]),
+        space_id=space_id,
+        asked_at=asked_at,
+        envelope=res["envelope"],
+        executed=res["trace"],
+    )
+    if not confirm.ok and res["envelope"].get("abstained") is False:
+        # (g) a served replay needs its row: no row, no figure; name the entry.
+        entry_id = str(res["envelope"].get("audit_id") or "")
+        res = wiring.demote_replay(res, "audit_unrecorded", orphan_ledger_entry=entry_id)
+    out = {k: res[k] for k in ("asset_id", "verdict", "envelope", "proof")}
+    if res.get("orphan_ledger_entry"):
+        out["orphan_ledger_entry"] = res["orphan_ledger_entry"]
+    return JSONResponse(_redacted(jsonable_encoder(out), key))
+
+
+@router.post("/pins/{asset_id}/revoke")
+def insight_proof_pin_revoke(
+    asset_id: str, settings: SettingsDep, cortex: CortexDep, ask: AskServiceDep
+) -> Any:
+    if cortex is None:
+        return _unavailable("Cortex client not configured", None)
+    key = getattr(cortex, "api_key", None)
+    if (stop := _steward_refusal(settings.dms_actor_user_id)) is not None:
+        return stop
+    space_id = wiring.pin_owner_space(ask, asset_id=asset_id)
+    decision = compliance_gate(
+        action="insight_proof.revoke",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.revoke", space_id),
+        client=cortex,
+    )
+    if (stop := _undecided(decision, cortex)) is not None:
+        return stop
+    res = wiring.revoke_pin(ask, cortex, asset_id, actor=settings.dms_actor_user_id)
+    if not res.get("ok"):
+        return _pin_refusal(res, key)
+    out = {k: res[k] for k in ("asset_id", "revoked_at", "revoke_ledger_entry_id")}
+    return JSONResponse(_redacted(jsonable_encoder(out), key))
+
+
+@router.get("/pins")
+def insight_proof_pins(
+    settings: SettingsDep,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+    space_id: str | None = Query(default=None),
+) -> Any:
+    _known_space(store, space_id)
+    if cortex is None:
+        return _unavailable("Cortex client not configured", None)
+    key = getattr(cortex, "api_key", None)
+    decision = compliance_gate(
+        action="insight_proof.pins.read",
+        actor=settings.dms_actor_user_id,
+        metadata=_f5_metadata("insight_proof.pins.read", space_id),
+        client=cortex,
+    )
+    if (stop := _undecided(decision, cortex)) is not None:
+        return stop
+    pins = wiring.list_pinned(ask, space_id=space_id)
+    return JSONResponse(_redacted(jsonable_encoder({"pins": pins}), key))
