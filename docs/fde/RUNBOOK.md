@@ -123,6 +123,24 @@ Not allowed: adding keyword or phrase rules, editing gold answers to match outpu
 
 ---
 
+## Automated path (FDE-PIPELINE-01, #549)
+
+Steps 1, 2 (structural draft), 5 and the report run as a single command. Use it first at every tenant, then do the human steps (3, 4, 6) on what it finds.
+
+```
+# tenant.yaml: tenant, source {kind, host, port, database, user, password_env}, optional glossary
+FDE_RO_PASSWORD=... python scripts/fde/fde_pipeline.py run --tenants tenant.yaml --work run/ --expect-keys
+# with the OpenVault-issued Cortex key on the box, ask every generated question on the real ask path:
+python scripts/fde/fde_pipeline.py run --tenants tenant.yaml --work run/ --dms armed
+```
+
+- `run/<tenant>/profile.json` holds types, nulls, distinct counts, key candidates and FK candidates. A source that declares no keys still gets entities and joins, marked `inferred` for the steward.
+- `ontology_draft.json` holds facts, dimensions, line tables, measures, time columns and joins. It is a starting point for step 3 and is never approved by the tool.
+- `pack.json` holds generated questions with gold from the landed copy, plus drop reasons and one refuse trap and one clarify trap. Add the customer's own questions to this in step 5.
+- `report.json` and `FLEET.md` carry the numbers for the handover. DMS shows SKIPPED until `--dms armed` runs, never a pass.
+
+At fleet scale, `factory` makes seeded tenants (8 domains x 4 naming styles, any row scale) on any engine. CI runs them on every connector change (`fde-fleet.yml`, `fde-engines.yml`).
+
 ## Per-tenant onboarding checklist
 
 - [ ] Engine and version confirmed supported (table in section 0)
