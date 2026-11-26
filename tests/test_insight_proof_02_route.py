@@ -632,7 +632,7 @@ def test_the_real_gate_puts_the_space_and_the_actor_on_the_wire(
     wire: list[dict[str, Any]] = []
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/dms/tasks/gate/check"
+        assert request.url.path == "/dms/tasks/choose"
         wire.append(json.loads(request.content))
         return httpx.Response(200, json={"status": "ok"})
 
@@ -655,6 +655,7 @@ def test_the_real_gate_puts_the_space_and_the_actor_on_the_wire(
     assert wire[0]["task_id"] == "insight_proof.run"
     assert wire[0]["filled_template"] == {"space_id": None}
     assert wire[0]["actor"] == _ACTOR
+    assert wire[0]["accepted"] is False
     assert _proven_by_text(res.json(), _HEADLINE_PART)
 
 
