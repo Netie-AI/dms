@@ -1,0 +1,380 @@
+{
+ "mf01_scrap_by_plant_q1": {
+  "columns": [
+   "plant",
+   "scrap_rate_pct"
+  ],
+  "rows": [
+   [
+    "Shah Alam",
+    3.46
+   ],
+   [
+    "Batam",
+    4.26
+   ],
+   [
+    "Penang",
+    4.0
+   ]
+  ]
+ },
+ "mf02_worst_unplanned_downtime_mar": {
+  "columns": [
+   "machine_code",
+   "hours"
+  ],
+  "rows": [
+   [
+    "SA-MOL-07",
+    13.3
+   ]
+  ]
+ },
+ "mf03_good_units_by_family_2025": {
+  "columns": [
+   "family",
+   "good_units"
+  ],
+  "rows": [
+   [
+    "Connectors",
+    109983
+   ],
+   [
+    "Brackets",
+    55998
+   ],
+   [
+    "Shafts",
+    138699
+   ],
+   [
+    "Housings",
+    175662
+   ]
+  ]
+ },
+ "mf04_on_time_completion_by_plant": {
+  "columns": [
+   "plant",
+   "on_time_pct"
+  ],
+  "rows": [
+   [
+    "Penang",
+    94.15
+   ],
+   [
+    "Shah Alam",
+    93.71
+   ],
+   [
+    "Batam",
+    96.94
+   ]
+  ]
+ },
+ "mf05_component_requirements": {
+  "columns": [
+   "component_code",
+   "units_needed"
+  ],
+  "rows": [
+   [
+    "C033",
+    16120
+   ],
+   [
+    "C039",
+    14105
+   ],
+   [
+    "C003",
+    11459
+   ],
+   [
+    "C026",
+    8060
+   ],
+   [
+    "C013",
+    7720
+   ],
+   [
+    "C031",
+    7300
+   ],
+   [
+    "C034",
+    5790
+   ],
+   [
+    "C021",
+    4744
+   ],
+   [
+    "C018",
+    4540
+   ],
+   [
+    "C004",
+    4200
+   ]
+  ]
+ },
+ "mf06_material_cost_top5": {
+  "columns": [
+   "product_code",
+   "material_cost"
+  ],
+  "rows": [
+   [
+    "P022",
+    481.31
+   ],
+   [
+    "P027",
+    413.91
+   ],
+   [
+    "P029",
+    393.3
+   ],
+   [
+    "P026",
+    391.78
+   ],
+   [
+    "P018",
+    359.43
+   ]
+  ]
+ },
+ "mf07_throughput_by_machine_type": {
+  "columns": [
+   "machine_type",
+   "good_per_hour"
+  ],
+  "rows": [
+   [
+    "Assembly Cell",
+    67.5
+   ],
+   [
+    "CNC Lathe",
+    65.0
+   ],
+   [
+    "Injection Molder",
+    66.5
+   ],
+   [
+    "Press",
+    68.1
+   ],
+   [
+    "CNC Mill",
+    63.5
+   ]
+  ]
+ },
+ "mf08_worst_shift_2025": {
+  "columns": [
+   "shift",
+   "scrap_rate_pct"
+  ],
+  "rows": [
+   [
+    "C",
+    4.27
+   ]
+  ]
+ },
+ "mf09_cancelled_wo_by_plant_2025": {
+  "columns": [
+   "plant",
+   "cancelled"
+  ],
+  "rows": [
+   [
+    "Penang",
+    9
+   ],
+   [
+    "Batam",
+    5
+   ],
+   [
+    "Shah Alam",
+    5
+   ]
+  ]
+ },
+ "mf10_top_defects_2026": {
+  "columns": [
+   "defect_type",
+   "defects"
+  ],
+  "rows": [
+   [
+    "Dimensional",
+    120
+   ],
+   [
+    "Scratch",
+    98
+   ],
+   [
+    "Crack",
+    83
+   ]
+  ]
+ },
+ "mf11_idle_machines_june": {
+  "columns": [
+   "machine_code"
+  ],
+  "rows": [
+   [
+    "BT-PRE-17"
+   ],
+   [
+    "BT-MOL-18"
+   ],
+   [
+    "BT-MOL-19"
+   ],
+   [
+    "BT-MOL-21"
+   ],
+   [
+    "BT-MOL-20"
+   ]
+  ]
+ },
+ "mf12_planned_vs_unplanned_h1": {
+  "columns": [
+   "plant",
+   "planned_hours",
+   "unplanned_hours"
+  ],
+  "rows": [
+   [
+    "Penang",
+    186.1,
+    203.3
+   ],
+   [
+    "Shah Alam",
+    217.7,
+    325.2
+   ],
+   [
+    "Batam",
+    150.8,
+    169.5
+   ]
+  ]
+ },
+ "mf13_overproduced_wos": {
+  "columns": [
+   "plant",
+   "overproduced"
+  ],
+  "rows": [
+   [
+    "Penang",
+    24
+   ],
+   [
+    "Shah Alam",
+    19
+   ],
+   [
+    "Batam",
+    17
+   ]
+  ]
+ },
+ "mf14_shah_alam_monthly_h1": {
+  "columns": [
+   "month",
+   "good_units"
+  ],
+  "rows": [
+   [
+    "2026-01",
+    16571
+   ],
+   [
+    "2026-02",
+    9013
+   ],
+   [
+    "2026-03",
+    22888
+   ],
+   [
+    "2026-04",
+    13177
+   ],
+   [
+    "2026-05",
+    9159
+   ],
+   [
+    "2026-06",
+    10419
+   ]
+  ]
+ },
+ "mf15_breakdown_count_by_type": {
+  "columns": [
+   "machine_type",
+   "breakdowns"
+  ],
+  "rows": [
+   [
+    "Press",
+    28
+   ],
+   [
+    "Injection Molder",
+    36
+   ],
+   [
+    "CNC Lathe",
+    40
+   ],
+   [
+    "CNC Mill",
+    29
+   ],
+   [
+    "Assembly Cell",
+    15
+   ]
+  ]
+ },
+ "mf16_defect_rate_by_plant_2026": {
+  "columns": [
+   "plant",
+   "defects_per_100"
+  ],
+  "rows": [
+   [
+    "Batam",
+    2.77
+   ],
+   [
+    "Shah Alam",
+    2.18
+   ],
+   [
+    "Penang",
+    2.36
+   ]
+  ]
+ }
+}

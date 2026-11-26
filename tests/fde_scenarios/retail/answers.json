@@ -1,0 +1,448 @@
+{
+ "rt01_active_skus_by_category": {
+  "columns": [
+   "category",
+   "active_skus"
+  ],
+  "rows": [
+   [
+    "Frozen",
+    12
+   ],
+   [
+    "Stationery",
+    12
+   ],
+   [
+    "Personal Care",
+    14
+   ],
+   [
+    "Beverages",
+    16
+   ],
+   [
+    "Household",
+    11
+   ],
+   [
+    "Baby",
+    15
+   ],
+   [
+    "Rice & Grains",
+    17
+   ],
+   [
+    "Snacks",
+    18
+   ]
+  ]
+ },
+ "rt02_stock_value_by_warehouse": {
+  "columns": [
+   "warehouse",
+   "stock_value"
+  ],
+  "rows": [
+   [
+    "Shah Alam DC",
+    1077271.92
+   ],
+   [
+    "Johor Bahru South",
+    1108820.73
+   ],
+   [
+    "Kuching East",
+    1249496.44
+   ],
+   [
+    "Kuala Lumpur Central",
+    1347787.72
+   ]
+  ]
+ },
+ "rt03_below_reorder": {
+  "columns": [
+   "sku",
+   "available"
+  ],
+  "rows": [
+   [
+    "RIC-1012",
+    150
+   ],
+   [
+    "BAB-1067",
+    196
+   ]
+  ]
+ },
+ "rt04_q1_revenue_by_warehouse": {
+  "columns": [
+   "warehouse",
+   "net_revenue"
+  ],
+  "rows": [
+   [
+    "Kuala Lumpur Central",
+    172363.59
+   ],
+   [
+    "Kuching East",
+    69752.35
+   ],
+   [
+    "Shah Alam DC",
+    246050.75
+   ],
+   [
+    "Johor Bahru South",
+    74567.26
+   ]
+  ]
+ },
+ "rt05_top5_units_2025": {
+  "columns": [
+   "sku",
+   "name",
+   "units"
+  ],
+  "rows": [
+   [
+    "STA-1089",
+    "Stationery item 89",
+    1584
+   ],
+   [
+    "FRO-1094",
+    "Frozen item 94",
+    1503
+   ],
+   [
+    "STA-1087",
+    "Stationery item 87",
+    1484
+   ],
+   [
+    "BEV-1111",
+    "Beverages item 111",
+    1477
+   ],
+   [
+    "BAB-1025",
+    "Baby item 25",
+    1454
+   ]
+  ]
+ },
+ "rt06_top_supplier_revenue_2025": {
+  "columns": [
+   "supplier",
+   "net_revenue"
+  ],
+  "rows": [
+   [
+    "Asia Personal",
+    371486.52
+   ]
+  ]
+ },
+ "rt07_po_lead_time_by_supplier": {
+  "columns": [
+   "supplier",
+   "avg_days"
+  ],
+  "rows": [
+   [
+    "Lion Supplies",
+    29.5
+   ],
+   [
+    "Selangor Mills",
+    22.1
+   ],
+   [
+    "Borneo Foods",
+    34.3
+   ],
+   [
+    "Pacific Home",
+    21.3
+   ],
+   [
+    "Delta Frozen",
+    15.8
+   ],
+   [
+    "Golden Rice Co",
+    33.4
+   ],
+   [
+    "Cebu Imports",
+    28.0
+   ],
+   [
+    "Kinder Asia",
+    42.7
+   ],
+   [
+    "Thai Snack Works",
+    23.1
+   ],
+   [
+    "Asia Personal",
+    43.4
+   ],
+   [
+    "Melaka Drinks",
+    41.8
+   ],
+   [
+    "Mega Paper",
+    22.5
+   ]
+  ]
+ },
+ "rt08_zero_stock_by_warehouse": {
+  "columns": [
+   "warehouse",
+   "zero_skus"
+  ],
+  "rows": [
+   [
+    "Kuala Lumpur Central",
+    8
+   ],
+   [
+    "Shah Alam DC",
+    4
+   ],
+   [
+    "Johor Bahru South",
+    5
+   ],
+   [
+    "Kuching East",
+    6
+   ]
+  ]
+ },
+ "rt09_fill_rate_2025": {
+  "columns": [
+   "fill_rate_pct"
+  ],
+  "rows": [
+   [
+    92.0
+   ]
+  ]
+ },
+ "rt10_wholesale_frequent": {
+  "columns": [
+   "name",
+   "orders"
+  ],
+  "rows": [
+   [
+    "Customer 129 Sdn Bhd",
+    8
+   ],
+   [
+    "Customer 035 Sdn Bhd",
+    7
+   ],
+   [
+    "Customer 001 Sdn Bhd",
+    7
+   ],
+   [
+    "Customer 193 Sdn Bhd",
+    7
+   ]
+  ]
+ },
+ "rt11_return_rate_by_category_2025": {
+  "columns": [
+   "category",
+   "return_rate_pct"
+  ],
+  "rows": [
+   [
+    "Personal Care",
+    4.68
+   ],
+   [
+    "Stationery",
+    4.81
+   ],
+   [
+    "Frozen",
+    5.98
+   ],
+   [
+    "Beverages",
+    4.79
+   ],
+   [
+    "Snacks",
+    5.78
+   ],
+   [
+    "Rice & Grains",
+    2.18
+   ],
+   [
+    "Baby",
+    3.5
+   ],
+   [
+    "Household",
+    5.72
+   ]
+  ]
+ },
+ "rt12_net_transfers_2026": {
+  "columns": [
+   "warehouse",
+   "net_units"
+  ],
+  "rows": [
+   [
+    "Kuala Lumpur Central",
+    -23
+   ],
+   [
+    "Kuching East",
+    -239
+   ],
+   [
+    "Johor Bahru South",
+    -119
+   ],
+   [
+    "Shah Alam DC",
+    381
+   ]
+  ]
+ },
+ "rt13_monthly_revenue_h1_2026": {
+  "columns": [
+   "month",
+   "net_revenue"
+  ],
+  "rows": [
+   [
+    "2026-01",
+    188475.21
+   ],
+   [
+    "2026-02",
+    175532.91
+   ],
+   [
+    "2026-03",
+    198725.82
+   ],
+   [
+    "2026-04",
+    195144.34
+   ],
+   [
+    "2026-05",
+    190010.7
+   ],
+   [
+    "2026-06",
+    156182.18
+   ]
+  ]
+ },
+ "rt14_dead_stock_share": {
+  "columns": [
+   "dead_stock_pct"
+  ],
+  "rows": [
+   [
+    10.97
+   ]
+  ]
+ },
+ "rt15_fullest_warehouse": {
+  "columns": [
+   "warehouse",
+   "utilisation_pct"
+  ],
+  "rows": [
+   [
+    "Kuching East",
+    80.83
+   ]
+  ]
+ },
+ "rt16_margin_by_category_2025": {
+  "columns": [
+   "category",
+   "gross_margin_pct"
+  ],
+  "rows": [
+   [
+    "Personal Care",
+    21.83
+   ],
+   [
+    "Stationery",
+    29.95
+   ],
+   [
+    "Frozen",
+    24.2
+   ],
+   [
+    "Beverages",
+    33.02
+   ],
+   [
+    "Snacks",
+    24.6
+   ],
+   [
+    "Rice & Grains",
+    24.38
+   ],
+   [
+    "Baby",
+    23.87
+   ],
+   [
+    "Household",
+    24.5
+   ]
+  ]
+ },
+ "rt17_open_po_units_by_warehouse": {
+  "columns": [
+   "warehouse",
+   "units_on_order"
+  ],
+  "rows": [
+   [
+    "Shah Alam DC",
+    4400
+   ],
+   [
+    "Johor Bahru South",
+    11600
+   ],
+   [
+    "Kuching East",
+    2900
+   ],
+   [
+    "Kuala Lumpur Central",
+    6600
+   ]
+  ]
+ }
+}
