@@ -213,8 +213,13 @@ def test_landing_walks_every_step_and_each_answer_equals_the_source(
         SCHOOLS: 4,
         ENROLL: 4,
     }
-    assert by_step["grants"].summary == "N/A on main" and by_step["grants"].na
-    assert "[N/A] grants: N/A on main" in list(fde_land.render(receipts))
+    # DMS_CONNECT_API is off in this rig: the probe gets 404 connect_api_disabled
+    # from the real route and the receipt names it. It is not a pass.
+    grants = by_step["grants"]
+    assert grants.na
+    assert grants.detail["probe_status"] == 404
+    assert grants.detail["probe_code"] == "connect_api_disabled"
+    assert "connect_api_disabled" in grants.summary
     onto = by_step["ontology"]
     assert onto.summary.startswith("3/3 objects verified, 1/2 links verified")
     assert f"unverified (no question uses them): {BROKEN_LINK}" in onto.summary
@@ -267,6 +272,106 @@ def _proposal() -> OntologyProposal:
         declared_fks=(),
         joins=(),
     )
+
+
+BEARER = "fde-bearer-never-echoed"
+
+
+def _connect_api_on(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """DMS_CONNECT_API on with a service bearer; the connect gate allows and is recorded."""
+    from cortex_client.gate import ComplianceDecision
+    from dms_core.control_plane import connect_grants
+
+    monkeypatch.setenv("DMS_CONNECT_API", "1")
+    monkeypatch.setenv("DMS_OV_SERVICE_TOKEN", BEARER)
+    connect_grants.reset()
+    gated: list[str] = []
+
+    def _allow(*, action: str, **_: Any) -> ComplianceDecision:
+        gated.append(action)
+        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+
+    monkeypatch.setattr("dms_api.routes.connect.compliance_gate", _allow)
+    return gated
+
+
+def _register(space_id: str, tables: list[str]) -> str:
+    from dms_core.control_plane import connect_grants
+
+    connect_grants.register_source(
+        source_id="src-fde",
+        space_id=space_id,
+        connector_id="fde-test",
+        exposed=tables,
+        actor="00000000-0000-4000-8000-00000000f0de",
+        token_id="test",
+    )
+    return "src-fde"
+
+
+def _source_tables(receipts: list[fde_land.Receipt]) -> list[str]:
+    return sorted(str(t["source"]).rsplit("#", 1)[-1] for t in receipts[0].detail["tables"])
+
+
+def test_grants_on_without_a_source_id_is_named_na_after_the_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    gated = _connect_api_on(monkeypatch)
+    _, receipts = _land(tmp_path, monkeypatch, minter)
+    grants = {r.step: r for r in receipts}["grants"]
+    assert grants.ok and grants.na
+    assert grants.detail["probe_status"] == 401
+    assert grants.detail["probe_code"] == "bearer_denied"
+    assert "registers no connect source" in grants.summary
+    assert gated == [], "the bearer-less probe must stop before the compliance gate"
+    assert receipts[-1].ok
+
+
+def test_grants_on_posts_the_landed_tables_on_the_named_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    from dms_core.control_plane import connect_grants
+
+    gated = _connect_api_on(monkeypatch)
+    rig = _setup(tmp_path, monkeypatch, minter)
+    # Learn the landed source names from a first pass, then register them.
+    first = fde_land.run_landing(rig.client, CFG, space_id=rig.space_id)
+    tables = _source_tables(first)
+    assert tables
+    source_id = _register(rig.space_id, tables)
+    receipts = fde_land.run_landing(
+        rig.client, CFG, space_id=rig.space_id, grant_source_id=source_id, bearer=BEARER
+    )
+    print("\n".join(fde_land.render(receipts)))
+    grants = {r.step: r for r in receipts}["grants"]
+    assert grants.ok and not grants.na
+    assert grants.detail["source_id"] == source_id
+    assert sorted(grants.detail["granted_tables"]) == tables
+    assert grants.summary == f"{len(tables)} tables granted on source {source_id}"
+    assert gated == ["connect.grant"]
+    assert receipts[-1].ok, "granting must not break the asks that follow"
+    granted = [r for r in connect_grants.audit_rows() if r["action"] == "grant"]
+    assert granted and sorted(granted[-1]["tables"]) == tables
+    blob = json.dumps([r.__dict__ for r in receipts], default=str)
+    assert BEARER not in blob and PASSWORD not in blob
+
+
+def test_grants_on_with_a_source_but_no_bearer_stops_named(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    _connect_api_on(monkeypatch)
+    _, receipts = _land(tmp_path, monkeypatch, minter, grant_source_id="src-fde")
+    assert _steps(receipts) == [("connect", True, None), ("grants", False, "grant_bearer_missing")]
+
+
+def test_grants_on_an_unknown_source_stops_with_the_api_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, minter: ManifestMinter
+) -> None:
+    _connect_api_on(monkeypatch)
+    _, receipts = _land(
+        tmp_path, monkeypatch, minter, grant_source_id="src-missing", bearer=BEARER
+    )
+    assert _steps(receipts) == [("connect", True, None), ("grants", False, "source_not_found")]
 
 
 def test_ao_proposal_stops_for_the_steward_until_approve(

@@ -5,7 +5,13 @@ SQL Server, MySQL or PostgreSQL source. It walks the path on main and prints a
 receipt per step. It stops at the first refusal and names it.
 
 1. connect   ``POST /v1/studio/sources/sql`` into a Space (created unless given)
-2. grants    no grant API on main: printed as ``N/A on main``, never invented
+2. grants    ``POST /v1/connect/sources/{id}/grants`` for the landed tables.
+             The API is probed first: 404 ``connect_api_disabled`` (``DMS_CONNECT_API``
+             off) prints N/A with that reason. When it is on, the landed tables are
+             granted on ``--grant-source-id`` (a source registered through
+             ``POST /v1/connect/sources``) with the bearer from ``FDE_DMS_BEARER``.
+             On without a source id, N/A names why: the SQL landing registers no
+             connect source. Any other answer stops the walk.
 3. ontology  ``GET /v1/spaces/{id}/ontology``: objects and links, verified or not
 4. diff      ``POST /v1/ontology/data/compile`` + ``GET /v1/ontology/data/diff``
 5. approve   ``POST /v1/ontology/data/items/{id}/approve``, only with ``--approve``
@@ -19,8 +25,9 @@ per verified object, and one grouped count over each verified many-to-one link
 (at most ``--max-groups``). An unverified link gets no question; its violation
 is on the ontology receipt.
 
-The source password is read from ``FDE_SOURCE_PASSWORD``, never from argv, and
-never printed. Exit 0 only when every step passed.
+The source password is read from ``FDE_SOURCE_PASSWORD`` and the DMS bearer from
+``FDE_DMS_BEARER``, never from argv, and neither is printed. Exit 0 only when
+every step passed.
 
     FDE_SOURCE_PASSWORD=... python scripts/verify/fde_land.py \\
         --dms-url https://dms.customer.internal --kind postgresql \\
@@ -306,16 +313,76 @@ def _connect(
     ), space_id
 
 
-def _grants() -> Receipt:
+_GRANT_PROBE = "fde-land-probe"
+
+
+def _grants(
+    client: Any,
+    landed: list[dict[str, Any]],
+    *,
+    source_id: str | None,
+    bearer: str | None,
+) -> Receipt:
+    """Grant the landed tables through the connect grant API, or name why not.
+
+    The probe sends no bearer, so the route stops at ``_enabled`` (404
+    ``connect_api_disabled``) or at ``_require_bearer`` (401 ``bearer_denied``)
+    before the compliance gate or the grant book is reached.
+    """
+    # The connect receipt names each source table as ``<dsn>#<schema>.<table>``;
+    # the grant book keys on the table name only.
+    tables = sorted({str(t["source"]).rsplit("#", 1)[-1] for t in landed if t.get("source")})
+    probe = client.post(
+        f"/v1/connect/sources/{source_id or _GRANT_PROBE}/grants", json={"tables": tables}
+    )
+    probed = _code(_detail(probe), f"http_{probe.status_code}")
+    if probe.status_code == 404 and probed == "connect_api_disabled":
+        return Receipt(
+            "grants",
+            True,
+            "N/A: connect_api_disabled (DMS_CONNECT_API is off on this DMS)",
+            {"probe_status": 404, "probe_code": probed, "tables": tables},
+            na=True,
+        )
+    if probe.status_code != 401:
+        raise _http_refusal("grants", probe, "grant_probe_unexpected")
+    if not source_id:
+        return Receipt(
+            "grants",
+            True,
+            "N/A: grant API is on, but the SQL landing registers no connect source",
+            {
+                "probe_status": 401,
+                "probe_code": probed,
+                "tables": tables,
+                "note": "register the source with POST /v1/connect/sources and pass "
+                "--grant-source-id (bearer in FDE_DMS_BEARER) to grant these tables",
+            },
+            na=True,
+        )
+    if not bearer:
+        raise _refuse(
+            "grants",
+            "grant_bearer_missing",
+            f"grant API is on and source {source_id} was named, but no bearer",
+            "set FDE_DMS_BEARER to the DMS service bearer",
+            source_id=source_id,
+            tables=tables,
+        )
+    r = client.post(
+        f"/v1/connect/sources/{source_id}/grants",
+        json={"tables": tables},
+        headers={"Authorization": f"Bearer {bearer}"},
+    )
+    if r.status_code != 200:
+        raise _http_refusal("grants", r, "grant_failed")
+    out = r.json()
+    granted = list(out.get("granted_tables") or [])
     return Receipt(
         "grants",
         True,
-        "N/A on main",
-        {
-            "note": "no grant API on main (admin is read-only; CONNECT-GRANT-01 #408 is "
-            "open). The Space reads the tables landed into it on connect."
-        },
-        na=True,
+        f"{len(granted)} tables granted on source {source_id}",
+        {"source_id": source_id, "space_id": out.get("space_id"), "granted_tables": granted},
     )
 
 
@@ -544,6 +611,8 @@ def run_landing(
     approve: bool = False,
     max_groups: int = 1,
     oracle: Oracle | None = None,
+    grant_source_id: str | None = None,
+    bearer: str | None = None,
 ) -> list[Receipt]:
     """Walk every step; stop at the first refusal. ``client`` is any httpx-style client."""
     receipts: list[Receipt] = []
@@ -553,7 +622,9 @@ def run_landing(
             client, cfg, space_id=space_id, space_name=space_name, tables=tables, max_rows=max_rows
         )
         receipts.append(got)
-        receipts.append(_grants())
+        receipts.append(
+            _grants(client, got.detail["tables"], source_id=grant_source_id, bearer=bearer)
+        )
         got, view = _ontology(client, sid)
         receipts.append(got)
         got, diff = _diff(client, sid)
@@ -605,6 +676,10 @@ def main(argv: list[str] | None = None) -> int:
         help="approve every proposed AO item as the DMS steward actor",
     )
     parser.add_argument("--max-groups", type=int, default=1)
+    parser.add_argument(
+        "--grant-source-id",
+        help="connect source id (POST /v1/connect/sources) to grant the landed tables on",
+    )
     parser.add_argument("--json", type=Path, help="also write the receipts here")
     args = parser.parse_args(argv)
     _bootstrap()
@@ -631,6 +706,8 @@ def main(argv: list[str] | None = None) -> int:
             max_rows=args.max_rows,
             approve=args.approve,
             max_groups=args.max_groups,
+            grant_source_id=args.grant_source_id,
+            bearer=os.environ.get("FDE_DMS_BEARER") or None,
         )
     for line in render(receipts):
         print(line)

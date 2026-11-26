@@ -35,7 +35,10 @@ The walk stops at the first refusal, prints `FAIL <name>` with what to do, and e
 | | | `gate_unavailable` / 403 | The Cortex gate refused or did not answer. Check `CORTEX_URL` and the Cortex key. |
 | | | `nothing_landed` | The login sees no base tables. |
 | | | `truncated_pull` | The pull hit the row cap: the lake is a partial copy and cannot equal the source. Raise `--max-rows` or name fewer tables. |
-| grants | none | prints `N/A on main` | No grant API on main. The Space reads the tables landed into it. |
+| grants | `POST /v1/connect/sources/{id}/grants` | N/A `connect_api_disabled` | `DMS_CONNECT_API` is off (default): the probe gets 404 and the receipt names it. The Space reads the tables landed into it. |
+| | | N/A, API on, no source id | The SQL landing registers no connect source. Register one with `POST /v1/connect/sources` and pass `--grant-source-id`, bearer in `FDE_DMS_BEARER`. |
+| | | `grant_bearer_missing` | A source id was named without `FDE_DMS_BEARER`. |
+| | | `source_not_found` / `table_not_exposed` / `bearer_denied` | The grant API refused: the source id, a landed table not in its listing, or the bearer. |
 | ontology | `GET /v1/spaces/{id}/ontology` | `ontology_not_derived` | Derive failed at connect; the reason is printed. Fix it, then `POST .../ontology/derive`. |
 | | | `ontology_version_proposed` | The source schema changed since the first connect. The new version is proposed and does not answer. There is no promote route on main. |
 | | | `no_verified_object` | Every object failed a key check. Declare or fix the primary key at the source. |
@@ -61,7 +64,10 @@ rows, and the oracle rows from the source. They must be equal.
 
 ## Not yet on main
 
-- **Grant API.** CONNECT-GRANT-01 (#408) is open; the admin routes are read-only.
+- **Grants for a SQL landing.** The grant API (`POST /v1/connect/sources/{id}/grants`,
+  behind `DMS_CONNECT_API`, default off) grants tables on a source registered through
+  `POST /v1/connect/sources`. `POST /v1/studio/sources/sql` registers no such source,
+  so the landing grants only when `--grant-source-id` names one.
 - **Studio ontology review.** ONTO-CONFIRM-01 (#283) is open. A changed source schema
   lands as a proposed version with no route to promote it. AO items are approved one
   by one through the API.
