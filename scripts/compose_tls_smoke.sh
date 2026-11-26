@@ -13,6 +13,10 @@
 #   E  files mode serves the operator-supplied certificate; an unknown mode
 #      (including the glob `*`), or an empty certificate directory, fails
 #      closed (nothing answers) and the glob is refused by the ui entry guard
+#   F  DMS_TLS_HOST (#387): a valid non-default name is served under that name
+#      with a certificate that verifies for it; a value carrying a second site
+#      and a directive, a space, or a brace is refused by the ui entry guard
+#      before Caddy starts (ui not running, the guard's line in its log)
 #
 # It exits 0 only when every assertion held. Exit 2 means a precondition is
 # missing (docker, curl, openssl, the cortex-contract wheel, a free port): the
@@ -320,6 +324,35 @@ fails_closed "DMS_TLS_MODE=* with a non-local host" "DMS_TLS_MODE must be exactl
 
 DMS_TLS_MODE='internal|files' dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
 fails_closed "DMS_TLS_MODE=internal|files (a pattern, not a word)" "DMS_TLS_MODE must be exactly"
+
+# ---- F: DMS_TLS_HOST is validated before Caddy reads it (#387) --------------
+# --noproxy: unlike localhost, this name is in no NO_PROXY list, and a proxy on
+# the workstation would be asked for it instead of the appliance port.
+GOOD_HOST="dms-smoke.example.internal"
+DMS_TLS_HOST="${GOOD_HOST}" dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
+code=000
+for _ in $(seq 1 30); do
+  code="$(curl -sS -m 10 ${NOREVOKE} --noproxy "${GOOD_HOST}" --resolve "${GOOD_HOST}:${PORT}:127.0.0.1" --cacert "${ROOT_CRT}" -o "${DISCARD}" -w '%{http_code}' "https://${GOOD_HOST}:${PORT}/health" 2>/dev/null || true)"
+  [ "${code}" = 200 ] && break
+  sleep 2
+done
+if [ "${code}" = 200 ]; then
+  pass "F1 a valid DMS_TLS_HOST (${GOOD_HOST}) is served under that name, certificate verifies for it"
+else
+  fail "F1 a valid DMS_TLS_HOST (${GOOD_HOST}) was not served (code ${code})"
+fi
+
+# The value that, unchecked, gives Caddy a second site and a directive chosen by
+# whoever wrote the value. The guard must refuse it before Caddy starts.
+INJECTED_HOST="$(printf 'localhost:8080 {\n\trespond "INJECTED-BY-DMS-TLS-HOST"\n}\nhttps://second.example')"
+DMS_TLS_HOST="${INJECTED_HOST}" dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
+fails_closed "DMS_TLS_HOST carrying a second site and a directive" "DMS_TLS_HOST must be"
+
+DMS_TLS_HOST='dms.example other.example' dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
+fails_closed "DMS_TLS_HOST with a space (two site addresses)" "DMS_TLS_HOST must be"
+
+DMS_TLS_HOST='localhost{' dc up -d --force-recreate --no-deps ui >/dev/null 2>&1
+fails_closed "DMS_TLS_HOST with a brace" "DMS_TLS_HOST must be"
 
 echo
 if [ "${FAILS}" -ne 0 ]; then
