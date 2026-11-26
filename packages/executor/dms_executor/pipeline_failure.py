@@ -71,6 +71,7 @@ _CODES = frozenset(
         "checker",
         "column_class_unsure",
         "db_error",
+        "definition_mismatch",
         "empty_result_unverified",
         "envelope_demoted",
         "explain",

@@ -430,14 +430,23 @@ def _cosine(left: list[float], right: list[float]) -> float:
     return dot / math.sqrt(na * nb)
 
 
-def _rank_examples(
+def rank_texts(
     question: str,
-    rows: list[dict[str, Any]],
+    docs: list[str],
     embedder: Callable[[list[str]], Any] | None,
-) -> list[dict[str, Any]]:
-    if not rows:
+    *,
+    limit: int,
+    floor: float = 0.0,
+) -> list[tuple[float, int]]:
+    """``(score, index)`` above ``floor``, best first, at most ``limit``.
+
+    The embedder scores the question against each doc when it returns one
+    vector per text. Otherwise Okapi BM25. No word list. ``floor`` 0 keeps
+    the verified-example ranker (a positive score only).
+    """
+    if not docs or limit <= 0:
         return []
-    texts = [question, *[str(row.get("question") or "") for row in rows]]
+    texts = [question, *docs]
     vectors = None
     if embedder is not None:
         try:
@@ -446,18 +455,29 @@ def _rank_examples(
             logger.warning("verified_example_embed_unavailable")
             vectors = None
     if vectors is not None:
-        scored = [(_cosine(vectors[0], vectors[i + 1]), row) for i, row in enumerate(rows)]
+        scores = [_cosine(vectors[0], vectors[i + 1]) for i in range(len(docs))]
     else:
-        scored = list(
-            zip(
-                _bm25_scores(question, [str(row.get("question") or "") for row in rows]),
-                rows,
-                strict=True,
-            )
-        )
-    kept = [(score, row) for score, row in scored if score > 0.0]
+        scores = _bm25_scores(question, docs)
+    kept = [(score, index) for index, score in enumerate(scores) if score > floor]
     kept.sort(key=lambda item: item[0], reverse=True)
-    return [row for _score, row in kept[:_EXAMPLE_LIMIT]]
+    return kept[:limit]
+
+
+def _rank_examples(
+    question: str,
+    rows: list[dict[str, Any]],
+    embedder: Callable[[list[str]], Any] | None,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    ranked = rank_texts(
+        question,
+        [str(row.get("question") or "") for row in rows],
+        embedder,
+        limit=_EXAMPLE_LIMIT,
+        floor=0.0,
+    )
+    return [rows[index] for _score, index in ranked]
 
 
 def _example_ok(row: dict[str, Any], allowed: set[str], dialect: str | None) -> bool:

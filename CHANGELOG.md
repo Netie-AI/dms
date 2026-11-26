@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-26 - GROUND-DEFS-01: governed definitions in the AI prompt
+
+- **Flag.** `DMS_GROUND_DEFS` defaults to 0. Off, the Insights prompt is unchanged. On, the ask's own ontology (the demo ontology only on the demo path) is ranked with the verified-example embedder, or BM25 when that embedder is absent. Top 3 above a score floor go into the question as `governed definitions; use exactly` (name, grain, governed SQL, as_of anchor). Space-scoped verified examples from the `DMS_VQ_RAG` path sit in the same block.
+- **Check.** When a grounded definition has a predicate, generated SQL must use that predicate on the measure's columns. The comparison is the normalized sqlglot tree. A mismatch reconfirms `definition_mismatch` and is not served. Yes re-asks. It does not run the mismatched SQL.
+- **Not in this change.** The token locks in `semantic_retrieve` stay until WORD-RULES-OUT-01 (see PARKING_LOT). `DMS_SCHEMA_CONTEXT` is not added to the armed flag set.
+
 ## 2026-11-13 - CI: the pytest shard gate was made to fail on purpose, and one hole was closed (F-TBD-42)
 
 - **Red test.** A probe test that always fails was pushed to the branch (`252827d`). Its shard concluded `failure`, the other two shards ran to `success`, and `lint-type-test` concluded `failure` (not skipped), printing `protected-paths=success contract-pin=success pytest=failure`.
