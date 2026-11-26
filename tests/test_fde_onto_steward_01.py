@@ -208,3 +208,14 @@ def test_reason_codes_are_counted_per_question() -> None:
         "out_of_scope": 1,
         "verdict:CORRECT": 1,
     }
+
+
+def test_store_error_is_named_not_raised(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(*a: Any, **k: Any) -> dict[str, Any]:
+        raise PermissionError("permission denied to set role")
+
+    monkeypatch.setattr(onto_compile, "compile_warehouse", boom)
+    res = fp.stage_steward(_report(tmp_path), tmp_path, _args(), {}, store=OntologyDataStore())
+    assert res["status"] == "COMPILE_ERROR"
+    assert res["detail"].startswith("PermissionError")
+    assert fp.steward_failures(res)[0].startswith("ontology COMPILE_ERROR")

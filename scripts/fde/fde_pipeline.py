@@ -971,6 +971,9 @@ def stage_steward(
         except SystemExit as exc:
             res.update(status="COMPILE_REFUSED", detail=str(exc))
             return res
+        except Exception as exc:  # noqa: BLE001 - store or model error, named per tenant
+            res.update(status="COMPILE_ERROR", detail=f"{type(exc).__name__}: {str(exc)[:200]}")
+            return res
         res.update(
             version_id=got["version_id"],
             compiled="new",
@@ -990,6 +993,13 @@ def stage_steward(
         )
     except SystemExit as exc:
         res.update(status="APPROVAL_REFUSED", detail=str(exc), approval_source=who["source"])
+        return res
+    except Exception as exc:  # noqa: BLE001 - store error, named per tenant
+        res.update(
+            status="APPROVAL_ERROR",
+            detail=f"{type(exc).__name__}: {str(exc)[:200]}",
+            approval_source=who["source"],
+        )
         return res
     res.update(
         status="APPROVED",
