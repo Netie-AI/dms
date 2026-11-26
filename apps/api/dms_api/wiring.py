@@ -917,3 +917,74 @@ def resolve_action_key(action_type: str, key: dict[str, str]) -> dict[str, Any]:
     return dms_executor.action_keys.resolve_key(
         at.source_kind, at.source_table, at.key_fields, at.field, key
     )
+
+
+def prove_insights(
+    ask: Any,
+    cortex: CortexClient,
+    *,
+    space_id: str | None,
+    session_id: str,
+    top: int,
+    actor: str | None = None,
+) -> Any:
+    """INS-PROOF-02 - proven insights for a Space, one Cortex ledger pointer each.
+
+    ``ask`` is the Executor; every statement goes through its Cortex submit, and
+    the pointer is appended through ``_ledger_append`` (dms_ledger -> Cortex
+    ``/v1/contract/ledger/append``). No local chain. ``actor`` is
+    settings.dms_actor_user_id (DR-0004 Option A), the identity the gate names.
+    """
+    return dms_executor.prove_for_space(
+        ask, space_id=space_id, session_id=session_id, top=top,
+        ledger_append=_ledger_append(cortex), actor=actor,
+    )
+
+
+def demote_insight(insight: Any, code: str, *, orphan_ledger_entry: str | None = None) -> Any:
+    """INS-PROOF-02 - a proven insight that may not be served, as an ABSTAIN refusal."""
+    return dms_executor.demote_insight(insight, code, orphan_ledger_entry=orphan_ledger_entry)
+
+
+# INS-PROOF-03 - steward pins. Pass-throughs: the route never imports the executor.
+# ``actor`` is settings.dms_actor_user_id (DR-0004 Option A, the deployment actor).
+
+
+def preview_pin(ask: Any, *, space_id: str | None, insight_id: str) -> dict[str, Any]:
+    return dms_executor.preview_pin(ask, space_id=space_id, insight_id=insight_id)
+
+
+def confirm_pin(ask: Any, cortex: CortexClient, *, token: str, actor: str) -> dict[str, Any]:
+    return dms_executor.confirm_pin(
+        ask, token=token, actor=actor, ledger_append=_ledger_append(cortex)
+    )
+
+
+def replay_pin(ask: Any, cortex: CortexClient, asset_id: str, *, actor: str) -> dict[str, Any]:
+    return dms_executor.replay_pin(
+        ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex)
+    )
+
+
+def demote_replay(
+    res: dict[str, Any], code: str, *, orphan_ledger_entry: str | None = None
+) -> dict[str, Any]:
+    """A served replay whose audit row did not land, as an ABSTAIN (INS-PROOF-02 rule g)."""
+    return dms_executor.demote_replay(res, code, orphan_ledger_entry=orphan_ledger_entry)
+
+
+def revoke_pin(ask: Any, cortex: CortexClient, asset_id: str, *, actor: str) -> dict[str, Any]:
+    return dms_executor.revoke_pin(
+        ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex)
+    )
+
+
+def list_pinned(ask: Any, *, space_id: str | None) -> list[dict[str, Any]]:
+    return dms_executor.list_pinned(ask, space_id=space_id)
+
+
+def pin_owner_space(ask: Any, *, token: str | None = None, asset_id: str | None = None) -> Any:
+    """The Space a token or pin belongs to, for the F5 call's metadata. A read only."""
+    if token is not None:
+        return dms_executor.token_space(token)
+    return dms_executor.pin_space(ask, asset_id or "")

@@ -1,0 +1,206 @@
+# FDE-SCENARIOS-01 retail pack. Gold SQL is DuckDB (the serving dialect) over the
+# source table names. expect: answer | clarify | refuse. clarify/refuse cases carry
+# no gold: a confident answer there is WRONG.
+company: retail
+title: Kedai Maju Trading (retail, multi-warehouse inventory)
+glossary:
+  net revenue: "SUM(qty * unit_price * (1 - discount_pct / 100)) on sales_order_lines of orders with status 'shipped'"
+  available stock: "qty_on_hand - qty_reserved in stock_levels"
+  stock value: "qty_on_hand * products.unit_cost"
+  active SKU: "products.discontinued = 0"
+join_notes:
+  - "products.sku = stock_levels.sku_code = sales_order_lines.item_code = purchase_order_lines.sku = stock_transfers.sku"
+questions:
+  - id: rt01_active_skus_by_category
+    question: How many active SKUs do we carry in each category? Leave out discontinued items.
+    tags: [count, join]
+    gold_sql: |
+      SELECT c.name AS category, COUNT(*) AS active_skus
+      FROM products p JOIN categories c ON c.category_id = p.category_id
+      WHERE p.discontinued = 0
+      GROUP BY c.name
+  - id: rt02_stock_value_by_warehouse
+    question: What's our total stock value at cost sitting in each warehouse?
+    tags: [sku_join, measure]
+    gold_sql: |
+      SELECT w.name AS warehouse, ROUND(SUM(s.qty_on_hand * p.unit_cost), 2) AS stock_value
+      FROM stock_levels s
+      JOIN products p ON p.sku = s.sku_code
+      JOIN warehouses w ON w.warehouse_id = s.warehouse_id
+      GROUP BY w.name
+  - id: rt03_below_reorder
+    question: Which active SKUs are below their reorder point once you add up available stock (on hand minus reserved) across all warehouses?
+    tags: [sku_join, having, multi_warehouse]
+    gold_sql: |
+      SELECT p.sku, SUM(s.qty_on_hand - s.qty_reserved) AS available
+      FROM products p JOIN stock_levels s ON s.sku_code = p.sku
+      WHERE p.discontinued = 0
+      GROUP BY p.sku, p.reorder_point
+      HAVING SUM(s.qty_on_hand - s.qty_reserved) < p.reorder_point
+  - id: rt04_q1_revenue_by_warehouse
+    question: Net revenue from shipped orders in Q1 2026, split by the warehouse that fulfilled them. Net means after line discounts.
+    tags: [time, discount, join]
+    gold_sql: |
+      SELECT w.name AS warehouse,
+             ROUND(SUM(l.qty * l.unit_price * (1 - l.discount_pct / 100)), 2) AS net_revenue
+      FROM sales_orders o
+      JOIN sales_order_lines l ON l.order_id = o.order_id
+      JOIN warehouses w ON w.warehouse_id = o.warehouse_id
+      WHERE o.status = 'shipped' AND o.order_date BETWEEN DATE '2026-01-01' AND DATE '2026-03-31'
+      GROUP BY w.name
+  - id: rt05_top5_units_2025
+    question: What were our top 5 products by units sold in 2025? Only count shipped orders.
+    tags: [topn, sku_join]
+    ordered: true
+    gold_sql: |
+      SELECT p.sku, p.name, SUM(l.qty) AS units
+      FROM sales_order_lines l
+      JOIN sales_orders o ON o.order_id = l.order_id
+      JOIN products p ON p.sku = l.item_code
+      WHERE o.status = 'shipped' AND o.order_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY p.sku, p.name
+      ORDER BY units DESC, p.sku
+      LIMIT 5
+  - id: rt06_top_supplier_revenue_2025
+    question: Whose products earned us the most net revenue in 2025 - which supplier? Shipped orders only.
+    tags: [topn, three_hop]
+    ordered: true
+    gold_sql: |
+      SELECT su.name AS supplier,
+             ROUND(SUM(l.qty * l.unit_price * (1 - l.discount_pct / 100)), 2) AS net_revenue
+      FROM sales_order_lines l
+      JOIN sales_orders o ON o.order_id = l.order_id
+      JOIN products p ON p.sku = l.item_code
+      JOIN suppliers su ON su.supplier_id = p.supplier_id
+      WHERE o.status = 'shipped' AND o.order_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY su.name
+      ORDER BY net_revenue DESC
+      LIMIT 1
+  - id: rt07_po_lead_time_by_supplier
+    question: On average, how many days does each supplier take from PO date to receipt? Only POs we've actually received, one decimal.
+    tags: [date_diff, avg]
+    gold_sql: |
+      SELECT su.name AS supplier,
+             ROUND(AVG(DATE_DIFF('day', po.order_date, po.received_date)), 1) AS avg_days
+      FROM purchase_orders po JOIN suppliers su ON su.supplier_id = po.supplier_id
+      WHERE po.received_date IS NOT NULL
+      GROUP BY su.name
+  - id: rt08_zero_stock_by_warehouse
+    question: For each warehouse, how many SKUs are showing zero on hand?
+    tags: [count, filter]
+    gold_sql: |
+      SELECT w.name AS warehouse, COUNT(*) AS zero_skus
+      FROM stock_levels s JOIN warehouses w ON w.warehouse_id = s.warehouse_id
+      WHERE s.qty_on_hand = 0
+      GROUP BY w.name
+  - id: rt09_fill_rate_2025
+    question: What was our overall PO fill rate for purchase orders placed in 2025, meaning units received divided by units ordered? Give it as a percentage with two decimals.
+    tags: [ratio, single_value]
+    gold_sql: |
+      SELECT ROUND(100.0 * SUM(l.qty_received) / SUM(l.qty_ordered), 2) AS fill_rate_pct
+      FROM purchase_order_lines l JOIN purchase_orders po ON po.po_id = l.po_id
+      WHERE po.order_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+  - id: rt10_wholesale_frequent
+    question: Which wholesale customers placed more than 6 shipped orders in 2025, and how many each?
+    tags: [having, segment]
+    gold_sql: |
+      SELECT c.name, COUNT(*) AS orders
+      FROM sales_orders o JOIN customers c ON c.customer_id = o.customer_id
+      WHERE c.segment = 'wholesale' AND o.status = 'shipped'
+        AND o.order_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY c.name
+      HAVING COUNT(*) > 6
+  - id: rt11_return_rate_by_category_2025
+    question: In 2025, what share of units went out on orders that ended up returned, by category? Compare returned units against shipped plus returned units, as a percent with 2 decimals.
+    tags: [ratio, conditional_agg]
+    gold_sql: |
+      SELECT c.name AS category,
+             ROUND(100.0 * SUM(CASE WHEN o.status = 'returned' THEN l.qty ELSE 0 END)
+                   / SUM(l.qty), 2) AS return_rate_pct
+      FROM sales_order_lines l
+      JOIN sales_orders o ON o.order_id = l.order_id
+      JOIN products p ON p.sku = l.item_code
+      JOIN categories c ON c.category_id = p.category_id
+      WHERE o.status IN ('shipped', 'returned')
+        AND o.order_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY c.name
+  - id: rt12_net_transfers_2026
+    question: Net units transferred into each warehouse so far in 2026 (transfers in minus transfers out)?
+    tags: [self_join_role, union]
+    gold_sql: |
+      SELECT w.name AS warehouse, SUM(t.delta) AS net_units
+      FROM (
+        SELECT to_warehouse_id AS wid, qty AS delta FROM stock_transfers
+        WHERE transfer_date >= DATE '2026-01-01'
+        UNION ALL
+        SELECT from_warehouse_id, -qty FROM stock_transfers
+        WHERE transfer_date >= DATE '2026-01-01'
+      ) t JOIN warehouses w ON w.warehouse_id = t.wid
+      GROUP BY w.name
+  - id: rt13_monthly_revenue_h1_2026
+    question: Show monthly net revenue from shipped orders for January to June 2026.
+    tags: [time_series]
+    ordered: true
+    gold_sql: |
+      SELECT STRFTIME(o.order_date, '%Y-%m') AS month,
+             ROUND(SUM(l.qty * l.unit_price * (1 - l.discount_pct / 100)), 2) AS net_revenue
+      FROM sales_orders o JOIN sales_order_lines l ON l.order_id = o.order_id
+      WHERE o.status = 'shipped' AND o.order_date BETWEEN DATE '2026-01-01' AND DATE '2026-06-30'
+      GROUP BY 1 ORDER BY 1
+  - id: rt14_dead_stock_share
+    question: What percent of our stock value (at cost) is tied up in SKUs that have had no shipped sales at all since 1 May 2026? Two decimals.
+    tags: [anti_join, ratio, hard]
+    gold_sql: |
+      WITH sold AS (
+        SELECT DISTINCT l.item_code FROM sales_order_lines l
+        JOIN sales_orders o ON o.order_id = l.order_id
+        WHERE o.status = 'shipped' AND o.order_date >= DATE '2026-05-01'
+      ), v AS (
+        SELECT s.sku_code, s.qty_on_hand * p.unit_cost AS val
+        FROM stock_levels s JOIN products p ON p.sku = s.sku_code
+      )
+      SELECT ROUND(100.0 * SUM(CASE WHEN sku_code NOT IN (SELECT item_code FROM sold) THEN val ELSE 0 END)
+                   / SUM(val), 2) AS dead_stock_pct
+      FROM v
+  - id: rt15_fullest_warehouse
+    question: Which warehouse is the fullest relative to its capacity, and what's the utilisation percent (2 decimals)?
+    tags: [ratio, topn]
+    ordered: true
+    gold_sql: |
+      SELECT w.name AS warehouse,
+             ROUND(100.0 * SUM(s.qty_on_hand) / w.capacity_units, 2) AS utilisation_pct
+      FROM stock_levels s JOIN warehouses w ON w.warehouse_id = s.warehouse_id
+      GROUP BY w.name, w.capacity_units
+      ORDER BY utilisation_pct DESC
+      LIMIT 1
+  - id: rt16_margin_by_category_2025
+    question: Gross margin percent by category for shipped orders in 2025, using current unit cost. Two decimals.
+    tags: [ratio, measure, join]
+    gold_sql: |
+      SELECT c.name AS category,
+             ROUND(100.0 * (SUM(l.qty * l.unit_price * (1 - l.discount_pct / 100)) - SUM(l.qty * p.unit_cost))
+                   / SUM(l.qty * l.unit_price * (1 - l.discount_pct / 100)), 2) AS gross_margin_pct
+      FROM sales_order_lines l
+      JOIN sales_orders o ON o.order_id = l.order_id
+      JOIN products p ON p.sku = l.item_code
+      JOIN categories c ON c.category_id = p.category_id
+      WHERE o.status = 'shipped' AND o.order_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY c.name
+  - id: rt17_open_po_units_by_warehouse
+    question: How many units are still on open purchase orders waiting to arrive, per warehouse?
+    tags: [filter, join]
+    gold_sql: |
+      SELECT w.name AS warehouse, SUM(l.qty_ordered) AS units_on_order
+      FROM purchase_orders po
+      JOIN purchase_order_lines l ON l.po_id = po.po_id
+      JOIN warehouses w ON w.warehouse_id = po.warehouse_id
+      WHERE po.status = 'open'
+      GROUP BY w.name
+  - id: rt18_best_customers
+    question: Who are our best customers?
+    expect: clarify
+    tags: [ambiguous_metric]
+  - id: rt19_penang_warehouse
+    question: What's the stock value in our Penang warehouse?
+    expect: refuse
+    tags: [nonexistent_entity]

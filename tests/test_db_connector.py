@@ -37,7 +37,11 @@ class _FakeCursor:
             self.description = [("TABLE_SCHEMA",), ("TABLE_NAME",)]
             self._result = list(self._owner.catalog)
             return
-        if "REFERENTIAL_CONSTRAINTS" in sql or "REFERENCED_TABLE_NAME" in sql:
+        if (
+            "REFERENTIAL_CONSTRAINTS" in sql
+            or "REFERENCED_TABLE_NAME" in sql
+            or "contype = 'f'" in sql
+        ):
             self.description = [
                 ("CONSTRAINT_NAME",),
                 ("FROM_SCHEMA",),
@@ -57,7 +61,11 @@ class _FakeCursor:
             self.description = [("COLUMN_NAME",), ("DATA_TYPE",), ("P",), ("S",)]
             self._result = list(self._owner.column_types.get(f"{schema}.{table}", []))
             return
-        if "PRIMARY KEY" in sql or "CONSTRAINT_NAME = 'PRIMARY'" in sql:
+        if (
+            "PRIMARY KEY" in sql
+            or "CONSTRAINT_NAME = 'PRIMARY'" in sql
+            or "contype = 'p'" in sql
+        ):
             self.description = [
                 ("TABLE_SCHEMA",),
                 ("TABLE_NAME",),
@@ -228,8 +236,46 @@ def test_postgresql_catalog_sql_does_not_treat_database_as_schema(
     assert "TABLE_SCHEMA = %s" not in con.executed[0]
     dbc.list_source_keys(_cfg("postgresql"))
     joined = " ".join(con.executed)
-    assert "PRIMARY KEY" in joined
+    assert "pg_catalog.pg_constraint" in joined
     assert "CONSTRAINT_NAME = 'PRIMARY'" not in joined
+
+
+def test_postgresql_keys_do_not_read_information_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FDE-PG-KEYS-01: INFORMATION_SCHEMA constraint views are empty for a SELECT-only
+    login, so the extract login an FDE should use read zero keys. pg_catalog is not
+    filtered that way; has_table_privilege keeps it to tables this login can read."""
+    con = _FakeConnection([("public", "orders")], (["id"], [["1"]]))
+    _install(monkeypatch, con)
+    dbc.list_source_keys(_cfg("postgresql"))
+    key_sql = [s for s in con.executed if "pg_constraint" in s]
+    assert len(key_sql) == 2
+    for sql in key_sql:
+        assert "INFORMATION_SCHEMA" not in sql.upper().replace("PG_CATALOG", "")
+        assert "has_table_privilege(c.oid, 'SELECT')" in sql
+    fk_sql = next(s for s in key_sql if "contype = 'f'" in s)
+    # Composite keys pair child and parent columns by position in the constraint.
+    assert "unnest(con.conkey, con.confkey)" in fk_sql
+    assert "has_table_privilege(pc.oid, 'SELECT')" in fk_sql
+
+
+def test_postgresql_keys_parse_composite_fk(monkeypatch: pytest.MonkeyPatch) -> None:
+    con = _FakeConnection([("public", "lines"), ("public", "orders")], (["id"], [["1"]]))
+    con.pks = [
+        ("public", "orders", "order_id", 1),
+        ("public", "orders", "region", 2),
+        ("public", "lines", "line_id", 1),
+    ]
+    con.fks = [
+        ("fk_lines_order", "public", "lines", "order_id", "public", "orders", "order_id", 1),
+        ("fk_lines_order", "public", "lines", "region", "public", "orders", "region", 2),
+    ]
+    _install(monkeypatch, con)
+    keys = dbc.list_source_keys(_cfg("postgresql"))
+    assert keys.primary_keys["public.orders"] == ("order_id", "region")
+    pairs = [(fk.from_column, fk.to_column, fk.ordinal) for fk in keys.foreign_keys]
+    assert pairs == [("order_id", "order_id", 1), ("region", "region", 2)]
 
 
 # --- what actually lands -----------------------------------------------------

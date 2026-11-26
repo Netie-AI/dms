@@ -1,0 +1,348 @@
+{
+ "ss01_mrr_by_tier": {
+  "columns": [
+   "tier",
+   "mrr"
+  ],
+  "rows": [
+   [
+    "Enterprise",
+    173250.0
+   ],
+   [
+    "Starter",
+    18712.5
+   ],
+   [
+    "Growth",
+    52858.0
+   ]
+  ]
+ },
+ "ss02_churn_events_q2": {
+  "columns": [
+   "churn_events",
+   "churned_mrr"
+  ],
+  "rows": [
+   [
+    5,
+    2212.5
+   ]
+  ]
+ },
+ "ss03_net_new_mrr_by_month": {
+  "columns": [
+   "month",
+   "net_new_mrr"
+  ],
+  "rows": [
+   [
+    "2026-01",
+    5410.0
+   ],
+   [
+    "2026-02",
+    2245.5
+   ],
+   [
+    "2026-03",
+    1789.0
+   ],
+   [
+    "2026-04",
+    20149.5
+   ],
+   [
+    "2026-05",
+    4076.0
+   ],
+   [
+    "2026-06",
+    3940.0
+   ]
+  ]
+ },
+ "ss04_top10_accounts_mrr": {
+  "columns": [
+   "company_name",
+   "mrr"
+  ],
+  "rows": [
+   [
+    "Awan Client 108",
+    9020.0
+   ],
+   [
+    "Awan Client 166",
+    8800.0
+   ],
+   [
+    "Awan Client 093",
+    8360.0
+   ],
+   [
+    "Awan Client 096",
+    7920.0
+   ],
+   [
+    "Awan Client 030",
+    7700.0
+   ],
+   [
+    "Awan Client 148",
+    7260.0
+   ],
+   [
+    "Awan Client 239",
+    7260.0
+   ],
+   [
+    "Awan Client 256",
+    6820.0
+   ],
+   [
+    "Awan Client 267",
+    6655.0
+   ],
+   [
+    "Awan Client 003",
+    6600.0
+   ]
+  ]
+ },
+ "ss05_avg_seats_by_plan": {
+  "columns": [
+   "plan_name",
+   "avg_seats"
+  ],
+  "rows": [
+   [
+    "Enterprise Annual",
+    73.3
+   ],
+   [
+    "Starter Monthly",
+    20.4
+   ],
+   [
+    "Growth Monthly",
+    21.6
+   ],
+   [
+    "Growth Annual",
+    21.0
+   ],
+   [
+    "Starter Annual",
+    25.6
+   ]
+  ]
+ },
+ "ss06_accounts_open_urgent": {
+  "columns": [
+   "accounts"
+  ],
+  "rows": [
+   [
+    4
+   ]
+  ]
+ },
+ "ss07_median_close_hours_2026": {
+  "columns": [
+   "priority",
+   "median_hours"
+  ],
+  "rows": [
+   [
+    "normal",
+    58.4
+   ],
+   [
+    "low",
+    111.9
+   ],
+   [
+    "high",
+    19.1
+   ],
+   [
+    "urgent",
+    4.9
+   ]
+  ]
+ },
+ "ss08_overdue_unpaid": {
+  "columns": [
+   "unpaid"
+  ],
+  "rows": [
+   [
+    121174.5
+   ]
+  ]
+ },
+ "ss09_arr_top5_countries": {
+  "columns": [
+   "country",
+   "arr"
+  ],
+  "rows": [
+   [
+    "MY",
+    864972.0
+   ],
+   [
+    "ID",
+    610332.0
+   ],
+   [
+    "VN",
+    551808.0
+   ],
+   [
+    "TH",
+    338016.0
+   ],
+   [
+    "PH",
+    296088.0
+   ]
+  ]
+ },
+ "ss10_usage_drop": {
+  "columns": [
+   "accounts"
+  ],
+  "rows": [
+   [
+    26
+   ]
+  ]
+ },
+ "ss11_logo_retention": {
+  "columns": [
+   "logo_retention_pct"
+  ],
+  "rows": [
+   [
+    86.67
+   ]
+  ]
+ },
+ "ss12_upgrades_by_owner_2026": {
+  "columns": [
+   "sales_owner",
+   "upgrades"
+  ],
+  "rows": [
+   [
+    "Bella",
+    1
+   ],
+   [
+    "Chen",
+    2
+   ],
+   [
+    "Devi",
+    3
+   ],
+   [
+    "Amir",
+    2
+   ]
+  ]
+ },
+ "ss13_arpa_by_industry": {
+  "columns": [
+   "industry",
+   "arpa"
+  ],
+  "rows": [
+   [
+    "Fintech",
+    1269.06
+   ],
+   [
+    "Retail",
+    1026.85
+   ],
+   [
+    "Manufacturing",
+    782.68
+   ],
+   [
+    "Education",
+    1054.91
+   ],
+   [
+    "Logistics",
+    1034.21
+   ],
+   [
+    "Healthcare",
+    788.74
+   ]
+  ]
+ },
+ "ss14_api_calls_by_tier_q2": {
+  "columns": [
+   "tier",
+   "api_calls"
+  ],
+  "rows": [
+   [
+    "Enterprise",
+    13344028
+   ],
+   [
+    "Starter",
+    10064448
+   ],
+   [
+    "Growth",
+    9507695
+   ]
+  ]
+ },
+ "ss15_tickets_by_category_h1": {
+  "columns": [
+   "category",
+   "tickets"
+  ],
+  "rows": [
+   [
+    "bug",
+    102
+   ],
+   [
+    "outage",
+    80
+   ],
+   [
+    "integration",
+    92
+   ],
+   [
+    "how-to",
+    78
+   ],
+   [
+    "billing",
+    80
+   ]
+  ]
+ },
+ "ss16_late_payers_2025": {
+  "columns": [
+   "late_pct"
+  ],
+  "rows": [
+   [
+    32.61
+   ]
+  ]
+ }
+}
