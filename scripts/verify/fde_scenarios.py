@@ -146,9 +146,13 @@ def _ordered(ds: Dataset) -> list[Table]:
 
 # --------------------------------------------------------------------------- DuckDB
 def build_duckdb(company: str, path: Path) -> Path:
+    return build_duckdb_dataset(scenarios.build(company), path)
+
+
+def build_duckdb_dataset(ds: Any, path: Path) -> Path:
+    """The oracle copy of ``ds`` as a DuckDB file (replaces a scratch file at ``path``)."""
     import duckdb
 
-    ds = scenarios.build(company)
     if path.exists():
         path.unlink()
     con = duckdb.connect(str(path))
@@ -370,65 +374,69 @@ def _engine_connect(engine: str, args: argparse.Namespace, database: str | None)
 
 def load_engine(engine: str, companies: Iterable[str], args: argparse.Namespace) -> int:
     for c in companies:
-        ds = scenarios.build(c)
-        dbname = f"fde_{c}"
-        if engine == "sqlite":
-            import sqlite3
-
-            out = Path(args.out_dir or ".") / f"{dbname}.sqlite"
-            if out.exists():
-                print(f"[SKIP] {out} exists; refusing to overwrite (no deletes)")
-                continue
-            con = sqlite3.connect(str(out))
-            con.execute("PRAGMA foreign_keys = ON")
-            for t in _ordered(ds):
-                con.execute(create_sql("sqlite", t))
-                ph = ", ".join("?" for _ in t.columns)
-                con.executemany(
-                    f'INSERT INTO "{t.name}" VALUES ({ph})',
-                    [tuple(_sqlite_cell(v) for v in r) for r in t.rows],
-                )
-            con.commit()
-            con.close()
-            print(f"[LOADED] sqlite {out}")
-            continue
-        admin = _engine_connect(engine, args, None)
-        cur = admin.cursor()
-        if engine == "postgresql":
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
-            exists = cur.fetchone() is not None
-            if not exists:
-                cur.execute(f'CREATE DATABASE "{dbname}"')
-        elif engine == "sqlserver":
-            cur.execute("SELECT 1 FROM sys.databases WHERE name = ?", (dbname,))
-            exists = cur.fetchone() is not None
-            if not exists:
-                cur.execute(f"CREATE DATABASE [{dbname}]")
-        else:
-            cur.execute("SHOW DATABASES LIKE %s", (dbname,))
-            exists = cur.fetchone() is not None
-            if not exists:
-                cur.execute(f"CREATE DATABASE `{dbname}`")
-        admin.close()
-        if exists:
-            print(f"[SKIP] {engine} {dbname} exists; refusing to overwrite (no deletes)")
-            continue
-        con = _engine_connect(engine, args, dbname)
-        cur = con.cursor()
-        if engine == "sqlserver":
-            cur.fast_executemany = True
-        for t in _ordered(ds):
-            cur.execute(create_sql(engine, t))
-            ph = ", ".join(("?" if engine == "sqlserver" else "%s") for _ in t.columns)
-            cols = ", ".join(_q(engine, cname) for cname, _ in t.columns)
-            stmt = f"INSERT INTO {_q(engine, t.name)} ({cols}) VALUES ({ph})"
-            for i in range(0, len(t.rows), 1000):
-                cur.executemany(stmt, t.rows[i : i + 1000])
-        if args.grant_readonly:
-            _grant_readonly(engine, cur, dbname, args.grant_readonly)
-        con.close()
-        print(f"[LOADED] {engine} {dbname}: {len(ds.tables)} tables")
+        load_dataset(engine, scenarios.build(c), f"fde_{c}", args)
     return EXIT_PASS
+
+
+def load_dataset(engine: str, ds: Any, dbname: str, args: argparse.Namespace) -> bool:
+    """Create ``dbname`` on ``engine`` and load ``ds``. Never overwrites: False if it exists."""
+    if engine == "sqlite":
+        import sqlite3
+
+        out = Path(args.out_dir or ".") / f"{dbname}.sqlite"
+        if out.exists():
+            print(f"[SKIP] {out} exists; refusing to overwrite (no deletes)")
+            return False
+        con = sqlite3.connect(str(out))
+        con.execute("PRAGMA foreign_keys = ON")
+        for t in _ordered(ds):
+            con.execute(create_sql("sqlite", t))
+            ph = ", ".join("?" for _ in t.columns)
+            con.executemany(
+                f'INSERT INTO "{t.name}" VALUES ({ph})',
+                [tuple(_sqlite_cell(v) for v in r) for r in t.rows],
+            )
+        con.commit()
+        con.close()
+        print(f"[LOADED] sqlite {out}")
+        return True
+    admin = _engine_connect(engine, args, None)
+    cur = admin.cursor()
+    if engine == "postgresql":
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (dbname,))
+        exists = cur.fetchone() is not None
+        if not exists:
+            cur.execute(f'CREATE DATABASE "{dbname}"')
+    elif engine == "sqlserver":
+        cur.execute("SELECT 1 FROM sys.databases WHERE name = ?", (dbname,))
+        exists = cur.fetchone() is not None
+        if not exists:
+            cur.execute(f"CREATE DATABASE [{dbname}]")
+    else:
+        cur.execute("SHOW DATABASES LIKE %s", (dbname,))
+        exists = cur.fetchone() is not None
+        if not exists:
+            cur.execute(f"CREATE DATABASE `{dbname}`")
+    admin.close()
+    if exists:
+        print(f"[SKIP] {engine} {dbname} exists; refusing to overwrite (no deletes)")
+        return False
+    con = _engine_connect(engine, args, dbname)
+    cur = con.cursor()
+    if engine == "sqlserver":
+        cur.fast_executemany = True
+    for t in _ordered(ds):
+        cur.execute(create_sql(engine, t))
+        ph = ", ".join(("?" if engine == "sqlserver" else "%s") for _ in t.columns)
+        cols = ", ".join(_q(engine, cname) for cname, _ in t.columns)
+        stmt = f"INSERT INTO {_q(engine, t.name)} ({cols}) VALUES ({ph})"
+        for i in range(0, len(t.rows), 1000):
+            cur.executemany(stmt, t.rows[i : i + 1000])
+    if args.grant_readonly:
+        _grant_readonly(engine, cur, dbname, args.grant_readonly)
+    con.close()
+    print(f"[LOADED] {engine} {dbname}: {len(ds.tables)} tables")
+    return True
 
 
 def _sqlite_cell(v: Any) -> Any:
@@ -671,7 +679,13 @@ def _space_id(company: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"netie-fde-scenario/{company}"))
 
 
-def armed(companies: Iterable[str], args: argparse.Namespace) -> int:
+def armed(
+    companies: Iterable[str],
+    args: argparse.Namespace,
+    *,
+    packs: dict[str, tuple[list[dict[str, Any]], dict[str, Any]]] | None = None,
+    landed: tuple[Path, dict[str, str]] | None = None,
+) -> int:
     """In-process DMS app on the real ask path, as ``grade52 --armed`` builds it.
 
     Each company is pulled from a live source engine through db_connector into a
@@ -680,6 +694,9 @@ def armed(companies: Iterable[str], args: argparse.Namespace) -> int:
     ``CortexClient`` and a real OpenVault manifest mint. Needs the grade52 armed
     settings (CORTEX_BASE_URL, an OpenVault-issued CORTEX_API_KEY, CORTEX_SHA,
     OPENVAULT_URL, DMS_OV_SERVICE_TOKEN). A missing one is refused by name.
+
+    ``packs`` (questions, gold) and ``landed`` (warehouse, Space ids) let the FDE
+    pipeline reuse this ask loop for generated tenants it has already landed.
     """
     sys.path.insert(0, str(ROOT / "scripts" / "verify"))
     import grade52
@@ -694,10 +711,14 @@ def armed(companies: Iterable[str], args: argparse.Namespace) -> int:
     cfg = grade52.armed_config()
     grade52.armed_preflight(cfg)
     grade52._prepare_armed_flags(all_flags=bool(args.all_flags))
-    db = Path(tempfile.mkdtemp(prefix="fde-armed-")) / "warehouse.duckdb"
-    ensure_demo_warehouse(db)
-    spaces: dict[str, str] = {}
-    for c in companies:
+    companies = list(companies)
+    if landed is not None:
+        db, spaces = landed
+    else:
+        db = Path(tempfile.mkdtemp(prefix="fde-armed-")) / "warehouse.duckdb"
+        ensure_demo_warehouse(db)
+        spaces = {}
+    for c in companies if landed is None else ():
         sid = _space_id(c)
         src = SourceConfig(
             kind=args.source,
@@ -737,10 +758,14 @@ def armed(companies: Iterable[str], args: argparse.Namespace) -> int:
         client = TestClient(app)
         try:
             for c in companies:
-                frozen = json.loads(answers_path(c).read_text(encoding="utf-8"))
+                if packs is not None:
+                    questions, frozen = packs[c]
+                else:
+                    questions = load_questions(c)
+                    frozen = json.loads(answers_path(c).read_text(encoding="utf-8"))
                 tally = {"CORRECT": 0, "WRONG": 0, "ABSTAIN": 0, "RECONFIRM": 0, "ERROR": 0}
                 cases = []
-                for q in load_questions(c):
+                for q in questions:
                     try:
                         res = client.post(
                             "/v1/chat/ask", json={"question": q["question"], "space_id": spaces[c]}
