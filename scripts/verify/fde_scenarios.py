@@ -611,7 +611,7 @@ def live(companies: Iterable[str], args: argparse.Namespace) -> int:
 
     spaces = json.loads(Path(args.spaces).read_text())
     report: dict[str, Any] = {}
-    any_wrong = False
+    any_wrong = any_error = False
     headers = {}
     token = os.environ.get("DMS_API_TOKEN")
     if token:
@@ -663,6 +663,7 @@ def live(companies: Iterable[str], args: argparse.Namespace) -> int:
             "cases": rows_out,
         }
         any_wrong |= tally["WRONG"] > 0
+        any_error |= tally["ERROR"] > 0
         print(
             f"[{c}] n={sum(tally.values())} answered={answered} correct={tally['CORRECT']} "
             f"WRONG={tally['WRONG']} abstain={tally['ABSTAIN']} reconfirm={tally['RECONFIRM']} "
@@ -670,7 +671,10 @@ def live(companies: Iterable[str], args: argparse.Namespace) -> int:
         )
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1) + "\n")
-    return EXIT_FAIL if any_wrong else EXIT_PASS
+    if any_wrong:
+        return EXIT_FAIL
+    # A question that never got an answer envelope was not graded: not a pass.
+    return EXIT_BLOCKED if any_error else EXIT_PASS
 
 
 def _space_id(company: str) -> str:
@@ -739,7 +743,7 @@ def armed(
         "cortex_sha": cfg.cortex_sha,
         "companies": {},
     }
-    any_wrong = False
+    any_wrong = any_error = False
     with grade52._env_value("CORTEX_URL", cfg.cortex_url):
         minter = grade52._armed_minter(cfg)
         cortex = CortexClient(cfg.cortex_url, timeout=args.timeout, api_key=cfg.api_key)
@@ -752,6 +756,18 @@ def armed(
             openvault_url=cfg.openvault_url,
         )
         app = create_app()
+        # The ask route 404s a Space its catalog does not hold. These Spaces exist
+        # only in this scratch warehouse, so the in-process app gets a memory
+        # catalog naming exactly them (never the box's Postgres Spaces).
+        from dms_api.store.memory import DemoSpaceStore
+        from dms_core.control_plane.spaces import SpaceRecord
+
+        app.state.space_store = DemoSpaceStore(
+            _spaces=[
+                SpaceRecord(id=sid, name=f"fde {c}", source_count=1, member_count=1)
+                for c, sid in spaces.items()
+            ]
+        )
         app.state.ask_service = Executor(cortex=cortex, minter=minter, warehouse_path=db)
         app.state.cortex = cortex
         app.dependency_overrides[get_settings] = lambda: settings
@@ -786,12 +802,16 @@ def armed(
                             "reason": why,
                             "badge": env.get("badge"),
                             "abstain_reason": env.get("abstain_reason"),
+                            "layer": env.get("layer"),
+                            "answer": str(env.get("answer") or "")[:300],
+                            "reconfirm": env.get("reconfirm") or env.get("needs_confirm"),
                             "sql": (env.get("sql_used") or env.get("sql") or "")[:2000],
                         }
                     )
                     print(f"  {c}/{q['id']}: {verdict} {why}", flush=True)
                 answered = tally["CORRECT"] + tally["WRONG"]
                 any_wrong |= tally["WRONG"] > 0
+                any_error |= tally["ERROR"] > 0
                 report["companies"][c] = {"tally": tally, "answered": answered, "cases": cases}
                 print(
                     f"[{args.source} {c}] n={sum(tally.values())} answered={answered} "
@@ -805,7 +825,10 @@ def armed(
             minter.close()
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=str) + "\n")
-    return EXIT_FAIL if any_wrong else EXIT_PASS
+    if any_wrong:
+        return EXIT_FAIL
+    # A question that never got an answer envelope was not graded: not a pass.
+    return EXIT_BLOCKED if any_error else EXIT_PASS
 
 
 def main(argv: Sequence[str] | None = None) -> int:
