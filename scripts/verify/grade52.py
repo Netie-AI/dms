@@ -139,6 +139,12 @@ ROOT = Path(__file__).resolve().parents[2]
 PACK_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 ORACLE_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 PACK_DIR = PACK_PATH.parent
+# The curated pack is the only one copy-only hides: the API image never holds tests/.
+CURATED_PACK_DIR = PACK_DIR
+CURATED_N = 52
+# ``--pack DIR`` (armed and envelopes only) grades an external pack, for
+# example a held-out split frozen outside this tree. None is the curated 52.
+EXTERNAL_PACK: Path | None = None
 # What the recorded stub Cortex serves. Armed mode refuses any answer that
 # carries one of its values, read from this file and never typed here.
 STUB_RESPONSES_PATH = ROOT / "tests" / "fixtures" / "ask_guide" / "cortex_responses_52.json"
@@ -1605,8 +1611,7 @@ def grade_envelopes(
     oracle_doc = _load_yaml(ORACLE_PATH).get("oracles") or {}
     oracles = oracle_doc if isinstance(oracle_doc, dict) else {}
     questions = list(pack["questions"])
-    if len(questions) != 52:
-        raise SystemExit(f"pack size {len(questions)} != 52")
+    _check_pack_size(len(questions))
     flagged = set(pack_gold_served_ids(questions, oracles))
     by_id: dict[str, Any] = {}
     model_sql_by_id: dict[str, str | None] = {}
@@ -1753,6 +1758,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "paths_correct": report.get("paths_correct"),
         "paths_served": report.get("paths_served"),
         "layout": report.get("layout"),
+        "pack": pack_label(),
         "empty_gold_abstained": report["empty_gold_abstained"],
         "empty_gold_served": report["empty_gold_served"],
         "score": True,
@@ -2064,6 +2070,8 @@ def summary_line(report: Mapping[str, Any]) -> str:
         raise SystemExit("grade52: buckets do not add up to n")
     layout = report.get("layout")
     head = f"sha={report['dms_sha']}"
+    if EXTERNAL_PACK is not None:
+        head += f" pack={pack_label()}"
     if isinstance(layout, str) and layout:
         head += f" layout={layout}"
     shown_wrong = counts["wrong"] + counts["refusal_wrong"]
@@ -2583,6 +2591,42 @@ def _env_value(name: str, value: str) -> Iterator[None]:
             os.environ[name] = before
 
 
+def use_pack(pack_dir: Path) -> None:
+    """Grade ``pack_dir`` (``questions.yaml`` + ``oracles.yaml``) instead of the 52.
+
+    The pack must live outside this tree, so a held-out split cannot be read by
+    the product it scores. Its size is its own; the 52 check stays for the
+    curated pack.
+    """
+    global PACK_PATH, ORACLE_PATH, PACK_DIR, EXTERNAL_PACK
+    root = Path(pack_dir).resolve()
+    try:
+        root.relative_to(ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("grade52: --pack must live outside the dms tree")
+    questions, oracles = root / "questions.yaml", root / "oracles.yaml"
+    if not questions.is_file() or not oracles.is_file():
+        raise SystemExit("grade52: --pack needs questions.yaml and oracles.yaml")
+    PACK_PATH, ORACLE_PATH, PACK_DIR, EXTERNAL_PACK = questions, oracles, root, root
+
+
+def expected_pack_n(found: int) -> int:
+    """52 for the curated pack. An external pack is the size it declares."""
+    return CURATED_N if EXTERNAL_PACK is None else found
+
+
+def _check_pack_size(found: int) -> None:
+    if found < 1 or found != expected_pack_n(found):
+        raise SystemExit(f"pack size {found} != {expected_pack_n(found)}")
+
+
+def pack_label() -> str:
+    """``curated_ceo`` or the external pack's directory name, printed on every score."""
+    return "curated_ceo" if EXTERNAL_PACK is None else EXTERNAL_PACK.name
+
+
 @contextmanager
 def pack_layout(layout: str) -> Iterator[None]:
     """copy-only hides the curated pack, which is what the API image holds.
@@ -2594,15 +2638,15 @@ def pack_layout(layout: str) -> Iterator[None]:
     if layout != "copy-only":
         yield
         return
-    hidden = PACK_DIR.with_name("curated_ceo.hide_capture")
+    hidden = CURATED_PACK_DIR.with_name("curated_ceo.hide_capture")
     if hidden.exists():
         raise SystemExit("grade52: capture hide path is already present")
-    PACK_DIR.rename(hidden)
+    CURATED_PACK_DIR.rename(hidden)
     try:
         yield
     finally:
-        if hidden.exists() and not PACK_DIR.exists():
-            hidden.rename(PACK_DIR)
+        if hidden.exists() and not CURATED_PACK_DIR.exists():
+            hidden.rename(CURATED_PACK_DIR)
 
 
 @dataclass(frozen=True)
@@ -3015,8 +3059,10 @@ def _armed_ask(
 
         httpx.Client.request = original_request  # type: ignore[method-assign]
         cortex.close()
-    if len(records) != 52:
-        raise SystemExit(f"grade52 armed: FAIL capture size {len(records)} != 52")
+    if len(records) != expected_pack_n(len(records)):
+        raise SystemExit(
+            f"grade52 armed: FAIL capture size {len(records)} != {expected_pack_n(len(records))}"
+        )
     return records
 
 
@@ -3388,8 +3434,7 @@ def _armed_replay(
     pack = _load_yaml(PACK_PATH)
     questions = list(pack["questions"])
     spaces = dict(pack["spaces"])
-    if len(questions) != 52:
-        raise SystemExit(f"pack size {len(questions)} != 52")
+    _check_pack_size(len(questions))
     traps = trap_ids(questions) if profile else frozenset()
     posture = armed_preflight(cfg)
     _prepare_armed_flags(all_flags=all_flags)
@@ -4422,7 +4467,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="--armed only: apply ARMED_ALL_FLAGS_ON (includes DMS_RECONFIRM_RUN_HELD=1)",
     )
+    parser.add_argument(
+        "--pack",
+        type=Path,
+        help="--armed or --envelopes: grade this external pack dir (held-out), not the 52",
+    )
     args = parser.parse_args(argv)
+    if args.pack is not None:
+        if not (args.armed or args.envelopes is not None):
+            raise SystemExit("grade52: --pack is for --armed or --envelopes")
+        use_pack(args.pack)
     sources = int(args.main) + int(args.envelopes is not None) + int(args.armed)
     if sources > 1:
         raise SystemExit("grade52: pass one of --envelopes, --main, --armed")
