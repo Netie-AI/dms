@@ -22,8 +22,17 @@ Stages, and what each one proves:
 * ``profile``  row counts, types, nulls, distinct counts, min/max per column, plus
   foreign-key *candidates* found by value inclusion for sources that declare none.
 * ``ontology`` a structural draft (facts, dimensions, line tables, measures, time
-  columns, joins) from keys and profile alone. With ``--dms`` it also asks DMS's
-  own AI compile for a proposal; nothing is ever approved here (steward step).
+  columns, joins) from keys and profile alone. With ``--dms armed --compile`` each
+  tenant's serving warehouse also goes through DMS's own AI compile, the one
+  ``grade52`` uses (``scripts/verify/onto_compile.py``), and the proposal is stored
+  in the Postgres the ``--onto-db-env`` variable names.
+* ``steward``  approval stays human. A compiled version is approved only by an
+  explicit ``--steward-approved-by <actor uuid> --approval-ref <text>`` or by an
+  entry in ``--approval-file`` that names the tenant and the exact version id
+  (``onto_steward.approve_version_cmd``). Without one the tenant is
+  ``PENDING_STEWARD``: its proposal and diff are written, DMS is not asked, and the
+  tenant is listed as a failure (never a pass). ``steward_pending.json`` in the
+  work dir is the template a steward fills in for ``--approval-file``.
 * ``pack``     human-style questions with gold SQL generated from the draft and run
   on the landed copy. A gold that is empty, all NULL, too long, or tied at its LIMIT
   is dropped with the reason. Two traps per tenant (refuse, clarify).
@@ -49,8 +58,9 @@ import re
 import sys
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -722,6 +732,14 @@ def run_tenant(path: str, work_root: str, opts: dict[str, Any]) -> dict[str, Any
 
     try:
         wh = Path(opts["warehouse"]) if opts.get("warehouse") else None
+        if opts.get("tenant_warehouse"):
+            # Compile reads the whole serving warehouse, so each tenant gets its own.
+            from dms_executor.demo_warehouse import ensure_demo_warehouse
+
+            wh = work / "serve.duckdb"
+            if wh.exists():
+                wh.unlink()  # scratch warehouse this pipeline owns
+            ensure_demo_warehouse(wh)
         ext = timed("extract", stage_extract, spec, work, wh)
         rep["stages"]["extract"] = {k: v for k, v in ext.items() if k not in ("pk", "fk")}
         rep["keys_read"] = {"pk_tables": len(ext["pk"]), "fk_columns": len(ext["fk"])}
@@ -757,6 +775,7 @@ def run_tenant(path: str, work_root: str, opts: dict[str, Any]) -> dict[str, Any
         for name, obj in (("profile", prof), ("ontology_draft", onto), ("pack", pack)):
             (work / f"{name}.json").write_text(json.dumps(obj, indent=1, default=str) + "\n")
         rep["space_id"] = ext.get("space_id")
+        rep["warehouse"] = ext.get("warehouse")
         rep["status"] = "OK"
     except Exception as exc:  # noqa: BLE001 - one tenant's failure is its own report
         rep["status"] = "ERROR"
@@ -772,8 +791,9 @@ def run_tenant(path: str, work_root: str, opts: dict[str, Any]) -> dict[str, Any
 
 
 # --------------------------------------------------------------------------- DMS eval
-def dms_armed(reports: list[dict[str, Any]], work_root: Path, args: argparse.Namespace) -> None:
-    """Ask every generated question on the real in-process ask path (grade52 armed)."""
+def _armed_packs(
+    reports: list[dict[str, Any]], work_root: Path
+) -> tuple[dict[str, tuple[list[Any], dict[str, Any]]], dict[str, str]]:
     packs, spaces = {}, {}
     for r in reports:
         if r["status"] != "OK" or not r.get("space_id"):
@@ -781,13 +801,10 @@ def dms_armed(reports: list[dict[str, Any]], work_root: Path, args: argparse.Nam
         p = json.loads((work_root / r["tenant"] / "pack.json").read_text())
         packs[r["tenant"]] = (p["questions"], p["gold"])
         spaces[r["tenant"]] = r["space_id"]
-    if not packs:
-        return
-    out = work_root / "dms_armed.json"
-    ns = argparse.Namespace(
-        source="fleet", all_flags=args.all_flags, timeout=args.timeout, json=str(out)
-    )
-    fs.armed(list(packs), ns, packs=packs, landed=(Path(args.warehouse), spaces))
+    return packs, spaces
+
+
+def _merge_armed(reports: list[dict[str, Any]], out: Path, args: argparse.Namespace) -> None:
     data = json.loads(out.read_text())
     for r in reports:
         got = data["companies"].get(r["tenant"])
@@ -796,8 +813,246 @@ def dms_armed(reports: list[dict[str, Any]], work_root: Path, args: argparse.Nam
                 "mode": "armed",
                 "tally": got["tally"],
                 "answered": got["answered"],
+                "reason_codes": reason_code_counts(got.get("cases", [])),
             }
             r["failures"] = eval_failures(r["eval"], expect_keys=bool(args.expect_keys))
+
+
+def reason_code_counts(cases: Sequence[dict[str, Any]]) -> dict[str, int]:
+    """Per-question reason codes from the answer envelope, counted (layer when none)."""
+    out: dict[str, int] = {}
+    for c in cases:
+        rc = c.get("reconfirm") if isinstance(c.get("reconfirm"), dict) else {}
+        code = (
+            (rc or {}).get("reason_code")
+            or c.get("abstain_reason")
+            or (f"verdict:{c.get('verdict')}" if c.get("verdict") else "none")
+        )
+        out[str(code)] = out.get(str(code), 0) + 1
+    return dict(sorted(out.items()))
+
+
+def dms_armed(reports: list[dict[str, Any]], work_root: Path, args: argparse.Namespace) -> None:
+    """Ask every generated question on the real in-process ask path (grade52 armed)."""
+    if getattr(args, "compile", False):
+        dms_armed_compiled(reports, work_root, args)
+        return
+    packs, spaces = _armed_packs(reports, work_root)
+    if not packs:
+        return
+    out = work_root / "dms_armed.json"
+    ns = argparse.Namespace(
+        source="fleet", all_flags=args.all_flags, timeout=args.timeout, json=str(out)
+    )
+    fs.armed(list(packs), ns, packs=packs, landed=(Path(args.warehouse), spaces))
+    _merge_armed(reports, out, args)
+
+
+# --------------------------------------------------------------------------- compile + steward
+ONTO_TENANT_NS = "netie-fde-onto"
+
+
+def onto_tenant_id(tenant: str) -> str:
+    """Ontology tenant uuid for an FDE tenant (stable, never the box default tenant)."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{ONTO_TENANT_NS}/{tenant}"))
+
+
+@contextmanager
+def scoped_env(values: dict[str, str]) -> Iterator[None]:
+    """Set ``values`` for the block, then restore the process env exactly."""
+    saved = {k: os.environ.get(k) for k in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def onto_env(args: argparse.Namespace, tenant: str) -> dict[str, str]:
+    """Env the compile, approve and ontology-grounded asks need for one tenant."""
+    name = args.onto_db_env
+    url = os.environ.get(name, "").strip()
+    if not url:
+        raise SystemExit(f"[CONFIG] --compile needs {name} (scratch ontology Postgres URL)")
+    return {
+        "DATABASE_URL": url,
+        "DMS_AO_COMPILE": "1",
+        "DMS_ONTO_PG": "1",
+        "DMS_ONTO_FROM_DATA": "1",
+        "DMS_TENANT_ID": onto_tenant_id(tenant),
+    }
+
+
+def load_approval_file(path: str | None) -> dict[str, dict[str, str]]:
+    """``{tenant: {version_id, actor, approval_ref}}`` from a steward's recorded file.
+
+    The file is JSON ``{"approvals": [{"tenant", "version_id", "actor",
+    "approval_ref"}]}``. An entry missing any field is refused by name; it is
+    never filled in.
+    """
+    if not path:
+        return {}
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    out: dict[str, dict[str, str]] = {}
+    for i, row in enumerate(data.get("approvals") or []):
+        missing = [
+            k
+            for k in ("tenant", "version_id", "actor", "approval_ref")
+            if not str(row.get(k) or "").strip()
+        ]
+        if missing:
+            raise SystemExit(f"[CONFIG] approval file entry {i} missing {','.join(missing)}")
+        out[str(row["tenant"])] = {
+            k: str(row[k]).strip() for k in ("version_id", "actor", "approval_ref")
+        }
+    return out
+
+
+def steward_decision(
+    tenant: str,
+    version_id: str | None,
+    args: argparse.Namespace,
+    recorded: dict[str, dict[str, str]],
+) -> dict[str, str] | None:
+    """Who approves ``version_id`` for ``tenant``, or None (stays PENDING_STEWARD).
+
+    Only two sources count: the explicit ``--steward-approved-by`` flag with an
+    ``--approval-ref``, or a recorded file entry for this tenant naming this exact
+    version. Nothing else approves.
+    """
+    if not version_id:
+        return None
+    entry = recorded.get(tenant)
+    if entry and entry["version_id"] == version_id:
+        return {"actor": entry["actor"], "approval_ref": entry["approval_ref"], "source": "file"}
+    actor = (getattr(args, "steward_approved_by", None) or "").strip()
+    if actor:
+        return {
+            "actor": actor,
+            "approval_ref": (getattr(args, "approval_ref", None) or "").strip(),
+            "source": "flag",
+        }
+    return None
+
+
+def stage_steward(
+    r: dict[str, Any],
+    work_root: Path,
+    args: argparse.Namespace,
+    recorded: dict[str, dict[str, str]],
+    *,
+    transport: Any = None,
+    store: Any = None,
+) -> dict[str, Any]:
+    """Compile one tenant's serving warehouse, then approve only on a human's say."""
+    import onto_compile
+    import onto_steward
+
+    tenant = r["tenant"]
+    tdir = work_root / tenant
+    entry = recorded.get(tenant)
+    res: dict[str, Any] = {"tenant_id": onto_tenant_id(tenant)}
+    if entry:
+        # A steward approved a version an earlier run compiled: approve that one.
+        res.update(version_id=entry["version_id"], compiled="reused")
+    else:
+        try:
+            got = onto_compile.compile_warehouse(
+                Path(r["warehouse"]),
+                res["tenant_id"],
+                transport=transport,
+                store=store,
+                dest=tdir / "onto_proposal.json",
+            )
+        except SystemExit as exc:
+            res.update(status="COMPILE_REFUSED", detail=str(exc))
+            return res
+        res.update(
+            version_id=got["version_id"],
+            compiled="new",
+            counts=got["counts"],
+            model_calls=got["model_calls"],
+        )
+    who = steward_decision(tenant, res.get("version_id"), args, recorded)
+    if who is None:
+        res["status"] = "PENDING_STEWARD"
+        return res
+    try:
+        done = onto_steward.approve_version_cmd(
+            version_id=str(res["version_id"]),
+            actor=who["actor"],
+            approval_ref=who["approval_ref"],
+            store=store,
+        )
+    except SystemExit as exc:
+        res.update(status="APPROVAL_REFUSED", detail=str(exc), approval_source=who["source"])
+        return res
+    res.update(
+        status="APPROVED",
+        approval_source=who["source"],
+        approved_by=done["actor"],
+        approval_ref=done["approval_ref"],
+        approved_items=done["n"],
+    )
+    return res
+
+
+def steward_failures(onto: dict[str, Any]) -> list[str]:
+    st = onto.get("status")
+    if st == "APPROVED":
+        return []
+    if st == "PENDING_STEWARD":
+        return [
+            f"ontology PENDING_STEWARD version={onto.get('version_id')} "
+            "(DMS not asked; approve with --steward-approved-by or --approval-file)"
+        ]
+    return [f"ontology {st}: {onto.get('detail', '')}".strip()]
+
+
+def dms_armed_compiled(
+    reports: list[dict[str, Any]], work_root: Path, args: argparse.Namespace
+) -> None:
+    """Per tenant: compile, steward approval, then ontology-grounded armed asks."""
+    import grade52
+    from dms_core.control_plane.onto_data import reset_ontology_data_store
+
+    packs, spaces = _armed_packs(reports, work_root)
+    recorded = load_approval_file(args.approval_file)
+    pending = []
+    for r in reports:
+        if r["tenant"] not in packs:
+            continue
+        t = r["tenant"]
+        with scoped_env(onto_env(args, t)):
+            reset_ontology_data_store()
+            onto = stage_steward(r, work_root, args, recorded)
+            (work_root / t / "steward.json").write_text(json.dumps(onto, indent=1) + "\n")
+            r.setdefault("eval", {})["onto"] = onto
+            print(f"[STEWARD] {t}: {onto['status']} version={onto.get('version_id')}", flush=True)
+            if onto["status"] == "PENDING_STEWARD":
+                pending.append(
+                    {"tenant": t, "version_id": onto["version_id"], "actor": "", "approval_ref": ""}
+                )
+            if onto["status"] != "APPROVED":
+                r["failures"] = eval_failures(r["eval"], expect_keys=bool(args.expect_keys))
+                r["failures"] += steward_failures(onto)
+                continue
+            onto["precheck"] = grade52.approved_ontology_precheck()
+            out = work_root / t / "dms_armed.json"
+            ns = argparse.Namespace(
+                source="fleet", all_flags=args.all_flags, timeout=args.timeout, json=str(out)
+            )
+            fs.armed([t], ns, packs={t: packs[t]}, landed=(Path(r["warehouse"]), {t: spaces[t]}))
+            reset_ontology_data_store()
+            _merge_armed([r], out, args)
+    if pending:
+        (work_root / "steward_pending.json").write_text(
+            json.dumps({"approvals": pending}, indent=1) + "\n"
+        )
 
 
 # --------------------------------------------------------------------------- fleet report
@@ -910,6 +1165,19 @@ def cmd_factory(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
+def compile_config_error(args: argparse.Namespace) -> str | None:
+    """Named refusal for a compile/steward flag set that cannot be honoured."""
+    if getattr(args, "compile", False) and args.dms != "armed":
+        return "--compile needs --dms armed"
+    if (args.steward_approved_by or args.approval_file) and not args.compile:
+        return "steward approval needs --compile"
+    if args.steward_approved_by and not (args.approval_ref or "").strip():
+        return "--steward-approved-by needs --approval-ref"
+    if args.compile and not os.environ.get(args.onto_db_env, "").strip():
+        return f"--compile needs {args.onto_db_env} (scratch ontology Postgres URL)"
+    return None
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     files = [str(p) for s in args.tenants for p in tenant_files(s)]
     if not files:
@@ -918,16 +1186,22 @@ def cmd_run(args: argparse.Namespace) -> int:
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=True)
     opts = {"max_questions": args.max_questions, "expect_keys": args.expect_keys}
+    bad = compile_config_error(args)
+    if bad:
+        print(f"[CONFIG] {bad}")
+        return EXIT_CONFIG
     if args.dms == "armed":
-        # One warehouse for the in-process app, so landing is serial.
+        # One in-process app at a time, so landing is serial.
         import grade52
         from dms_executor.demo_warehouse import ensure_demo_warehouse
 
-        sys.path.insert(0, str(ROOT / "scripts" / "verify"))
         grade52.armed_preflight(grade52.armed_config())
-        args.warehouse = str(work / "fleet_warehouse.duckdb")
-        ensure_demo_warehouse(Path(args.warehouse))
-        opts["warehouse"] = args.warehouse
+        if args.compile:
+            opts["tenant_warehouse"] = True
+        else:
+            args.warehouse = str(work / "fleet_warehouse.duckdb")
+            ensure_demo_warehouse(Path(args.warehouse))
+            opts["warehouse"] = args.warehouse
         args.workers = 1
     t0 = time.perf_counter()
     if args.workers > 1:
@@ -987,6 +1261,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     r.add_argument("--dms", choices=["none", "armed"], default="none")
     r.add_argument("--all-flags", action="store_true")
     r.add_argument("--timeout", type=float, default=120.0)
+    r.add_argument(
+        "--compile",
+        action="store_true",
+        help="--dms armed: AI ontology compile per tenant (grade52's), then steward step",
+    )
+    r.add_argument(
+        "--onto-db-env",
+        default="FDE_ONTO_DATABASE_URL",
+        help="env var holding the Postgres URL the ontology versions are stored in",
+    )
+    r.add_argument(
+        "--steward-approved-by",
+        default="",
+        metavar="ACTOR_UUID",
+        help="explicit human approval of every version this run compiles",
+    )
+    r.add_argument("--approval-ref", default="", help="steward reference recorded on approval")
+    r.add_argument(
+        "--approval-file",
+        default="",
+        help="recorded approvals: {approvals:[{tenant,version_id,actor,approval_ref}]}",
+    )
     args = ap.parse_args(argv)
     if args.cmd == "factory":
         if args.engine not in ("generated", "sqlite") and not os.environ.get(args.password_env):

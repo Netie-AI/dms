@@ -17,6 +17,9 @@ on:
       - "scripts/verify/fde_scenarios.py"
       - "tests/fde_scenarios/**"
       - "tests/test_fde_pipeline_01.py"
+      - "tests/test_fde_onto_steward_01.py"
+      - "scripts/verify/onto_compile.py"
+      - "scripts/verify/onto_steward.py"
       - ".github/workflows/fde-fleet.yml"
   push:
     branches: [main, master]
@@ -62,7 +65,7 @@ jobs:
           pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
           pip install -e ".[dev,sources]"
       - name: Pipeline unit tests
-        run: python -m pytest tests/test_fde_pipeline_01.py -q
+        run: python -m pytest tests/test_fde_pipeline_01.py tests/test_fde_onto_steward_01.py -q
       - name: Generated fleet (fixed seed, then this run's seed)
         run: |
           N="${{ github.event.inputs.tenants || '200' }}"
