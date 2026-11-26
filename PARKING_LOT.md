@@ -3,6 +3,12 @@
 **Deferred until condition is met.**
 **Ledger updated:** 2026-08-05 afternoon — F29 NEEDS-YOU closed **A** (thin EPIC-023 deferred SURFACE; B/H6 rejected; P-DMS-30 stays parked). Accuracy RUN NOW = residual EPIC-017/018 completeness (#33/#35), then EPIC-019. EPIC-023 not ticketed.
 
+## WORD-RULES-OUT-01 - remove the hand-coded measure token locks
+
+`semantic_retrieve._locked_measure` and `typed_filters` still map phrases (audit+overdue, utilisation, reorder, chemicals, cctv) onto measure ids. GROUND-DEFS-01 does not delete them.
+
+**Unlock:** an A/B on the box, `DMS_GROUND_DEFS` on vs off, same SHA, the 52 and pack H, 2 runs each. WRONG stays 0 and correct does not drop beyond run-to-run noise. Then delete those token locks. Do not replace them with a new word list.
+
 ---
 
 ## Done this pass (not parked)

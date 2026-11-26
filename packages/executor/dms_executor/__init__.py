@@ -284,13 +284,20 @@ def _insights_compute_seam(
     feedback = None
     asked = question
     examples = ""
+    defs = ""
     ai_rows: list[dict[str, Any]] = []
     # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
     # stays quiet because the key is removed before the POST.
     # verified_examples is the same kind of lift: question text, not a body field.
     from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
 
-    _hidden = {"sql_loop_feedback", "sql_vote_prompt", "sql_vote_kind", "vq_examples"}
+    _hidden = {
+        "sql_loop_feedback",
+        "sql_vote_prompt",
+        "sql_vote_kind",
+        "vq_examples",
+        "governed_definitions",
+    }
     if isinstance(ontology, dict) and (
         _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
     ):
@@ -306,11 +313,16 @@ def _insights_compute_seam(
             raw_examples = lifted.get("vq_examples")
             if isinstance(raw_examples, str) and raw_examples.strip():
                 examples = raw_examples.strip()
+            raw_defs = lifted.get("governed_definitions")
+            if isinstance(raw_defs, str) and raw_defs.strip():
+                defs = raw_defs.strip()
             onto = {k: v for k, v in lifted.items() if k not in _hidden}
         else:
             onto = lifted
     if examples:
         asked = f"{asked.rstrip()}\nExamples:\n{examples}"
+    if defs:
+        asked = f"{asked.rstrip()}\n{defs}"
     if ai_rows:
         from dms_executor.ai_first import understand_question
 

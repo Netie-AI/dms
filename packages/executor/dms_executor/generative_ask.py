@@ -88,6 +88,12 @@ from dms_executor.grant_struct import (
     sqlglot_dialect,
     structural_grant_stop,
 )
+from dms_executor.ground_defs import (
+    GroundedDef,
+    build_grounding,
+    ground_defs_enabled,
+    mismatch_envelope,
+)
 from dms_executor.manifest import OpenVaultTokenError
 from dms_executor.ontology import (
     CompiledQuery,
@@ -1556,10 +1562,12 @@ def _run_extract_loop(
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
     budget: AskCallBudget,
+    grounded: Sequence[GroundedDef] | None = None,
 ) -> dict[str, Any]:
     """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
 
     held: dict[str, Any] = {}
+    grounded_defs = list(grounded or [])
 
     def model_sql(body: dict[str, Any] | None) -> str | None:
         if not isinstance(body, dict):
@@ -1616,6 +1624,17 @@ def _run_extract_loop(
             broken = violations_cited_by_sql(sql, declared, declared_violations)
             if broken:
                 return violation_reason(broken)
+        if grounded_defs:
+            blocked = mismatch_envelope(
+                sql,
+                grounded_defs,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+            )
+            if blocked is not None:
+                held["env"] = blocked
+                return "definition_mismatch"
         return None
 
     def vote_rows(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1735,7 +1754,9 @@ def _run_extract_loop(
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=attempts,
-        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF, "pii", "def_validate"}),
+        no_retry_reasons=frozenset(
+            {RESERVED_PARAM_AS_OF, "pii", "def_validate", "definition_mismatch"}
+        ),
         budget=budget,
     )
     if first.get("abstained") or not first.get("rows"):
@@ -1861,7 +1882,9 @@ def _second_reading(
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=second_attempts,
-        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF, "pii", "def_validate"}),
+        no_retry_reasons=frozenset(
+            {RESERVED_PARAM_AS_OF, "pii", "def_validate", "definition_mismatch"}
+        ),
         recover_failures=True,
         budget=budget,
     )
@@ -1944,6 +1967,7 @@ def _ladder_after_ai_error(
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
     budget: AskCallBudget,
+    grounded: Sequence[GroundedDef] | None = None,
 ) -> dict[str, Any]:
     """Retry generate once, then the extract checker. No rule-builder compile.
 
@@ -1989,6 +2013,7 @@ def _ladder_after_ai_error(
             ledger_append=ledger_append,
             attempts=attempts,
             budget=budget,
+            grounded=grounded,
         )
     return _abstain(
         question,
@@ -2178,6 +2203,7 @@ def maybe_generative_ask(
         if space_block is not None
         else ctx
     )
+    example_rows: list[dict[str, Any]] = []
     if vq_rag_enabled():
         example_rows = retrieve_verified_examples(
             q,
@@ -2191,6 +2217,25 @@ def maybe_generative_ask(
         if block:
             insights_ctx = dict(insights_ctx)
             insights_ctx["vq_examples"] = block
+    # Flag off: this list stays empty and the catalog is not copied.
+    # On the demo path `onto` is the demo ontology. Outside demo it is the
+    # Space's own, never a demo ontology loaded beside it.
+    grounded: list[GroundedDef] = []
+    if ground_defs_enabled():
+        defs_onto = onto if demo_ontology_allowed else space_onto
+        text, grounded = build_grounding(
+            q,
+            defs_onto,
+            embedder=embedder,
+            examples=example_rows,
+            grantable=allowed,
+        )
+        if text:
+            insights_ctx = dict(insights_ctx)
+            insights_ctx["governed_definitions"] = text
+            # The rows already sit in the governed block. A second Examples
+            # section would send the same SQL twice.
+            insights_ctx.pop("vq_examples", None)
     from dms_executor.ai_first import ai_first_enabled, with_examples
 
     held_preview: dict[str, Any] | None = None
@@ -2355,6 +2400,7 @@ def maybe_generative_ask(
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
                     budget=vote_budget,
+                    grounded=grounded,
                 )
             )
         return _stamp(
@@ -2426,6 +2472,7 @@ def maybe_generative_ask(
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
                     budget=vote_budget,
+                    grounded=grounded,
                 )
             )
     ranked_slots: dict[str, Any] | None = None
@@ -2646,6 +2693,16 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            if grounded:
+                blocked = mismatch_envelope(
+                    sql,
+                    grounded,
+                    question=q,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if blocked is not None:
+                    return _stamp(blocked)
             sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(
@@ -2879,6 +2936,16 @@ def maybe_generative_ask(
             if NOTE_INSIGHTS_RANKING in trail_notes
             else PLAN_ORIGIN_GENERATE_SQL
         )
+    if grounded:
+        blocked = mismatch_envelope(
+            compiled.sql,
+            grounded,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if blocked is not None:
+            return _stamp(blocked)
     return _stamp(
         _submit_validated(
             compiled.sql,
