@@ -2974,6 +2974,7 @@ def _armed_ask(
     records: list[dict[str, Any]] = []
     pacer = _ArmedPacer()
     original_request = _install_pacer(pacer)
+    pending: dict[str, Any] | None = None
     try:
         for question in questions:
             qid = str(question["id"])
@@ -3000,6 +3001,7 @@ def _armed_ask(
                 "env": env,
                 "served": _served_block(env, cortex.payloads),
             }
+            pending = record
             if profile == PROFILE_AI_FIRST:
                 record["served"]["example_sql_sha256"] = sorted(cortex.examples)
                 cortex.examples = set()
@@ -3010,6 +3012,15 @@ def _armed_ask(
             if token and qid not in traps:
                 record["yes"] = _press_yes(client, cortex, cfg, qid, token, stub)
             records.append(record)
+            pending = None
+    except SystemExit as exc:
+        kept = keep_failed_capture(
+            [*records, *([pending] if pending is not None else [])],
+            str(exc),
+            cortex_sha=cfg.cortex_sha,
+        )
+        print(f"armed failed capture (not a score): {kept}")
+        raise
     finally:
         import httpx
 
@@ -3408,7 +3419,12 @@ def _armed_replay(
                 records = _armed_ask(cfg, minter, questions, spaces, profile=profile, traps=traps)
         finally:
             minter.close()
-    armed_check(records)
+    try:
+        armed_check(records)
+    except SystemExit as exc:
+        kept = keep_failed_capture(records, str(exc), cortex_sha=cfg.cortex_sha)
+        print(f"armed failed capture (not a score): {kept}")
+        raise
     meta = {
         "mode": RUN_ARMED,
         "cortex_sha": cfg.cortex_sha,
@@ -3432,6 +3448,29 @@ def write_capture(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+FAILED_CAPTURE_NAME = "grade52.armed.failed.jsonl"
+
+
+def keep_failed_capture(
+    records: Sequence[Mapping[str, Any]], reason: str, *, cortex_sha: str | None = None
+) -> Path:
+    """Write what an armed run captured before it refused. Never a score.
+
+    The header says ``mode=failed`` and ``not_a_score=true``, so ``--envelopes``
+    refuses it (only armed or stub headers grade). It exists so a refused run
+    still shows why: the Insights fail codes, reconfirm codes and model stamps
+    per question, for ``failure_cases.py`` and a human.
+    """
+    header = {
+        "mode": "failed",
+        "not_a_score": True,
+        "reason": str(reason)[:300],
+        "cortex_sha": cortex_sha,
+        "n_captured": len(records),
+    }
+    return write_capture(records, header, _artifact_dir() / FAILED_CAPTURE_NAME)
 
 
 def _labelled(
