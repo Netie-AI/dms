@@ -665,6 +665,124 @@ def live(companies: Iterable[str], args: argparse.Namespace) -> int:
     return EXIT_FAIL if any_wrong else EXIT_PASS
 
 
+def _space_id(company: str) -> str:
+    import uuid
+
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"netie-fde-scenario/{company}"))
+
+
+def armed(companies: Iterable[str], args: argparse.Namespace) -> int:
+    """In-process DMS app on the real ask path, as ``grade52 --armed`` builds it.
+
+    Each company is pulled from a live source engine through db_connector into a
+    scratch warehouse under its own Space (grants = that Space's bronze tables),
+    then every pack question is posted to ``/v1/chat/ask`` with the product
+    ``CortexClient`` and a real OpenVault manifest mint. Needs the grade52 armed
+    settings (CORTEX_BASE_URL, an OpenVault-issued CORTEX_API_KEY, CORTEX_SHA,
+    OPENVAULT_URL, DMS_OV_SERVICE_TOKEN). A missing one is refused by name.
+    """
+    sys.path.insert(0, str(ROOT / "scripts" / "verify"))
+    import grade52
+    from cortex_client import CortexClient
+    from dms_api.app import create_app
+    from dms_api.settings import Settings, get_settings
+    from dms_executor import Executor
+    from dms_executor.db_connector import SourceConfig, ingest_source_database
+    from dms_executor.demo_warehouse import ensure_demo_warehouse
+    from fastapi.testclient import TestClient
+
+    cfg = grade52.armed_config()
+    grade52.armed_preflight(cfg)
+    grade52._prepare_armed_flags(all_flags=bool(args.all_flags))
+    db = Path(tempfile.mkdtemp(prefix="fde-armed-")) / "warehouse.duckdb"
+    ensure_demo_warehouse(db)
+    spaces: dict[str, str] = {}
+    for c in companies:
+        sid = _space_id(c)
+        src = SourceConfig(
+            kind=args.source,
+            host=args.host,
+            port=args.port,  # type: ignore[arg-type]
+            database=f"fde_{c}",
+            user=args.user or "",
+            password=_password(),
+            encrypt=False,
+            trust_server_certificate=True,
+        )
+        ext = ingest_source_database(src, path=db, space_id=sid)
+        spaces[c] = sid
+        print(f"[LANDED] {args.source} {c}: {len(ext.pulls)} tables -> space {sid}")
+    report: dict[str, Any] = {
+        "source": args.source,
+        "all_flags": bool(args.all_flags),
+        "cortex_sha": cfg.cortex_sha,
+        "companies": {},
+    }
+    any_wrong = False
+    with grade52._env_value("CORTEX_URL", cfg.cortex_url):
+        minter = grade52._armed_minter(cfg)
+        cortex = CortexClient(cfg.cortex_url, timeout=args.timeout, api_key=cfg.api_key)
+        settings = Settings(
+            _env_file=None,
+            dms_ask_mode="live",
+            dms_demo_fallback=False,  # type: ignore[call-arg]
+            cortex_url=cfg.cortex_url,
+            cortex_api_key=cfg.api_key,
+            openvault_url=cfg.openvault_url,
+        )
+        app = create_app()
+        app.state.ask_service = Executor(cortex=cortex, minter=minter, warehouse_path=db)
+        app.state.cortex = cortex
+        app.dependency_overrides[get_settings] = lambda: settings
+        client = TestClient(app)
+        try:
+            for c in companies:
+                frozen = json.loads(answers_path(c).read_text(encoding="utf-8"))
+                tally = {"CORRECT": 0, "WRONG": 0, "ABSTAIN": 0, "RECONFIRM": 0, "ERROR": 0}
+                cases = []
+                for q in load_questions(c):
+                    try:
+                        res = client.post(
+                            "/v1/chat/ask", json={"question": q["question"], "space_id": spaces[c]}
+                        )
+                        env = res.json() if res.status_code == 200 else {}
+                        if res.status_code != 200:
+                            verdict, why = "ERROR", f"http_{res.status_code}"
+                        else:
+                            verdict, why = judge_live(q, env, frozen.get(q["id"]))
+                    except Exception as exc:  # noqa: BLE001 - named per question
+                        verdict, why, env = "ERROR", type(exc).__name__, {}
+                    tally[verdict] += 1
+                    cases.append(
+                        {
+                            "id": q["id"],
+                            "expect": q["expect"],
+                            "verdict": verdict,
+                            "reason": why,
+                            "badge": env.get("badge"),
+                            "abstain_reason": env.get("abstain_reason"),
+                            "sql": (env.get("sql_used") or env.get("sql") or "")[:2000],
+                        }
+                    )
+                    print(f"  {c}/{q['id']}: {verdict} {why}", flush=True)
+                answered = tally["CORRECT"] + tally["WRONG"]
+                any_wrong |= tally["WRONG"] > 0
+                report["companies"][c] = {"tally": tally, "answered": answered, "cases": cases}
+                print(
+                    f"[{args.source} {c}] n={sum(tally.values())} answered={answered} "
+                    f"correct={tally['CORRECT']} WRONG={tally['WRONG']} "
+                    f"abstain={tally['ABSTAIN']} reconfirm={tally['RECONFIRM']} "
+                    f"error={tally['ERROR']}",
+                    flush=True,
+                )
+        finally:
+            cortex.close()
+            minter.close()
+    if args.json:
+        Path(args.json).write_text(json.dumps(report, indent=1, default=str) + "\n")
+    return EXIT_FAIL if any_wrong else EXIT_PASS
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     mode = ap.add_mutually_exclusive_group(required=True)
@@ -674,6 +792,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     mode.add_argument("--load", choices=["postgresql", "mysql", "sqlserver", "sqlite"])
     mode.add_argument("--fidelity", choices=["postgresql", "mysql", "sqlserver", "sqlite"])
     mode.add_argument("--live", action="store_true")
+    mode.add_argument(
+        "--armed",
+        action="store_true",
+        help="in-process app, real Cortex + OpenVault mint (grade52 armed settings)",
+    )
+    ap.add_argument(
+        "--source",
+        choices=["postgresql", "mysql", "sqlserver"],
+        default="postgresql",
+        help="--armed: engine the companies are pulled from",
+    )
+    ap.add_argument("--all-flags", action="store_true", help="--armed: grade52 ARMED_ALL_FLAGS_ON")
     ap.add_argument("--company", action="append", choices=COMPANIES)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int)
@@ -704,6 +834,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return load_engine(args.load, companies, args)
     if args.fidelity:
         return fidelity(args.fidelity, companies, args)
+    if args.armed:
+        return armed(companies, args)
     return live(companies, args)
 
 
