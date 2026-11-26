@@ -1,0 +1,435 @@
+{
+ "hr01_headcount_by_dept": {
+  "columns": [
+   "dept_name",
+   "headcount"
+  ],
+  "rows": [
+   [
+    "Engineering",
+    86
+   ],
+   [
+    "Sales",
+    58
+   ],
+   [
+    "Marketing",
+    32
+   ],
+   [
+    "People",
+    41
+   ],
+   [
+    "Finance",
+    27
+   ],
+   [
+    "Operations",
+    71
+   ],
+   [
+    "Customer Support",
+    50
+   ]
+  ]
+ },
+ "hr02_leavers_2025_by_dept": {
+  "columns": [
+   "dept_name",
+   "leavers"
+  ],
+  "rows": [
+   [
+    "Customer Support",
+    2
+   ],
+   [
+    "Finance",
+    2
+   ],
+   [
+    "Operations",
+    1
+   ],
+   [
+    "People",
+    2
+   ],
+   [
+    "Engineering",
+    3
+   ],
+   [
+    "Sales",
+    2
+   ]
+  ]
+ },
+ "hr03_avg_salary_by_level_myr": {
+  "columns": [
+   "job_level",
+   "avg_salary"
+  ],
+  "rows": [
+   [
+    1,
+    81208.87
+   ],
+   [
+    2,
+    108320.69
+   ],
+   [
+    3,
+    134545.09
+   ],
+   [
+    4,
+    167562.23
+   ],
+   [
+    5,
+    211290.06
+   ],
+   [
+    6,
+    211957.56
+   ],
+   [
+    7,
+    362398.61
+   ]
+  ]
+ },
+ "hr04_biggest_team": {
+  "columns": [
+   "emp_id",
+   "full_name",
+   "direct_reports"
+  ],
+  "rows": [
+   [
+    48,
+    "Farah Lee",
+    13
+   ]
+  ]
+ },
+ "hr05_annual_leave_2025_by_dept": {
+  "columns": [
+   "dept_name",
+   "leave_days"
+  ],
+  "rows": [
+   [
+    "Sales",
+    282
+   ],
+   [
+    "Engineering",
+    582
+   ],
+   [
+    "Marketing",
+    177
+   ],
+   [
+    "People",
+    223
+   ],
+   [
+    "Customer Support",
+    288
+   ],
+   [
+    "Operations",
+    363
+   ],
+   [
+    "Finance",
+    83
+   ]
+  ]
+ },
+ "hr06_tenure_by_city": {
+  "columns": [
+   "city",
+   "avg_tenure_years"
+  ],
+  "rows": [
+   [
+    "Jakarta",
+    4.98
+   ],
+   [
+    "Penang",
+    6.38
+   ],
+   [
+    "Kuala Lumpur",
+    6.36
+   ],
+   [
+    "Singapore",
+    6.22
+   ]
+  ]
+ },
+ "hr07_big_raises": {
+  "columns": [
+   "employees"
+  ],
+  "rows": [
+   [
+    85
+   ]
+  ]
+ },
+ "hr08_gender_by_level": {
+  "columns": [
+   "job_level",
+   "gender",
+   "employees"
+  ],
+  "rows": [
+   [
+    1,
+    "F",
+    48
+   ],
+   [
+    1,
+    "M",
+    35
+   ],
+   [
+    2,
+    "F",
+    44
+   ],
+   [
+    2,
+    "M",
+    47
+   ],
+   [
+    3,
+    "F",
+    30
+   ],
+   [
+    3,
+    "M",
+    47
+   ],
+   [
+    4,
+    "F",
+    25
+   ],
+   [
+    4,
+    "M",
+    34
+   ],
+   [
+    5,
+    "F",
+    14
+   ],
+   [
+    5,
+    "M",
+    18
+   ],
+   [
+    6,
+    "F",
+    10
+   ],
+   [
+    6,
+    "M",
+    6
+   ],
+   [
+    7,
+    "F",
+    3
+   ],
+   [
+    7,
+    "M",
+    4
+   ]
+  ]
+ },
+ "hr09_hires_by_month_h1": {
+  "columns": [
+   "month",
+   "hires"
+  ],
+  "rows": [
+   [
+    "2026-01",
+    2
+   ],
+   [
+    "2026-02",
+    4
+   ],
+   [
+    "2026-03",
+    3
+   ],
+   [
+    "2026-04",
+    2
+   ],
+   [
+    "2026-05",
+    4
+   ],
+   [
+    "2026-06",
+    3
+   ]
+  ]
+ },
+ "hr10_contractor_share": {
+  "columns": [
+   "dept_name",
+   "contract_pct"
+  ],
+  "rows": [
+   [
+    "Engineering",
+    11.63
+   ],
+   [
+    "Sales",
+    6.9
+   ],
+   [
+    "People",
+    14.63
+   ],
+   [
+    "Marketing",
+    12.5
+   ],
+   [
+    "Finance",
+    7.41
+   ],
+   [
+    "Operations",
+    12.68
+   ],
+   [
+    "Customer Support",
+    8.0
+   ]
+  ]
+ },
+ "hr11_low_rated_depts_2025": {
+  "columns": [
+   "dept_name",
+   "avg_rating"
+  ],
+  "rows": [
+   [
+    "Marketing",
+    2.76
+   ],
+   [
+    "Sales",
+    2.54
+   ],
+   [
+    "Operations",
+    2.88
+   ],
+   [
+    "Customer Support",
+    2.1
+   ]
+  ]
+ },
+ "hr12_missing_reviews_2025": {
+  "columns": [
+   "missing_reviews"
+  ],
+  "rows": [
+   [
+    19
+   ]
+  ]
+ },
+ "hr13_payroll_by_currency": {
+  "columns": [
+   "currency",
+   "annual_payroll"
+  ],
+  "rows": [
+   [
+    "SGD",
+    3350810.55
+   ],
+   [
+    "MYR",
+    33579128.32
+   ],
+   [
+    "IDR",
+    26551206523.64
+   ]
+  ]
+ },
+ "hr14_pending_leave_old": {
+  "columns": [
+   "stale_pending"
+  ],
+  "rows": [
+   [
+    139
+   ]
+  ]
+ },
+ "hr15_sick_days_by_city_2025": {
+  "columns": [
+   "city",
+   "sick_days"
+  ],
+  "rows": [
+   [
+    "Kuala Lumpur",
+    325
+   ],
+   [
+    "Penang",
+    113
+   ],
+   [
+    "Jakarta",
+    91
+   ],
+   [
+    "Singapore",
+    77
+   ]
+  ]
+ },
+ "hr16_engineering_attrition_2025": {
+  "columns": [
+   "attrition_pct"
+  ],
+  "rows": [
+   [
+    3.57
+   ]
+  ]
+ }
+}
