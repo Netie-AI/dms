@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-26 - ONTO-GAPS-01: propose a missing measure, steward confirms it
+
+- **Flag.** `DMS_ONTO_GAP_PROPOSE` defaults to 0 and also needs `DMS_ONTO_PG`. Off, the ask envelope, the prompt, and the served route are unchanged. On, an ask that reconfirms `unknown_measure` or `ungrounded_measure`, or whose SQL aggregate is not a declared measure, is logged. A background drain (or `scripts/onto/propose_gaps.py --since`) asks OpenVault role `ontology` for one measure. The ask does not wait.
+- **Store.** A proposal that parses, names only granted columns, explains, and returns a finite number is stored with `store_proposal` as status `proposed` and `served` false. The same `onto_steward.py approve-version` path approves it. Yes on the reconfirm is not approval. OpenVault 422 records `gap_propose_unavailable` and leaves today's reconfirm in place.
+- **Not a word rule.** The gap is a reason code or a sqlglot aggregate. The model returns structured JSON. Duplicate detection compares the normalized expression tree. After approval, GROUND-DEFS ranks the measure with the existing embedder or BM25.
+
 ## 2026-11-26 - GROUND-DEFS-01: governed definitions in the AI prompt
 
 - **Flag.** `DMS_GROUND_DEFS` defaults to 0. Off, the Insights prompt is unchanged. On, the ask's own ontology (the demo ontology only on the demo path) is ranked with the verified-example embedder, or BM25 when that embedder is absent. Top 3 above a score floor go into the question as `governed definitions; use exactly` (name, grain, governed SQL, as_of anchor). Space-scoped verified examples from the `DMS_VQ_RAG` path sit in the same block.
