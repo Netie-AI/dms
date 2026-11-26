@@ -1416,7 +1416,7 @@ def test_the_real_gate_puts_the_steward_and_the_space_on_the_wire_for_pins(
     wire: list[dict[str, Any]] = []
 
     def _handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/dms/tasks/gate/check"
+        assert request.url.path == "/dms/tasks/choose"
         wire.append(json.loads(request.content))
         return httpx.Response(200, json={"status": "ok"})
 
@@ -1441,6 +1441,7 @@ def test_the_real_gate_puts_the_steward_and_the_space_on_the_wire_for_pins(
     for task in ("insight_proof.pin.preview", "insight_proof.pin.confirm",
                  "insight_proof.replay", "insight_proof.pins.read", "insight_proof.revoke"):
         assert by_task[task]["actor"] == _ACTOR, by_task[task]
+        assert by_task[task]["accepted"] is False, by_task[task]
         assert by_task[task]["filled_template"] == {"space_id": None}, by_task[task]
     assert got["approved_by"] == _ACTOR
     assert w.cortex.events("insight.pinned")[0].actor == _ACTOR
