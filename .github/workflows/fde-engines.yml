@@ -83,7 +83,7 @@ jobs:
           import pymysql
           for port, pw in ((3306, "ci-only-mysql"), (3307, "ci-only-mariadb")):
               con = pymysql.connect(host="127.0.0.1", port=port, user="root", password=pw, autocommit=True)
-              con.cursor().execute("CREATE USER 'fde_ro'@'%' IDENTIFIED BY %s", ("$RO",))
+              con.cursor().execute("CREATE USER 'fde_ro'@'%%' IDENTIFIED BY %s", ("$RO",))
               con.close()
           PY
       - name: Load (PostgreSQL 16, MySQL 8, MariaDB 11)
@@ -130,8 +130,8 @@ jobs:
       - name: ODBC Driver 18
         run: |
           if ! odbcinst -q -d 2>/dev/null | grep -q "ODBC Driver 18 for SQL Server"; then
-            curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
-            curl -fsSL "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list" | sudo tee /etc/apt/sources.list.d/mssql-release.list
+            curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+            echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/$(lsb_release -rs)/prod $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/mssql-release.list
             sudo apt-get update
             sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
           fi
