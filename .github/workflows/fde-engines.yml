@@ -96,10 +96,9 @@ jobs:
         run: |
           FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity mysql --port 3306 --user fde_ro --expect-keys
           FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity mysql --port 3307 --user fde_ro --expect-keys
-          # PostgreSQL: answers must survive; key discovery for a SELECT-only login is
-          # not enforced on main (information_schema hides constraints from it).
-          # FDE-PG-KEYS-01 turns --expect-keys on here once it lands.
-          FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity postgresql --user fde_ro
+          # PostgreSQL keys come from pg_catalog since FDE-PG-KEYS-01 (#545), so a
+          # SELECT-only login must read every PK and FK, as on the other engines.
+          FDE_SOURCE_PASSWORD="$FDE_RO_PW" python scripts/verify/fde_scenarios.py --fidelity postgresql --user fde_ro --expect-keys
 
   sqlserver:
     runs-on: ubuntu-latest
