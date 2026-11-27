@@ -1200,7 +1200,9 @@ def _insights_body(
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
             asked += _repair_question_suffix(sql_feedback)
-    preference = "escalate" if route_hint == "escalate" else FREEROUTE_PREFERENCE
+    preference = (
+        route_hint if route_hint in {"escalate", "reason"} else FREEROUTE_PREFERENCE
+    )
     onto, schema_context = _split_schema_context(ontology)
     onto, examples = lift_verified_examples(onto)
     evidence = None

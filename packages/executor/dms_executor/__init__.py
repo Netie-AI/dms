@@ -311,8 +311,9 @@ def _insights_compute_seam(
         if isinstance(lifted, dict) and _hidden.intersection(lifted):
             raw = lifted.get("sql_loop_feedback")
             feedback = raw if isinstance(raw, dict) else None
-            if lifted.get("route_hint") == "escalate":
-                route_hint = "escalate"
+            hint = lifted.get("route_hint")
+            if hint in {"escalate", "reason"}:
+                route_hint = hint
             vote_prompt = lifted.get("sql_vote_prompt")
             if isinstance(vote_prompt, str) and vote_prompt.strip():
                 asked = vote_prompt
@@ -347,8 +348,8 @@ def _insights_compute_seam(
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
-        if route_hint == "escalate":
-            kwargs["route_hint"] = "escalate"
+        if route_hint in {"escalate", "reason"}:
+            kwargs["route_hint"] = route_hint
         try:
             return fn(asked, **kwargs)
         except TypeError:
@@ -1636,6 +1637,65 @@ class Executor:
         from dms_executor.reconfirm import peek_pending
 
         return peek_pending(token)
+
+    def clarify_pick(
+        self,
+        clarify_id: str,
+        *,
+        reading_id: str | None = None,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """Re-check grants, then ask the chosen reading on the normal path.
+
+        The stored preview is not executed. Free text is one new question.
+        """
+        from dms_executor.clarify import peek_clarify, run_pick
+        from dms_executor.demo_warehouse import SERVING_DIALECT
+
+        pending = peek_clarify(clarify_id)
+        if pending is None:
+            raise KeyError(clarify_id)
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        grants = set(self.grantable_tables(space_id=space_id))
+
+        def _ask(
+            question: str,
+            *,
+            space_id: str | None,
+            session_id: str | None,
+            tables: list[str] | None,
+        ) -> dict[str, Any]:
+            env = self.live_ask(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+            )
+            clarify = env.get("clarify") if isinstance(env, dict) else None
+            if isinstance(clarify, dict) and clarify.get("blocks") is True:
+                return env
+            return self.offer_reconfirm(
+                env,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+                cortex=self._cortex,
+            )
+
+        picked = run_pick(
+            clarify_id,
+            reading_id=reading_id,
+            text=text,
+            grantable=grants,
+            dialect=self.dialect or SERVING_DIALECT,
+            ask=_ask,
+        )
+        if picked.ran is not None:
+            return picked.ran
+        if picked.envelope is not None:
+            return picked.envelope
+        raise ValueError("empty clarify pick")
 
     def confirm_reconfirm(self, token: str, yes: bool) -> dict[str, Any]:
         """Yes re-runs the suggested question on the normal ladder. No logs a ticket.

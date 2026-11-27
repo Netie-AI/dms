@@ -148,6 +148,14 @@ class ConfirmBody(BaseModel):
     yes: bool | Literal["yes", "no"]
 
 
+class ClarifyPickBody(BaseModel):
+    """Pick one stored reading, or send one free-text question."""
+
+    clarify_id: str = Field(min_length=1)
+    reading_id: str | None = None
+    text: str | None = None
+
+
 class DrillthroughBody(BaseModel):
     token: str = Field(min_length=1)
 
@@ -393,6 +401,12 @@ def _choice_yes(value: bool | str) -> bool:
 def _offer_reconfirm(
     ask: AskServicePort, env: dict[str, Any], body: AskBody, cortex: Any
 ) -> dict[str, Any]:
+    clarify = env.get("clarify") if isinstance(env, dict) else None
+    if isinstance(clarify, dict) and clarify.get("blocks") is True:
+        return env
+    block = env.get("reconfirm") if isinstance(env, dict) else None
+    if isinstance(block, dict) and block.get("reason_code") == "not_in_data":
+        return env
     offer = getattr(ask, "offer_reconfirm", None)
     if not callable(offer):
         return env
@@ -564,6 +578,46 @@ def _answer_ask(
             end = getattr(ask, "end_client_watch", None)
             if callable(end):
                 end(watch[0])
+
+
+@router.post("/clarify/pick")
+def chat_clarify_pick(
+    body: ClarifyPickBody,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+) -> dict[str, Any]:
+    """Run the chosen reading. The preview SQL is not the answer."""
+    decision = compliance_gate(
+        action="chat.ask",
+        metadata={"clarify_id": body.clarify_id[:12], "task_id": "chat.ask"},
+        client=cortex,
+    )
+    if not decision.allowed and decision.reason not in _SOFT_GATE:
+        raise HTTPException(status_code=403, detail=decision.reason)
+    pick = getattr(ask, "clarify_pick", None)
+    if not callable(pick):
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "clarify_unsupported", "message": "this ask service has no clarify"},
+        )
+    try:
+        env = pick(body.clarify_id, reading_id=body.reading_id, text=body.text)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "clarify_unknown", "message": "that clarify id is unknown"},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "clarify_pick", "message": str(exc)},
+        ) from exc
+    if not isinstance(env, dict):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "clarify_pick", "message": "empty clarify pick"},
+        )
+    return env
 
 
 @router.post("/ask/confirm")

@@ -11,6 +11,13 @@ Append-only. Never edited, only added to. Newest first.
 - **BIRD.** Download stays outside the repo and is refused while `scripts/verify/bird_minidev_2026.sha256` says `UNPINNED`. No estimated EX.
 - **Stub 52.** flag off: correct=43 WRONG=0 refusal_wrong=0 reconfirm=5 clarify=0 abstain=0 AI=0 rule=43 unattributed=0. flag on (existing AI-first stub): correct=0 WRONG=0 reconfirm=48 clarify=0 AI=0 rule=0. p50 unmeasured (stub). Not PASS.
 
+## 2026-11-27 - R1-CLARIFY-01: the model decides an ambiguous question
+
+- **Flag.** `DMS_AI_CLARIFY` defaults off. Off, phrase gates and the ladder are unchanged. On, one OpenVault call with role `reason` returns answerable, ambiguous, or unanswerable. A verdict replaces the phrase gates. No verdict, or an invalid verdict, keeps them, so a silent stub cannot serve a trap.
+- **Ask back.** Ambiguous returns `route=needs_clarification` with 2 to 4 readings. Each SQL preview passed the grant and read-only check and was not executed. `POST /v1/chat/clarify/pick` re-checks grants and asks the chosen reading. Ungranted is a refusal. Unanswerable is reconfirm `not_in_data`.
+- **Grading.** R1-EVAL-01 (#572) already grades a clarify card. This change does not edit the harness.
+- **52.** Stub numbers are in the PR. Armed grade52 and pack H were not run. Not PASS.
+
 ## 2026-11-27 - DMS-AI-ABSTAIN-01: generative misses climb before they abstain
 
 - **Flag.** `DMS_ASK_LADDER` defaults off. Off, phrase gates and a checker failure still stop where they did. On, a generative-stage miss climbs four rungs inside the existing insights cap: feed the error, empty result, or check failure back; retry with ontology joins, masked column samples, and retrieved verified examples; plan then solve; send `route_hint=escalate` so OpenVault picks a stronger route. One call stays unused for reconfirm. The armed AI-first profile turns the flag on and sets `DMS_INSIGHTS_CALL_CAP=4`.
