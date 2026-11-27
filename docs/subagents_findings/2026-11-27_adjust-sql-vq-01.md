@@ -6,7 +6,7 @@
 
 `DMS_STUDIO_ADJUST` defaults to off. Only the digit 1 enables it. The router is mounted from `app.py` only when that check is true, so flag off the OpenAPI document matches main and `POST /v1/studio/adjust/run` is 404.
 
-On, a steward (`holds_steward_grant`) can `POST /v1/studio/adjust/run` and `POST /v1/studio/adjust/save`. Both call `validate_compiled_sql` then `run_readonly`. The refusal string is that checker code. Rows go through `fail_closed_mask_payload`. Save stores provenance `steward_adjusted`, the configured actor, and the catalog schema hash. `retrieve_verified_examples` returns the row when `DMS_VQ_RAG` is on. A viewer is 403 and nothing is stored.
+On, a steward (`holds_steward_grant`) can `POST /v1/studio/adjust/run` and `POST /v1/studio/adjust/save`. Both call `validate_compiled_sql` then `run_readonly`. The refusal string is that checker code. Rows go through `fail_closed_mask_payload`. Save stores provenance `steward_adjusted`, the configured actor, and the catalog schema hash only when `DMS_VQ_RAG` is on. `lookup_verified_query` skips that provenance, so `maybe_verified_ask` does not replay it. `retrieve_verified_examples` returns the row when `DMS_VQ_RAG` is on. A viewer is 403 and nothing is stored.
 
 The answer view mounts the button only for role steward, and the panel stays null until `GET /v1/studio/adjust/status` returns `enabled: true`. A static render has no button and no textarea.
 

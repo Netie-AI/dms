@@ -213,7 +213,7 @@ def save_steward_adjusted(
     question: str,
     sql: str,
     actor: str,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     return dms_executor.save_steward_adjusted(
         space_id=space_id,
         question=question,

@@ -115,7 +115,7 @@ def adjust_save(
     )
     enforce(decision)
     try:
-        return save_steward_adjusted(
+        saved = save_steward_adjusted(
             space_id=body.space_id,
             question=body.question,
             sql=body.sql,
@@ -123,3 +123,6 @@ def adjust_save(
         )
     except Exception as exc:  # noqa: BLE001 - checker code or AdjustDisabled, else re-raised
         raise _http(exc) from None
+    if saved is None:
+        raise HTTPException(status_code=400, detail="vq_rag_required")
+    return saved

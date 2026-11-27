@@ -6,7 +6,7 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Flag.** `DMS_STUDIO_ADJUST` defaults to off. Only the digit `1` turns it on. Off, `/v1/studio/adjust` is not mounted and the answer view has no Adjust SQL control. On, a steward opens the served SQL, runs it, and can save it for that question.
 - **Gates.** Run and save call `validate_compiled_sql` and `run_readonly`, the same grant, hostile, statement-count, and read-only checks as model SQL, then `fail_closed_mask_payload`. A refusal is that checker code. A non-steward is 403.
-- **Store.** Save writes provenance `steward_adjusted` with the actor and a schema hash. `DMS_VQ_RAG` few-shot can retrieve the row. The ask path does not store this provenance by itself.
+- **Store.** Save writes provenance `steward_adjusted` with the actor and a schema hash only when `DMS_VQ_RAG` is on, the same gate as save-on-Yes. Lookup skips that provenance, so `maybe_verified_ask` does not replay it. Few-shot retrieval is the only reader.
 - **Not a word rule.** The SQL is checked by sqlglot and DuckDB. The question is the ask that produced the answer. Nothing scans question text.
 
 ## 2026-11-27 - UNICODE-IDENT-01: keep non-ASCII headers beside an ASCII id

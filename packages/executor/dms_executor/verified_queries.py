@@ -10,7 +10,9 @@ one (OpenVault still picks the model) and Okapi BM25 otherwise. No word list.
 Save-on-Yes stores one row per question: the question, the SQL, a schema
 hash, and a provenance token (``yes:reconfirm`` or ``yes:vote``). A steward
 adjust (``DMS_STUDIO_ADJUST``, default off) stores provenance
-``steward_adjusted`` plus the actor. Revoked rows are not retrieved. A
+``steward_adjusted`` plus the actor only when ``DMS_VQ_RAG`` is on, the same
+write gate as save-on-Yes. Lookup never replays that provenance.
+Revoked rows are not retrieved. A
 listed pack hash, SQL hash, or result hash is not written. Leading
 underscore hides the table from Library listings.
 
@@ -739,6 +741,13 @@ def revoke_verified_example(
     return bool(updated)
 
 
+def _replayable(row: dict[str, Any]) -> bool:
+    """Exact-match replay. ``steward_adjusted`` is a writer example, never an answer."""
+    if row.get("revoked_at"):
+        return False
+    return row.get("provenance") != PROVENANCE_STEWARD_ADJUSTED
+
+
 def _hit(question: str, row: dict[str, Any]) -> bool:
     qn = normalize_verified_question(question)
     if not qn:
@@ -761,6 +770,7 @@ def lookup_verified_query(
     """Return ``{asset_id, sql}`` for a Space hit. Does not run SQL as the answer.
 
     ``DMS_VQ_RAG`` on: always None. The row is a few-shot example, not a replay.
+    ``steward_adjusted`` is never a hit, even when that flag is off.
     """
     if vq_rag_enabled() or tables:
         return None
@@ -770,7 +780,7 @@ def lookup_verified_query(
         (
             row
             for row in _rows_for_space(db, sid)
-            if not row.get("revoked_at") and _hit(question, row)
+            if _replayable(row) and _hit(question, row)
         ),
         None,
     )
@@ -1002,11 +1012,12 @@ def save_steward_adjusted(
     actor: str,
     path: Path | None = None,
     dialect: str | None = None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """Re-check the SQL, then store one ``steward_adjusted`` example.
 
-    The actor and a schema hash are required. Few-shot retrieval is unchanged
-    until ``DMS_VQ_RAG`` is also on. Flag off stores nothing.
+    Same write gate as save-on-Yes: ``DMS_VQ_RAG`` off returns None and writes
+    nothing. The actor and a schema hash are required when it does write.
+    ``DMS_STUDIO_ADJUST`` off stores nothing.
     """
     if not studio_adjust_enabled():
         raise AdjustDisabled()
@@ -1020,6 +1031,8 @@ def save_steward_adjusted(
     allowed = _grantable(space_id, db)
     read = _adjust_dialect(dialect)
     preview_adjusted_sql(sql=sql, space_id=space_id, path=db, dialect=read)
+    if not vq_rag_enabled():
+        return None
     if not _schema_hash(db, allowed, read):
         raise ValueError("schema_hash_unavailable")
     saved = _save_example(

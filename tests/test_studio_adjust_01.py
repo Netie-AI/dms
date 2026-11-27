@@ -24,6 +24,8 @@ from dms_executor.verified_queries import (
     AdjustDisabled,
     _rows_for_space,
     examples_text,
+    lookup_verified_query,
+    maybe_verified_ask,
     preview_adjusted_sql,
     retrieve_verified_examples,
     save_steward_adjusted,
@@ -164,6 +166,7 @@ def test_run_masks_pii_and_save_keeps_actor_and_schema_hash(
     blob = json.dumps(preview)
     assert PII_VALUE not in blob
     assert "DMSMASK_email_" in blob
+    monkeypatch.setenv("DMS_VQ_RAG", "1")
     saved = save_steward_adjusted(
         question=QUESTION,
         sql=OK_SQL,
@@ -172,6 +175,7 @@ def test_run_masks_pii_and_save_keeps_actor_and_schema_hash(
         path=path,
         dialect="duckdb",
     )
+    assert saved is not None
     assert saved["actor"] == ACTOR
     assert saved["schema_hash"]
     assert saved["provenance"] == "steward_adjusted"
@@ -313,6 +317,15 @@ def test_steward_route_runs_and_saves(
         warehouse=path,
         dialect="duckdb",
     )
+    monkeypatch.delenv("DMS_VQ_RAG", raising=False)
+    blocked = client.post(
+        "/v1/studio/adjust/save",
+        json={"space_id": SPACE, "question": QUESTION, "sql": OK_SQL},
+    )
+    assert blocked.status_code == 400
+    assert blocked.json()["detail"] == "vq_rag_required"
+    assert _rows_for_space(path, SPACE) == []
+    monkeypatch.setenv("DMS_VQ_RAG", "1")
     save = client.post(
         "/v1/studio/adjust/save",
         json={"space_id": SPACE, "question": QUESTION, "sql": OK_SQL},
@@ -333,3 +346,82 @@ def test_steward_route_runs_and_saves(
         dialect="duckdb",
     )
     assert [row["sql"] for row in examples] == [OK_SQL]
+
+
+class _Submit:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, sql: str) -> Any:
+        self.calls.append(sql)
+
+        class _Result:
+            ok = True
+            output = {"rows": [{"qty": 2}]}
+            run_id = "run-adjust"
+
+        return _Result()
+
+
+class _Ledger:
+    entry_id = "led-adjust"
+    hash = "hash-adjust-not-the-entry"
+
+    def __call__(self, payload: dict[str, Any]) -> _Ledger:
+        return self
+
+
+def _ask(path: Path, submit: _Submit) -> dict[str, Any] | None:
+    return maybe_verified_ask(
+        QUESTION,
+        space_id=SPACE,
+        warehouse=path,
+        submit=submit,
+        ledger_append=_Ledger(),
+        dialect="duckdb",
+    )
+
+
+def test_adjust_save_is_not_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flag(monkeypatch, True)
+    _grant(monkeypatch)
+    path = _lake(tmp_path)
+    submit = _Submit()
+    monkeypatch.delenv("DMS_VQ_RAG", raising=False)
+    assert (
+        save_steward_adjusted(
+            question=QUESTION,
+            sql=OK_SQL,
+            space_id=SPACE,
+            actor=ACTOR,
+            path=path,
+            dialect="duckdb",
+        )
+        is None
+    )
+    assert _rows_for_space(path, SPACE) == []
+    assert lookup_verified_query(QUESTION, space_id=SPACE, warehouse=path, dialect="duckdb") is None
+    assert _ask(path, submit) is None
+    assert submit.calls == []
+
+    monkeypatch.setenv("DMS_VQ_RAG", "1")
+    saved = save_steward_adjusted(
+        question=QUESTION,
+        sql=OK_SQL,
+        space_id=SPACE,
+        actor=ACTOR,
+        path=path,
+        dialect="duckdb",
+    )
+    assert saved is not None
+    assert saved["provenance"] == "steward_adjusted"
+    assert _ask(path, submit) is None
+    assert submit.calls == []
+
+    monkeypatch.delenv("DMS_VQ_RAG")
+    assert len(_rows_for_space(path, SPACE)) == 1
+    assert lookup_verified_query(QUESTION, space_id=SPACE, warehouse=path, dialect="duckdb") is None
+    assert _ask(path, submit) is None
+    assert submit.calls == []
