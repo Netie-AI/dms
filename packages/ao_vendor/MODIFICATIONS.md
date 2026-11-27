@@ -51,6 +51,13 @@ The prompt still names the same evidence. No new word list was added.
 - `ao_vendor/compile_run.py`: new driver. Declared FKs are re-parsed with `extract_tables_and_columns` so the sqlglot parser is on the compile path. Status written into the payload is `proposed`. Each term carries `key`: the declared catalog primary key, else `pk_column_names` from the `FkAndPkResult` reading `process_table` already made (no second call). A table with neither is omitted from `terms` and listed in `unkeyed`.
 - `ao_vendor/semantic/fk_suggester.py` and `visit_enter.py`: the same reading's `pk_column_names` is returned on `PotentialFkResult` and `CompiledTable`. The UUID foreign-key filter is unchanged.
 
+## Sample values to the model (PII-01, dms#272)
+
+- `ao_vendor/utils/sample_guard.py` is new, not upstream. `compile_catalog(..., sample_guard=)` binds a guard for the compile, the same way the client is bound. With no guard bound, or a guard that raises, prompts carry no sample values.
+- `visit_enter._profile`: `sample_values` is now the guard's output, which is what every prompt reads. `probe_values` is the full local sample, and it is empty for a column the guard calls personal. `is_unique` and the date `format` are still computed from the full local sample.
+- `fk_suggester._format_sample_values` and `semantic_fk._llm_pick_hit` pass their sample values through the guard as well. `semantic_fk._match_hit_by_samples` (local SQL on the caller connection) reads `probe_values`, else `sample_values`, so a personal-data column is not probed.
+- `deterministic.py` is unchanged. Its description and samples-suffix prompts read the profiling `sample_values`, which are already guarded.
+
 ## DMS entry
 
-- `packages/executor/dms_executor/ao_compile.py` is new, not vendored. `compile_source` imports `ao_vendor` only when `DMS_AO_COMPILE=1`. Off returns `status=off` and does not touch the connection. `OntologyProposal.served` cannot be true.
+- `packages/executor/dms_executor/ao_compile.py` is new, not vendored. `compile_source` imports `ao_vendor` only when `DMS_AO_COMPILE=1`. Off returns `status=off` and does not touch the connection. `OntologyProposal.served` cannot be true. `compile_source` passes `model_samples` as the guard: `dms_core.pii.classify_column` decides, a personal-data column sends up to 3 `DMSMASK_<kind>_<nn>` placeholders, and any other column sends its first 20 values.

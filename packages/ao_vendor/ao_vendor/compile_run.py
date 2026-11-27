@@ -27,18 +27,28 @@ from ao_vendor.llm.ov_client import (
 from ao_vendor.semantic.bridge_tables import propose_bridge_attributes
 from ao_vendor.semantic.semantic_fk import resolve_inferred_fks
 from ao_vendor.semantic.visit_enter import process_table
+from ao_vendor.utils.sample_guard import SampleGuard, bind_sample_guard, reset_sample_guard
 from ao_vendor.utils.sql_identifiers import quoted_identifier
 
 
-def compile_catalog(conn: Any, *, transport: Any = None) -> dict[str, Any]:
+def compile_catalog(
+    conn: Any,
+    *,
+    transport: Any = None,
+    sample_guard: SampleGuard | None = None,
+) -> dict[str, Any]:
     """Extract ``conn`` and propose terms, attributes, and inferred FKs.
 
     Raises :class:`AoCompileRefused` when any model call failed, or when no
     call succeeded for a catalog that has tables. A proposal whose AI pass did
     not run is not returned, so nothing downstream can store it.
+
+    ``sample_guard`` decides which sample values a prompt may carry. With
+    none, prompts carry no sample values (dms#272).
     """
     client = OpenVaultOntologyClient(transport=transport)
     token = bind_client(client)
+    guard_token = bind_sample_guard(sample_guard)
     try:
         catalog = extract_duckdb(conn)
         by_table = _group(catalog)
@@ -104,6 +114,7 @@ def compile_catalog(conn: Any, *, transport: Any = None) -> dict[str, Any]:
     except AoLlmError as exc:
         raise AoCompileRefused(exc.code) from None
     finally:
+        reset_sample_guard(guard_token)
         reset_client(token)
 
 
