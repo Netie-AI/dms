@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
+from dms_core.pii import NUMBER_LITERAL, fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor import executed_trace
 from dms_executor.bronze import (
@@ -23,6 +23,7 @@ from dms_executor.bronze import (
     unicode_ident_enabled,
 )
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
+from dms_executor.route_stamp import is_abstain_route
 from dms_executor.row_listing import StatedFloat, cell_text, float_precision_note
 
 ALLOWED_BADGES = frozenset(
@@ -897,6 +898,71 @@ _LIST_MARKER = re.compile(r"^\s*(?:[-*\u00b7\u2022]|\d+[.)]) +")
 _SHOWING = re.compile(r"\bShowing (\d+) of (\d+)\b")
 
 
+
+# The builder's own withhold texts (ENVELOPE-GATE-01, dms#590). An answer the
+# builder withholds says one of these; a served answer never does (E15).
+_TEXT_BREAKDOWN_FOR_TOTAL = (
+    'You asked for one total, and the query I matched returns a grouped '
+    'ranking instead. Those figures answer a different question. Rather '
+    "than show a breakdown as though it were the total, I'm stopping here. "
+    'Ask for the breakdown by name, or for the overall total.'
+)
+_TEXT_DEMO_FOR_WORKBOOK = (
+    'You named a workbook, and the query I matched reads the demo warehouse'
+    ' instead of that file. Those figures answer a different dataset. '
+    "Rather than show them as though they came from the upload, I'm "
+    'stopping here. Ground the ask in that file, or ask without a filename '
+    'to use the Space warehouse.'
+)
+_TEXT_E14_WITHHELD = (
+    'This answer shows a figure that does not match the query result. '
+    "Rather than show a number I cannot stand behind, I'm stopping here. "
+    'Ask again, or ask for the columns you need by name.'
+)
+_TEXT_E4_WITHHELD = (
+    'This answer states figure(s) I cannot cite from the query result. '
+    "Rather than show numbers I cannot stand behind, I'm stopping here. Ask"
+    ' for columns returned by the query, or a metric that includes the '
+    'figure in the result set.'
+)
+_TEXT_FILTER_MATCHED_NOTHING = (
+    'No matching rows for that filter. Stored encodings may differ (e.g. '
+    'BETA vs SKU-BETA, KL vs Kuala Lumpur). Use the exact value from the '
+    'data, or ask without that filter.'
+)
+_TEXT_HISTORY_FOR_FORECAST = (
+    'You asked for a forecast, but the query I matched reads historical '
+    'transactions. That is not a prediction, so I cannot confirm the '
+    "figure. Rather than pad history as a forecast, I'm stopping here."
+)
+_TEXT_INVENTED_TOTAL_WITHHELD = (
+    'This answer states figure(s) I cannot cite from the include rows. '
+    "Rather than pad or invent a total, I'm stopping here."
+)
+_TEXT_NO_EXECUTED_ROWS = (
+    "I don't have executed rows for that, so I cannot certify a figure. "
+    'Name a table and a metric, or ground the ask in one uploaded file.'
+)
+_TEXT_TOTAL_FOR_BREAKDOWN = (
+    'You asked for a breakdown, and the query I matched returns a single '
+    'total instead - it has no grouping, so it cannot answer per-group or '
+    'top-N. Rather than show you one number as though it were the '
+    "breakdown, I'm stopping here. Name the grouping column, or ask for the"
+    ' overall total if that is what you want.'
+)
+WITHHOLD_TEXTS = (
+    _TEXT_BREAKDOWN_FOR_TOTAL,
+    _TEXT_DEMO_FOR_WORKBOOK,
+    _TEXT_E14_WITHHELD,
+    _TEXT_E4_WITHHELD,
+    _TEXT_FILTER_MATCHED_NOTHING,
+    _TEXT_HISTORY_FOR_FORECAST,
+    _TEXT_INVENTED_TOTAL_WITHHELD,
+    _TEXT_NO_EXECUTED_ROWS,
+    _TEXT_TOTAL_FOR_BREAKDOWN,
+)
+
+
 def _is_number(cell: Any) -> bool:
     if isinstance(cell, bool) or not isinstance(cell, (int, float, Decimal)):
         return False
@@ -1103,6 +1169,93 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
             out.append("c: the stated cut is not the listing")
         elif 0 < listed < len(row_list) and not cut:
             out.append("c: the listing is cut and does not say so")
+    return out
+
+
+# ENVELOPE-GATE-01 (dms#590). Abstention is read from the envelope's own
+# structure, never from its wording (rule 15): the abstain reason code, the
+# abstain route stamp, the builder's withhold stamp, the builder's withhold text.
+_WITHHOLD_STAMP = re.compile(r"withheld \((?:E\d+|ONTOLOGY-AUDIT-01)\b")
+
+
+def question_figures(question: str | None) -> list[str]:
+    """The number literals the question states, so an abstention may echo them."""
+    return sorted({hit.group(0) for hit in NUMBER_LITERAL.finditer(str(question or ""))})
+
+
+def _literal_figure(literal: str) -> float | None:
+    try:
+        value = float(literal.replace(",", ""))
+    except ValueError:
+        return None
+    return value if value == value and abs(value) != float("inf") else None
+
+
+def abstain_markers(envelope: dict[str, Any]) -> list[str]:
+    """E15: the structural marks of an abstention an envelope carries."""
+    from dms_executor.abstain import _SERVED_UNGRANTED_TEXT
+
+    out: list[str] = []
+    reason = envelope.get("abstain_reason")
+    if isinstance(reason, str) and reason.strip():
+        out.append("abstain_reason")
+    for key in ("served_route", "ladder_rung"):
+        route = envelope.get(key)
+        if isinstance(route, str) and is_abstain_route(route):
+            out.append(key)
+    if any(_WITHHOLD_STAMP.search(str(item)) for item in envelope.get("assumptions") or []):
+        out.append("withhold stamp")
+    text = str(envelope.get("text") or "")
+    if any(template in text for template in (*WITHHOLD_TEXTS, _SERVED_UNGRANTED_TEXT)):
+        out.append("withhold text")
+    return out
+
+
+def abstained_figures(text: str, echoed: list[Any] | None) -> list[str]:
+    """E16: figures an abstention states that the question did not."""
+    echo = {_literal_figure(str(item)) for item in echoed or []}
+    return [
+        hit.group(0)
+        for hit in NUMBER_LITERAL.finditer(text or "")
+        if _literal_figure(hit.group(0)) not in echo
+    ]
+
+
+def uncited_figures(
+    text: str, values: list[dict[str, Any]] | None, rows: list[dict[str, Any]] | None
+) -> list[str]:
+    """E17: figures in a served SQL answer the envelope does not declare.
+
+    Declared: a ``values[]`` figure, a numeric row cell, the row count and the
+    listing's cut. Digits inside a row label, a column name or a value label
+    (WH-01, q4_cost) are part of that label, not figures.
+    """
+    row_list = [r for r in (rows or []) if isinstance(r, dict)]
+    allowed: list[float] = _value_nums(values)
+    labels: set[str] = set()
+    for row in row_list:
+        for col, cell in row.items():
+            labels.add(str(col))
+            if _is_number(cell):
+                allowed.append(float(cell))
+            elif cell is not None and str(cell).strip():
+                labels.add(str(cell))
+    for v in values or []:
+        if isinstance(v, dict) and v.get("label"):
+            labels.add(str(v["label"]))
+    allowed.append(float(len(row_list)))
+    cut = _SHOWING.search(text or "")
+    if cut:
+        allowed.append(float(cut.group(1)))
+    stripped = text or ""
+    for label in sorted(labels, key=len, reverse=True):
+        if any(ch.isdigit() for ch in label):
+            stripped = stripped.replace(label, " ")
+    out: list[str] = []
+    for hit in NUMBER_LITERAL.finditer(stripped):
+        value = _literal_figure(hit.group(0))
+        if value is not None and not any(_close(value, a) for a in allowed):
+            out.append(hit.group(0))
     return out
 
 
@@ -1705,11 +1858,7 @@ def build_answer_envelope(
     if not abstained and _executed_query(sql_used) and not rows_out:
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "No matching rows for that filter. Stored encodings may differ "
-            "(e.g. BETA vs SKU-BETA, KL vs Kuala Lumpur). Use the exact value "
-            "from the data, or ask without that filter."
-        )
+        text = _TEXT_FILTER_MATCHED_NOTHING
         assumptions_list.append(
             "empty result after executed SQL: withheld (hard rule 12)"
         )
@@ -1728,10 +1877,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "I don't have executed rows for that, so I cannot certify a figure. "
-            "Name a table and a metric, or ground the ask in one uploaded file."
-        )
+        text = _TEXT_NO_EXECUTED_ROWS
         assumptions_list.append(
             "confident badge with no executed rows: withheld (E9-03)"
         )
@@ -1773,13 +1919,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You asked for a breakdown, and the query I matched returns a single "
-            "total instead - it has no grouping, so it cannot answer per-group or "
-            "top-N. Rather than show you one number as though it were the "
-            "breakdown, I'm stopping here. Name the grouping column, or ask for "
-            "the overall total if that is what you want."
-        )
+        text = _TEXT_TOTAL_FOR_BREAKDOWN
         assumptions_list.append(
             "grouped/ranked ask answered by an ungrouped scalar: shape mismatch (E10/FF-01)"
         )
@@ -1791,12 +1931,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You asked for one total, and the query I matched returns a grouped "
-            "ranking instead. Those figures answer a different question. Rather "
-            "than show a breakdown as though it were the total, I'm stopping "
-            "here. Ask for the breakdown by name, or for the overall total."
-        )
+        text = _TEXT_BREAKDOWN_FOR_TOTAL
         assumptions_list.append(
             "scalar ask answered by a grouped ranking: shape mismatch (E12/ANS-02)"
         )
@@ -1807,13 +1942,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You named a workbook, and the query I matched reads the demo "
-            "warehouse instead of that file. Those figures answer a different "
-            "dataset. Rather than show them as though they came from the "
-            "upload, I'm stopping here. Ground the ask in that file, or ask "
-            "without a filename to use the Space warehouse."
-        )
+        text = _TEXT_DEMO_FOR_WORKBOOK
         assumptions_list.append(
             "xlsx-named ask answered from demo warehouse: scope mismatch"
         )
@@ -1854,11 +1983,7 @@ def build_answer_envelope(
     if not abstained and _forecast_history_pad(question, sql_used):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You asked for a forecast, but the query I matched reads historical "
-            "transactions. That is not a prediction, so I cannot confirm the "
-            "figure. Rather than pad history as a forecast, I'm stopping here."
-        )
+        text = _TEXT_HISTORY_FOR_FORECAST
         assumptions_list.append(
             "predict/forecast ask answered by historical SQL: history pad"
         )
@@ -1918,12 +2043,7 @@ def build_answer_envelope(
         if broken:
             badge_out = "ABSTAIN"
             abstained = True
-            text = (
-                "This answer shows a figure that does not match the query "
-                "result. Rather than show a number I cannot stand behind, I'm "
-                "stopping here. Ask again, or ask for the columns you need by "
-                "name."
-            )
+            text = _TEXT_E14_WITHHELD
             assumptions_list.append(
                 f"rendered figure differs from query result: withheld (E14 {broken[0]})"
             )
@@ -1949,12 +2069,7 @@ def build_answer_envelope(
         if orphans:
             badge_out = "ABSTAIN"
             abstained = True
-            text = (
-                "This answer states figure(s) I cannot cite from the query "
-                "result. Rather than show numbers I cannot stand behind, I'm "
-                "stopping here. Ask for columns returned by the query, or a "
-                "metric that includes the figure in the result set."
-            )
+            text = _TEXT_E4_WITHHELD
             assumptions_list.append(
                 "prose figure not in query result: withheld (E4)"
             )
@@ -1967,10 +2082,7 @@ def build_answer_envelope(
         if invented:
             badge_out = "ABSTAIN"
             abstained = True
-            text = (
-                "This answer states figure(s) I cannot cite from the include "
-                "rows. Rather than pad or invent a total, I'm stopping here."
-            )
+            text = _TEXT_INVENTED_TOTAL_WITHHELD
             assumptions_list.append(
                 "stated figure not in include rows: withheld (ONTOLOGY-AUDIT-01)"
             )
@@ -2020,6 +2132,8 @@ def build_answer_envelope(
         # holding all six demo tables (dms#5). The count a viewer reads has to
         # come from the manifest, not from the request that asked for it.
         "grounded_tables": list(grounded_tables or []),
+        # ENVELOPE-GATE-01: the figures the question stated (E16 echo).
+        "question_figures": question_figures(question),
         "audit_receipt": build_audit_receipt(
             abstained=bool(abstained),
             badge=badge_out,
@@ -2192,7 +2306,7 @@ def reserved_as_of_abstain(
 
 
 def assert_envelope_valid(envelope: dict[str, Any]) -> None:
-    """E1-E14 property assertions. Raises AssertionError on violation."""
+    """E1-E17 property assertions. Raises AssertionError on violation."""
     badge = envelope.get("badge")
     abstained = bool(envelope.get("abstained"))
     values = envelope.get("values") or []
@@ -2241,6 +2355,26 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             text, env_rows_e14 if isinstance(env_rows_e14, list) else []
         )
         assert not broken, f"E14: {broken[0]}"
+
+    # E15 (ENVELOPE-GATE-01) - a green badge never sits on an abstention.
+    if not abstained:
+        marks = abstain_markers(envelope)
+        assert not marks, f"E15: served answer carries abstention marks {marks}"
+
+    # E16 - an abstention states no figure the question did not.
+    if abstained:
+        stated = abstained_figures(text, envelope.get("question_figures"))
+        assert not stated, f"E16: abstention states figure(s) {stated}"
+
+    # E17 - every figure in a served SQL answer is one the envelope declares.
+    if not abstained and _executed_query(sql_used):
+        env_rows_e17 = envelope.get("rows")
+        stray = uncited_figures(
+            text,
+            values if isinstance(values, list) else [],
+            env_rows_e17 if isinstance(env_rows_e17, list) else [],
+        )
+        assert not stray, f"E17: figure(s) {stray} in text are not in values[] or rows"
 
     # E6
     if envelope.get("demo_fallback_used") is True:
