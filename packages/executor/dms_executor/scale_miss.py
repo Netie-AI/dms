@@ -520,6 +520,9 @@ def _repair_ctx(turn: Turn, sql: str, why: str, *, escalate: bool) -> dict[str, 
 
 
 def _richer(turn: Turn, sql: str) -> str:
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    dialect = turn.dialect or SERVING_DIALECT
     parts: list[str] = []
     try:
         from dms_executor.ask_ladder import richer_context_block
@@ -529,7 +532,7 @@ def _richer(turn: Turn, sql: str) -> str:
             sql,
             warehouse=turn.warehouse,
             grantable=set(turn.grantable),
-            dialect=turn.dialect or "duckdb",
+            dialect=dialect,
             ontology=turn.ontology,
             space_id=turn.space_id,
         )
@@ -544,7 +547,7 @@ def _richer(turn: Turn, sql: str) -> str:
             sql,
             warehouse=turn.warehouse,
             grantable=set(turn.grantable),
-            dialect=turn.dialect or "duckdb",
+            dialect=dialect,
             ontology=turn.ontology,
         )
         text = format_slice_block(sliver)

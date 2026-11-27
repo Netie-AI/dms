@@ -1209,8 +1209,8 @@ def _submit_validated(
     served_route: str = "",
     grantable: set[str] | None = None,
 ) -> dict[str, Any]:
-    def _gate(statement: str) -> dict[str, Any] | None:
-        """Qualifier, currency, and numeric gates. None means the SQL may be served."""
+    def _sql_checks(statement: str) -> dict[str, Any] | None:
+        """Qualifier, currency, and numeric checks. None means the SQL may be served."""
         if not coverage_valid(coverage):
             return _abstain(
                 question,
@@ -1241,7 +1241,7 @@ def _submit_validated(
             )
         return None
 
-    stopped = _gate(sql)
+    stopped = _sql_checks(sql)
     if stopped is not None:
         return stopped
     from dms_executor.ai_first import (
@@ -1279,8 +1279,8 @@ def _submit_validated(
             served_route = ROUTE_MODEL
             plan_origin = PLAN_ORIGIN_GENERATE_SQL
             notes = (*tuple(notes), "scale_miss:ai_over_compile")
-            # Same gates as the first SQL. A failed replacement is not served.
-            stopped = _gate(sql)
+            # Same checks as the first SQL. A failed replacement is not served.
+            stopped = _sql_checks(sql)
             if stopped is not None:
                 return stopped
     try:
@@ -2921,9 +2921,9 @@ def _maybe_generative_ask_impl(
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
     if _scale_miss_on():
-        from dms_executor.scale_miss import budget_stop
+        from dms_executor.scale_miss import budget_stop as scale_budget_stop
 
-        stopped = budget_stop(q, space_id=space_id, session_id=session_id)
+        stopped = scale_budget_stop(q, space_id=space_id, session_id=session_id)
         if isinstance(stopped, dict):
             return stopped
     note_stage("retrieve_context", "started")
