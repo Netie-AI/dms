@@ -1315,7 +1315,11 @@ def _try_multi_grain_envelope(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     dialect: str | None = None,
-) -> dict[str, Any] | None:
+    space_onto: Ontology | None = None,
+    declared: Ontology | None = None,
+    declared_violations: Sequence[Violation] | None = None,
+    grounded: Sequence[GroundedDef] | None = None,
+) -> dict[str, Any] | _CompileRefused | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
     Runs before one-grain GEN-01 plan/SQL. bind_plan is not this path.
@@ -1393,6 +1397,32 @@ def _try_multi_grain_envelope(
             q, ungrounded,
             space_id=space_id, session_id=session_id, plan_source=source,
         )
+    blocked = ai_lane_sql_check(
+        multi.sql,
+        question=q,
+        grantable=allowed,
+        warehouse=lake,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=list(declared_violations or []),
+        grounded=grounded,
+    )
+    if blocked:
+        # Direct refusals stay abstains. Any other checker miss is not a
+        # serve: the caller hands the question to the AI ladder.
+        if _checker_is_direct(blocked):
+            return _abstain(
+                q,
+                blocked,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                sql=multi.sql,
+            )
+        return _CompileRefused(reason=blocked, sql=multi.sql)
     if ai_first_enabled():
         note_example(
             compile_example(
@@ -1429,7 +1459,11 @@ def rank_window_ask(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     dialect: str | None = None,
-) -> dict[str, Any] | None:
+    space_onto: Ontology | None = None,
+    declared: Ontology | None = None,
+    declared_violations: Sequence[Violation] | None = None,
+    grounded: Sequence[GroundedDef] | None = None,
+) -> dict[str, Any] | _CompileRefused | None:
     """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
 
     Grammar parse + verified ontology compile, then the shared Cortex submit
@@ -1482,6 +1516,24 @@ def rank_window_ask(
         f"Ranks {win.label} of {noun}; ranks 1-{win.offset} are excluded. "
         f"{reading[:1].upper()}{reading[1:]}."
     )
+    blocked = ai_lane_sql_check(
+        compiled.sql,
+        question=q,
+        grantable=allowed,
+        warehouse=lake,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=list(declared_violations or []),
+        grounded=grounded,
+    )
+    if blocked:
+        if _checker_is_direct(blocked):
+            return _no(blocked)
+        # Not a serve. The caller continues into the AI pipeline.
+        return _CompileRefused(reason=blocked, sql=compiled.sql)
     from dms_executor.ai_first import ai_first_enabled, compile_example, note_example
 
     if ai_first_enabled():
@@ -1576,6 +1628,127 @@ def _space_insights_body(
     return out
 
 
+@dataclass(frozen=True)
+class _CompileRefused:
+    """Compile SQL failed the AI-lane checker. Not an envelope and not a serve."""
+
+    reason: str
+    sql: str
+
+
+_DIRECT_CHECK_HEADS = frozenset(
+    {
+        "multi_statement",
+        "statement_not_allowed",
+        "sql_not_analyzable",
+        "hostile_sql",
+        "ungranted",
+        "sql_relation_not_granted",
+        "pii",
+        "reserved_param",
+    }
+)
+
+
+def _checker_is_direct(reason: str) -> bool:
+    """Ungranted, hostile, and non-SELECT stay abstains. Everything else can climb."""
+    head = str(reason or "").split(":", 1)[0]
+    return head in _DIRECT_CHECK_HEADS or str(reason or "").startswith("hostile_sql")
+
+
+def ai_lane_sql_check(
+    sql: str,
+    *,
+    question: str,
+    grantable: set[str],
+    warehouse: Path | None,
+    dialect: str | None,
+    space_id: str | None,
+    session_id: str | None,
+    space_onto: Ontology | None,
+    declared: Ontology | None,
+    declared_violations: Sequence[Violation],
+    grounded: Sequence[GroundedDef] | None = None,
+    held: dict[str, Any] | None = None,
+) -> str | None:
+    """The extract loop's checker. Compile serves call this before submit.
+
+    None means the SQL may be served. A reason means it must not. The
+    caller does not add a word list: every branch here already ran on
+    model SQL. ``held`` keeps a def_validate or definition envelope the
+    loop already returns instead of a bare reason.
+    """
+    box = held if held is not None else {}
+    if (
+        os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
+        and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+    ):
+        from dms_executor.onto_gap import ask_ontology, undeclared_aggregate_reason
+
+        undeclared = undeclared_aggregate_reason(sql, ask_ontology())
+        if undeclared:
+            return undeclared
+    from dms_executor.def_validate import validate_generated_sql
+
+    gated = validate_generated_sql(
+        sql,
+        grantable=grantable,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+    )
+    if gated is not None:
+        box["provenance"] = gated.provenance
+        if gated.outcome != "pass":
+            if gated.outcome == "reconfirm" and isinstance(gated.envelope, dict):
+                from dms_executor.reconfirm import park_def_validate_hold
+
+                park_def_validate_hold(gated.envelope, sql=sql, grantable=grantable)
+            box["env"] = gated.envelope
+            return gated.reason
+        box.pop("env", None)
+    if dialect is not None and is_multi_statement(sql, dialect):
+        return "multi_statement"
+    if space_onto is not None:
+        # ONTO-DERIVE-01: the Space join rule is the named refusal, and it
+        # runs before EXPLAIN so a grant or syntax miss cannot hide it.
+        try:
+            cols = relation_columns(space_onto, warehouse, sorted(grantable))
+        except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+            return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+        join_why = unverified_join_reason(
+            sql, space_onto, declared_violations, columns_of=cols
+        )
+        if join_why:
+            return join_why
+    why = validate_compiled_sql(
+        sql, grantable=grantable, warehouse=warehouse, dialect=dialect
+    )
+    if why and why.startswith("explain:"):
+        code = _explain_error_code(sql, warehouse)
+        if code:
+            why = f"explain:{code}"
+    if why:
+        return why
+    if declared is not None:
+        broken = violations_cited_by_sql(sql, declared, declared_violations)
+        if broken:
+            return violation_reason(broken)
+    grounded_defs = list(grounded or [])
+    if grounded_defs:
+        blocked = mismatch_envelope(
+            sql,
+            grounded_defs,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if blocked is not None:
+            box["env"] = blocked
+            return "definition_mismatch"
+    return None
+
+
 def _run_extract_loop(
     *,
     question: str,
@@ -1607,76 +1780,20 @@ def _run_extract_loop(
         return query_sql_from_payload(body) or insights_query_sql(body)
 
     def check(sql: str) -> str | None:
-        if (
-            os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
-            and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
-        ):
-            from dms_executor.onto_gap import ask_ontology, undeclared_aggregate_reason
-
-            undeclared = undeclared_aggregate_reason(sql, ask_ontology())
-            if undeclared:
-                return undeclared
-        from dms_executor.def_validate import validate_generated_sql
-
-        gated = validate_generated_sql(
+        return ai_lane_sql_check(
             sql,
-            grantable=grantable,
             question=question,
+            grantable=grantable,
+            warehouse=warehouse,
+            dialect=dialect,
             space_id=space_id,
             session_id=session_id,
+            space_onto=space_onto,
+            declared=declared,
+            declared_violations=declared_violations,
+            grounded=grounded_defs,
+            held=held,
         )
-        if gated is not None:
-            held["provenance"] = gated.provenance
-            if gated.outcome != "pass":
-                if gated.outcome == "reconfirm" and isinstance(gated.envelope, dict):
-                    from dms_executor.reconfirm import park_def_validate_hold
-
-                    park_def_validate_hold(
-                        gated.envelope, sql=sql, grantable=grantable
-                    )
-                held["env"] = gated.envelope
-                return gated.reason
-            held.pop("env", None)
-        if is_multi_statement(sql, dialect):
-            return "multi_statement"
-        if space_onto is not None:
-            # ONTO-DERIVE-01: the Space join rule is the named refusal, and it
-            # runs before EXPLAIN so a grant or syntax miss cannot hide it.
-            try:
-                cols = relation_columns(space_onto, warehouse, sorted(grantable))
-            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
-                return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
-            join_why = unverified_join_reason(
-                sql, space_onto, declared_violations, columns_of=cols
-            )
-            if join_why:
-                return join_why
-        why = validate_compiled_sql(
-            sql, grantable=grantable, warehouse=warehouse, dialect=dialect
-        )
-        if why and why.startswith("explain:"):
-            # A typed code reaches the model, never the database message.
-            code = _explain_error_code(sql, warehouse)
-            if code:
-                why = f"explain:{code}"
-        if why:
-            return why
-        if declared is not None:
-            broken = violations_cited_by_sql(sql, declared, declared_violations)
-            if broken:
-                return violation_reason(broken)
-        if grounded_defs:
-            blocked = mismatch_envelope(
-                sql,
-                grounded_defs,
-                question=question,
-                space_id=space_id,
-                session_id=session_id,
-            )
-            if blocked is not None:
-                held["env"] = blocked
-                return "definition_mismatch"
-        return None
 
     def vote_rows(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         return _vote_rows(
@@ -2124,6 +2241,83 @@ def _ladder_after_ai_error(
     )
 
 
+def _hand_compile_to_ai(
+    *,
+    question: str,
+    ctx: dict[str, Any],
+    payload: dict[str, Any] | None,
+    rejected_sql: str,
+    reason: str,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    dialect: str,
+    grantable: set[str],
+    declared: Ontology | None,
+    declared_violations: list[Violation],
+    space_onto: Ontology | None,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    attempts: list[dict[str, Any]],
+    budget: AskCallBudget,
+    grounded: Sequence[GroundedDef] | None = None,
+) -> dict[str, Any]:
+    """Compile SQL failed the AI-lane checker. Do not serve it.
+
+    One generate call carries the rejected SQL and the checker reason,
+    then the extract loop (execute, check, schema repair when that flag
+    is on, escalate when that flag is on). No rule-builder compile. A
+    miss abstains with the checker reason and no rows. Reconfirm is the
+    route's job when that envelope is still unchecked.
+    """
+    current: dict[str, Any] | None = payload if isinstance(payload, dict) else None
+    if budget.take():
+        nxt_ctx = dict(ctx)
+        nxt_ctx["sql_loop_feedback"] = {
+            "previous_sql": rejected_sql,
+            "reason": f"checker:{reason}",
+            "prompt": question,
+        }
+        try:
+            got = compute(nxt_ctx)
+        except Exception:  # noqa: BLE001 — retry miss, then abstain
+            got = None
+        if isinstance(got, dict):
+            current = got
+    sql = None
+    if isinstance(current, dict):
+        sql = query_sql_from_payload(current) or insights_query_sql(current)
+    if sql and isinstance(current, dict):
+        return _run_extract_loop(
+            question=question,
+            ctx=ctx,
+            payload=current,
+            compute=compute,
+            warehouse=warehouse,
+            dialect=dialect,
+            grantable=grantable,
+            declared=declared,
+            declared_violations=declared_violations,
+            space_onto=space_onto,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            attempts=attempts,
+            budget=budget,
+            grounded=grounded,
+        )
+    return _abstain(
+        question,
+        reason,
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_ONTOLOGY,
+        stage="extract_loop",
+    )
+
+
 def _maybe_generative_ask_impl(
     question: str,
     *,
@@ -2265,11 +2459,21 @@ def _maybe_generative_ask_impl(
             space_id=space_id,
             session_id=session_id,
         )
+    # A Space ontology (never the demo one). Compile serves run the same
+    # join rule the AI lane runs, so this is known before the rank window.
+    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    held_refusal: _CompileRefused | None = None
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
         dialect=dialect,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=declared_violations,
     )
+    if isinstance(ranked_env, _CompileRefused):
+        held_refusal = ranked_env
+        ranked_env = None
     if ranked_env is not None:
         ranked_env["generate_legs"] = generate_legs_view(None)
         return with_served_attribution(ranked_env, None)
@@ -2306,8 +2510,7 @@ def _maybe_generative_ask_impl(
             index_stamp = held_stamp
         note_stage("schema_context", "done")
     # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
-    # generated SQL must follow. Measured just above, against the lake as it is.
-    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    # generated SQL must follow. Measured against the lake as it is.
     space_block = (
         space_catalog(space_onto, declared_violations, allowed)
         if space_onto is not None
@@ -2376,7 +2579,14 @@ def _maybe_generative_ask_impl(
             submit=submit,
             ledger_append=ledger_append,
             dialect=dialect,
+            space_onto=space_onto,
+            declared=declared,
+            declared_violations=declared_violations,
+            grounded=grounded,
         )
+        if isinstance(preview, _CompileRefused):
+            held_refusal = preview
+            preview = None
         if preview is not None:
             held_preview = preview
         insights_ctx = with_examples(insights_ctx)
@@ -2663,6 +2873,44 @@ def _maybe_generative_ask_impl(
                     question=q,
                 )
             )
+    def _ai_budget() -> AskCallBudget:
+        nonlocal vote_budget
+        if vote_budget is None:
+            vote_budget = AskCallBudget()
+        return vote_budget
+
+    def _handoff(refused: _CompileRefused) -> dict[str, Any]:
+        budget = _ai_budget()
+        body = payload if isinstance(payload, dict) else None
+        has_sql = bool(
+            body and (query_sql_from_payload(body) or insights_query_sql(body))
+        )
+        # A charged opening call that returned a plan is not the SQL reading.
+        # Give that slot back so generate plus the second reading fit the cap.
+        if not has_sql and budget.used > 0:
+            budget.used -= 1
+        return _hand_compile_to_ai(
+            question=q,
+            ctx=insights_ctx,
+            payload=payload if isinstance(payload, dict) else None,
+            rejected_sql=refused.sql,
+            reason=refused.reason,
+            compute=compute,
+            warehouse=lake,
+            dialect=dialect,
+            grantable=allowed,
+            declared=declared,
+            declared_violations=declared_violations,
+            space_onto=space_onto,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            attempts=loop_attempts,
+            budget=budget,
+            grounded=grounded,
+        )
+
     multi_env = _try_multi_grain_envelope(
         q,
         onto=onto,
@@ -2674,11 +2922,45 @@ def _maybe_generative_ask_impl(
         submit=submit,
         ledger_append=ledger_append,
         dialect=dialect,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=declared_violations,
+        grounded=grounded,
     )
+    if isinstance(multi_env, _CompileRefused):
+        held_refusal = multi_env
+        multi_env = None
     if multi_env is not None:
         # DMS's own multi-grain compile is served. Any model SQL in the
         # payload never ran, so its generate origin and model do not apply.
         return _stamp(with_plan_origin(multi_env, PLAN_ORIGIN_ONTOLOGY_COMPILE))
+    if kind == "sql" and held_refusal is not None and isinstance(payload, dict):
+        # The compile candidate failed the checker. Run the model SQL through
+        # the same extract loop (check, execute, repair, escalate).
+        sql_budget = _ai_budget()
+        if sql_budget.used == 0:
+            sql_budget.take()
+        return _stamp(
+            _run_extract_loop(
+                question=q,
+                ctx=insights_ctx,
+                payload=payload,
+                compute=compute,
+                warehouse=lake,
+                dialect=dialect,
+                grantable=allowed,
+                declared=declared,
+                declared_violations=declared_violations,
+                space_onto=space_onto,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                attempts=loop_attempts,
+                budget=sql_budget,
+                grounded=grounded,
+            )
+        )
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
@@ -2911,8 +3193,12 @@ def _maybe_generative_ask_impl(
                         plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
                     )
                 )
+            if held_refusal is not None:
+                return _stamp(_handoff(held_refusal))
             return _stamp(None)
         if not bind_on_miss:
+            if held_refusal is not None:
+                return _stamp(_handoff(held_refusal))
             return _stamp(None)
         payload = bind_plan(q, ctx)
         kind = parse_compute_plan(payload)
@@ -3094,16 +3380,32 @@ def _maybe_generative_ask_impl(
             if NOTE_INSIGHTS_RANKING in trail_notes
             else PLAN_ORIGIN_GENERATE_SQL
         )
-    if grounded:
-        blocked = mismatch_envelope(
-            compiled.sql,
-            grounded,
-            question=q,
-            space_id=space_id,
-            session_id=session_id,
-        )
-        if blocked is not None:
-            return _stamp(blocked)
+    checker_why = ai_lane_sql_check(
+        compiled.sql,
+        question=q,
+        grantable=allowed,
+        warehouse=lake,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=declared_violations,
+        grounded=grounded,
+    )
+    if checker_why:
+        if _checker_is_direct(checker_why):
+            return _stamp(
+                _abstain(
+                    q,
+                    checker_why,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    sql=compiled.sql,
+                )
+            )
+        return _stamp(_handoff(_CompileRefused(reason=checker_why, sql=compiled.sql)))
     return _stamp(
         _submit_validated(
             compiled.sql,
