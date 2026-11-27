@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - COMPILE-CHECK-01: compile SQL must pass the AI-lane checker
+
+- **Gate.** Rank-window, multi-grain, and one-grain compile call `ai_lane_sql_check` before submit. That is the extract loop's checker: the Space join rule, `def_validate` when its flag is on, grants, one SELECT, EXPLAIN, cited violations, and definition mismatch when grounded defs are on. No new flag. No new word or phrase rule.
+- **Miss.** A failing compile SQL is not served and is not submitted. The question goes to the extract loop (generate from the ontology, schema, and retrieved examples, execute, check, schema repair and escalate when those flags are on). If that misses, the envelope abstains with no compile figure. The route can offer reconfirm. Ungranted, hostile, and non-SELECT stay direct abstains.
+- **52 stub.** `grade52 --main` before (`f286c4a`) and after: correct=43 wrong=0 reconfirm=5, ai=0 rule=43 (L1=23 compile=20). The demo compile answers pass the checker, so the stub does not shrink. Pack H and armed grade52 were not run. Not PASS.
+
 ## 2026-11-27 - ADJUST-SQL-VQ-01: steward can adjust SQL and save a verified example
 
 - **Flag.** `DMS_STUDIO_ADJUST` defaults to off. Only the digit `1` turns it on. Off, `/v1/studio/adjust` is not mounted and the answer view has no Adjust SQL control. On, a steward opens the served SQL, runs it, and can save it for that question.
