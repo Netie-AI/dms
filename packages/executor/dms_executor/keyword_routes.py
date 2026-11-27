@@ -6,6 +6,7 @@ A follow-up deletes this module after the armed A/B. Do not add a phrase.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -84,11 +85,19 @@ def asks_for_dimension(question: str) -> bool:
     return bool(_NEEDS_DIM.search(q) or _TOP_N.search(q) or _ENTITY_PREFIX.search(q))
 
 
+def _rules_off() -> bool:
+    """Digit 1 only. Implies ``DMS_NO_WORD_RULES`` for this locker."""
+    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
 def locked_measure(question: str) -> str | None:
     """One measure the question names, or None. Not a certified-pack lookup.
 
     Kept so ``DMS_NO_WORD_RULES`` off stays byte-identical. Do not add a phrase.
+    ``DMS_RULES_OFF`` does not let this list decide a measure.
     """
+    if _rules_off():
+        return None
     qn = (question or "").lower()
     if "quantity sold" in qn or "qty sold" in qn:
         return "outbound_kg"

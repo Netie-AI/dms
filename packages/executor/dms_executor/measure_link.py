@@ -32,7 +32,14 @@ _SPINE = Path(__file__).with_name("ontology_spine.yaml")
 
 
 def no_word_rules_enabled() -> bool:
-    """True only when ``DMS_NO_WORD_RULES`` is the digit 1. Unset is off."""
+    """True when measure linking must not use the keyword locker.
+
+    ``DMS_NO_WORD_RULES=1`` is that switch. ``DMS_RULES_OFF=1`` implies it,
+    so the same ranker runs and a tie or a low score reconfirms. Unset,
+    ``0``, and ``true`` are off. Only the digit ``1`` counts.
+    """
+    if os.environ.get("DMS_RULES_OFF", "0").strip() == "1":
+        return True
     return os.environ.get(FLAG, "0").strip() == "1"
 
 

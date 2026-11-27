@@ -1,0 +1,169 @@
+# Question-text rule sites. This file may only shrink.
+# Do not add a key. Remove a line when that site is deleted.
+# A moved statement may replace its line number. Columns: path:line, kind, qualname, snippet.
+packages/cortex_client/cortex_client/compute.py:1076	in	question_with_examples	sql in question	#1
+packages/cortex_client/cortex_client/qualifiers.py:432	regex	_by_phrase_tokens	_BY_PHRASE_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:309	regex	_entity_hits	pat.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:324	regex	_excluded_noun	_EXCL_TOP_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:327	regex	_excluded_noun	_NOUN_AFTER_RE.match(qn, excl.end())	#1
+packages/cortex_client/cortex_client/qualifiers.py:526	regex	_plain_ranking_spans	rx.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:489	regex	_window_blanks	_BY_PHRASE_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:470	regex	_window_blanks	_EXCL_TOP_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:474	regex	_window_blanks	_NEXT_RE.search(rest)	#1
+packages/cortex_client/cortex_client/qualifiers.py:486	regex	_window_blanks	_SELLING_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:474	regex	_window_blanks	_SHOW_N_RE.search(rest)	#1
+packages/cortex_client/cortex_client/qualifiers.py:478	regex	_window_blanks	_TOP_RE.search(rest)	#1
+packages/cortex_client/cortex_client/qualifiers.py:716	regex	extract_qualifiers	_GRAIN_PHRASE_RE.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:721	regex	extract_qualifiers	_LY_RE.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:704	regex	extract_qualifiers	_NAMED_MONTH_RE.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:711	regex	extract_qualifiers	_NAMED_YEAR_RE.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:747	regex	extract_qualifiers	_QUOTED_RE.finditer(q)	#1
+packages/cortex_client/cortex_client/qualifiers.py:696	regex	extract_qualifiers	_TIME_FILTER_RE.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:755	regex	extract_qualifiers	_WH_A_RE.finditer(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:705	regex	extract_qualifiers	re.search(r"\bin\s+may\b", qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:402	regex	parse_rank_window	_BY_PHRASE_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:366	regex	parse_rank_window	_EXCL_TOP_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:370	regex	parse_rank_window	_NEXT_RE.search(rest)	#1
+packages/cortex_client/cortex_client/qualifiers.py:389	regex	parse_rank_window	_ORD_RANGE_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:385	regex	parse_rank_window	_RANKS_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:406	regex	parse_rank_window	_SELLING_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:370	regex	parse_rank_window	_SHOW_N_RE.search(rest)	#1
+packages/cortex_client/cortex_client/qualifiers.py:376	regex	parse_rank_window	_TOP_RE.search(rest)	#1
+packages/cortex_client/cortex_client/qualifiers.py:622	regex	rank_window_measure	_QTY_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:623	regex	rank_window_measure	_REVENUE_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:624	regex	rank_window_measure	_SELLING_RE.search(qn)	#1
+packages/cortex_client/cortex_client/qualifiers.py:621	regex	rank_window_measure	_UNIT_WORD_RE.search(qn)	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:107	regex	bronze_lane_table	_CATEGORY.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:112	regex	bronze_lane_table	_FOR_FILTER.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:113	regex	bronze_lane_table	_MEASURE.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:95	regex	bronze_lane_table	_NO_SQL.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:97	regex	bronze_lane_table	_SCOPED.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:106	regex	bronze_lane_table	_TOP_N.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:114	regex	bronze_lane_table	_TOTAL.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:174	regex	maybe_bronze_sheet_ask	_CATEGORY.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:196	regex	maybe_bronze_sheet_ask	_FOR_FILTER.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:178	regex	maybe_bronze_sheet_ask	_MEASURE.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:197	regex	maybe_bronze_sheet_ask	_MEASURE.search(question or "")	#2
+packages/executor/dms_executor/bronze_sheet_ask.py:163	regex	maybe_bronze_sheet_ask	_SCOPED.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:173	regex	maybe_bronze_sheet_ask	_TOP_N.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:198	regex	maybe_bronze_sheet_ask	_TOTAL.search(question or "")	#1
+packages/executor/dms_executor/cca/geo.py:246	regex	_cased_ok	_WORD.findall(question or "")	#1
+packages/executor/dms_executor/cca/geo.py:262	regex	propose_region	_WORD.findall(question or "")	#1
+packages/executor/dms_executor/demo_ask.py:206	regex	_excluded_skus	re.finditer( r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|remov(?:e|ing)|drop(?:ping)?|without|except)\s+(?:the\s+)?(.+)", question, flags=re.I, )	#1
+packages/executor/dms_executor/demo_ask.py:106	regex	_is_predictive	_PREDICTIVE.search(question or "")	#1
+packages/executor/dms_executor/demo_ask.py:265	regex	_rank_window	re.search( r"\b(?:number|numbers|nos?|ranks?|positions?)\s*" r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b", q, )	#1
+packages/executor/dms_executor/demo_ask.py:275	regex	_rank_window	re.search( r"\b(?:sku|skus|rank|revenue|sales)\b.*\b" r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b", q, )	#1
+packages/executor/dms_executor/demo_ask.py:270	regex	_rank_window	re.search( r"\b(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b" r".*\b(?:sku|skus|rank|revenue|sales)\b", q, )	#1
+packages/executor/dms_executor/demo_ask.py:114	regex	_scale_factor	re.search(r"(?:/|÷)\s*(\d+(?:\.\d+)?)", q)	#1
+packages/executor/dms_executor/demo_ask.py:120	regex	_scale_factor	re.search(r"\b(?:scale|split)\b.*?\b(?:by|/)\s*(\d+(?:\.\d+)?)", q)	#1
+packages/executor/dms_executor/demo_ask.py:111	regex	_scale_factor	re.search(r"\bdivid(?:e|ed|ing)\b.*?\bby\s+(\d+(?:\.\d+)?)", q)	#1
+packages/executor/dms_executor/demo_ask.py:117	regex	_scale_factor	re.search(r"\bone\s+fifth\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:127	regex	_top_n	re.search(r"\btop\s+(\d+)\b", question.lower())	#1
+packages/executor/dms_executor/demo_ask.py:347	in	answer_demo_question	"alert" in q	#1
+packages/executor/dms_executor/demo_ask.py:344	in	answer_demo_question	"below" in q	#1
+packages/executor/dms_executor/demo_ask.py:336	in	answer_demo_question	"capacity" in q	#1
+packages/executor/dms_executor/demo_ask.py:309	in	answer_demo_question	"divid" in q	#1
+packages/executor/dms_executor/demo_ask.py:344	in	answer_demo_question	"reorder" in q	#1
+packages/executor/dms_executor/demo_ask.py:309	in	answer_demo_question	"revenue" in q	#1
+packages/executor/dms_executor/demo_ask.py:309	in	answer_demo_question	"sales" in q	#1
+packages/executor/dms_executor/demo_ask.py:344	in	answer_demo_question	"sku" in q	#1
+packages/executor/dms_executor/demo_ask.py:309	in	answer_demo_question	"total" in q	#1
+packages/executor/dms_executor/demo_ask.py:336	in	answer_demo_question	"utilisation" in q	#1
+packages/executor/dms_executor/demo_ask.py:336	in	answer_demo_question	"utilization" in q	#1
+packages/executor/dms_executor/demo_ask.py:339	regex	answer_demo_question	re.search( r"\btotal\b.*\b(revenue|sales)\b", q )	#1
+packages/executor/dms_executor/demo_ask.py:339	regex	answer_demo_question	re.search(r"\b(revenue|sales)\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:316	regex	answer_demo_question	re.search(r"\b(sell|sold|revenue|sales|sku|skus|revnue|revanue)\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:318	regex	answer_demo_question	re.search(r"\b(top|best|highest|most)\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:319	regex	answer_demo_question	re.search(r"\btop\s+\d+\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:190	regex	normalize_ask_question	_NO_EXCLUSION_CHIP.search(q)	#1
+packages/executor/dms_executor/demo_ask.py:194	regex	normalize_ask_question	_WITHOUT_EXCLUSION_DECLINE.search(q)	#1
+packages/executor/dms_executor/demo_ask.py:180	in	with_grounded_scope	t.lower() not in q.lower()	#1
+packages/executor/dms_executor/demo_ask.py:180	in	with_grounded_scope	t.split(".", 1)[-1].lower() not in q.lower()	#1
+packages/executor/dms_executor/demo_pack.py:599	in	is_curated_l0_without_pack_metric	n in curated_l0_question_norms()	#1
+packages/executor/dms_executor/demo_pack.py:437	in	is_uncertified_paraphrase	qn in _UNCERTIFIED_PARAPHRASE	#1
+packages/executor/dms_executor/envelope.py:857	regex	_forecast_history_pad	_FORECAST_ASK.search(question or "")	#1
+packages/executor/dms_executor/envelope.py:642	regex	_negated_concepts	_NEGATION_MARK.finditer(question)	#1
+packages/executor/dms_executor/envelope.py:646	regex	_negated_concepts	_WORD.finditer(tail)	#1
+packages/executor/dms_executor/envelope.py:647	regex	_negated_concepts	re.search(r"[?!.;]", tail[last_end : tok.start()])	#1
+packages/executor/dms_executor/envelope.py:491	regex	_requests_multiple_rows	_PER_GROUP_ASK.search(q)	#1
+packages/executor/dms_executor/envelope.py:484	regex	_requests_multiple_rows	_TOP_N_ASK.search(q)	#1
+packages/executor/dms_executor/envelope.py:573	regex	_requests_single_total	_TOTAL_ASK.search(question or "")	#1
+packages/executor/dms_executor/envelope.py:343	in	_scope_uniquely_named	bare.lower() in q_low	#1
+packages/executor/dms_executor/envelope.py:347	in	_scope_uniquely_named	stem in q_low	#1
+packages/executor/dms_executor/envelope.py:358	regex	_scope_uniquely_named	_EXPLICIT_SHEET.search(q)	#1
+packages/executor/dms_executor/envelope.py:555	regex	_should_demote_xlsx_ask_hit_demo_warehouse	_XLSX_IN_ASK.search(question or "")	#1
+packages/executor/dms_executor/envelope.py:837	regex	asked_calendar_years	_CALENDAR_YEAR.findall(question)	#1
+packages/executor/dms_executor/keyword_routes.py:147	in	_group_from_hints	n in qn	#1
+packages/executor/dms_executor/keyword_routes.py:85	regex	asks_for_dimension	_ENTITY_PREFIX.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:85	regex	asks_for_dimension	_NEEDS_DIM.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:85	regex	asks_for_dimension	_TOP_N.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:361	in	bind_plan	"audit" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:355	in	bind_plan	"camera" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:355	in	bind_plan	"cctv" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:363	in	bind_plan	"chemical" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:363	in	bind_plan	"expir" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:358	in	bind_plan	"location" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:361	in	bind_plan	"overdue" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:363	in	bind_plan	"reorder" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:412	regex	bind_plan	_ABOVE_PCT.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:358	regex	bind_plan	_COLD.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:325	regex	bind_plan	_ENTITY_PREFIX.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:350	regex	bind_plan	_NEEDS_DIM.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:313	regex	bind_plan	_STILL_UNTYPED.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:313	regex	bind_plan	_TIME.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:351	regex	bind_plan	_TOP_N.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:173	regex	intent_slots	_ABOVE_PCT.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:172	regex	intent_slots	_TOP_N.search(q)	#1
+packages/executor/dms_executor/keyword_routes.py:112	in	locked_measure	"90 percent" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:120	in	locked_measure	"audit" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:114	in	locked_measure	"camera" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:108	in	locked_measure	"capacity utilisation" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:108	in	locked_measure	"capacity utilization" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:136	in	locked_measure	"categories" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:136	in	locked_measure	"category" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:135	in	locked_measure	"categoty" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:114	in	locked_measure	"cctv" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:122	in	locked_measure	"chemical" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:122	in	locked_measure	"expir" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:106	in	locked_measure	"freight" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:104	in	locked_measure	"how many sku" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:104	in	locked_measure	"how many unique sku" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:126	in	locked_measure	"inventory worth" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:120	in	locked_measure	"overdue" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:102	in	locked_measure	"qty sold" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:102	in	locked_measure	"quantity sold" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:116	in	locked_measure	"reorder" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:133	in	locked_measure	"revenue" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:136	in	locked_measure	"sales" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:133	in	locked_measure	"selling sku" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:106	in	locked_measure	"shipment cost" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:106	in	locked_measure	"shipping cost" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:104	in	locked_measure	"sku count" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:131	in	locked_measure	"spend by" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:125	in	locked_measure	"stock value" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:118	in	locked_measure	"supplier" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:131	in	locked_measure	"total spend" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:127	in	locked_measure	"value of stock" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:128	in	locked_measure	"worth per category" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:112	regex	locked_measure	_ABOVE_PCT.search(question or "")	#1
+packages/executor/dms_executor/keyword_routes.py:110	regex	locked_measure	_COLD.search(question or "")	#1
+packages/executor/dms_executor/keyword_routes.py:118	regex	locked_measure	re.search(r"\brank(?:ing)?\b", qn)	#1
+packages/executor/dms_executor/keyword_routes.py:230	in	lookup_bound_values	"chemical" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:221	regex	lookup_bound_values	_WH_A.search(question or "")	#1
+packages/executor/dms_executor/keyword_routes.py:275	in	typed_filters	"audit" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:286	in	typed_filters	"camera" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:286	in	typed_filters	"cctv" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:269	in	typed_filters	"chemical" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:275	in	typed_filters	"overdue" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:290	in	typed_filters	"reorder" in qn	#1
+packages/executor/dms_executor/keyword_routes.py:253	regex	typed_filters	_COLD.search(question or "")	#1
+packages/executor/dms_executor/keyword_routes.py:256	regex	typed_filters	_COLD_NEGATED.search(question or "")	#1
+packages/executor/dms_executor/keyword_routes.py:264	regex	typed_filters	_WH_A.search(question or "")	#1
+packages/executor/dms_executor/keyword_routes.py:258	regex	typed_filters	re.search(r"\bexpir", qn)	#1
+packages/executor/dms_executor/keyword_routes.py:80	regex	vague_question	_UNSURE_ASK.search(question or "")	#1
+packages/executor/dms_executor/ontology.py:394	regex	detect_supply_chain_grains	pat.search(q)	#1
+packages/executor/dms_executor/semantic_retrieve.py:126	regex	question_tokens	re.findall(r"[a-z0-9]+", (question or "").lower())	#1
+packages/executor/dms_executor/session_followup.py:42	regex	is_followup_question	_ADD.match(q)	#1
+packages/executor/dms_executor/session_followup.py:42	regex	is_followup_question	_AVG.match(q)	#1
+packages/executor/dms_executor/session_followup.py:239	regex	maybe_followup	_ADD.match(q)	#1
+packages/executor/dms_executor/session_followup.py:238	regex	maybe_followup	_AVG.match(q)	#1

@@ -14,6 +14,7 @@ schema-link service behind the existing compute HTTP call.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,14 @@ from dms_executor.keyword_routes import (
 )
 from dms_executor.measure_link import no_word_rules_enabled, rank_measure_link
 from dms_executor.ontology import Ontology
+
+
+def _keyword_lock_off() -> bool:
+    """Keyword measure lock is off. ``DMS_RULES_OFF`` implies ``DMS_NO_WORD_RULES``."""
+    if os.environ.get("DMS_RULES_OFF", "0").strip() == "1":
+        return True
+    return no_word_rules_enabled()
+
 
 MAX_CONTEXT_CHARS = 2400
 MAX_TABLES = 6
@@ -242,7 +251,7 @@ def intent_slots(
     Flag off is the keyword lock. Flag on ranks the ontology and does not
     keep a keyword measure when that rank is a tie or under the floor.
     """
-    if not no_word_rules_enabled():
+    if not _keyword_lock_off():
         return _keyword_intent_slots(question, ontology)
     slots = _keyword_intent_slots(question, ontology, keyword_lock=False)
     link = rank_measure_link(question, ontology, embedder=embedder)
@@ -376,7 +385,7 @@ def retrieve_short_context(
                 onto_slice.setdefault("objects", {}).setdefault(
                     grain, {"key": list(ontology.objects[grain].key)}
                 )
-    if no_word_rules_enabled():
+    if _keyword_lock_off():
         link = rank_measure_link(question, ontology, embedder=embedder)
         lock = link.name if link.reason_code is None else None
     else:
@@ -525,7 +534,7 @@ def bind_plan(
     A tie or a score under the floor is unsure and does not pick a measure.
     ``link_measures=False`` types slots for a measure the caller already chose.
     """
-    use_link = no_word_rules_enabled() if link_measures is None else link_measures
+    use_link = _keyword_lock_off() if link_measures is None else link_measures
     if not use_link:
         return _keyword_bind_plan(question, context)
     ctx_in = context if isinstance(context, dict) else None
