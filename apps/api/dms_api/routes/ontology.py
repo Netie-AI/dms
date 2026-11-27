@@ -1,12 +1,12 @@
-"""Ontology — the shared vocabulary the product is built on, read from Cortex.
+"""Ontology the product renders, read from the Space's own store.
 
-DMS renders the ontology; it never authors it. Object types, links, governed
-actions and functions live as YAML in the engine's pack and are the same
-definitions the answer plane routes against — a second copy here would be a
-second truth, and the first thing to drift.
+DMS does not proxy Cortex ``/dms/ontology`` (that route is gone). Object types,
+links, and approved measures come from ``space_ontology`` plus the approved
+onto_data items for the Space. When that Space has neither, the response is the
+pack ``ontology_spine.yaml`` and ``source`` is ``pack``.
 
-Cortex offline is a normal state, not an error: every route answers 200 with
-``ok: false`` and a hint so the page can explain itself instead of blanking.
+``pack`` stays on the signature so older clients and the MCP metrics tool keep
+calling the same function. It does not select a Cortex pack.
 """
 
 from __future__ import annotations
@@ -17,51 +17,39 @@ from cortex_client import compliance_gate
 from dms_core.control_plane.onto_data import _public_item, ontology_data_store
 from fastapi import APIRouter, HTTPException
 
-from dms_api.cortex_read import cortex_get
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
+from dms_api.wiring import read_live_ontology
 
 router = APIRouter(prefix="/v1/ontology", tags=["ontology"])
 
-#: DMS path suffix → Cortex path suffix. An allowlist, not a wildcard proxy:
-#: an open proxy to the engine would defeat the port isolation in §1.
-SECTIONS: dict[str, str] = {
-    "": "",
-    "objects": "/objects",
-    "links": "/links",
-    "actions": "/actions",
-    "functions": "/functions",
-    "metrics": "/metrics",
-    "graph": "/graph",
-}
+#: Allowlist, not a wildcard. An unknown section is 404.
+SECTIONS = frozenset({"", "objects", "links", "actions", "functions", "metrics", "graph"})
 
 
-def _fetch(settings: SettingsDep, section: str, pack: str | None) -> dict[str, Any]:
-    suffix = SECTIONS[section]
-    result = cortex_get(
-        settings.cortex_url,
-        f"/dms/ontology{suffix}",
-        api_key=settings.cortex_api_key,
-        params={"pack": pack} if pack else None,
-    )
-    if result["ok"]:
-        return {"ok": True, "section": section or "summary", **(result["data"] or {})}
-    return {
-        "ok": False,
-        "section": section or "summary",
-        "error": result.get("error"),
-        "hint": result.get("hint"),
-    }
+def _read(section: str, *, space_id: str | None, pack: str | None) -> dict[str, Any]:
+    _ = pack
+    return read_live_ontology(section, space_id=space_id)
 
 
 @router.get("")
-def ontology_summary(settings: SettingsDep, pack: str | None = None) -> dict[str, Any]:
-    return _fetch(settings, "", pack)
+def ontology_summary(
+    settings: SettingsDep,
+    pack: str | None = None,
+    space_id: str | None = None,
+) -> dict[str, Any]:
+    _ = settings
+    return _read("summary", space_id=space_id, pack=pack)
 
 
 @router.get("/graph")
-def ontology_graph(settings: SettingsDep, pack: str | None = None) -> dict[str, Any]:
-    return _fetch(settings, "graph", pack)
+def ontology_graph(
+    settings: SettingsDep,
+    pack: str | None = None,
+    space_id: str | None = None,
+) -> dict[str, Any]:
+    _ = settings
+    return _read("graph", space_id=space_id, pack=pack)
 
 
 def _require_steward(settings: SettingsDep) -> None:
@@ -159,7 +147,9 @@ def ontology_section(
     section: str,
     settings: SettingsDep,
     pack: str | None = None,
+    space_id: str | None = None,
 ) -> dict[str, Any]:
+    _ = settings
     if section not in SECTIONS or section == "":
         raise HTTPException(status_code=404, detail=f"unknown ontology section: {section}")
-    return _fetch(settings, section, pack)
+    return _read(section, space_id=space_id, pack=pack)

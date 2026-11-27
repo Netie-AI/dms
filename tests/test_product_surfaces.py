@@ -61,43 +61,43 @@ def _stub_cortex(monkeypatch, payload: dict[str, Any] | None, *, ok: bool = True
             "data": None,
         }
 
-    import dms_api.routes.ontology as ontology_routes
     import dms_api.routes.trust as trust_routes
 
-    monkeypatch.setattr(ontology_routes, "cortex_get", fake_get)
     monkeypatch.setattr(trust_routes, "cortex_get", fake_get)
 
 
 # ------------------------------------------------------------------- ontology
 
-ONTOLOGY_FIXTURE = {
-    "pack": "dms",
-    "counts": {"object_types": 2, "link_types": 1, "metrics": 3, "sensitive_properties": 3},
-    "objects_without_metrics": ["alerts"],
-}
 
+def test_ontology_summary_reads_the_pack_when_the_space_has_none(client, monkeypatch):
+    """Cortex /dms/ontology is gone. An empty Space is the pack spine, ok true."""
 
-def test_ontology_summary_passes_the_engine_payload_through(client, monkeypatch):
-    _stub_cortex(monkeypatch, ONTOLOGY_FIXTURE)
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ontology must not call Cortex")
+
+    monkeypatch.setattr("dms_api.cortex_read.cortex_get", boom)
     body = client.get("/v1/ontology").json()
     assert body["ok"] is True
-    assert body["pack"] == "dms"
-    assert body["counts"]["object_types"] == 2
+    assert body["source"] == "pack"
+    assert body["counts"]["object_types"] >= 1
 
 
-def test_ontology_sections_are_an_allowlist_not_a_proxy(client, monkeypatch):
-    _stub_cortex(monkeypatch, {"object_types": []})
+def test_ontology_sections_are_an_allowlist_not_a_proxy(client):
     for section in ("objects", "links", "actions", "functions", "metrics", "graph"):
         assert client.get(f"/v1/ontology/{section}").status_code == 200
     assert client.get("/v1/ontology/../health").status_code in (404, 405)
     assert client.get("/v1/ontology/secrets").status_code == 404
 
 
-def test_ontology_renders_a_hint_when_cortex_is_down(client, monkeypatch):
-    _stub_cortex(monkeypatch, None, ok=False)
+def test_ontology_stays_up_when_cortex_is_down(client, monkeypatch):
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ontology must not call Cortex")
+
+    monkeypatch.setattr("dms_api.cortex_read.cortex_get", boom)
     body = client.get("/v1/ontology").json()
-    assert body["ok"] is False
-    assert body["hint"]
+    assert body["ok"] is True
+    assert body["source"] == "pack"
+    assert body["object_types"]
 
 
 # ---------------------------------------------------------------------- trust

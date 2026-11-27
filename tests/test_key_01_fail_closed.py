@@ -270,12 +270,14 @@ def test_ontology_and_trust_routes_refuse_by_name_with_zero_outbound_calls(
 ) -> None:
     calls = _wire(no_key_env)
     client = TestClient(create_app())
-    for path in (
-        "/v1/ontology",
-        "/v1/ontology/metrics",
-        "/v1/trust/summary",
-        "/v1/trust/runs/corpus",
-    ):
+    # Ontology is the Space store. A missing key does not blank it and it
+    # makes no outbound call. Trust still refuses by name.
+    for path in ("/v1/ontology", "/v1/ontology/metrics"):
+        body = client.get(path).json()
+        assert body["ok"] is True, path
+        assert body["source"] in {"store", "pack"}, path
+        assert DEMO_VIEWER_KEY not in json.dumps(body), path
+    for path in ("/v1/trust/summary", "/v1/trust/runs/corpus"):
         body = client.get(path).json()
         assert body["ok"] is False, path
         assert body["error"] == "cortex_key_missing", (path, body)
@@ -285,10 +287,13 @@ def test_ontology_and_trust_routes_refuse_by_name_with_zero_outbound_calls(
     assert summary["claim"]["supported"] is False
     assert calls == [], f"unkeyed ontology/trust routes leaked: {calls}"
 
-    # Control: with a key configured the same route does call Cortex with that key.
+    # Control: a key still goes out on trust, and still does not go out on ontology.
     no_key_env.setenv("CORTEX_API_KEY", _FAKE)
     get_settings.cache_clear()
-    assert TestClient(create_app()).get("/v1/ontology").json()["ok"] is True
+    keyed = TestClient(create_app())
+    assert keyed.get("/v1/ontology").json()["ok"] is True
+    assert calls == []
+    keyed.get("/v1/trust/summary")
     assert [c["headers"].get("X-API-Key") for c in calls] == [_FAKE]
 
 
