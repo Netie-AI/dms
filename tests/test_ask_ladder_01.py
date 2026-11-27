@@ -1,7 +1,8 @@
 """DMS-AI-ABSTAIN-01: generative misses climb. Ungranted and hostile SQL do not.
 
-The flag defaults off. Off, a phrase gate still returns before any model call.
+The flag defaults off. Off, the existing early returns still stop before a model call.
 On, the same miss climbs repair, richer context, plan, then an escalate role.
+A vague question is a clarify card only when the model returns readings.
 DMS does not name a model. A checker failure is not served.
 """
 
@@ -19,7 +20,6 @@ from dms_executor.ask_ladder import (
     ClimbSession,
     is_direct_abstain,
     named_code,
-    phrase_gate_reason,
 )
 from dms_executor.demo_warehouse import SERVING_DIALECT, connect_file, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
@@ -136,23 +136,70 @@ def test_named_codes_and_direct_stops() -> None:
     assert is_direct_abstain("checker:hostile_sql:path_not_allowed")
     assert not is_direct_abstain("explain:missing_column")
     assert not is_direct_abstain("vague_question")
-    assert phrase_gate_reason(_VAGUE, demo_gate=False) == "vague_question"
-    worry = "Are we short on anything the warehouse should worry about?"
-    assert phrase_gate_reason(worry, demo_gate=False) == "vague_question"
-    pending = "Which high-risk suppliers have pending shipments?"
-    assert phrase_gate_reason(pending, demo_gate=False) is None
 
 
-def test_pack_phrase_gates_are_the_existing_checkers() -> None:
-    """The 52's early give-ups are the existing gates, not a new word list."""
-    hit = {
-        qid
-        for qid, question in _pack_questions()
-        if phrase_gate_reason(question, demo_gate=False)
+def _readings() -> dict[str, Any]:
+    return {
+        "clarify_verdict": {
+            "category": "ambiguous",
+            "readings": [
+                {"id": "sku", "text": "List inventory sku values", "slots": {}},
+                {"id": "loc", "text": "List location ids", "slots": {}},
+            ],
+            "missing": ["measure"],
+        }
     }
-    assert "trap_last_month" in hit
-    assert "trap_short_paraphrase" in hit
-    assert "trap_high_risk_pending" not in hit
+
+
+def _clarify_compute(ambiguous: bool):
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        if ctx.get("route_hint") == "reason":
+            if ambiguous:
+                return _readings()
+            return {
+                "clarify_verdict": {
+                    "category": "answerable",
+                    "readings": [],
+                    "missing": [],
+                }
+            }
+        prompt = str(ctx.get("sql_vote_prompt") or "")
+        if prompt.endswith("List location ids"):
+            return _names(query_sql="SELECT location_id FROM locations")
+        return _names(query_sql="SELECT sku FROM inventory")
+
+    return compute
+
+
+def test_model_readings_decide_the_vague_traps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The card comes from the model reading list, not from question wording."""
+    _arm(monkeypatch, flag="1", cap="4")
+    monkeypatch.setenv("DMS_AI_CLARIFY", "1")
+    by_id = dict(_pack_questions())
+    cases = {
+        "trap_last_month": True,
+        "trap_short_paraphrase": True,
+        "trap_high_risk_pending": False,
+    }
+    for qid, ambiguous in cases.items():
+        submitted: list[str] = []
+        env = _ask(
+            tmp_path / f"{qid}.duckdb",
+            _clarify_compute(ambiguous),
+            submitted,
+            by_id[qid],
+        )
+        assert env is not None
+        if ambiguous:
+            assert env.get("route") == "needs_clarification"
+            readings = env["clarify"]["readings"]
+            assert 2 <= len(readings) <= 4
+            assert submitted == []
+        else:
+            assert env.get("route") != "needs_clarification"
+            assert env.get("clarify") is None
 
 
 def test_flag_off_phrase_does_not_call_the_model(
@@ -325,26 +372,26 @@ def test_empty_result_is_fed_back_and_named(
     assert "___none___" not in text
 
 
-def test_phrase_on_calls_the_model_then_names_the_abstain(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_vague_question_is_a_clarify_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _arm(monkeypatch, flag="1", cap="4")
+    monkeypatch.setenv("DMS_AI_CLARIFY", "1")
     calls: list[dict[str, Any]] = []
 
     def compute(ctx: dict[str, Any]) -> dict[str, Any]:
-        calls.append(ctx)
-        return _names()
+        calls.append(dict(ctx))
+        return _clarify_compute(True)(ctx)
 
-    with caplog.at_level(logging.WARNING, logger="dms_executor.pipeline_failure"):
-        env = _ask(tmp_path / "vague.duckdb", compute, [], _VAGUE)
-    assert calls
-    assert env is not None and env["abstained"] is True and env["rows"] == []
-    reason = str(env.get("abstain_reason") or "")
-    assert "vague_question" in reason
+    submitted: list[str] = []
+    env = _ask(tmp_path / "vague.duckdb", compute, submitted, _VAGUE)
+    assert calls and calls[0].get("route_hint") == "reason"
+    assert env is not None and env.get("route") == "needs_clarification"
+    assert env["abstained"] is True and env["rows"] == []
+    assert 2 <= len(env["clarify"]["readings"]) <= 4
+    assert submitted == []
     assert "Found " not in str(env.get("text") or "")
-    text = "\n".join(record.getMessage() for record in caplog.records)
-    assert "vague_question" in text
-    assert _VAGUE not in text
+    assert _VAGUE not in json.dumps(env["clarify"]["readings"])
 
 
 def test_plan_then_solve(monkeypatch: pytest.MonkeyPatch) -> None:

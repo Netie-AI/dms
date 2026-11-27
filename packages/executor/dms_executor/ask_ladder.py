@@ -140,27 +140,6 @@ def is_direct_abstain(reason: str) -> bool:
     return any(reconfirm_disposition(token) == "direct" for token in tokens)
 
 
-def phrase_gate_reason(question: str, *, demo_gate: bool) -> str | None:
-    """Named code for a gate that today returns before any model call.
-
-    Uses the existing checkers. Does not add a word or phrase rule.
-    """
-    from dms_executor.demo_ask import _is_predictive
-    from dms_executor.demo_pack import is_uncertified_paraphrase
-    from dms_executor.envelope import asked_calendar_years
-    from dms_executor.generative_ask import _UNSURE_ASK
-
-    if demo_gate and is_uncertified_paraphrase(question):
-        return "uncertified_paraphrase"
-    if _UNSURE_ASK.search(question or ""):
-        return "vague_question"
-    if _is_predictive(question):
-        return "predictive"
-    if "2099" in asked_calendar_years(question):
-        return "year_not_certified"
-    return None
-
-
 def richer_context_block(
     question: str,
     sql: str | None,

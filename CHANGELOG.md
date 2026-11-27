@@ -11,6 +11,11 @@ Append-only. Never edited, only added to. Newest first.
 - **BIRD.** Download stays outside the repo and is refused while `scripts/verify/bird_minidev_2026.sha256` says `UNPINNED`. No estimated EX.
 - **Stub 52.** flag off: correct=43 WRONG=0 refusal_wrong=0 reconfirm=5 clarify=0 abstain=0 AI=0 rule=43 unattributed=0. flag on (existing AI-first stub): correct=0 WRONG=0 reconfirm=48 clarify=0 AI=0 rule=0. p50 unmeasured (stub). Not PASS.
 
+## 2026-11-27 - R1-CLARIFY-01: drop the phrase label, build abstains in one place
+
+- **Phrase label.** `phrase_gate_reason` matched question wording, so it is gone. With `DMS_AI_CLARIFY` on, a card comes from the model's reading list. A silent verdict still uses the existing early returns.
+- **Builder.** Ladder abstains pass their named reason into `build_abstain`. No other call sets `abstain_reason`.
+
 ## 2026-11-27 - R1-CLARIFY-01: the model decides an ambiguous question
 
 - **Flag.** `DMS_AI_CLARIFY` defaults off. Off, phrase gates and the ladder are unchanged. On, one OpenVault call with role `reason` returns answerable, ambiguous, or unanswerable. A verdict replaces the phrase gates. No verdict, or an invalid verdict, keeps them, so a silent stub cannot serve a trap.
