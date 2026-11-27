@@ -1496,11 +1496,11 @@ def _try_multi_grain_envelope(
         # Do not serve it, and do not hand it to the model as an example.
         if ai_first_enabled():
             return None
-        blocked = reconfirm_for_reason(
+        held = reconfirm_for_reason(
             ungrounded, question=q, space_id=space_id, session_id=session_id
         )
-        if blocked is not None:
-            return blocked
+        if held is not None:
+            return held
         return _abstain(
             q, ungrounded,
             space_id=space_id, session_id=session_id, plan_source=source,
