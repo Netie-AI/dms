@@ -410,10 +410,14 @@ jobs:
       - name: Studio result view tests
         # STUDIO-RESULT-01 (#365). Vitest was not a CI step. This runs the
         # result-view file only. It does not score answers or call /ask.
+        # R1-UI-CLARIFY-01 adds the clarify card tests and a mocked Playwright
+        # spec. It does not score answers.
         working-directory: apps/ui
         run: |
           npm ci
-          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/ontologyRead.test.ts
+          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/ontologyRead.test.ts src/components/studio/clarifyCards.test.tsx src/lib/clarifyAsk.test.ts
+          npx playwright install --with-deps chromium
+          npx playwright test e2e/clarify.spec.ts
 
   # BANK-04 (#271). Brings the appliance compose stack up and asserts the TLS
   # contract against the live containers: HTTPS answers /health, plain HTTP does
