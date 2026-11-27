@@ -1,6 +1,6 @@
 # ADJUST-SQL-VQ-01
 
-**Status:** Not PASS. `tests/test_studio_adjust_01.py` 9 passed. UI vitest `AdjustSqlPanel.test.ts`, `ResultView.test.ts`, and `AnswerMessage.test.ts` 18 passed. ruff, mypy, and import-linter passed. Full `pytest tests/` with `DMS_SKIP_CONTROL_PLANE_TESTS=1` was started. grade52 was not run. Armed 52 and pack H were not run. Not PASS.
+**Status:** Not PASS. `tests/test_studio_adjust_01.py` 9 passed. UI vitest for the panel, ResultView, and AnswerMessage: 18 passed. ruff, mypy, and import-linter passed. Full `pytest tests/` with `DMS_SKIP_CONTROL_PLANE_TESTS=1` on the dirty tree: 4625 passed, 119 skipped, 34 xfailed, 8 failed, 4 errors. Those 12 were grade52 refusing uncommitted apps/packages. On this commit, `tests/test_grade52.py`, `tests/test_grade52_armed.py`, `tests/test_grade52_model_requested.py`, and `tests/test_aif_grade_01.py`: 46 passed. grade52 was not run as a score. Armed 52 and pack H were not run. Not PASS.
 
 ## What
 
