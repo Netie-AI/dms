@@ -105,6 +105,7 @@ from dms_executor.ground_defs import (
     ground_defs_enabled,
     mismatch_envelope,
 )
+from dms_executor.keyword_routes import vague_question
 from dms_executor.manifest import OpenVaultTokenError
 from dms_executor.measure_link import no_word_rules_enabled, reconfirm_for_reason
 from dms_executor.ontology import (
@@ -183,10 +184,6 @@ from dms_executor.verified_queries import (
 )
 
 _KNOWN = frozenset(DEMO_TABLES)
-_UNSURE_ASK = re.compile(
-    r"\b(worry about|is this good|just give me)\b",
-    re.I,
-)
 PLAN_SOURCE_ONTOLOGY = "ontology_plan"
 PLAN_SOURCE_BIND = "bind_plan"
 PLAN_SOURCE_OTHER = "other"
@@ -2530,7 +2527,7 @@ def _maybe_generative_ask_impl(
                 q, "uncertified paraphrase: not a generative certify boundary",
                 space_id=space_id, session_id=session_id,
             )
-        if _UNSURE_ASK.search(q):
+        if vague_question(q):
             return _abstain(
                 q, "question is too vague or time-unbounded to ground",
                 space_id=space_id, session_id=session_id,
@@ -2542,7 +2539,8 @@ def _maybe_generative_ask_impl(
             )
         return None
 
-    if not clarify_on and not ladder_on:
+    # DMS_RULES_OFF is the same skip: a question word must not decide.
+    if not clarify_on and not ladder_on and not _rules_off():
         held_phrase = _phrase_hold()
         if held_phrase is not None:
             return held_phrase
