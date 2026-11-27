@@ -3,8 +3,10 @@
 A file Space lands in ``bronze``. ``read_catalog`` used to read ``main`` only,
 so the model was sent no columns. Grants name the schema. ``main`` stays a
 bare name. Anything else keeps the grant's ``schema.table``. No table body
-is read here. A join of those tables with no stored ontology abstains
-``unverified_join:no_ontology``.
+is read here. A granted join of those tables with no stored ontology is
+not an abstain. ``DMS_SCHEMA_CONTEXT`` asks the user to confirm the catalog
+keys and the SQL, and Yes files a proposed ontology link. The flag is off
+by default. An ungranted name stays ``sql_relation_not_granted``.
 
 Refs #518.
 """
@@ -21,7 +23,7 @@ from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
 from dms_executor.demo_warehouse import connect_file, connect_serving, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
-from dms_executor.generative_ask import _no_ontology_file_join
+from dms_executor.generative_ask import JOIN_CONFIRM_CODE, _no_ontology_file_join
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from dms_executor.schema_context import (
     INDEX_COLUMN_CAP,
@@ -29,6 +31,7 @@ from dms_executor.schema_context import (
     _serving_file,
     build_schema_context,
     build_space_index,
+    join_key_facts,
     lookup_schema,
     read_catalog,
 )
@@ -94,7 +97,7 @@ def test_no_ontology_file_join_ignores_main_and_one_table() -> None:
     assert _no_ontology_file_join(
         "WITH c AS (SELECT * FROM bronze.orders) SELECT * FROM c"
     ) is None
-    assert _no_ontology_file_join(JOIN_SQL) == "unverified_join:no_ontology"
+    assert _no_ontology_file_join(JOIN_SQL) == JOIN_CONFIRM_CODE
 
 
 def test_bronze_grant_lists_that_schema_and_not_the_main_twin(tmp_path: Path) -> None:
@@ -488,18 +491,121 @@ def test_ask_sends_the_file_tables_and_answers_the_one_table_truth(
     assert CANARY_EMAIL not in str(env.get("text") or "")
 
 
-def test_two_table_sql_abstains_without_an_ontology(
+def test_catalog_foreign_key_is_a_proposed_join_key(tmp_path: Path) -> None:
+    path = _lake(tmp_path)
+    _exec(
+        path,
+        """
+        CREATE TABLE bronze.customers (customer_id INTEGER PRIMARY KEY, email VARCHAR);
+        CREATE TABLE bronze.orders (
+            order_id INTEGER,
+            customer_id INTEGER,
+            amount INTEGER,
+            FOREIGN KEY (customer_id) REFERENCES bronze.customers(customer_id)
+        );
+        """,
+    )
+    keys = join_key_facts(
+        path,
+        {"bronze.orders", "bronze.customers"},
+        JOIN_SQL,
+        "duckdb",
+    )
+    assert keys
+    key = keys[0]
+    assert key["left_table"] == "bronze.orders"
+    assert key["left_column"] == "customer_id"
+    assert key["right_table"] == "bronze.customers"
+    assert key["right_column"] == "customer_id"
+    assert key["right_key"] == "primary_key"
+    assert key["reported"] == "foreign_key"
+    assert "INT" in key["left_type"].upper()
+
+
+def test_two_table_sql_is_served_when_schema_context_is_off(
     file_space: tuple[Any, Path, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("DMS_SCHEMA_CONTEXT", raising=False)
     app, path, space_id = file_space
     env, posts = _ask(app, path, JOIN_SQL, space_id, monkeypatch)
+    assert_envelope_valid(env)
+    assert env.get("abstained") is not True, env.get("text")
+    assert env.get("reconfirm") in (None, {})
+    rows = env.get("rows") or []
+    assert len(rows) == 1
+    assert int(rows[0]["total"]) == 250
+    assumptions = " ".join(str(item) for item in env.get("assumptions") or [])
+    assert "unverified_join" not in assumptions
+    assert JOIN_CONFIRM_CODE not in assumptions
+    assert posts
+    listed = " ".join(str(post) for post in posts)
+    assert CANARY_EMAIL not in listed
+
+
+def test_schema_context_confirms_a_granted_join_and_files_the_link(
+    file_space: tuple[Any, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dms_api.settings import Settings, get_settings
+    from dms_core.control_plane.onto_data import ontology_data_store, reset_ontology_data_store
+    from dms_executor.reconfirm import _reset_reconfirm
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    monkeypatch.delenv("DMS_RECONFIRM_RUN_HELD", raising=False)
+    reset_ontology_data_store()
+    _reset_reconfirm()
+    app, path, space_id = file_space
+    env, _posts = _ask(app, path, JOIN_SQL, space_id, monkeypatch)
     assert_envelope_valid(env)
     assert env.get("abstained") is True
     assert not env.get("rows")
     assert not env.get("values")
-    assumptions = " ".join(str(item) for item in env.get("assumptions") or [])
-    assert "unverified_join:no_ontology" in assumptions, assumptions
     assert "250" not in str(env.get("text") or "")
-    listed = " ".join(prompt for post in posts for prompt in _prompts(post))
-    assert "bronze.orders" in listed
-    assert CANARY_EMAIL not in listed
+    offer = env.get("reconfirm")
+    assert isinstance(offer, dict)
+    assert offer.get("token")
+    definition = str(offer.get("definition") or "")
+    assert "bronze.orders.customer_id" in definition
+    assert "bronze.customers.customer_id" in definition
+    assert "SELECT SUM(o.amount)" in definition
+    assert "proposed ontology link" in definition
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+        dms_harness_ask_paths=True,
+    )
+    confirmed = TestClient(app).post(
+        "/v1/chat/ask/confirm",
+        json={"token": offer["token"], "yes": True},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    body = confirmed.json()
+    assert_envelope_valid(body)
+    assert body.get("abstained") is not True, body.get("text")
+    rows = body.get("rows") or []
+    assert len(rows) == 1
+    assert int(rows[0]["total"]) == 250
+    proposed = ontology_data_store().diff().get("proposed_only") or []
+    assert any(item.get("kind") == "link" and item.get("status") == "proposed" for item in proposed)
+    assert all(item.get("status") != "approved" for item in proposed)
+    reset_ontology_data_store()
+
+
+def test_ungranted_name_stays_a_grant_refusal_under_schema_context(
+    file_space: tuple[Any, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    app, path, space_id = file_space
+    sql = (
+        "SELECT o.amount FROM bronze.orders o "
+        "JOIN bronze.secrets s ON o.customer_id = s.id"
+    )
+    env, _posts = _ask(app, path, sql, space_id, monkeypatch)
+    assert_envelope_valid(env)
+    assert env.get("abstained") is True
+    assert not env.get("rows")
+    offer = env.get("reconfirm")
+    assert not (isinstance(offer, dict) and offer.get("token"))
+    assumptions = " ".join(str(item) for item in env.get("assumptions") or [])
+    assert "sql_relation_not_granted" in assumptions or "ungranted" in assumptions
+    assert "250" not in str(env.get("text") or "")

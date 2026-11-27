@@ -2326,6 +2326,239 @@ def _catalog_label(
     return bucket[table_key]
 
 
+def join_key_facts(
+    serving: Path | None,
+    grantable: set[str] | None,
+    sql: str,
+    dialect: str | None = None,
+) -> list[dict[str, str]]:
+    """Column pairs for one granted join. Catalog types and keys, plus the SQL.
+
+    A foreign key the engine reports is listed first. An equality in the
+    SQL ON or USING clause is listed too, unless it is the same pair, and
+    it carries the catalog type and primary or foreign key when one is
+    reported. A shared primary-key name is used only when neither of those
+    exists. Question text is not read.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    _fp, body = read_catalog(serving, grantable, dialect)
+    columns: dict[tuple[str, str], dict[str, Any]] = {}
+    labels: set[str] = set()
+    for dataset in body.get("datasets") or []:
+        if not isinstance(dataset, dict):
+            continue
+        table_name = str(dataset.get("name") or "")
+        if not table_name:
+            continue
+        labels.add(table_name)
+        for column in dataset.get("columns") or []:
+            if not isinstance(column, dict):
+                continue
+            name = str(column.get("name") or "")
+            if name:
+                columns[(table_name, name.casefold())] = column
+    if not labels:
+        return []
+    read = dialect or SERVING_DIALECT
+    try:
+        trees = [tree for tree in sqlglot.parse(sql or "", read=read) if tree is not None]
+    except Exception:  # noqa: BLE001 - an unparsed statement has no key to show
+        return []
+    if len(trees) != 1:
+        return []
+    root = trees[0]
+    alias: dict[str, str] = {}
+    order: list[str] = []
+    for source in root.find_all(exp.Table):
+        name = str(source.name or "")
+        if not name:
+            continue
+        db = source.args.get("db")
+        schema = str(getattr(db, "name", "") or "") if db is not None else ""
+        label = name if not schema or schema.casefold() == _MAIN_SCHEMA else f"{schema}.{name}"
+        if label not in labels:
+            continue
+        if label not in order:
+            order.append(label)
+        alias[name.casefold()] = label
+        alias[label.casefold()] = label
+        if source.alias:
+            alias[str(source.alias).casefold()] = label
+    sql_pairs: list[tuple[str, str, str, str]] = []
+    # Walk joins in source order. USING pairs the new table with the previous one.
+    previous: str | None = order[0] if order else None
+    for join in root.find_all(exp.Join):
+        joined = join.this if isinstance(join.this, exp.Table) else None
+        right = None
+        if joined is not None:
+            right = alias.get(str(joined.name or "").casefold())
+            if right is None and joined.alias:
+                right = alias.get(str(joined.alias).casefold())
+        if right is None and joined is not None:
+            db = joined.args.get("db")
+            schema = str(getattr(db, "name", "") or "") if db is not None else ""
+            raw = str(joined.name or "")
+            if not schema or schema.casefold() == _MAIN_SCHEMA:
+                candidate = raw
+            else:
+                candidate = f"{schema}.{raw}"
+            right = candidate if candidate in labels else None
+        using = join.args.get("using")
+        if previous and right and previous != right and isinstance(using, list):
+            for ident in using:
+                column = str(getattr(ident, "name", "") or "")
+                if column:
+                    sql_pairs.append((previous, column, right, column))
+        on = join.args.get("on")
+        if on is not None:
+            for eq in on.find_all(exp.EQ):
+                left_col = eq.this
+                right_col = eq.expression
+                if not isinstance(left_col, exp.Column) or not isinstance(right_col, exp.Column):
+                    continue
+                left_label = alias.get(str(left_col.table or "").casefold())
+                right_label = alias.get(str(right_col.table or "").casefold())
+                left_name = str(left_col.name or "")
+                right_name = str(right_col.name or "")
+                if (
+                    left_label
+                    and right_label
+                    and left_name
+                    and right_name
+                    and left_label != right_label
+                ):
+                    sql_pairs.append((left_label, left_name, right_label, right_name))
+        if right:
+            previous = right
+    fk_pairs = _catalog_foreign_keys(serving, grantable, set(order))
+    tagged: list[tuple[str, tuple[str, str, str, str]]] = [
+        ("foreign_key", pair) for pair in fk_pairs
+    ]
+    tagged.extend(("sql", pair) for pair in sql_pairs)
+    if not tagged and len(order) >= 2:
+        left, right = order[0], order[1]
+        shared = [
+            name
+            for (table, name), column in columns.items()
+            if table == left and bool(column.get("primary_key")) and (right, name) in columns
+        ]
+        shared += [
+            name
+            for (table, name), column in columns.items()
+            if table == right
+            and bool(column.get("primary_key"))
+            and (left, name) in columns
+            and name not in shared
+        ]
+        tagged = [("primary_key", (left, name, right, name)) for name in shared]
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for reported, (left_table, left_column, right_table, right_column) in tagged:
+        mark = (
+            left_table.casefold(),
+            left_column.casefold(),
+            right_table.casefold(),
+            right_column.casefold(),
+        )
+        flipped = (mark[2], mark[3], mark[0], mark[1])
+        if mark in seen or flipped in seen:
+            continue
+        seen.add(mark)
+        out.append(
+            {
+                "left_table": left_table,
+                "left_column": left_column,
+                "left_type": _column_type(columns, left_table, left_column),
+                "left_key": _column_key(columns, left_table, left_column, fk_pairs),
+                "right_table": right_table,
+                "right_column": right_column,
+                "right_type": _column_type(columns, right_table, right_column),
+                "right_key": _column_key(columns, right_table, right_column, fk_pairs),
+                "reported": reported,
+            }
+        )
+    return out
+
+
+def _column_type(
+    columns: dict[tuple[str, str], dict[str, Any]], table: str, name: str
+) -> str:
+    column = columns.get((table, name.casefold()))
+    if not column:
+        return ""
+    return str(column.get("type") or "")
+
+
+def _column_key(
+    columns: dict[tuple[str, str], dict[str, Any]],
+    table: str,
+    name: str,
+    fk_pairs: list[tuple[str, str, str, str]],
+) -> str:
+    column = columns.get((table, name.casefold()))
+    if column and column.get("primary_key"):
+        return "primary_key"
+    folded = name.casefold()
+    for left_table, left_column, right_table, right_column in fk_pairs:
+        if (
+            left_table == table and left_column.casefold() == folded
+        ) or (
+            right_table == table and right_column.casefold() == folded
+        ):
+            return "foreign_key"
+    return ""
+
+
+def _catalog_foreign_keys(
+    serving: Path | None,
+    grantable: set[str] | None,
+    tables: set[str],
+) -> list[tuple[str, str, str, str]]:
+    """Engine-reported foreign keys whose two tables are both in ``tables``."""
+    if serving is None or not Path(serving).is_file() or not tables:
+        return []
+    labels = _grant_labels(grantable)
+    try:
+        con = _open_serving(Path(serving))
+    except Exception:  # noqa: BLE001 - no catalog key is not a serve
+        return []
+    try:
+        rows = con.execute(
+            "SELECT schema_name, table_name, constraint_column_names, "
+            "referenced_table, referenced_column_names "
+            "FROM duckdb_constraints() WHERE constraint_type = 'FOREIGN KEY'"
+        ).fetchall()
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        con.close()
+    found: list[tuple[str, str, str, str]] = []
+    for schema_name, table_name, columns, referenced, referenced_columns in rows:
+        child = _catalog_label(str(schema_name), str(table_name), labels)
+        parent_name = str(referenced or "")
+        parent = None
+        if labels is None:
+            parent = parent_name if parent_name in tables else None
+        else:
+            for schema_key, bucket in labels.items():
+                label = bucket.get(_ascii_key(parent_name))
+                if label and (schema_key == _ascii_key(str(schema_name)) or parent is None):
+                    parent = label
+                    if schema_key == _ascii_key(str(schema_name)):
+                        break
+        if child is None or parent is None or child not in tables or parent not in tables:
+            continue
+        child_cols = _constraint_names(columns)
+        parent_cols = _constraint_names(referenced_columns)
+        for left, right in zip(child_cols, parent_cols, strict=False):
+            found.append((child, left, parent, right))
+    return found
+
+
 def read_catalog(
     serving: Path | None,
     grantable: set[str] | None,

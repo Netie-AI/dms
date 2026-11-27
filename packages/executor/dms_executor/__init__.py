@@ -1758,6 +1758,7 @@ class Executor:
         """
         from dms_executor.reconfirm import (
             decline_envelope,
+            file_proposed_join,
             held_ready,
             reconfirm_run_held_enabled,
             take_pending,
@@ -1772,6 +1773,22 @@ class Executor:
             if cortex_origin:
                 return self._cortex_confirm_no(pending)
             return decline_envelope(pending)
+        if pending.get("join_confirm") is True:
+            from cortex_client.insights import schema_context_enabled
+
+            if schema_context_enabled():
+                env = self._run_held_sql(pending)
+                served = (
+                    env.get("abstained") is not True
+                    and str(env.get("badge") or "") != "ABSTAIN"
+                )
+                if served and not file_proposed_join(pending):
+                    assumptions = env.get("assumptions")
+                    if not isinstance(assumptions, list):
+                        assumptions = []
+                        env["assumptions"] = assumptions
+                    assumptions.append("join_link:not_filed")
+                return env
         if reconfirm_run_held_enabled() and held_ready(pending):
             return self._run_held_sql(pending)
         suggested = str(pending.get("suggested_question") or "").strip()
