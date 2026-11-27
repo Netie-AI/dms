@@ -17,7 +17,11 @@ from typing import Any
 from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor import executed_trace
-from dms_executor.bronze import stamp_contributing_source_watermarks
+from dms_executor.bronze import (
+    relabel_row_headers,
+    stamp_contributing_source_watermarks,
+    unicode_ident_enabled,
+)
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
 
 ALLOWED_BADGES = frozenset(
@@ -1765,6 +1769,10 @@ def build_answer_envelope(
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
     masked = mask_unknown_keys(env)
+    if unicode_ident_enabled():
+        raw_rows = masked.get("rows")
+        if isinstance(raw_rows, list):
+            masked["rows"] = relabel_row_headers(raw_rows)
     # Lazy: this module must not import the quarantine filter at load.
     from dms_executor.skills_quarantine import config_stamp
 

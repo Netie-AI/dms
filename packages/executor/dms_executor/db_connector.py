@@ -28,10 +28,12 @@ from typing import Any, Literal
 
 from dms_executor.bronze import (
     claim_source_table_name,
+    has_non_ascii,
     ident_safe,
     mint_extracted_at,
     record_source_pull,
     type_bronze_columns,
+    unicode_ident_enabled,
     write_bronze_rows,
 )
 
@@ -138,6 +140,10 @@ class SourcePull:
     #: Columns that stayed VARCHAR, and why (undeclared type, unmapped type, or
     #: values the declared type could not hold). Named on the receipt, never silent.
     untyped_columns: dict[str, str] = field(default_factory=dict)
+    #: Original qualified table name. Set only when ``DMS_UNICODE_IDENT`` is on.
+    source_name: str | None = None
+    #: Landed column identifier -> original header. Same flag.
+    column_sources: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -657,7 +663,10 @@ def preview_source_table(
 
 
 def _bronze_name(target: SourceTable) -> str:
-    stem = "".join(c if c.isalnum() else "_" for c in target.qualified)
+    full = target.qualified
+    if unicode_ident_enabled() and has_non_ascii(full):
+        return ident_safe(full)
+    stem = "".join(c if c.isalnum() else "_" for c in full)
     return ident_safe(stem.strip("_").lower()[:60] or "source_table")
 
 
@@ -790,6 +799,30 @@ def _pull_one(
         note = f"{note}; {rename_note}" if note else rename_note
         if declared is not None:
             declared = {renamed.get(c, c): v for c, v in declared.items()}
+    column_sources: dict[str, str] = {}
+    if unicode_ident_enabled():
+        origin = {new: old for old, new in renamed.items()}
+        final: list[str] = []
+        used: set[str] = set()
+        redeclared: dict[str, tuple[str, int | None, int | None]] | None = (
+            {} if declared is not None else None
+        )
+        for col in landed_cols:
+            # Do not reuse ``name``: that is the bronze table, and the last
+            # column would overwrite it.
+            col_name = ident_safe(col) if has_non_ascii(col) else col
+            base, n = col_name, 2
+            while col_name.lower() in used:
+                col_name = f"{base}_{n}"
+                n += 1
+            used.add(col_name.lower())
+            final.append(col_name)
+            column_sources[col_name] = origin.get(col, col)
+            if redeclared is not None and declared is not None and col in declared:
+                redeclared[col_name] = declared[col]
+        landed_cols = final
+        if redeclared is not None:
+            declared = redeclared
     landed = write_bronze_rows(
         table=name,
         columns=landed_cols,
@@ -809,6 +842,8 @@ def _pull_one(
         path=path,
         extracted_at=extracted_at,
         untyped_numeric=typing["untyped_numeric"],
+        source_name=target.qualified if column_sources else None,
+        column_sources=column_sources or None,
     )
     return SourcePull(
         bronze_table=landed,
@@ -822,6 +857,8 @@ def _pull_one(
         note=note,
         column_types=typing["column_types"],
         untyped_columns=typing["untyped_columns"],
+        source_name=target.qualified if column_sources else None,
+        column_sources=column_sources,
     )
 
 
