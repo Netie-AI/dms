@@ -834,8 +834,9 @@ class Executor:
 
         try:
             from dms_executor.ai_first import ai_first_enabled, begin_example_turn
+            from dms_executor.arbiter import arbiter_enabled
 
-            if ai_first_enabled():
+            if ai_first_enabled() or arbiter_enabled():
                 example_token = begin_example_turn()
             try:
                 try:
@@ -1213,6 +1214,12 @@ class Executor:
                 if pack_env is not None and not (
                     armed_product and pack_env.get("abstained") is True
                 ):
+                    # No model SQL has run on this return. A certified measure
+                    # may still serve. Disagreement is serve() when both exist.
+                    from dms_executor.arbiter import arbiter_enabled, serve_certified
+
+                    if arbiter_enabled() and pack_env.get("abstained") is not True:
+                        pack_env = serve_certified(pack_env, question=question)
                     self._store_turn(session_id, space_id, pack_env)
                     return pack_env
 
@@ -1356,41 +1363,53 @@ class Executor:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
             raise_if_ask_stopped()
-            gen_env = maybe_generative_ask(
-                question,
+            from dms_executor.arbiter import arbitrate_generative, compile_context
+
+            with compile_context():
+                gen_env = maybe_generative_ask(
+                    question,
+                    space_id=space_id,
+                    session_id=session_id,
+                    warehouse=self._warehouse,
+                    grantable=set(readable),
+                    tables=tables,
+                    compute=lambda catalog: _seen(
+                        seen,
+                        _insights_compute_seam(
+                            self._cortex,
+                            question,
+                            session_id=session_id,
+                            space_id=space_id,
+                            ontology=catalog,
+                        ),
+                    ),
+                    submit=lambda sql: self._submit_verified_sql(
+                        sql, space_id=space_id, session_id=session_id, tables=tables
+                    ),
+                    ledger_append=lambda payload: self._ledger_verified_query(
+                        asset_sql=str(payload.get("sql") or ""),
+                        run_id=str(payload.get("run_id") or ""),
+                        space_id=space_id,
+                        session_id=session_id,
+                        event_type="ask.generated_ontology",
+                    ),
+                    bind_on_miss=False,
+                    ontology=data_onto if data_onto is not None else space_onto,
+                    demo_ontology_allowed=data_onto is None and space_onto is None,
+                    # Extract and EXPLAIN run on the DuckDB serving copy
+                    # (connect_serving), not on the source connector in self.dialect.
+                    dialect=SERVING_DIALECT,
+                    embedder=openvault_embedder(self._cortex),
+                    demo_gate=not armed_product,
+                )
+            gen_env = arbitrate_generative(
+                gen_env,
+                question=question,
                 space_id=space_id,
                 session_id=session_id,
-                warehouse=self._warehouse,
-                grantable=set(readable),
-                tables=tables,
-                compute=lambda catalog: _seen(
-                    seen,
-                    _insights_compute_seam(
-                        self._cortex,
-                        question,
-                        session_id=session_id,
-                        space_id=space_id,
-                        ontology=catalog,
-                    ),
-                ),
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
                 ),
-                ledger_append=lambda payload: self._ledger_verified_query(
-                    asset_sql=str(payload.get("sql") or ""),
-                    run_id=str(payload.get("run_id") or ""),
-                    space_id=space_id,
-                    session_id=session_id,
-                    event_type="ask.generated_ontology",
-                ),
-                bind_on_miss=False,
-                ontology=data_onto if data_onto is not None else space_onto,
-                demo_ontology_allowed=data_onto is None and space_onto is None,
-                # Extract and EXPLAIN run on the DuckDB serving copy
-                # (connect_serving), not on the source connector in self.dialect.
-                dialect=SERVING_DIALECT,
-                embedder=openvault_embedder(self._cortex),
-                demo_gate=not armed_product,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain

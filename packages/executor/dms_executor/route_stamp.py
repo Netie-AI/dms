@@ -19,6 +19,11 @@ ROUTE_L1 = "l1_governed_metric"
 ROUTE_COMPILE = "ontology_compile"
 ROUTE_LADDER = "ladder_rung"
 ROUTE_MODEL = "model"
+# DMS_AI_ARBITER (default off) writes these. Flag off never does.
+ROUTE_AI = "ai"
+ROUTE_AI_EXAMPLE = "ai_with_example"
+ROUTE_CERTIFIED = "certified_metric"
+ROUTE_RULE = "rule"
 
 ROUTES = (
     ROUTE_VERIFIED,
@@ -26,6 +31,10 @@ ROUTES = (
     ROUTE_COMPILE,
     ROUTE_LADDER,
     ROUTE_MODEL,
+    ROUTE_AI,
+    ROUTE_AI_EXAMPLE,
+    ROUTE_CERTIFIED,
+    ROUTE_RULE,
 )
 
 # Rungs freeze_route writes beside a closed route.
@@ -71,6 +80,10 @@ _PROFILES: dict[str, tuple[str, bool]] = {
     ROUTE_COMPILE: ("compile", False),
     ROUTE_LADDER: ("ladder", False),
     ROUTE_MODEL: ("generate_sql", True),
+    ROUTE_AI: ("generate_sql", True),
+    ROUTE_AI_EXAMPLE: ("generate_sql", True),
+    ROUTE_CERTIFIED: ("l1", False),
+    ROUTE_RULE: ("compile", False),
 }
 
 # Customer route and served_route use different tokens for one path.
@@ -80,6 +93,9 @@ _ROUTE_CLASS = {
     "generate_sql": "ai",
     "model_sql": "ai",
     "ai": "ai",
+    "ai_with_example": "ai",
+    "certified_metric": "l1",
+    "rule": "compile",
     "ontology_compile": "compile",
     "compile": "compile",
     "ontology_ranking": "compile",
@@ -182,7 +198,8 @@ def stamp_route(
     env["served_route"] = route
     env["ladder_rung"] = rung
     # A rule path built these rows. "generated" would claim the model did.
-    if route != ROUTE_MODEL and env.get("route") == "generated":
+    # AI stamps keep "generated": the model wrote the SQL.
+    if route not in {ROUTE_MODEL, ROUTE_AI, ROUTE_AI_EXAMPLE} and env.get("route") == "generated":
         env["route"] = rung
     return env
 
