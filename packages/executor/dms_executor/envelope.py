@@ -1791,9 +1791,12 @@ def build_answer_envelope(
             demote=masked,
         )
     # CHART-SPEC-01. Off, this returns the same dict and sends no prompt.
+    # R1-RUNTIME-01. Off, the same dict. On and degraded, banner keys only.
+    from cortex_client.compute import attach_runtime_banner
+
     from dms_executor.chart_spec import attach_chart_spec
 
-    return attach_chart_spec(masked)
+    return attach_runtime_banner(attach_chart_spec(masked))
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:

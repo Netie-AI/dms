@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from cortex_client import CortexClient
+from cortex_client.compute import log_effective_insights_timeout, log_runtime_selfcheck
 from dms_core.control_plane.ask_audit import (
     AskAuditStorePort,
     InMemoryAskAuditStore,
@@ -95,6 +96,10 @@ def _build_ask_audit_store(settings, binding: StoreBinding) -> AskAuditStorePort
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    # R1-RUNTIME-01. Always log the effective insights timeout. The self-check
+    # warning runs only when DMS_RUNTIME_SELFCHECK is on. Neither prints a key.
+    log_effective_insights_timeout()
+    log_runtime_selfcheck(settings.cortex_api_key)
     migrate_error: str | None = None
     if settings.database_url:
         try:
