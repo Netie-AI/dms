@@ -12,12 +12,12 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `c25c02e`, `grade52 --main`. Same split as `7392972`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `4713b26`, `grade52 --main`. Same split as `7392972` and main `34f791f`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
-| flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
-| flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
+| defaults | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| DMS_AI_FIRST=1 | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
 Both on this branch's stub: refusal_ok=4, refusal_wrong=0, gold_broken=0, clarify=0 (ops_spend_boundary is a certified refusal). Flag off wrong_ub95=6.7%, coverage 43/43. COMPILE-CHECK-01 remeasured the stub before (f286c4a) and after the checker: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Those compile answers pass the checker. Pack H and armed grade52 not measured. Not PASS.
 
