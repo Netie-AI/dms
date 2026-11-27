@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, STREAM-STAGES-01
+**Last updated:** 2026-11-27, STREAM-STAGES-01, BENCH-MATRIX-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_ASK_STREAM` default off. Off, the events route is not mounted and the envelope is unchanged. `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` stay default off. Not PASS. Armed grade52 not run.
+**Tip:** `DMS_ASK_STREAM` default off. Off, the events route is not mounted and the envelope is unchanged. `DMS_BENCH_MATRIX` defaults off. Off, the matrix runner sends no ask. No live dataset score. Not PASS. `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` stay off. Armed grade52 not run.
 
 ## Direction
 
