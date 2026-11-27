@@ -182,6 +182,21 @@ def create_app() -> FastAPI:
             status_code=422, content={"detail": _validation_detail_without_input(exc)}
         )
 
+    @app.exception_handler(AssertionError)
+    async def envelope_gate_handler(request: Request, exc: AssertionError) -> JSONResponse:
+        """ENVELOPE-GATE-01 (dms#590): a chat route never 500s on a gate refusal.
+
+        Any other AssertionError, or one outside ``/v1/chat/``, is re-raised.
+        """
+        from dms_api import wiring
+
+        if not request.url.path.startswith("/v1/chat/"):
+            raise exc
+        refusal = wiring.gate_refusal_envelope(exc)
+        if refusal is None:
+            raise exc
+        return JSONResponse(status_code=200, content=refusal)
+
     app.include_router(health.router, tags=["health"])
     app.include_router(ping.router, tags=["skeleton"])
     app.include_router(spaces.router)

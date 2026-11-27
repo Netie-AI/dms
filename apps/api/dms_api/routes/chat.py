@@ -433,6 +433,14 @@ def _map_live_exception(
     grounded_tables: list[str] | None,
 ) -> dict[str, Any]:
     """The /ask error map. Returns an envelope or raises the HTTP error."""
+    from dms_api import wiring
+
+    # ENVELOPE-GATE-01 (dms#590): a gate refusal is a named abstain, never a 503.
+    refusal = wiring.gate_refusal_envelope(
+        exc, question=question, space_id=space_id, session_id=session_id
+    )
+    if refusal is not None:
+        return refusal
     if isinstance(exc, GroundingRefused):
         # Refusing is the fix, not the failure: this used to widen the manifest
         # to the whole demo warehouse while the UI read "Grounded in 1 file".

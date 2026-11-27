@@ -2592,3 +2592,54 @@ def test_a_non_gate_assertion_on_the_ask_route_is_not_relabelled(
     monkeypatch.setattr(app.state.ask_service, "_live_ask", _bug)
     asked = _ask(client, WHERE_IS_SKU, session_id="ses_gate590_bug")
     assert asked.status_code == 503, asked.text
+
+
+class _GateRefusingAsk(StubAsk):
+    """Every lane raises a rule 10a gate refusal."""
+
+    def __init__(self) -> None:
+        super().__init__(AssertionError("E16: abstention states figure(s) ['1610511']"))
+
+    def confirm_reconfirm(self, *_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("E16: abstention states figure(s) ['1610511']")
+
+    def clarify_pick(self, *_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("E17: figure(s) ['412'] in text are not in values[] or rows")
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/v1/chat/ask", {"question": WHERE_IS_SKU, "space_id": FINANCE}),
+        ("/v1/chat/ask/confirm", {"token": "tok_gate590", "yes": True}),
+        ("/v1/chat/clarify/pick", {"clarify_id": "clr_gate590", "reading_id": "r1"}),
+    ],
+)
+def test_every_chat_route_answers_a_gate_refusal_as_a_named_abstain(
+    path: str, body: dict[str, Any]
+) -> None:
+    """dms#590: no chat route returns 503 or 500 because assert_envelope_valid refused."""
+    app = create_app()
+    app.state.cortex = LedgerCortex()
+    app.state.ask_service = _GateRefusingAsk()
+    res = TestClient(app).post(path, json=body)
+    assert res.status_code == 200, res.text
+    env = res.json()
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert env["abstain_reason"] == "envelope_invalid"
+    assert "1610511" not in res.text and "412" not in res.text
+
+
+def test_live_ask_itself_answers_a_gate_refusal_as_a_named_abstain(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The executor layer maps it too, so a caller off the HTTP routes never sees the raise."""
+    _client, app, _cortex = _real_stack(minter)
+
+    def _gate_refuses(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("E15: served answer carries abstention marks ['abstain_reason']")
+
+    monkeypatch.setattr(app.state.ask_service, "_live_ask", _gate_refuses)
+    env = app.state.ask_service.live_ask(WHERE_IS_SKU, space_id=FINANCE, session_id="ses_x")
+    assert env["abstained"] is True and env["abstain_reason"] == "envelope_invalid"
+    assert "envelope_invalid:E15" in env["assumptions"]

@@ -139,6 +139,48 @@ def build_abstain(
     return env
 
 
+_GATE_REFUSAL_TEXT = (
+    "I can't answer this: the answer failed the DMS answer check. No figure was returned."
+)
+
+
+def gate_refusal_abstain(
+    exc: BaseException,
+    *,
+    question: str = "",
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """ENVELOPE-GATE-01 (dms#590): the named abstain for a rule 10a gate refusal.
+
+    None when ``exc`` is not a gate refusal; the caller re-raises it. The
+    clause stays in assumptions, so the sentence states no code digits.
+    """
+    from dms_executor.envelope import assert_envelope_valid, envelope_gate_clause
+
+    clause = envelope_gate_clause(exc)
+    if clause is None:
+        return None
+    env = build_abstain(
+        reason=f"envelope_invalid:{clause}",
+        question=question,
+        stage="envelope_gate",
+        answer_id="ans_envelope_invalid",
+        text=_GATE_REFUSAL_TEXT,
+        values=[],
+        rows=[],
+        sql_used=None,
+        assumptions=[f"envelope_invalid:{clause}"],
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="abstain",
+        abstain_reason="envelope_invalid",
+    )
+    assert_envelope_valid(env)
+    return env
+
+
 _SERVED_UNGRANTED_TEXT = (
     "I can't answer this: the query behind this answer read a table this "
     "Space does not grant. No figure was returned."
