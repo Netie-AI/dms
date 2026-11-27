@@ -61,15 +61,25 @@ def sheet_lane() -> str:
     return name
 
 
+def _rules_off() -> bool:
+    """Digit 1 only. The sheet lane stays when the flag is off."""
+    import os
+
+    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
 def bronze_sheet_lane_enabled() -> bool:
     """Hand-coded workbook lane. Off unless ``DMS_LANE_BRONZE_SHEET`` is set.
 
     Only ``1``, ``true``, ``yes``, and ``on`` (any case) turn it on. Swap: a
     host that still wants this lane sets the env. Default off, so the ask
-    continues down the generative path. Read per call.
+    continues down the generative path. Read per call. ``DMS_RULES_OFF``
+    turns the lane off even when the host flag is on.
     """
     import os
 
+    if _rules_off():
+        return False
     raw = os.environ.get("DMS_LANE_BRONZE_SHEET", "")
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -80,7 +90,10 @@ def bronze_lane_table(question: str) -> str | None:
     Same scope as ``maybe_bronze_sheet_ask`` before any DuckDB open. The
     phrase match only names that table. It does not grant, and it does not
     build SQL. The grant decision is ``relation_gap`` on this name.
+    ``DMS_RULES_OFF`` names no table, so the ask does not enter this lane.
     """
+    if _rules_off():
+        return None
     if _NO_SQL.search(question or ""):
         return None
     scoped = _SCOPED.search(question or "")
@@ -143,6 +156,8 @@ def maybe_bronze_sheet_ask(
     session_id: str | None = None,
     warehouse: Path | None = None,
 ) -> dict[str, Any] | None:
+    if _rules_off():
+        return None
     if not bronze_sheet_lane_enabled():
         return None
     if bronze_lane_table(question) is None:

@@ -8,9 +8,13 @@ writer. Similarity is an embedding from the Cortex client when it exposes
 one (OpenVault still picks the model) and Okapi BM25 otherwise. No word list.
 
 Save-on-Yes stores one row per question: the question, the SQL, a schema
-hash, and a provenance token (``yes:reconfirm`` or ``yes:vote``). Revoked
-rows are not retrieved. A listed pack hash, SQL hash, or result hash is not
-written. Leading underscore hides the table from Library listings.
+hash, and a provenance token (``yes:reconfirm`` or ``yes:vote``). A steward
+adjust (``DMS_STUDIO_ADJUST``, default off) stores provenance
+``steward_adjusted`` plus the actor only when ``DMS_VQ_RAG`` is on, the same
+write gate as save-on-Yes. Lookup never replays that provenance.
+Revoked rows are not retrieved. A
+listed pack hash, SQL hash, or result hash is not written. Leading
+underscore hides the table from Library listings.
 
 Every read goes through ``_rows_for_space``, which applies
 ``filter_retrieved_rows``. Writes whose pack hash, SQL content hash, or
@@ -57,6 +61,10 @@ _COMPANY = "company-default"
 _FLAG = "DMS_VQ_RAG"
 _FLAG_ON = frozenset({"1", "true", "yes", "on"})
 _SAVE_PROVENANCE = frozenset({"yes:reconfirm", "yes:vote"})
+_ADJUST_FLAG = "DMS_STUDIO_ADJUST"
+PROVENANCE_STEWARD_ADJUSTED = "steward_adjusted"
+# ponytail: fixed preview size. Upgrade: the ask page size, still read-only.
+_ADJUST_PREVIEW_CAP = 200
 _SKIP_ROUTES = frozenset({"verified_query", "l1_governed_metric"})
 # ponytail: fixed k. Upgrade: a caller token budget.
 _EXAMPLE_LIMIT = 3
@@ -80,6 +88,15 @@ def normalize_verified_question(question: str) -> str:
 def vq_rag_enabled() -> bool:
     """``DMS_VQ_RAG`` is off unless set to a true token."""
     return os.environ.get(_FLAG, "").strip().lower() in _FLAG_ON
+
+
+def studio_adjust_enabled() -> bool:
+    """``DMS_STUDIO_ADJUST`` is off unless it is the digit 1."""
+    return os.environ.get(_ADJUST_FLAG, "0").strip() == "1"
+
+
+class AdjustDisabled(RuntimeError):
+    """The adjust flag is off. Nothing ran and nothing was stored."""
 
 
 def _grantable(space_id: str | None, warehouse: Path | None) -> set[str]:
@@ -117,7 +134,8 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
               pack_hash VARCHAR,
               schema_hash VARCHAR,
               provenance VARCHAR,
-              revoked_at TIMESTAMPTZ
+              revoked_at TIMESTAMPTZ,
+              actor VARCHAR
             )
             """
         )
@@ -140,6 +158,7 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
             ("schema_hash", "VARCHAR"),
             ("provenance", "VARCHAR"),
             ("revoked_at", "TIMESTAMPTZ"),
+            ("actor", "VARCHAR"),
         ):
             if column not in names:
                 con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN {column} {decl}")
@@ -203,6 +222,7 @@ def _stored_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "schema_hash": row[8] if len(row) > 8 else None,
         "provenance": row[9] if len(row) > 9 else None,
         "revoked_at": revoked,
+        "actor": row[11] if len(row) > 11 else None,
     }
 
 
@@ -247,7 +267,7 @@ def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
                 SELECT asset_id, space_id, question, question_norm, sql_text,
                        synonyms_json, created_at, {_expr(names, "pack_hash")},
                        {_expr(names, "schema_hash")}, {_expr(names, "provenance")},
-                       {_expr(names, "revoked_at")}
+                       {_expr(names, "revoked_at")}, {_expr(names, "actor")}
                 FROM {_TABLE}
                 WHERE space_id = ?
                 ORDER BY created_at DESC
@@ -432,14 +452,23 @@ def _cosine(left: list[float], right: list[float]) -> float:
     return dot / math.sqrt(na * nb)
 
 
-def _rank_examples(
+def rank_texts(
     question: str,
-    rows: list[dict[str, Any]],
+    docs: list[str],
     embedder: Callable[[list[str]], Any] | None,
-) -> list[dict[str, Any]]:
-    if not rows:
+    *,
+    limit: int,
+    floor: float = 0.0,
+) -> list[tuple[float, int]]:
+    """``(score, index)`` above ``floor``, best first, at most ``limit``.
+
+    The embedder scores the question against each doc when it returns one
+    vector per text. Otherwise Okapi BM25. No word list. ``floor`` 0 keeps
+    the verified-example ranker (a positive score only).
+    """
+    if not docs or limit <= 0:
         return []
-    texts = [question, *[str(row.get("question") or "") for row in rows]]
+    texts = [question, *docs]
     vectors = None
     if embedder is not None:
         try:
@@ -448,18 +477,29 @@ def _rank_examples(
             logger.warning("verified_example_embed_unavailable")
             vectors = None
     if vectors is not None:
-        scored = [(_cosine(vectors[0], vectors[i + 1]), row) for i, row in enumerate(rows)]
+        scores = [_cosine(vectors[0], vectors[i + 1]) for i in range(len(docs))]
     else:
-        scored = list(
-            zip(
-                _bm25_scores(question, [str(row.get("question") or "") for row in rows]),
-                rows,
-                strict=True,
-            )
-        )
-    kept = [(score, row) for score, row in scored if score > 0.0]
+        scores = _bm25_scores(question, docs)
+    kept = [(score, index) for index, score in enumerate(scores) if score > floor]
     kept.sort(key=lambda item: item[0], reverse=True)
-    return [row for _score, row in kept[:_EXAMPLE_LIMIT]]
+    return kept[:limit]
+
+
+def _rank_examples(
+    question: str,
+    rows: list[dict[str, Any]],
+    embedder: Callable[[list[str]], Any] | None,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    ranked = rank_texts(
+        question,
+        [str(row.get("question") or "") for row in rows],
+        embedder,
+        limit=_EXAMPLE_LIMIT,
+        floor=0.0,
+    )
+    return [rows[index] for _score, index in ranked]
 
 
 def _example_ok(row: dict[str, Any], allowed: set[str], dialect: str | None) -> bool:
@@ -506,12 +546,14 @@ def retrieve_verified_examples(
     grantable: set[str] | None = None,
     dialect: str | None = None,
     embedder: Callable[[list[str]], Any] | None = None,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     """Similar Space examples for the SQL writer. Never an answer to execute.
 
-    Off when ``DMS_VQ_RAG`` is off. Revoked rows and scored-pack rows are absent.
+    Off when ``DMS_VQ_RAG`` is off, unless ``force`` (the ask ladder's context
+    rung). Revoked rows and scored-pack rows are absent.
     """
-    if not vq_rag_enabled():
+    if not force and not vq_rag_enabled():
         return []
     q = (question or "").strip()
     if not q:
@@ -603,6 +645,7 @@ def _save_example(
     grantable: set[str] | None,
     dialect: str | None,
     provenance: str,
+    actor: str | None = None,
 ) -> dict[str, Any] | None:
     sid = scope_key(space_id)
     q = (question or "").strip()
@@ -639,14 +682,26 @@ def _save_example(
                 INSERT INTO {_TABLE}
                   (asset_id, space_id, question, question_norm, sql_text,
                    synonyms_json, created_at, pack_hash, schema_hash,
-                   provenance, revoked_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                   provenance, revoked_at, actor)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                 """,
-                [asset_id, sid, q, qn, sql_text, "[]", created, None, schema_hash, provenance],
+                [
+                    asset_id,
+                    sid,
+                    q,
+                    qn,
+                    sql_text,
+                    "[]",
+                    created,
+                    None,
+                    schema_hash,
+                    provenance,
+                    actor,
+                ],
             )
         finally:
             con.close()
-    return {
+    out = {
         "asset_id": asset_id,
         "space_id": sid,
         "question": q,
@@ -655,6 +710,9 @@ def _save_example(
         "provenance": provenance,
         "created_at": created.isoformat(),
     }
+    if actor:
+        out["actor"] = actor
+    return out
 
 
 def revoke_verified_example(
@@ -687,6 +745,13 @@ def revoke_verified_example(
     return bool(updated)
 
 
+def _replayable(row: dict[str, Any]) -> bool:
+    """Exact-match replay. ``steward_adjusted`` is a writer example, never an answer."""
+    if row.get("revoked_at"):
+        return False
+    return row.get("provenance") != PROVENANCE_STEWARD_ADJUSTED
+
+
 def _hit(question: str, row: dict[str, Any]) -> bool:
     qn = normalize_verified_question(question)
     if not qn:
@@ -709,6 +774,7 @@ def lookup_verified_query(
     """Return ``{asset_id, sql}`` for a Space hit. Does not run SQL as the answer.
 
     ``DMS_VQ_RAG`` on: always None. The row is a few-shot example, not a replay.
+    ``steward_adjusted`` is never a hit, even when that flag is off.
     """
     if vq_rag_enabled() or tables:
         return None
@@ -718,7 +784,7 @@ def lookup_verified_query(
         (
             row
             for row in _rows_for_space(db, sid)
-            if not row.get("revoked_at") and _hit(question, row)
+            if _replayable(row) and _hit(question, row)
         ),
         None,
     )
@@ -859,3 +925,128 @@ def maybe_verified_ask(
         session_id=session_id,
         audit_id=entry_id.strip(),
     )
+
+
+def _adjust_dialect(dialect: str | None) -> str:
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    return dialect if dialect is not None else SERVING_DIALECT
+
+
+def _mask_adjust_rows(sql: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Same payload mask the answer envelope uses. The SQL text is not returned."""
+    from dms_core.pii import fail_closed_mask_payload
+
+    from dms_executor.sql_currency import served_column_sources
+
+    prepared = _json_rows(rows)
+    try:
+        sources = served_column_sources(sql)
+    except Exception:
+        logger.warning("adjust_sql_column_sources_unavailable")
+        sources = None
+    masked = fail_closed_mask_payload(
+        text="",
+        rows=prepared,
+        values=[],
+        sources=[],
+        sql_used=None,
+        column_sources=sources,
+    )
+    out = masked.get("rows")
+    if not isinstance(out, list):
+        return []
+    return [row for row in out if isinstance(row, dict)]
+
+
+def preview_adjusted_sql(
+    *,
+    sql: str,
+    space_id: str | None,
+    path: Path | None = None,
+    dialect: str | None = None,
+) -> dict[str, Any]:
+    """Run steward SQL through the model SQL gates and return masked rows.
+
+    ``validate_compiled_sql`` is the grant, hostile, statement-count, and
+    EXPLAIN check. ``run_readonly`` is the read-only execute. A refusal is
+    ``ValueError`` whose text is that checker code. The flag off raises
+    ``AdjustDisabled`` before any read.
+    """
+    if not studio_adjust_enabled():
+        raise AdjustDisabled()
+    sql_text = (sql or "").strip()
+    if not sql_text:
+        raise ValueError("sql_required")
+    from dms_executor.generative_ask import validate_compiled_sql
+    from dms_executor.lake_registry import SERVING_ERRORS
+    from dms_executor.sql_loop import run_readonly
+
+    db = path or warehouse_path()
+    allowed = _grantable(space_id, db)
+    read = _adjust_dialect(dialect)
+    why = validate_compiled_sql(sql_text, grantable=allowed, warehouse=db, dialect=read)
+    if why:
+        raise ValueError(why)
+    try:
+        rows, err = run_readonly(sql_text, Path(db))
+    except SERVING_ERRORS:
+        raise ValueError("serving_unavailable") from None
+    if err or rows is None:
+        raise ValueError(err or "execute_failed")
+    masked = _mask_adjust_rows(sql_text, rows)
+    shown = masked[:_ADJUST_PREVIEW_CAP]
+    return {
+        "ok": True,
+        "rows": shown,
+        "row_count": len(masked),
+        "truncated": len(masked) > _ADJUST_PREVIEW_CAP,
+    }
+
+
+def save_steward_adjusted(
+    *,
+    question: str,
+    sql: str,
+    space_id: str | None,
+    actor: str,
+    path: Path | None = None,
+    dialect: str | None = None,
+) -> dict[str, Any] | None:
+    """Re-check the SQL, then store one ``steward_adjusted`` example.
+
+    Same write gate as save-on-Yes: ``DMS_VQ_RAG`` off returns None and writes
+    nothing. The actor and a schema hash are required when it does write.
+    ``DMS_STUDIO_ADJUST`` off stores nothing.
+    """
+    if not studio_adjust_enabled():
+        raise AdjustDisabled()
+    actor_id = (actor or "").strip()
+    if not actor_id or len(actor_id) > 128:
+        raise ValueError("actor_required")
+    q = (question or "").strip()
+    if not q:
+        raise ValueError("question_required")
+    db = path or warehouse_path()
+    allowed = _grantable(space_id, db)
+    read = _adjust_dialect(dialect)
+    preview_adjusted_sql(sql=sql, space_id=space_id, path=db, dialect=read)
+    if not vq_rag_enabled():
+        return None
+    if not _schema_hash(db, allowed, read):
+        raise ValueError("schema_hash_unavailable")
+    saved = _save_example(
+        question=q,
+        sql=sql,
+        space_id=space_id,
+        warehouse=db,
+        grantable=allowed,
+        dialect=read,
+        provenance=PROVENANCE_STEWARD_ADJUSTED,
+        actor=actor_id,
+    )
+    if not saved or not saved.get("schema_hash") or saved.get("actor") != actor_id:
+        raise ValueError("not_stored")
+    if saved.get("provenance") != PROVENANCE_STEWARD_ADJUSTED:
+        raise ValueError("not_stored")
+    return saved

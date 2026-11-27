@@ -94,6 +94,7 @@ from dms_core.pii import (
     is_mask_token,
 )
 
+from dms_executor.bronze import column_source_maps, unicode_ident_enabled
 from dms_executor.grant_struct import relation_gap, sqlglot_dialect
 from dms_executor.ontology import Ontology, relation_tables
 
@@ -267,6 +268,7 @@ class ColumnFact:
     distinct: int | str | None
     score: float
     reason: str = ""
+    source_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -1319,6 +1321,13 @@ def _format_column(col: ColumnFact) -> str:
         bits.append(f"distinct={col.distinct}")
     if col.reason:
         bits.append(f"reason={col.reason}")
+    if col.source_name and unicode_ident_enabled():
+        tail = " ".join(bits[2:])
+        line = (
+            f"- column: {col.name}  source_name: {col.source_name}  "
+            f"type: {col.data_type or 'unknown'}"
+        )
+        return f"{line} {tail}" if tail else line
     return "- " + " ".join(bits)
 
 
@@ -1825,6 +1834,9 @@ def build_schema_context(
                     "table_desc": table_desc,
                     "tagged": tagged,
                     "cleared": cleared,
+                    "source_name": (
+                        _text(column.get("source_name")) if unicode_ident_enabled() else ""
+                    ),
                 }
             )
     index, capped = _limit_index(index_rows)
@@ -1928,9 +1940,10 @@ def build_schema_context(
         key = f"{table}.{name}"
         description = column_desc_out.get(key, "") if masked is not None else ""
         kept_samples = sample_out.get(key, ()) if masked is not None else ()
-        document = " ".join(
-            (table, name, str(item["type"]), description, " ".join(kept_samples))
-        )
+        document_parts = [table, name, str(item["type"]), description, " ".join(kept_samples)]
+        if item.get("source_name"):
+            document_parts.append(str(item["source_name"]))
+        document = " ".join(document_parts)
         score = _cosine(question_vec, _trigrams(document))
         reason = f"score:{score:.2f}"
         if span_of.get(key):
@@ -1949,6 +1962,7 @@ def build_schema_context(
                 ),
                 score=score,
                 reason=reason,
+                source_name=str(item.get("source_name") or ""),
             )
         )
     if masked is None:
@@ -2289,6 +2303,7 @@ def read_catalog(
             keys.setdefault(table, set()).update(_constraint_names(cols))
         grouped: dict[str, list[dict[str, Any]]] = {}
         fp_rows: list[tuple[str, str, str]] = []
+        source_index = column_source_maps(con) if unicode_ident_enabled() else {}
         for table_name, column_name, data_type in rows:
             table = str(table_name)
             column_name_text = str(column_name)
@@ -2298,17 +2313,19 @@ def read_catalog(
                 continue
             data = str(data_type or "")
             fp_rows.append((table, column_name_text, data))
-            grouped.setdefault(table, []).append(
-                {
-                    "name": column_name_text,
-                    "type": data,
-                    "description": "",
-                    "primary_key": column_name_text in keys.get(table, set()),
-                    "distinct": None,
-                    "values": [],
-                    "samples": [],
-                }
-            )
+            entry: dict[str, Any] = {
+                "name": column_name_text,
+                "type": data,
+                "description": "",
+                "primary_key": column_name_text in keys.get(table, set()),
+                "distinct": None,
+                "values": [],
+                "samples": [],
+            }
+            src = (source_index.get(table) or {}).get(column_name_text)
+            if src:
+                entry["source_name"] = src
+            grouped.setdefault(table, []).append(entry)
         body["datasets"] = [
             {"name": table, "description": "", "columns": cols}
             for table, cols in sorted(grouped.items())
@@ -2330,6 +2347,52 @@ def schema_from_serving(
 ) -> dict[str, Any]:
     """Catalog description only. Value samples are not read here."""
     _fp, body = read_catalog(serving, grantable, dialect)
+    return body
+
+
+def schema_from_landed(path: Path, qualified: str) -> dict[str, Any]:
+    """Schema dict for one landed table, including ``source_name`` when the flag is on."""
+    from dms_executor.demo_warehouse import SERVING_DIALECT, connect_serving
+
+    schema, _, table = qualified.partition(".")
+    if not table:
+        schema, table = "bronze", qualified
+    body: dict[str, Any] = {
+        "dialect": SERVING_DIALECT,
+        "datasets": [{"name": table, "description": "", "columns": []}],
+    }
+    if not Path(path).is_file():
+        return body
+
+    try:
+        con = connect_serving(Path(path))
+    except Exception:  # noqa: BLE001
+        return body
+    try:
+        rows = con.execute(
+            """
+            SELECT column_name, data_type FROM information_schema.columns
+            WHERE table_schema = ? AND table_name = ?
+            ORDER BY ordinal_position
+            """,
+            [schema, table],
+        ).fetchall()
+        sources = (column_source_maps(con).get(table) or {}) if unicode_ident_enabled() else {}
+    except Exception:  # noqa: BLE001
+        return body
+    finally:
+        con.close()
+    columns: list[dict[str, Any]] = []
+    for column_name, data_type in rows:
+        name = str(column_name)
+        if name in {"_src", "_ingest_id"}:
+            continue
+        item: dict[str, Any] = {"name": name, "type": str(data_type or "")}
+        src = sources.get(name)
+        if src:
+            item["source_name"] = src
+        columns.append(item)
+    body["datasets"][0]["columns"] = columns
     return body
 
 

@@ -17,7 +17,11 @@ from typing import Any
 from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor import executed_trace
-from dms_executor.bronze import stamp_contributing_source_watermarks
+from dms_executor.bronze import (
+    relabel_row_headers,
+    stamp_contributing_source_watermarks,
+    unicode_ident_enabled,
+)
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
 from dms_executor.row_listing import StatedFloat, cell_text, float_precision_note
 
@@ -2030,6 +2034,10 @@ def build_answer_envelope(
     if demo_fallback_banner is not None:
         env["demo_fallback_banner"] = bool(demo_fallback_banner)
     masked = mask_unknown_keys(env)
+    if unicode_ident_enabled():
+        raw_rows = masked.get("rows")
+        if isinstance(raw_rows, list):
+            masked["rows"] = relabel_row_headers(raw_rows)
     # Lazy: this module must not import the quarantine filter at load.
     from dms_executor.skills_quarantine import config_stamp
 
@@ -2047,7 +2055,13 @@ def build_answer_envelope(
             stage="envelope",
             demote=masked,
         )
-    return masked
+    # CHART-SPEC-01. Off, this returns the same dict and sends no prompt.
+    # R1-RUNTIME-01. Off, the same dict. On and degraded, banner keys only.
+    from cortex_client.runtime_check import attach_runtime_banner
+
+    from dms_executor.chart_spec import attach_chart_spec
+
+    return attach_runtime_banner(attach_chart_spec(masked))
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:
@@ -2318,11 +2332,45 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
         raise AssertionError(f"E8: as_of not parseable: {as_of!r}") from exc
 
 
+def attach_clarify_block(
+    env: dict[str, Any],
+    *,
+    question: str,
+    readings: list[dict[str, Any]],
+    clarify_id: str,
+) -> dict[str, Any]:
+    """Attach the clarify block. Does not change badge, rows, values, or sql_used.
+
+    ``route`` becomes ``needs_clarification``. Each reading is ``id``, ``text``,
+    and ``sql_preview``. ``blocks`` is true: nothing was executed.
+    """
+    shown: list[dict[str, str]] = []
+    for item in readings[:4]:
+        if not isinstance(item, dict):
+            continue
+        shown.append(
+            {
+                "id": str(item.get("id") or ""),
+                "text": str(item.get("text") or ""),
+                "sql_preview": str(item.get("sql_preview") or ""),
+            }
+        )
+    env["clarify"] = {
+        "question": question,
+        "readings": shown,
+        "blocks": True,
+        "clarify_id": clarify_id,
+    }
+    env["route"] = "needs_clarification"
+    return env
+
+
 __all__ = [
     "ALLOWED_BADGES",
     "DOCUMENT_ROUTE",
     "asked_calendar_years",
     "assert_envelope_valid",
+    "attach_clarify_block",
     "build_answer_envelope",
     "build_audit_receipt",
     "chart_from_rows",

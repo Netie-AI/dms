@@ -13,7 +13,8 @@
  * (scripts/score_curated.py). Shown only when that key is already present.
  * Contract version: health body key `contract`
  * (apps/api/dms_api/routes/health.py), not copied onto the ask envelope.
- * Timings: no duration key is written on the ask envelope.
+ * Timings: ask envelope key `timings` (stage spans and counts). The vendored
+ * OpenAPI pin does not include this block.
  */
 
 export const NOT_STAMPED = "not stamped";
@@ -47,7 +48,7 @@ export const STAMP_SLOTS: readonly StampSlot[] = [
   },
   { id: "cortex-pin", label: "Cortex pin", keys: ["cortex_sha"] },
   { id: "contract-version", label: "Contract version", keys: ["contract"] },
-  { id: "timings", label: "Timings", keys: [] },
+  { id: "timings", label: "Timings", keys: ["timings"] },
 ];
 
 const NAMED_IDS = new Set(["cortex-pin", "contract-version", "timings"]);

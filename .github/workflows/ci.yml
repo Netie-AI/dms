@@ -149,15 +149,189 @@ jobs:
             exit 1
           fi
 
-  lint-type-test:
+  # F-TBD-42. pytest is 96 to 97 percent of what used to be one job (22.0 to
+  # 26.6 min on four PR heads, 2026-11-13, against the 30 minute cap). The suite
+  # now runs as three shards, each on its own runner with the same cap. Nothing
+  # is deselected: every shard asks pytest itself for the collected test files,
+  # in pytest's own order, and takes every third one (scripts/ci_pytest_shard.sh).
+  # lint-type-test proves on every run that the three shards collect exactly the
+  # ids `pytest tests/` collects, and fails if any shard is not green.
+  # One pytest process per runner, as before: the shards share no filesystem,
+  # so the shared default DuckDB file is not shared between them.
+  pytest:
+    name: pytest (shard ${{ matrix.shard }} of 3)
     runs-on: ubuntu-latest
-    # The job takes 18.5 min on main (a52ccb2, 8ff2623). 20 left 1.5 min, so
-    # a PR adding about two minutes of tests was cancelled with nothing failed.
     timeout-minutes: 30
     needs: [protected-paths, contract-pin]
+    strategy:
+      # A red shard must not hide another shard's failures.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     env:
       PYTHONUTF8: "1"
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          # secrets.GITHUB_TOKEN is scoped to the repo the workflow runs in, so
+          # it cannot read the private Netie-AI/Cortex and the API answers 404
+          # rather than 403. Everything downstream - ruff, mypy, import-linter,
+          # the test suite - sat behind this step and had never run.
+          # This is CI-02 option A. Option C (install the published wheel and
+          # delete this step) is the long-term answer, and must not land before
+          # Netie-AI/Cortex#5 or a packaging bug presents as a crypto bug.
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev]"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Invariant + unit tests (shard ${{ matrix.shard }} of 3)
+        shell: bash
+        env:
+          # Control-plane suite hard-fails without Postgres (R-0002). This job has
+          # no compose service yet; skip is an explicit decision, not a silent green.
+          # Add a postgres service job before flipping this off.
+          DMS_SKIP_CONTROL_PLANE_TESTS: "1"
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
+          # DEF-VALIDATE-01: tests/test_def_validate_01.py runs here. No skip.
+          bash scripts/ci_pytest_shard.sh files ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard_files.txt"
+          echo "shard ${{ matrix.shard }} of 3: $(wc -l < "$RUNNER_TEMP/shard_files.txt") test files"
+          xargs -a "$RUNNER_TEMP/shard_files.txt" python -m pytest -q --tb=short
+
+  # R1-LIVE-FIX-01. Boots the API on the seeded Postgres and GETs every
+  # page-load path. A 4xx or 5xx fails the job. lint-type-test waits on it.
+  live-pages-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [protected-paths, contract-pin]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dms
+          POSTGRES_PASSWORD: dms
+          POSTGRES_DB: dms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dms -d dms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PYTHONUTF8: "1"
+      DATABASE_URL: postgresql://dms:dms@127.0.0.1:5432/dms
+      DMS_DEMO_FALLBACK: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev]"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Boot the API and GET every page-load path
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          # STUDIO-FIX-A. The pytest shards skip control_plane. This job has
+          # the Postgres service, so the sources route is checked here before
+          # the page-load smoke. The test drops schema dms; the API migrates
+          # again on boot.
+          python -m pytest tests/control_plane/test_studio_fix_a_pg.py -q --tb=short -p no:cacheprovider
+          python -m uvicorn dms_api.app:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
+          pid=$!
+          ok=0
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/health >/dev/null; then
+              ok=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "API exited during startup"
+              cat "$RUNNER_TEMP/api.log"
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "API did not answer /health"
+            cat "$RUNNER_TEMP/api.log"
+            exit 1
+          fi
+          python scripts/verify/live_pages_smoke.py --base http://127.0.0.1:8000
+
+  lint-type-test:
+    runs-on: ubuntu-latest
+    # The cap dates from when pytest ran inside this job (18.5 min on main
+    # a52ccb2, then 22 to 27 min). pytest now runs in the `pytest` shards above
+    # and this job takes about a minute. The cap is not raised.
+    timeout-minutes: 30
+    # This job keeps its name and stays the single gate: it is red unless the
+    # two gates, every pytest shard, and the live-pages smoke are green.
+    # `!cancelled()` is needed so a failed shard makes this job FAIL. Without it
+    # the job would be skipped, and a skipped required check counts as passing.
+    needs: [protected-paths, contract-pin, pytest, live-pages-smoke]
+    if: ${{ !cancelled() }}
+    env:
+      PYTHONUTF8: "1"
+    steps:
+      - name: Require the gates and every pytest shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }} live-pages-smoke=${{ needs.live-pages-smoke.result }}"
+          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ] || [ "${{ needs.live-pages-smoke.result }}" != "success" ]; then
+            echo "::error::a required job is not green (see the line above)"
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -204,20 +378,20 @@ jobs:
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           lint-imports
 
-      - name: Invariant + unit tests
+      - name: The pytest shards run exactly the suite (no test dropped or run twice)
+        shell: bash
         env:
-          # Control-plane suite hard-fails without Postgres (R-0002). This job has
-          # no compose service yet; skip is an explicit decision, not a silent green.
-          # Add a postgres service job before flipping this off.
           DMS_SKIP_CONTROL_PLANE_TESTS: "1"
         run: |
+          set -euo pipefail
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
-          # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
-          # DEF-VALIDATE-01: tests/test_def_validate_01.py runs here. No skip.
-          python -m pytest tests/ -q --tb=short
+          bash scripts/ci_pytest_shard.sh verify 3
 
       - name: grade52 metric self-test (stack-free, not a score)
         run: python scripts/verify/grade52.py --self-test
+
+      - name: Live pages smoke self-check (path list, not a booted API)
+        run: python scripts/verify/live_pages_smoke.py --self-check
 
       - name: Oracle self-test (stack-free, not live ask)
         # F42 / EPIC-018: recomputes hostile-pack oracles. Does not POST /v1/chat/ask.
@@ -226,6 +400,10 @@ jobs:
       - name: SCORE-BIRD self-check (stack-free, not live ask)
         # SCORE-BIRD-01 #184. Pack honesty + judge plants. Does not POST /v1/chat/ask.
         run: python scripts/score_bird.py --self-check
+
+      - name: BENCH-MATRIX self-check (stack-free, not live ask)
+        # BENCH-MATRIX-01. Five synthetic questions. Does not POST /v1/chat/ask.
+        run: python scripts/bench_matrix.py --self-check
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -237,10 +415,14 @@ jobs:
       - name: Studio result view tests
         # STUDIO-RESULT-01 (#365). Vitest was not a CI step. This runs the
         # result-view file only. It does not score answers or call /ask.
+        # R1-UI-CLARIFY-01 adds the clarify card tests and a mocked Playwright
+        # spec. It does not score answers.
         working-directory: apps/ui
         run: |
           npm ci
-          npx vitest run src/components/studio/ResultView.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts
+          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/ontologyRead.test.ts src/components/studio/clarifyCards.test.tsx src/lib/clarifyAsk.test.ts
+          npx playwright install --with-deps chromium
+          npx playwright test e2e/clarify.spec.ts
 
   # BANK-04 (#271). Brings the appliance compose stack up and asserts the TLS
   # contract against the live containers: HTTPS answers /health, plain HTTP does

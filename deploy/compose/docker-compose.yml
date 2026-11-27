@@ -19,7 +19,9 @@
 #   DMS_TLS_DIR      files mode only: host directory holding tls.crt (leaf plus
 #                    chain, PEM) and tls.key (PEM). Mounted read-only. Never
 #                    committed; deploy/compose/tls/ ignores *.crt *.key *.pem.
-#   DMS_TLS_HOST     the DNS name clients type. Default localhost.
+#   DMS_TLS_HOST     the DNS name (or IPv4 address) clients type. Default
+#                    localhost. Letters, digits, hyphens and dots only; anything
+#                    else stops the ui service before Caddy starts (#387).
 #   DMS_BIND_ADDR    host address the one published port binds to. Default
 #                    0.0.0.0 (every interface, as before). Set 127.0.0.1 when a
 #                    load balancer or IAP on the same host fronts the appliance,
@@ -54,6 +56,11 @@ services:
       DATABASE_URL: "postgresql://dms:${DMS_DB_PASSWORD:?DMS_DB_PASSWORD is required - set it in deploy/compose/.env, no default is shipped}@postgres:5432/dms"
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
+      # KEY-01 (dms#273): no default key. Empty = unset = keyed Cortex calls refuse by name.
+      CORTEX_API_KEY: ${CORTEX_API_KEY:-}
+      # R1-RUNTIME-01. 60 so a compose restart cannot fall back to the 8s default.
+      # The Python default stays 8 when this variable is unset. Ceiling is 60.
+      DMS_INSIGHTS_TIMEOUT_S: ${DMS_INSIGHTS_TIMEOUT_S:-60}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
       DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-0}
       CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000,http://127.0.0.1,http://localhost
@@ -71,7 +78,8 @@ services:
     # Entry guard. DMS_TLS_MODE is spliced into the Caddyfile's `import
     # tls_<mode>`; anything but these two exact words is refused before Caddy
     # runs, so a glob such as `*` can never leave the site without a certificate
-    # source. $$ is compose's escape for a literal $.
+    # source. DMS_TLS_HOST is spliced into the site address and is checked the
+    # same way, below. $$ is compose's escape for a literal $.
     command:
       - sh
       - -c
@@ -80,6 +88,27 @@ services:
           internal|files) ;;
           *) echo "DMS_TLS_MODE must be exactly internal or files, got '$${DMS_TLS_MODE}'" >&2; exit 1 ;;
         esac
+        # TLS-HOST-VALIDATE (#387). Caddy splices DMS_TLS_HOST into the site
+        # address as text, before it parses: a newline, brace or space there adds
+        # sites and directives. Allowlist, not blocklist: RFC 1123 labels only
+        # (letters, digits, hyphens, dots), which also admits a dotted IPv4
+        # address. No port, no IPv6, no raw IDN (use its xn-- form). The value is
+        # never echoed, so it cannot write lines into the log either.
+        export LC_ALL=C
+        host="$${DMS_TLS_HOST:-}"
+        refuse() { echo "DMS_TLS_HOST must be a DNS name (RFC 1123 labels) or an IPv4 address; refused: $$1" >&2; exit 1; }
+        case "$$host" in
+          '') refuse "empty" ;;
+          *[!A-Za-z0-9.-]*) refuse "a character other than a letter, digit, hyphen or dot" ;;
+          .*|*.|*..*) refuse "an empty label (a leading, trailing or doubled dot)" ;;
+          -*|*-|*.-*|*-.*) refuse "a label that starts or ends with a hyphen" ;;
+        esac
+        [ "$${#host}" -le 253 ] || refuse "longer than 253 characters"
+        IFS=.
+        for label in $$host; do
+          [ "$${#label}" -le 63 ] || refuse "a label longer than 63 characters"
+        done
+        unset IFS
         exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     environment:
       DMS_TLS_MODE: ${DMS_TLS_MODE:-internal}
@@ -111,6 +140,10 @@ services:
       DATABASE_URL: "postgresql://dms:${DMS_DB_PASSWORD:?DMS_DB_PASSWORD is required - set it in deploy/compose/.env, no default is shipped}@postgres:5432/dms"
       CORTEX_URL: ${CORTEX_URL:-http://host.docker.internal:8010}
       OPENVAULT_URL: ${OPENVAULT_URL:-http://host.docker.internal:5000}
+      # KEY-01 (dms#273): no default key. Empty = unset = keyed Cortex calls refuse by name.
+      CORTEX_API_KEY: ${CORTEX_API_KEY:-}
+      # R1-RUNTIME-01. Same pin as the api service. Unset in the shell still gets 60.
+      DMS_INSIGHTS_TIMEOUT_S: ${DMS_INSIGHTS_TIMEOUT_S:-60}
       DMS_ASK_MODE: ${DMS_ASK_MODE:-live}
       DMS_DEMO_FALLBACK: ${DMS_DEMO_FALLBACK:-0}
       CORS_ORIGINS: http://127.0.0.1:3000,http://localhost:3000

@@ -9,10 +9,17 @@ multi-statement SQL, file reads, ungranted tables, a missing extract, and
 a reply with no SQL abstain at once and are not pasted into a retry prompt.
 The second reading sets ``recover_failures`` and also feeds back a pre-run
 refusal and an empty result. Hostile SQL stays out of that prompt.
+
+``DMS_SHAPE_CHECK`` defaults off. Off, a successful execute is served as
+before and no shape call is made. On, one OpenVault call with role ``reason``
+checks the result shape. One misfit is repaired through the schema-retry
+feedback slot. A second misfit, or an unreadable reply, is a ``shape_misfit``
+reconfirm and is not served.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -632,6 +639,247 @@ def _model_called(payload: dict[str, Any] | None, loop: list[dict[str, Any]] | N
     return False
 
 
+def _tag_rung(attempts: list[dict[str, Any]], schema_ladder: Any) -> None:
+    """Stamp the rung that produced the attempt just recorded. Flag off: no-op."""
+    if schema_ladder is None or not schema_ladder.pending_rung or not attempts:
+        return
+    item = attempts[-1]
+    if item.get("rung"):
+        return
+    item["rung"] = schema_ladder.pending_rung
+    model = item.get("model")
+    if isinstance(model, str) and model:
+        item["served_model"] = model
+    if item.get("outcome") == "served":
+        item["repair"] = f"repair_ok@{schema_ladder.pending_rung}"
+
+
+def _schema_dispatch(
+    *,
+    schema_ladder: Any,
+    outcome: str,
+    sql: str,
+    ctx: dict[str, Any],
+    question: str,
+    payload: dict[str, Any] | None,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    model_sql: Callable[[dict[str, Any] | None], str | None],
+    budget: AskCallBudget,
+    attempts: list[dict[str, Any]],
+    dialect: str,
+) -> tuple[str, Any] | None:
+    """None keeps today's retry. ``abstain`` / ``retry`` only when the flag is on."""
+    if schema_ladder is None:
+        return None
+    from dms_executor.schema_retry import (
+        feedback_payload,
+        route_refused,
+    )
+
+    plan = schema_ladder.plan(
+        outcome=outcome,
+        sql=sql,
+        attempts=attempts,
+        budget=budget,
+        question=question,
+    )
+    if plan is None:
+        return None
+    if plan.abstain:
+        return ("abstain", plan.abstain)
+    if not budget.take():
+        return ("abstain", f"schema_repair_exhausted:{plan.kind}")
+    nxt = dict(ctx)
+    if plan.schema_slice is not None:
+        nxt = schema_ladder.attach_schema(nxt, question, plan.schema_slice)
+    nxt["sql_loop_feedback"] = feedback_payload(plan, previous_sql=sql, reason=outcome)
+    nxt.pop("route_hint", None)
+    if plan.route_hint == "escalate":
+        nxt["route_hint"] = "escalate"
+    try:
+        got = compute(nxt)
+    except Exception:  # noqa: BLE001 - a missed repair rung reconfirms
+        got = None
+    refused = plan.route_hint == "escalate" and route_refused(
+        got if isinstance(got, dict) else None
+    )
+    produced = model_sql(got) if isinstance(got, dict) else None
+    if refused or not produced:
+        attempts.append(
+            loop_entry(
+                prompt=plan.prompt,
+                payload=got if isinstance(got, dict) else payload,
+                sql=None,
+                outcome="route_refused" if refused else f"schema_repair_exhausted:{plan.kind}",
+                dialect=dialect,
+            )
+        )
+        _tag_rung(attempts, schema_ladder)
+        if attempts:
+            attempts[-1]["error_kind"] = plan.kind
+        return ("abstain", f"schema_repair_exhausted:{plan.kind}")
+    return ("retry", got)
+
+
+def _shape_flag_on() -> bool:
+    """True only when ``DMS_SHAPE_CHECK`` is the digit 1. Unset is off."""
+    return os.environ.get("DMS_SHAPE_CHECK", "0").strip() == "1"
+
+
+def _shape_rung():
+    """#570's ladder supplies ``shape_rung`` once it has that name.
+
+    Until then this is ``dms_executor.shape_check.shape_rung``. The flag-off
+    path does not import either module.
+    """
+    import importlib
+
+    try:
+        module = importlib.import_module("dms_executor.ask_ladder")
+    except ImportError:
+        module = None
+    if module is not None:
+        found = getattr(module, "shape_rung", None)
+        if callable(found):
+            return found
+    from dms_executor.shape_check import shape_rung
+
+    return shape_rung
+
+
+def _shape_reconfirm(
+    abstain: Callable[..., dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    sql: str,
+    retries: int,
+    kind: str,
+    reasons: list[str],
+) -> dict[str, Any]:
+    """Reconfirm. Rows and SQL are cleared so a misfit is not served."""
+    env = abstain("shape_misfit", attempts, sql=sql, retries=retries)
+    if not isinstance(env, dict):
+        env = {}
+    # Badge, abstained, and abstain_reason stay on the builder. This only
+    # clears the served figure and attaches the typed reconfirm.
+    env["rows"] = []
+    env["values"] = []
+    env["sql_used"] = None
+    shown = "; ".join(reasons) if reasons else kind
+    env["text"] = f"shape_misfit: {shown}"
+    assumptions = [item for item in (env.get("assumptions") or []) if isinstance(item, str)]
+    for item in reasons:
+        line = f"shape_reason: {item}"
+        if line not in assumptions:
+            assumptions.append(line)
+    env["assumptions"] = assumptions
+    env["reconfirm"] = {
+        "reason_code": "shape_misfit",
+        "verdict": kind if kind in {"misfit", "unknown"} else "unknown",
+        "reasons": list(reasons),
+        "why": "shape_misfit",
+        "closest_question": "",
+    }
+    return env
+
+
+def _shape_after_execute(
+    *,
+    question: str,
+    sql: str,
+    rows: list[dict[str, Any]],
+    dialect: str,
+    ctx: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    prompt: str,
+    payload: dict[str, Any] | None,
+    budget: AskCallBudget,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    abstain: Callable[..., dict[str, Any]],
+    retries: int,
+    shape_repairs: int,
+) -> tuple[str, Any]:
+    """``serve`` keeps today's path. ``repair`` and ``reconfirm`` do not serve.
+
+    Flag off returns ``serve`` before any shape import or model call.
+    """
+    if not _shape_flag_on():
+        return ("serve", None)
+    ontology = ctx.get("shape_ontology")
+    if ontology is None:
+        ontology = ctx.get("ontology")
+    try:
+        verdict = _shape_rung()(
+            question,
+            sql,
+            rows=rows,
+            ontology=ontology,
+            dialect=dialect,
+        )
+    except Exception:
+        verdict = {"verdict": "unknown", "reasons": ["shape_call_failed"], "fix_hint": None}
+    if not isinstance(verdict, dict):
+        verdict = {"verdict": "unknown", "reasons": ["shape_call_failed"], "fix_hint": None}
+    kind = verdict.get("verdict")
+    raw_reasons = verdict.get("reasons")
+    if isinstance(raw_reasons, list):
+        reasons = [item for item in raw_reasons if isinstance(item, str)]
+    else:
+        reasons = []
+    hint = verdict.get("fix_hint") if isinstance(verdict.get("fix_hint"), str) else None
+    if kind in {"skipped", "fit"}:
+        return ("serve", None)
+    attempts.append(
+        loop_entry(
+            prompt=prompt,
+            payload=payload,
+            sql=sql,
+            outcome="shape_unknown" if kind == "unknown" else "shape_misfit",
+            dialect=dialect,
+        )
+    )
+    if kind == "misfit" and shape_repairs < 1 and budget.take():
+        reason = "shape_misfit"
+        if hint:
+            reason = f"{reason}\nfix_hint:\n{hint}"
+        repair_prompt = feedback_prompt(question, previous_sql=sql, reason=reason)
+        feedback = {
+            "previous_sql": mask_feedback_text(sql),
+            "reason": mask_feedback_text(reason),
+            "prompt": repair_prompt,
+            "repair_hint": {
+                "kind": "shape_misfit",
+                "fix_hint": mask_feedback_text(hint or ""),
+                "reasons": [mask_feedback_text(item) for item in reasons],
+            },
+        }
+        nxt = dict(ctx)
+        nxt["sql_loop_feedback"] = feedback
+        try:
+            got = compute(nxt)
+        except Exception:
+            got = None
+        return (
+            "repair",
+            {
+                "current": got if isinstance(got, dict) else None,
+                "reason": reason,
+                "shape_repairs": shape_repairs + 1,
+                "retries": retries + 1,
+            },
+        )
+    return (
+        "reconfirm",
+        _shape_reconfirm(
+            abstain,
+            attempts,
+            sql,
+            retries,
+            str(kind or "unknown"),
+            reasons,
+        ),
+    )
+
+
 def run_model_loop(
     *,
     question: str,
@@ -649,6 +897,7 @@ def run_model_loop(
     no_retry_reasons: frozenset[str] = frozenset(),
     recover_failures: bool = False,
     budget: AskCallBudget,
+    schema_ladder: Any = None,
 ) -> dict[str, Any]:
     """Checker, read-only run, feedback retry.
 
@@ -658,19 +907,26 @@ def run_model_loop(
 
     ``budget`` is the ask's one cap. The opening compute already took a
     call. Retries take from what is left. They do not start a new cap.
+    ``schema_ladder`` is set only when ``DMS_SCHEMA_RETRY`` is on. Off,
+    it stays None and this loop is the pre-ladder retry.
 
     ``recover_failures`` is the second reading only. It feeds back a reply
     with no SQL, a statement refused before execute, and an empty result.
     The next SQL still goes through ``check``. Hostile SQL does not.
     """
     retries = 0
+    shape_repairs = 0
     current = payload if isinstance(payload, dict) else None
     reason: str | None = None
     prev_sql: str | None = None
     protected_sql: str | None = None
+    if schema_ladder is not None:
+        schema_ladder.begin()
 
     while True:
         prompt = feedback_prompt(question, previous_sql=prev_sql, reason=reason)
+        if schema_ladder is not None and schema_ladder.prompt_suffix:
+            prompt = prompt + "\n" + schema_ladder.prompt_suffix
         sql = model_sql(current)
         if not sql:
             attempts.append(
@@ -746,8 +1002,30 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            _tag_rung(attempts, schema_ladder)
             if why in no_retry_reasons:
                 return abstain(why, attempts, sql=sql, retries=retries)
+            schema_step = _schema_dispatch(
+                schema_ladder=schema_ladder,
+                outcome=outcome,
+                sql=sql,
+                ctx=ctx,
+                question=question,
+                payload=current,
+                compute=compute,
+                model_sql=model_sql,
+                budget=budget,
+                attempts=attempts,
+                dialect=dialect,
+            )
+            if schema_step is not None:
+                if schema_step[0] == "abstain":
+                    return abstain(schema_step[1], attempts, sql=sql, retries=retries)
+                protected_sql = sql
+                prev_sql = sql
+                reason = outcome
+                current = schema_step[1]
+                continue
             blocked = _no_model_retry(why, no_retry_reasons)
             if recover_failures and _refusal_head(why) in _SECOND_RECOVER_HEADS:
                 blocked = False
@@ -802,7 +1080,28 @@ def run_model_loop(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
+            _tag_rung(attempts, schema_ladder)
             protected_sql = sql
+            schema_step = _schema_dispatch(
+                schema_ladder=schema_ladder,
+                outcome=outcome,
+                sql=sql,
+                ctx=ctx,
+                question=question,
+                payload=current,
+                compute=compute,
+                model_sql=model_sql,
+                budget=budget,
+                attempts=attempts,
+                dialect=dialect,
+            )
+            if schema_step is not None:
+                if schema_step[0] == "abstain":
+                    return abstain(schema_step[1], attempts, sql=sql, retries=retries)
+                prev_sql = sql
+                reason = outcome
+                current = schema_step[1]
+                continue
             if not _can_retry(retries=retries, budget=budget):
                 head = f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
@@ -814,6 +1113,32 @@ def run_model_loop(
             continue
 
         got = rows or []
+        action, detail = _shape_after_execute(
+            question=question,
+            sql=sql,
+            rows=got,
+            dialect=dialect,
+            ctx=ctx,
+            attempts=attempts,
+            prompt=prompt,
+            payload=current,
+            budget=budget,
+            compute=compute,
+            abstain=abstain,
+            retries=retries,
+            shape_repairs=shape_repairs,
+        )
+        if action == "reconfirm":
+            return detail
+        if action == "repair":
+            shape_repairs = int(detail["shape_repairs"])
+            retries = int(detail["retries"])
+            prev_sql = sql
+            reason = str(detail["reason"])
+            current = detail["current"]
+            if not protected_sql:
+                protected_sql = sql
+            continue
         if not got:
             decision = empty_result_reason(sql)
             if decision:
@@ -834,7 +1159,7 @@ def run_model_loop(
                     current = _call(compute, ctx, prompt, reason, sql)
                     continue
                 return abstain(decision, attempts, sql=sql, retries=retries)
-            return _finish_attempt(
+            env = _finish_attempt(
                 empty_answer(sql, attempts),
                 attempts=attempts,
                 prompt=prompt,
@@ -842,6 +1167,8 @@ def run_model_loop(
                 sql=sql,
                 dialect=dialect,
             )
+            _tag_rung(attempts, schema_ladder)
+            return env
         env = _finish_attempt(
             submit_sql(sql, attempts),
             attempts=attempts,
@@ -850,6 +1177,7 @@ def run_model_loop(
             sql=sql,
             dialect=dialect,
         )
+        _tag_rung(attempts, schema_ladder)
         return env
 
 

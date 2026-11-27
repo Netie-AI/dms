@@ -1,0 +1,195 @@
+company: finance_ar
+title: Teguh Distribution (finance, accounts receivable)
+glossary:
+  invoice amount: "SUM(invoice_lines.amount) for the invoice"
+  outstanding: "invoice amount minus credit notes minus payment allocations applied to it, non-void invoices only"
+  MYR equivalent: "amount * fx_rates.rate_to_myr for the invoice currency and the invoice month (rate_month = YYYY-MM of invoice_date)"
+  overdue: "outstanding > 0 and due_date before the as-of date"
+as_of_note: "Questions name their as-of date. All allocations and credit notes in the data are on or before 2026-06-30."
+questions:
+  - id: ar01_invoiced_by_currency_2025
+    question: Total invoiced in 2025 by currency, excluding void invoices.
+    gold_sql: |
+      SELECT i.currency, ROUND(SUM(l.amount), 2) AS invoiced
+      FROM invoices i JOIN invoice_lines l ON l.invoice_no = i.invoice_no
+      WHERE i.status <> 'void' AND i.invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY i.currency
+  - id: ar02_top10_outstanding_myr
+    question: Which 10 customers owe us the most on MYR invoices as of 30 June 2026? Net of payments and credit notes.
+    ordered: true
+    gold_sql: |
+      WITH amt AS (SELECT invoice_no, SUM(amount) AS a FROM invoice_lines GROUP BY invoice_no),
+      paid AS (SELECT invoice_no, SUM(amount_applied) AS p FROM payment_allocations GROUP BY invoice_no),
+      cn AS (SELECT invoice_no, SUM(amount) AS c FROM credit_notes GROUP BY invoice_no)
+      SELECT cu.legal_name, ROUND(SUM(amt.a - COALESCE(paid.p, 0) - COALESCE(cn.c, 0)), 2) AS outstanding
+      FROM invoices i
+      JOIN amt ON amt.invoice_no = i.invoice_no
+      LEFT JOIN paid ON paid.invoice_no = i.invoice_no
+      LEFT JOIN cn ON cn.invoice_no = i.invoice_no
+      JOIN customers cu ON cu.cust_no = i.cust_no
+      WHERE i.status <> 'void' AND i.currency = 'MYR'
+      GROUP BY cu.legal_name
+      ORDER BY outstanding DESC, cu.legal_name
+      LIMIT 10
+  - id: ar03_aging_buckets_myr
+    question: Give me the AR aging for MYR invoices as of 30 June 2026 - not yet due, 1-30, 31-60, 61-90 and over 90 days past due, total outstanding in each bucket.
+    gold_sql: |
+      WITH amt AS (SELECT invoice_no, SUM(amount) AS a FROM invoice_lines GROUP BY invoice_no),
+      paid AS (SELECT invoice_no, SUM(amount_applied) AS p FROM payment_allocations GROUP BY invoice_no),
+      cn AS (SELECT invoice_no, SUM(amount) AS c FROM credit_notes GROUP BY invoice_no),
+      o AS (
+        SELECT i.due_date, amt.a - COALESCE(paid.p, 0) - COALESCE(cn.c, 0) AS outstanding
+        FROM invoices i JOIN amt ON amt.invoice_no = i.invoice_no
+        LEFT JOIN paid ON paid.invoice_no = i.invoice_no
+        LEFT JOIN cn ON cn.invoice_no = i.invoice_no
+        WHERE i.status <> 'void' AND i.currency = 'MYR'
+      )
+      SELECT CASE
+               WHEN due_date >= DATE '2026-06-30' THEN 'not yet due'
+               WHEN DATE_DIFF('day', due_date, DATE '2026-06-30') <= 30 THEN '1-30'
+               WHEN DATE_DIFF('day', due_date, DATE '2026-06-30') <= 60 THEN '31-60'
+               WHEN DATE_DIFF('day', due_date, DATE '2026-06-30') <= 90 THEN '61-90'
+               ELSE '90+' END AS bucket,
+             ROUND(SUM(outstanding), 2) AS outstanding
+      FROM o WHERE outstanding > 0.005
+      GROUP BY 1
+  - id: ar04_over_credit_limit
+    question: Which customers are over their credit limit as of 30 June 2026, counting all their open balances converted to MYR at the invoice month's rate?
+    gold_sql: |
+      WITH amt AS (SELECT invoice_no, SUM(amount) AS a FROM invoice_lines GROUP BY invoice_no),
+      paid AS (SELECT invoice_no, SUM(amount_applied) AS p FROM payment_allocations GROUP BY invoice_no),
+      cn AS (SELECT invoice_no, SUM(amount) AS c FROM credit_notes GROUP BY invoice_no),
+      o AS (
+        SELECT i.cust_no,
+               (amt.a - COALESCE(paid.p, 0) - COALESCE(cn.c, 0)) * fx.rate_to_myr AS myr
+        FROM invoices i JOIN amt ON amt.invoice_no = i.invoice_no
+        LEFT JOIN paid ON paid.invoice_no = i.invoice_no
+        LEFT JOIN cn ON cn.invoice_no = i.invoice_no
+        JOIN fx_rates fx ON fx.currency = i.currency AND fx.rate_month = STRFTIME(i.invoice_date, '%Y-%m')
+        WHERE i.status <> 'void'
+      )
+      SELECT cu.legal_name, ROUND(SUM(o.myr), 2) AS outstanding_myr, cu.credit_limit
+      FROM o JOIN customers cu ON cu.cust_no = o.cust_no
+      GROUP BY cu.legal_name, cu.credit_limit
+      HAVING SUM(o.myr) > cu.credit_limit
+  - id: ar05_void_by_region_2025
+    question: How many invoices did we void in 2025, by customer region?
+    gold_sql: |
+      SELECT cu.region, COUNT(*) AS voided
+      FROM invoices i JOIN customers cu ON cu.cust_no = i.cust_no
+      WHERE i.status = 'void' AND i.invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY cu.region
+  - id: ar06_cash_by_month_h1
+    question: Cash received each month in the first half of 2026.
+    ordered: true
+    gold_sql: |
+      SELECT STRFTIME(payment_date, '%Y-%m') AS month, ROUND(SUM(amount), 2) AS cash
+      FROM payments
+      WHERE payment_date BETWEEN DATE '2026-01-01' AND DATE '2026-06-30'
+      GROUP BY 1 ORDER BY 1
+  - id: ar07_unapplied_cash
+    question: Which customers have unapplied cash - payments we received but haven't matched to any invoice - and how much?
+    gold_sql: |
+      WITH ap AS (SELECT payment_id, SUM(amount_applied) AS applied FROM payment_allocations GROUP BY payment_id)
+      SELECT cu.legal_name, ROUND(SUM(p.amount - COALESCE(ap.applied, 0)), 2) AS unapplied
+      FROM payments p LEFT JOIN ap ON ap.payment_id = p.payment_id
+      JOIN customers cu ON cu.cust_no = p.cust_no
+      GROUP BY cu.legal_name
+      HAVING SUM(p.amount - COALESCE(ap.applied, 0)) > 0.005
+  - id: ar08_days_to_pay_by_region
+    question: For invoices that are fully settled, what's the average number of days from invoice date to the final payment, by region? Use invoices dated in 2025, one decimal.
+    gold_sql: |
+      WITH amt AS (SELECT invoice_no, SUM(amount) AS a FROM invoice_lines GROUP BY invoice_no),
+      paid AS (
+        SELECT pa.invoice_no, SUM(pa.amount_applied) AS p, MAX(py.payment_date) AS last_pay
+        FROM payment_allocations pa JOIN payments py ON py.payment_id = pa.payment_id
+        GROUP BY pa.invoice_no),
+      cn AS (SELECT invoice_no, SUM(amount) AS c FROM credit_notes GROUP BY invoice_no)
+      SELECT cu.region, ROUND(AVG(DATE_DIFF('day', i.invoice_date, paid.last_pay)), 1) AS avg_days
+      FROM invoices i
+      JOIN amt ON amt.invoice_no = i.invoice_no
+      JOIN paid ON paid.invoice_no = i.invoice_no
+      LEFT JOIN cn ON cn.invoice_no = i.invoice_no
+      JOIN customers cu ON cu.cust_no = i.cust_no
+      WHERE i.status <> 'void' AND i.invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+        AND amt.a - paid.p - COALESCE(cn.c, 0) <= 0.005
+      GROUP BY cu.region
+  - id: ar09_credit_note_pct_by_region_2025
+    question: Credit notes as a percent of invoiced value by region, for invoices dated in 2025 (two decimals).
+    gold_sql: |
+      WITH amt AS (SELECT invoice_no, SUM(amount) AS a FROM invoice_lines GROUP BY invoice_no),
+      cn AS (SELECT invoice_no, SUM(amount) AS c FROM credit_notes GROUP BY invoice_no)
+      SELECT cu.region, ROUND(100.0 * SUM(COALESCE(cn.c, 0)) / SUM(amt.a), 2) AS credit_note_pct
+      FROM invoices i
+      JOIN amt ON amt.invoice_no = i.invoice_no
+      LEFT JOIN cn ON cn.invoice_no = i.invoice_no
+      JOIN customers cu ON cu.cust_no = i.cust_no
+      WHERE i.status <> 'void' AND i.invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY cu.region
+  - id: ar10_most_overdue_invoices
+    question: Which customer has the most overdue invoices as of 30 June 2026, and how many?
+    ordered: true
+    gold_sql: |
+      WITH amt AS (SELECT invoice_no, SUM(amount) AS a FROM invoice_lines GROUP BY invoice_no),
+      paid AS (SELECT invoice_no, SUM(amount_applied) AS p FROM payment_allocations GROUP BY invoice_no),
+      cn AS (SELECT invoice_no, SUM(amount) AS c FROM credit_notes GROUP BY invoice_no)
+      SELECT cu.legal_name, COUNT(*) AS overdue_invoices
+      FROM invoices i JOIN amt ON amt.invoice_no = i.invoice_no
+      LEFT JOIN paid ON paid.invoice_no = i.invoice_no
+      LEFT JOIN cn ON cn.invoice_no = i.invoice_no
+      JOIN customers cu ON cu.cust_no = i.cust_no
+      WHERE i.status <> 'void' AND i.due_date < DATE '2026-06-30'
+        AND amt.a - COALESCE(paid.p, 0) - COALESCE(cn.c, 0) > 0.005
+      GROUP BY cu.legal_name
+      ORDER BY overdue_invoices DESC, cu.legal_name
+      LIMIT 1
+  - id: ar11_invoiced_myr_equiv_2025
+    question: What did we invoice in total in 2025 in MYR terms, converting foreign-currency invoices at their invoice month's rate? Exclude voids.
+    gold_sql: |
+      SELECT ROUND(SUM(l.amount * fx.rate_to_myr), 2) AS invoiced_myr
+      FROM invoices i
+      JOIN invoice_lines l ON l.invoice_no = i.invoice_no
+      JOIN fx_rates fx ON fx.currency = i.currency AND fx.rate_month = STRFTIME(i.invoice_date, '%Y-%m')
+      WHERE i.status <> 'void' AND i.invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+  - id: ar12_largest_invoice_2026
+    question: What's the single largest invoice we've raised in 2026 - invoice number, customer and amount?
+    ordered: true
+    gold_sql: |
+      SELECT i.invoice_no, cu.legal_name, ROUND(SUM(l.amount), 2) AS amount
+      FROM invoices i JOIN invoice_lines l ON l.invoice_no = i.invoice_no
+      JOIN customers cu ON cu.cust_no = i.cust_no
+      WHERE i.status <> 'void' AND i.invoice_date >= DATE '2026-01-01'
+      GROUP BY i.invoice_no, cu.legal_name
+      ORDER BY amount DESC
+      LIMIT 1
+  - id: ar13_lapsed_customers
+    question: How many customers were invoiced in 2025 but have had no invoices at all in 2026?
+    gold_sql: |
+      SELECT COUNT(*) AS lapsed_customers FROM (
+        SELECT cust_no FROM invoices WHERE invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+        EXCEPT
+        SELECT cust_no FROM invoices WHERE invoice_date >= DATE '2026-01-01'
+      ) x
+  - id: ar14_cash_by_method_2025
+    question: Breakdown of cash collected in 2025 by payment method.
+    gold_sql: |
+      SELECT method, ROUND(SUM(amount), 2) AS collected
+      FROM payments WHERE payment_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY method
+  - id: ar15_sgd_outstanding_total
+    question: Total outstanding on SGD invoices as of 30 June 2026, in SGD.
+    gold_sql: |
+      WITH amt AS (SELECT invoice_no, SUM(amount) AS a FROM invoice_lines GROUP BY invoice_no),
+      paid AS (SELECT invoice_no, SUM(amount_applied) AS p FROM payment_allocations GROUP BY invoice_no),
+      cn AS (SELECT invoice_no, SUM(amount) AS c FROM credit_notes GROUP BY invoice_no)
+      SELECT ROUND(SUM(amt.a - COALESCE(paid.p, 0) - COALESCE(cn.c, 0)), 2) AS outstanding_sgd
+      FROM invoices i JOIN amt ON amt.invoice_no = i.invoice_no
+      LEFT JOIN paid ON paid.invoice_no = i.invoice_no
+      LEFT JOIN cn ON cn.invoice_no = i.invoice_no
+      WHERE i.status <> 'void' AND i.currency = 'SGD'
+  - id: ar16_dso
+    question: What's our DSO?
+    expect: clarify
+  - id: ar17_acme_balance
+    question: How much does Acme Holdings owe us?
+    expect: refuse

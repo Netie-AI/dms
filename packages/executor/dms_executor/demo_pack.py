@@ -13,6 +13,7 @@ must not ship L1 even when Cortex ``route_to_metric`` would green them.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -425,7 +426,14 @@ _UNCERTIFIED_PARAPHRASE = frozenset(
 )
 
 
+def _rules_off() -> bool:
+    """Digit 1 only. The exact-match trap list stays when the flag is off."""
+    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
 def is_uncertified_paraphrase(question: str | None) -> bool:
+    if _rules_off():
+        return False
     qn = _norm(question or "")
     return bool(qn) and qn in _UNCERTIFIED_PARAPHRASE
 

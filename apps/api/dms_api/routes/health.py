@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
+from cortex_client.runtime_check import runtime_health_fields
 from fastapi import APIRouter
 
 from dms_api.deps import SettingsDep, StoreBindingDep
@@ -263,4 +264,12 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
         },
     }
     body.update(engine_clock_fields())
+    # R1-RUNTIME-01. Flag off: this is {} and the body is unchanged.
+    body.update(
+        runtime_health_fields(
+            settings.cortex_api_key,
+            cortex_reachable=bool(cortex_liveness.get("ok")),
+            ov_reachable=bool(ov.get("ok")),
+        )
+    )
     return body

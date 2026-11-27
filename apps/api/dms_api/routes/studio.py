@@ -254,7 +254,7 @@ def xlsx_orch_golden_route(
 
 
 class SqlSourceIn(BaseModel):
-    kind: Literal["sqlserver", "mysql", "postgresql"]
+    kind: Literal["sqlserver", "mysql", "postgresql", "sqlite"]
     host: str
     database: str
     user: str

@@ -5,6 +5,7 @@ Regenerate with ``just sync-contract``. Do not hand-edit ``generated/``.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -67,6 +68,49 @@ from cortex_client.models import (
 
 CONTRACT_MAJOR = 1
 
+# Not AskPayload wire fields. A sample list must not ride out beside masked.
+_SAMPLE_KEYS = frozenset({"values", "samples"})
+
+
+def _bool_mask_flags(payload: Any) -> Any:
+    """``AskPayloadColumn.masked`` leaves as a JSON bool.
+
+    A missing flag, or any value that is not a bool, is true. The string
+    ``"false"`` and the number ``0`` are not false. Bools already set by
+    ``stamp_ask_payload`` are kept. Sample keys are dropped.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    tables = payload.get("tables")
+    if not isinstance(tables, list):
+        return payload
+    out = dict(payload)
+    stamped: list[Any] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            stamped.append(table)
+            continue
+        copied = dict(table)
+        columns = copied.get("columns")
+        if isinstance(columns, list):
+            new_columns: list[Any] = []
+            for column in columns:
+                if not isinstance(column, dict):
+                    new_columns.append(column)
+                    continue
+                flag = column.get("masked", True)
+                cleaned = {
+                    key: value
+                    for key, value in column.items()
+                    if key not in _SAMPLE_KEYS and key != "masked"
+                }
+                cleaned["masked"] = flag if isinstance(flag, bool) else True
+                new_columns.append(cleaned)
+            copied["columns"] = new_columns
+        stamped.append(copied)
+    out["tables"] = stamped
+    return out
+
 
 def _to_gen_manifest(m: ContractManifest) -> GenManifest:
     return GenManifest.from_dict(m.model_dump(mode="json"))
@@ -118,6 +162,8 @@ class CortexClient:
         for key in ("dms_payload", "plan_sql_confirm"):
             if data.get(key) is None:
                 data.pop(key, None)
+        if "dms_payload" in data:
+            data["dms_payload"] = _bool_mask_flags(data["dms_payload"])
         body = GenAskRequest.from_dict(data)
         parsed = ask_api.sync(client=self._client, body=body)
         if parsed is None:
@@ -226,6 +272,8 @@ class CortexClient:
         ontology: dict[str, Any] | None = None,
         sql_feedback: dict[str, Any] | None = None,
         schema_context: str | None = None,
+        route_hint: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
@@ -243,6 +291,13 @@ class CortexClient:
             onto = dict(ontology or {})
             onto[SCHEMA_CONTEXT_FIELD] = schema_context
         bound = min(insights_timeout_s(), float(self.timeout))
+        if timeout is not None:
+            bound = min(bound, max(float(timeout), 0.0))
+        from cortex_client.ask_clock import generate_budget_left_s
+
+        left = generate_budget_left_s()
+        if left is not None:
+            bound = min(bound, left) if left > 0 else 0.0
         return post_compute_insights(
             self.base_url,
             question=question,
@@ -252,6 +307,7 @@ class CortexClient:
             api_key=self.api_key,
             timeout=bound,
             sql_feedback=sql_feedback,
+            route_hint=route_hint,
         )
 
     def complete(self, prompt: str) -> str:
@@ -260,16 +316,26 @@ class CortexClient:
         A dead engine or a refused generate returns ``""``. Nothing is filled in.
         Skipped when this ask already used ``insights_call_cap`` generate posts,
         so the suggestion cannot take a call the answer still needs.
+        ``DMS_DEADLINE_ASKBACK=1`` allows this one call once only the reserve
+        remains. The flag off path does not.
 
         The body is ``InsightsAskIn`` only. No ``max_tokens``: contract 1.9.0
         does not declare it, and Cortex answers an undeclared field with 422
         ``unknown_request_fields`` (WIRE-CONFORM-01, #276).
         """
+        from cortex_client.ask_clock import askback_window_open, current_clock
         from cortex_client.compute import insights_call_cap, note_model_call, recorded_model_calls
 
-        if recorded_model_calls() >= insights_call_cap():
+        if recorded_model_calls() >= insights_call_cap() and not askback_window_open():
             return ""
         note_model_call()
+        timeout = min(2.0, float(self.timeout))
+        clock = current_clock()
+        if askback_window_open() and clock is not None and clock.deadline is not None:
+            left = clock.deadline - time.monotonic()
+            if left <= 0:
+                return ""
+            timeout = min(timeout, left)
         try:
             payload = insights_post(
                 self.base_url,
@@ -277,7 +343,7 @@ class CortexClient:
                 ask=False,
                 generate=True,
                 api_key=self.api_key,
-                timeout=min(2.0, float(self.timeout)),
+                timeout=timeout,
             )
         except Exception:
             return ""

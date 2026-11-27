@@ -13,11 +13,8 @@ import { useAsync } from "@/lib/useAsync";
 import type { AdminOverview } from "@/lib/types";
 
 /**
- * Usability rule 11: name things by what people control. The heading over the
- * ACL table says "Who can see this"; the underlying column names stay
- * `acl_grants` / `resource_kind` because that is what the ledger records, and a
- * vocabulary that changes between the screen and the audit trail is how a
- * steward loses the thread.
+ * The heading over the access table says "Who can see this". The stored column
+ * names stay as the ledger recorded them, so the screen and the record match.
  */
 export function AdminPage() {
   const { role } = useApp();
@@ -28,9 +25,9 @@ export function AdminPage() {
   return (
     <Page>
       <PageHeader
-        phase="U5 · control plane"
+        phase="People and access"
         title="Admin"
-        blurb="People, the role each one holds, the departments they belong to, who can see what, and the compute pools queries run in. Read-only: granting access is a write with an ACL blast radius, so it goes through the amend loop when it lands, not a button added because a page looked empty."
+        blurb="See people, the role each person holds, their departments, who can see which data, and where questions run. This page is read-only."
         actions={
           <button
             type="button"
@@ -49,7 +46,7 @@ export function AdminPage() {
         />
       )}
       {data?.configured === false && (
-        <DependencyNotice title="No control plane configured" hint={data.hint} />
+        <DependencyNotice title="No saved database" hint={data.hint} />
       )}
 
       <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -153,7 +150,7 @@ export function AdminPage() {
             </div>
           ) : (
             <p className="border border-[var(--color-line)] px-3 py-5 text-sm text-[var(--color-ink-muted)]">
-              No explicit grants — access falls back to tenant default ACL.
+              No extra access has been granted. People see the company default.
             </p>
           )}
         </Section>
@@ -161,7 +158,7 @@ export function AdminPage() {
         <Section
           title="Compute pools"
           count={data?.pools.length}
-          description="Where a query is allowed to run. Pools, never clusters — the customer controls a budget, not a Spark topology."
+          description="Where a question is allowed to run."
         >
           <ul className="divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
             {(data?.pools ?? []).map((p) => (
@@ -177,7 +174,7 @@ export function AdminPage() {
             ))}
             {!data?.pools.length && (
               <li className="px-3 py-4 text-sm text-[var(--color-ink-muted)]">
-                No pools defined — queries run on the default read pool.
+                No pools defined. Questions run on the default read pool.
               </li>
             )}
           </ul>

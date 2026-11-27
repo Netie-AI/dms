@@ -2,6 +2,124 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - R1-EVAL-01: one eval report for the 52, pack H, BIRD, and an ambiguity pack
+
+- **Harness.** `scripts/verify/eval_all.py --stub` writes `report.md` and `report.json`. It grades the 52 with `grade52 --main` and `--main --ai-first`. Pack H, BIRD execution accuracy, and OpenVault hop-stamp pin splits are `unmeasured (stub)`. `--armed` is the box run and refuses when Cortex settings are missing. No new serving flag.
+- **CLARIFY.** grade52 records a CLARIFY bucket from the product route `needs_clarification` or a clarify block. It is a pass only when `founder_f2.yaml` says `expect: clarify_or_answer`. Question text is not read.
+- **Gold.** `ops_spend_boundary` is a declared refusal in the pack data. A served row is `REFUSAL_WRONG`. It is no longer gold-broken.
+- **Ambiguity pack.** 42 synthetic cases on the demo schema (ambiguous, answerable, unanswerable). Not copied from pack H.
+- **BIRD.** Download stays outside the repo and is refused while `scripts/verify/bird_minidev_2026.sha256` says `UNPINNED`. No estimated EX.
+- **Stub 52.** flag off: correct=43 WRONG=0 refusal_wrong=0 reconfirm=5 clarify=0 abstain=0 AI=0 rule=43 unattributed=0. flag on (existing AI-first stub): correct=0 WRONG=0 reconfirm=48 clarify=0 AI=0 rule=0. p50 unmeasured (stub). Not PASS.
+
+## 2026-11-27 - R1-CLARIFY-01: drop the phrase label, build abstains in one place
+
+- **Phrase label.** `phrase_gate_reason` matched question wording, so it is gone. With `DMS_AI_CLARIFY` on, a card comes from the model's reading list. A silent verdict still uses the existing early returns.
+- **Builder.** Ladder abstains pass their named reason into `build_abstain`. No other call sets `abstain_reason`.
+
+## 2026-11-27 - R1-CLARIFY-01: the model decides an ambiguous question
+
+- **Flag.** `DMS_AI_CLARIFY` defaults off. Off, phrase gates and the ladder are unchanged. On, one OpenVault call with role `reason` returns answerable, ambiguous, or unanswerable. A verdict replaces the phrase gates. No verdict, or an invalid verdict, keeps them, so a silent stub cannot serve a trap.
+- **Ask back.** Ambiguous returns `route=needs_clarification` with 2 to 4 readings. Each SQL preview passed the grant and read-only check and was not executed. `POST /v1/chat/clarify/pick` re-checks grants and asks the chosen reading. Ungranted is a refusal. Unanswerable is reconfirm `not_in_data`.
+- **Grading.** R1-EVAL-01 (#572) already grades a clarify card. This change does not edit the harness.
+- **52.** Stub numbers are in the PR. Armed grade52 and pack H were not run. Not PASS.
+
+## 2026-11-27 - DMS-AI-ABSTAIN-01: generative misses climb before they abstain
+
+- **Flag.** `DMS_ASK_LADDER` defaults off. Off, phrase gates and a checker failure still stop where they did. On, a generative-stage miss climbs four rungs inside the existing insights cap: feed the error, empty result, or check failure back; retry with ontology joins, masked column samples, and retrieved verified examples; plan then solve; send `route_hint=escalate` so OpenVault picks a stronger route. One call stays unused for reconfirm. The armed AI-first profile turns the flag on and sets `DMS_INSIGHTS_CALL_CAP=4`.
+- **Stop.** Ungranted tables, PII, and destructive or hostile SQL do not climb. Every other remaining abstain carries a named reason (`ladder_exhausted:<code>`, or the direct code) and is logged. Question text and SQL text stay out of that log.
+- **Not a word rule.** The ladder does not add a phrase list. The old gates still classify vague, predictive, and year-2099 asks. With the flag on, those asks call the model; a miss abstains with that named code instead of a compiled figure.
+- **52.** Flag-off stub counts are the recorded STATUS numbers (correct=43 wrong=0). This change does not remeasure them. Armed AI vs rules and WRONG were not measured here.
+
+## 2026-11-27 - R1-RUNTIME-01: durable timeout, caller class, startup self-check
+
+- **Flag.** `DMS_RUNTIME_SELFCHECK` defaults to off. Off, `/health` and answer envelopes gain no runtime key, and the served text, SQL, and route stay put. On, `/health` adds `runtime` (`insights_timeout_s`, `cortex_reachable`, `cortex_caller_kind`, `ov_reachable`). A loopback caller (the published demo viewer key) or an effective insights timeout under 30s stamps `runtime_degraded` and `banner_reason`. The UI copy ticket renders that reason.
+- **Timeout.** The process default stays 8s. Compose and the Windows uvicorn fallback pin `DMS_INSIGHTS_TIMEOUT_S` to 60 unless the shell already set it. Startup logs the effective timeout and, when the flag is on and the runtime is degraded, one warning. Neither log line contains the key.
+- **Not a word rule.** Caller class is the demo-viewer digest or the service-key prefix. Question text is not read. Stub `grade52 --main`, flag off and on: correct=43 wrong=0 reconfirm=5 refusal_wrong=0 abstain=0 ai=0 rule=43. Armed grade52 and pack H were not run. Not PASS.
+
+## 2026-11-27 - R1-UI-COPY-01: plain page headers, no developer notes
+
+- **Copy.** Page headers say what the page does in one sentence. Eyebrow codes, buyer-walk notes, script names, and the refuse demo are gone. The five starter questions stay.
+- **Flag.** `DMS_RUNTIME_SELFCHECK` defaults off. Off, the offline banner is the previous sentence. On, it states the runtime problem in plain language. The ask path does not read the flag.
+- **52.** Unmeasured (stub). No serving change. Not PASS.
+
+## 2026-11-27 - R1-RULES-OUT-01: the question-word compiler does not submit
+
+- **Miss.** With `DMS_RULES_OFF=1`, a generate miss that has a ranking plan reconfirms (`rules_off`) and does not submit. Multi-grain compile returns None on that flag. Flag off is unchanged.
+- **Stub 52.** Two runs, same commit. Flag off: correct=43 wrong=0 refusal_wrong=0 reconfirm=5 ai=0 rule=43. Flag on: correct=23 wrong=0 refusal_wrong=0 reconfirm=20 abstain=3 ai=0 rule=23. The 23 are certified pack L1 (`demo_pack.py` `match_pack_phrase`). Compile served is 0. The stub's Insights payload is a miss (`model_calls=0`), so there is no AI SQL to run. Armed and pack H not run. Not PASS.
+
+## 2026-11-27 - R1-RULES-OUT-01: question-word lanes behind DMS_RULES_OFF
+
+- **Flag.** `DMS_RULES_OFF` defaults to off. Only the digit `1` turns it on. Off, prompt bytes, the envelope, and the served route stay the same. On, `answer_demo_question` returns None, `_is_predictive` and `is_uncertified_paraphrase` return False, and the bronze sheet lane names no table. `DMS_RULES_OFF` implies `DMS_NO_WORD_RULES`, so measure linking ranks instead of the keyword locker. `locked_measure` returns None.
+- **Guard.** `scripts/verify/rule_inventory.py` lists every regex or `in` test that traces to a question argument (`file:line`). Today's 166 sites are the allowlist and the day-1 ceiling. A new key fails CI. The ceiling hash is pinned. Deletion of the lanes waits on the armed A/B.
+- **Stub 52.** `grade52 --main`, two runs each, flag off and flag on, same commit. Flag off: correct=43 wrong=0 reconfirm=5 refusal_wrong=0 ai=0 rule=43. Flag on: correct=37 wrong=4 (printed wrong includes refusal_wrong) refusal_wrong=1 reconfirm=2 abstain=3 ai=0 rule=41. Clarify and p50 are not in this stub. Armed and pack H were not run. Not PASS.
+
+## 2026-11-27 - WORD-RULES-OUT-01: rank measures instead of keyword locks
+
+- **Flag.** `DMS_NO_WORD_RULES` defaults to 0. Off, `semantic_retrieve` still calls the keyword locker in `keyword_routes.py`. Prompt, envelope, and served route stay the same. On, measure linking uses `rank_texts` (embedder, else BM25) over the ontology name, description, and synonyms stored on the measure. Floor 0.5, top 3. A unique top score links that measure. A tie or nothing above the floor reconfirms `measure_tie` or `measure_unranked` and is not served.
+- **Not a word rule.** The ranker does not test question text for a phrase. Synonyms are ontology data (`ontology_spine.yaml` for the demo, the measure payload for a Space). A renamed measure links from its own synonyms.
+- **Not in this change.** The keyword module stays until the armed A/B. `DMS_NO_WORD_RULES` is not added to `ARMED_ALL_FLAGS_ON`. No live grade52 score.
+
+## 2026-11-27 - COMPILE-CHECK-01: compile SQL must pass the AI-lane checker
+
+- **Gate.** Rank-window, multi-grain, and one-grain compile call `ai_lane_sql_check` before submit. That is the extract loop's checker: the Space join rule, `def_validate` when its flag is on, grants, one SELECT, EXPLAIN, cited violations, and definition mismatch when grounded defs are on. No new flag. No new word or phrase rule.
+- **Miss.** A failing compile SQL is not served and is not submitted. The question goes to the extract loop (generate from the ontology, schema, and retrieved examples, execute, check, schema repair and escalate when those flags are on). If that misses, the envelope abstains with no compile figure. The route can offer reconfirm. Ungranted, hostile, and non-SELECT stay direct abstains.
+- **52 stub.** `grade52 --main` before (`f286c4a`) and after: correct=43 wrong=0 reconfirm=5, ai=0 rule=43 (L1=23 compile=20). The demo compile answers pass the checker, so the stub does not shrink. Pack H and armed grade52 were not run. Not PASS.
+
+## 2026-11-27 - ADJUST-SQL-VQ-01: steward can adjust SQL and save a verified example
+
+- **Flag.** `DMS_STUDIO_ADJUST` defaults to off. Only the digit `1` turns it on. Off, `/v1/studio/adjust` is not mounted and the answer view has no Adjust SQL control. On, a steward opens the served SQL, runs it, and can save it for that question.
+- **Gates.** Run and save call `validate_compiled_sql` and `run_readonly`, the same grant, hostile, statement-count, and read-only checks as model SQL, then `fail_closed_mask_payload`. A refusal is that checker code. A non-steward is 403.
+- **Store.** Save writes provenance `steward_adjusted` with the actor and a schema hash only when `DMS_VQ_RAG` is on, the same gate as save-on-Yes. Lookup skips that provenance, so `maybe_verified_ask` does not replay it. Few-shot retrieval is the only reader.
+- **Not a word rule.** The SQL is checked by sqlglot and DuckDB. The question is the ask that produced the answer. Nothing scans question text.
+
+## 2026-11-27 - UNICODE-IDENT-01: keep non-ASCII headers beside an ASCII id
+
+- **Flag.** `DMS_UNICODE_IDENT` defaults to off. Only the digit `1` turns it on. Off, `ident_safe`, wire ids, bronze names, CSV headers, and schema prompts stay the previous fold. On, a name that still has a non-ASCII character lands as `<ascii stem or t>_<8 hex of sha256(the full source name)>`. The original is `source_name` on the registry row, the ingest receipt, and `schema_context`. Answer row headers use that source name.
+- **Not a word rule.** The suffix is sha256 of the source string. ASCII names, including Malay `jumlah_jualan`, are unchanged. Nothing inspects question text. The model reads `source_name` and writes the ASCII reference.
+
+## 2026-11-27 - STREAM-STAGES-01: live ask stages over SSE
+
+- **Flag.** `DMS_ASK_STREAM` defaults to off. Off, `GET /v1/studio/ask/{id}/events` is not mounted and `POST /v1/chat/ask` is unchanged. On, the ladder stages already recorded (retrieve, plan, generate, validate, retry rung N, vote, reconfirm) are pushed as `{stage, t_ms, status}`. Studio shows elapsed seconds and Cancel. Cancel aborts the ask request, which is the existing client-disconnect path.
+- **Not a word rule.** The stage token is the span or attempt field the ladder already stored (`retrieve_context`, `schema_context`, `insights_generate`, `validate_explain`, `sql_vote`, `second_reading`, `reconfirm_build`, `rung1`..`rung9`). Question text is not read. SQL, row values, and relation names are not fields on the event.
+- **Not PASS.** Armed `grade52` and pack H were not run.
+
+## 2026-11-27 - BENCH-MATRIX-01: dataset matrix runner, flag off
+
+- **Flag.** `DMS_BENCH_MATRIX` defaults to off. Only the digit `1` turns it on. Off, `scripts/bench_matrix.py` sends no ask and writes no artifact. `--self-check` is a five-question synthetic SQLite instrument and does not call the live route.
+- **Runner.** One command scores a named slice (BIRD Mini-Dev sqlite/mysql/pg, Spider 2.0-lite SQLite, AdventureWorks PG) through `POST /v1/chat/ask`. Datasets are loaded at run time and are not committed. The artifact records served correct, WRONG, reconfirm, abstain, the 95 percent upper bound on wrong-served, p50/p95 seconds, and OpenVault usage USD for the run label. `--header-lang zh|ms` re-ingests a CSV pack from an operator mapping file. An armed `grade52` or `ab_run.sh` refuses the start.
+- **Not a word rule.** Question text is copied into the ask body. Header translation is a map from table and column names. Gold SQL is one read-only statement. Not PASS. No accuracy target.
+
+## 2026-11-27 - AO-JSON-01: ontology compile can ask for a JSON schema
+
+- **Flag.** `DMS_AO_RESPONSE_FORMAT` defaults to off. Only the digit `1` turns it on. Off, the OpenVault ontology body is still `role`, `messages`, and the pydantic class name, and a string reply is `json.loads` only. On, the body also sends `response_format` (`type` `json_schema`, name and schema from that class, no `strict`, no model id). A string that is not JSON gets one retry: drop one leading fence line and one trailing fence, then `json.loads` again.
+- **Refusal.** Anything still unparseable, or JSON that does not match the class, is `ao_model_output_invalid`. A refused compile stores nothing.
+- **Not a word rule.** The schema is `model_json_schema()` of the pydantic class. The retry is a string split on a fence, not a check of question text. OpenVault still picks the model.
+
+## 2026-11-26 - SCHEMA-RETRY-01: repair a database error before reconfirm
+
+- **Flag.** `DMS_SCHEMA_RETRY` defaults to 0. Off, an explain or execution failure still retries with the typed code only, and the prompt and envelope stay the same. On, the extract loop climbs three rungs inside the existing `AskCallBudget`: a parsed `repair_hint`, the granted schema slice (samples only when `DMS_SCHEMA_CONTEXT` is already on), then `route_hint=escalate`. The cap is not raised.
+- **Not a word rule.** Parsers key off the engine exception class and vendor code (DuckDB, Postgres SQLSTATE, MySQL/MariaDB errno, SQLite, SQL Server). The identifier is kept only when the model's own SQL wrote it. Candidates are granted names ranked by edit distance and the existing trigram score.
+- **Stop.** `definition_mismatch`, `pii`, `def_validate`, and `reserved_param:as_of` do not retry. A spent budget or a third failure reconfirms `schema_repair_exhausted:<kind>`. A 422 on the escalate role reconfirms the same way. DMS does not pick a model. An unknown dialect reconfirms `sql_dialect_unknown`. It is not parsed as the serving engine.
+
+## 2026-11-26 - LATENCY-01: ask stage timings, lean cuts default off
+
+- **Timings.** The ask clock always records stage spans, prompt size, and abandoned calls. `DMS_ASK_TIMINGS` defaults to 0. Off, the envelope has no `timings` key. The snapshot is published in-process for `grade52 --armed`. On, the same snapshot is also written on the envelope. It is not in the vendored OpenAPI pin.
+- **Flag.** `DMS_ASK_LEAN` defaults to 0. Sub-flags `DMS_ASK_LEAN_CANCEL`, `DMS_ASK_LEAN_DEFER`, `DMS_ASK_LEAN_TRIM`, `DMS_ASK_LEAN_SINGLE` follow the master unless set. Cancel closes the HTTP client and POSTs `/v1/insights/cancel` (the companion route, not in the contract). Trim caps the catalog with `rank_texts`. Single holds one model POST unless `DMS_CLOOP_B` voting is on.
+- **Defer.** The second reading stays on the answer path. Defer skips only the reconfirm suggestion model call. SQL and rows are unchanged.
+- **Not a word rule.** Trim ranks chunks. It does not scan the question.
+
+## 2026-11-26 - ONTO-GAPS-01: propose a missing measure, steward confirms it
+
+- **Flag.** `DMS_ONTO_GAP_PROPOSE` defaults to 0 and also needs `DMS_ONTO_PG`. Off, the ask envelope, the prompt, and the served route are unchanged. On, an ask that reconfirms `unknown_measure` or `ungrounded_measure`, or whose SQL aggregate is not a declared measure, is logged. A background drain (or `scripts/onto/propose_gaps.py --since`) asks OpenVault role `ontology` for one measure. The ask does not wait.
+- **Store.** A proposal that parses, names only granted columns, explains, and returns a finite number is stored with `store_proposal` as status `proposed` and `served` false. The same `onto_steward.py approve-version` path approves it. Yes on the reconfirm is not approval. OpenVault 422 records `gap_propose_unavailable` and leaves today's reconfirm in place.
+- **Not a word rule.** The gap is a reason code or a sqlglot aggregate. The model returns structured JSON. Duplicate detection compares the normalized expression tree. After approval, GROUND-DEFS ranks the measure with the existing embedder or BM25.
+
+## 2026-11-26 - GROUND-DEFS-01: governed definitions in the AI prompt
+
+- **Flag.** `DMS_GROUND_DEFS` defaults to 0. Off, the Insights prompt is unchanged. On, the ask's own ontology (the demo ontology only on the demo path) is ranked with the verified-example embedder, or BM25 when that embedder is absent. Top 3 above a score floor go into the question as `governed definitions; use exactly` (name, grain, governed SQL, as_of anchor). Space-scoped verified examples from the `DMS_VQ_RAG` path sit in the same block.
+- **Check.** When a grounded definition has a predicate, generated SQL must use that predicate on the measure's columns. The comparison is the normalized sqlglot tree. A mismatch reconfirms `definition_mismatch` and is not served. Yes re-asks. It does not run the mismatched SQL.
+- **Not in this change.** The token locks in `semantic_retrieve` stay until WORD-RULES-OUT-01 (see PARKING_LOT). `DMS_SCHEMA_CONTEXT` is not added to the armed flag set.
+
 ## 2026-11-21 - DECIMAL-EXACT-01 (#540): a certified figure is computed in exact decimal
 
 - **Ingest.** A CSV or sheet column the sniffer types as a binary float lands as `DECIMAL(38,s)` (s = largest observed scale, at most 18) when every value is a plain decimal (`+5.25`, `.5`, `5.` included). Otherwise it keeps DOUBLE and the receipt says why (`column x kept DOUBLE: ...`). A value DOUBLE cannot read (`0x10`) still quarantines the file.
@@ -35,6 +153,37 @@ Append-only. Never edited, only added to. Newest first.
 - **Masking.** Unchanged from main: masked text is byte-identical to `ebe65cc` on 120000 generated texts. A mask that rewrites a figure is counted, never undone (#318 widen-only). The unmask variant (PR-a in #508) is not on this branch; it needs the founder's yes.
 - **Cost.** A figure whose digits still read as a phone or card after rounding (`234567.8901`, `12.3456789012`, `4111.111111111111`), and Cortex prose that prints the raw float, now abstain instead of serving.
 - **Tests.** `tests/test_fig_fidelity_01.py`, through `POST /v1/chat/ask` and `assert_envelope_valid`. Mutations (unmask re-added, rewrites not counted, E14 demotion off, E14 validator off, cut line off) each turn tests red. No test on main edited, no skip or xfail.
+## 2026-11-13 - CI: the pytest shard gate was made to fail on purpose, and one hole was closed (F-TBD-42)
+
+- **Red test.** A probe test that always fails was pushed to the branch (`252827d`). Its shard concluded `failure`, the other two shards ran to `success`, and `lint-type-test` concluded `failure` (not skipped), printing `protected-paths=success contract-pin=success pytest=failure`.
+- **Hole found.** A probe file with a syntax error showed that `scripts/ci_pytest_shard.sh files` exited 0 and left the file out of its shard: bash drops `-e` inside `$(...)`. `verify` already failed, so `lint-type-test` would have been red, but the shard itself was not. Fixed with `inherit_errexit` (`8810387`). On the probe head (`3a9c7ca`) all three shards and `lint-type-test` concluded `failure`.
+- **Cause in the log.** The shard failed with exit 2 and no reason. The script now prints pytest's collection error and one error line (`37a24f4`).
+- **Probes removed.** `git ls-files tests | grep zz_ci_gate` prints nothing.
+
+## 2026-11-13 - CI: pytest runs as three shards, the 30 minute cap is unchanged (F-TBD-42)
+
+- **Measured.** On four PR heads (#510, #519, #521, #522) pytest was 96 to 97 percent of `lint-type-test`: 22.0 to 26.6 min of a 22.9 to 27.7 min job. Everything else (install, ruff, mypy, import linter, scoring, UI) was 42 to 61 s. The same suite varied by about 4.5 min between runners.
+- **Change.** `.github/workflows/ci.yml` only, plus `scripts/ci_pytest_shard.sh`. pytest moves to a matrix job, `pytest (shard K of 3)`, one pytest process per runner, each under the same 30 minute cap. Each shard takes every third test file from pytest's own collection order. No test, fixture, assertion or product file changed. Nothing is deselected.
+- **Gate.** `lint-type-test` keeps its name. It fails unless `protected-paths`, `contract-pin` and every shard are green, and on every run it checks that the three shards collect exactly the ids `pytest tests/` collects, each once. The check was shown to fail on a dropped file and on a doubled file.
+- **Proof.** At `ebe65cc`: `pytest tests/` collects 3900 ids and the shards collect the same 3900 (1441 + 1231 + 1228). CI on the branch: 3791 passed, 75 skipped, 34 xfailed summed over the shards, the same as the single job. Locally, per test id, the three shards gave the same outcome as one single-process run for 3899 of 3900 ids; the other one, `tests/test_conn_pool_01.py::test_serving_abstain_tickets_follow_the_flag`, is timing-sensitive on the slow local box (it failed in the single run and passed in the shard run) and passes in CI in both layouts.
+- **Timing.** First CI run of the branch: shards 5 min 7 s, 8 min 13 s, 12 min 8 s; `lint-type-test` 1 min 21 s; workflow start to finish 13 min 40 s. One run, so runner variance is not measured for the new layout.
+- **Not done.** No fixture-scope change and no `pytest-xdist`: 49 test files reach the app without their own `DMS_WAREHOUSE_DB` and share the default DuckDB file, so one pytest process per machine still holds. `tests/test_conn_pool_01.py` is about a fifth of pytest time and now sets the longest shard.
+
+## 2026-10-31 - ACT-02 fix 5: a reused entry id is never voided
+
+- **Reused entry id.** When Cortex returns an entry id that already backs an earlier, committed decision (`LedgerEntryReused`), apply and decline no longer append `action.*.void` naming that id (it put "did not commit" on the ledger over a real decision). They answer 409 `ledger_entry_reused` with `reused_entry_id` and `voided: false`, roll back, and append nothing. The entry Cortex really wrote for the refused attempt cannot be named, so it is disclosed as an orphan. Other refusals after the append (`receipt_mismatch`) still void the entry they name. DR-0008 item 4 updated (still Proposed).
+
+## 2026-10-30 - ACT-02 fix 4: a verbatim approval_ref carries no NRIC or card
+
+- **approval_ref.** Since fix 3 keeps the ref verbatim, a ticket-shaped ref that embeds an NRIC (`CHG-900101-14-5678`, `NRIC900101145678`, even after a letter prefix) or a Luhn-valid card number (`REF-4111-1111-1111-1111`) is refused with 400 `approval_ref_invalid` before any write, instead of reaching the immutable ledger as given. Ordinary numeric tickets (`CHG-2026-1030-4417`, `INC-60123456789`) are kept. No new refusal code. DR-0008 item 8 updated (still Proposed).
+
+## 2026-10-30 - ACT-02 fix 3: identifiers are kept verbatim, one actor spelling, a dead record is voided
+
+- **Evidence ids.** The PII masker no longer runs over the evidence keys `audit_id` and `reverts_decision_id` (it rewrote about 3% of UUID4 and 7% of 64-hex ids, so the pinned `evidence_audit_id` pointed at nothing and the proposal could never be applied). They are kept verbatim and shape-checked; a non-id value is refused at propose (400 `evidence_id_invalid`, a new refusal code).
+- **approval_ref.** Validated by shape and kept verbatim instead of PII-masked, so `CHG-2026-1030-4417` and `CHG-2026-1031-9999` stay distinct on the ledger, in the confirmation row and in the decision row. One ASCII ticket token of 3-200 characters with a letter; an email, a spaced narrative, a bare NRIC/phone/card number or a secret is refused (400 `approval_ref_invalid`, a new refusal code) before any write.
+- **Actor.** The configured actor is parsed with `uuid.UUID`; the shipped default is refused in any spelling (hyphenless, braced, `urn:uuid:`), and the canonical form is what the gate, the ledger actor, `created_by`, the confirmation row and the decision row receive. The core `_require_actor` canonicalises the same way.
+- **Record failure.** A non-refusal failure inside `record_decision` after the Cortex append (the database dies) now voids the known entry (`action.*.void`, `reason: record_failed`) and answers 503 `record_failed_after_append` with the entry id, instead of a 500 that left an unvoided `verified: true` entry.
+- **Docs.** DR-0008 updated (still Proposed).
 
 ## 2026-10-30 - ACT-01 fix 2: who approved is bound at apply, evidence is what was pinned
 
@@ -43,6 +192,16 @@ Append-only. Never edited, only added to. Newest first.
 - **Refused record.** Apply and decline hold a savepoint until `record_decision` stores the decision; any refusal rolls it back, so a caller that commits anyway keeps no write, no status flip and no binding.
 - **Masking.** Integers in evidence are masked by their text. A key value that reads as PII or is longer than 200 characters is refused at propose (`key_value_invalid`, a new refusal code). An actor that is not a user id and reads as PII is refused (`ActorRequired`). A reason that masks past 500 characters is refused at propose.
 - **Docs.** DR-0008 items 6-9 updated (still Proposed).
+
+## 2026-10-30 - ACT-02: the route demo has no shared-server default
+
+- **Demo.** `act_02_route_demo.py` no longer defaults to `127.0.0.1:5432`; it refuses (exit 2) unless `ACT02_DEMO_URL` is set, as `act_01_writeback_demo.py` already does. The demo creates, migrates and drops a database and grants cluster-wide roles, so it must name a scratch server.
+
+## 2026-10-30 - ACT-02: carries the ACT-01 receipt fix to the routes
+
+- **Refusals.** `actor_required` (403), `receipt_mismatch` (409, with `field`) and `ledger_entry_reused` (409) are mapped. A receipt refused after the Cortex append appends an `action.apply.void` / `action.decline.void` and rolls the write back.
+- **PII.** The decline's ledger payload carries the masked `approval_ref` and reason, as the receipt does.
+
 ## 2026-10-30 - ACT-01 fix: the receipt is rebuilt from the database, not trusted
 
 - **Receipt.** `record_decision` rebuilds every receipt field from the stored version, its pins and the writeback row the version last wrote, and refuses a caller record that differs (`ReceiptMismatch`). A forged `applied` for a pending version, and a real apply recorded as `declined`, are refused; the real receipt can still be written. The Space is the proposal's own (`space_id`, if passed, must match). One Cortex entry id backs one pointer (`LedgerEntryReused`).
@@ -51,6 +210,15 @@ Append-only. Never edited, only added to. Newest first.
 - **Identity.** Apply and decline refuse a blank, `None` or shipped-default actor (`ActorRequired`); `action_decisions.actor_id` records it. DR-0004 Option A, no dual-control claim.
 - **Inputs.** Decline checks `approval_ref` before it flips the status. `approval_ref` needs 3 visible characters (code and table CHECK). Values are ASCII digits, at most 40 significant digits. The VerifyFailed branch is tested. The demo needs an explicit `ACT01_DEMO_URL`.
 - **Not fixed.** The advisory-lock unlock on an aborted transaction (pre-existing `advisory_lock.py`, shared with main's confirm) is left for its own ticket.
+
+## 2026-10-30 - ACT-02: governed action routes behind DMS_ACTIONS
+
+- **Flag.** `DMS_ACTIONS` defaults 0; only `1` is on. Off, nothing under `/v1/amend/actions` matches: every method and body (malformed JSON included) gets main's 404 bytes, and `/openapi.json` hashes the same as origin/main `58fcaa5` (`scripts/verify/act_flag_off_parity.py`). No route is in the schema with the flag on either. `app.py`, `settings.py`, `chat.py` and MCP `TOOLS` are untouched.
+- **Routes.** types, proposals (list, propose, apply, decline), objects, decisions (list, get, revert). Each calls `compliance_gate` (`action.*`) in its own body; mutations then require the steward grant and refuse the shipped default actor. List GETs require `space_id`.
+- **Proof.** Propose refuses a key that does not match the source encoding (`BETA` -> 422 with candidate `SKU-BETA`) and evidence that is not a validated, executed, row-returning answer that read `inventory` (E9). Apply checks the ledger chain first, then in one transaction re-checks evidence, writes, re-reads, appends `action.apply` to Cortex and stores the pointer. A failed append writes nothing. A failed commit after the append makes a best-effort `action.apply.void` and answers 503 `commit_failed_after_append`. The receipt says `separation_of_duties.proven: false` and `source_system_changed: false`. Revert is a new proposal that still needs an apply.
+- **Held files.** `wiring.py` (+1 function at the end) and `dms_executor/__init__.py` (+1 import line, needed so the import-linter exemption covers the new resolver).
+- **Decision.** DR-0008 gains an ACT-02 addendum and is still Proposed; it needs the founder stamp.
+- **Tests.** At `de09cd0`, Postgres 16 (scratch container), one file per process: `tests/test_act_02_flag_off.py` 10 passed, `tests/control_plane/test_act_02_routes.py` 11 passed, every other `tests/control_plane` file and every `tests/invariants` file passed, `ruff`, `mypy` (5 CI packages) and `lint-imports` clean. `act_02_route_demo.py` printed `ACT-02 PROOF OK @de09cd0d` against an in-process fake ledger (live Cortex not exercised). The full suite was not run. Not PASS.
 
 ## 2026-10-29 - ACT-01: governed action core behind DMS_ACTIONS
 
@@ -188,6 +356,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Agreement.** Normalized identical SQL plus equal rows counts, when the prompts differ. The same prompt does not count.
 - **Split.** Disagreement is a reconfirm: why, closest question, and Yes. It does not serve the number and it does not ledger it.
 - **Measure.** Held-out n=348 was not run here. No BIRD databases and no model route. `scripts/score_sql_vote.py --self-check` is a four-row stub. Not PASS.
+
+## 2026-10-18 - PAYLOAD-MASK-FLAG-01: AskPayloadColumn.masked (Refs dms#456)
+
+- **Flag.** `stamp_ask_payload` sets `masked` on every column of a `dms_payload`. The value is a bool. Masked, PII, unread, and unknown columns are true. False only for a column DMS has positively cleared (boolean name that is not PII; numeric or date name the mask treats as non-personal, with values read and not PII; text only with an ontology `non_personal` tag and values that are not PII).
+- **Wire.** `CortexClient.ask` keeps a bool and turns a missing flag, a string, or a number into true. Sample keys are dropped. An ask with no payload is the same body as before.
+- **Older Cortex.** Contract 1.7 `AskPayloadColumn` has no `masked` field and ignores unknown keys, so the bool does not 422. `/health` does not advertise the contract version, so the field is sent. It pairs with Cortex#386. Not PASS.
 
 ## 2026-10-05 - DEMO-HOST-01: Studio origin is studio.netie.ai (Refs dms#163)
 

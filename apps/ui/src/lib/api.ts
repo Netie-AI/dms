@@ -1,5 +1,6 @@
 /** DMS API client — browser talks only to DMS (proxied /api). Never Cortex. */
 
+import { ontologyReadPath } from "./ontologyRead";
 import type {
   AdminOverview,
   AnswerEnvelope,
@@ -149,23 +150,40 @@ export type AskPayload = {
   /** Tables the user grounded the question in. Narrows the session manifest,
    *  so the scope is enforced by the engine, not suggested to the model. */
   grounded_tables?: string[] | null;
+  /** Set only when the user picked a clarify reading. Omitted otherwise. */
+  clarify_id?: string | null;
+  reading_id?: string | null;
 };
+
+/** Ask JSON. clarify_id and reading_id are omitted unless both were picked,
+ *  so a normal ask stays the same bytes. */
+export function askRequestBody(payload: AskPayload): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    question: payload.question,
+    space_id: payload.space_id ?? undefined,
+    session_id: payload.session_id ?? undefined,
+    grounded_tables: payload.grounded_tables?.length ? payload.grounded_tables : undefined,
+  };
+  const clarifyId = payload.clarify_id?.trim() ?? "";
+  const readingId = payload.reading_id?.trim() ?? "";
+  if (clarifyId && readingId) {
+    body.clarify_id = clarifyId;
+    body.reading_id = readingId;
+  }
+  return body;
+}
 
 export async function postAsk(
   payload: AskPayload,
   signal?: AbortSignal,
+  askId?: string,
 ): Promise<AnswerEnvelope> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (askId) headers["X-Dms-Ask-Id"] = askId;
   const res = await fetch("/api/v1/chat/ask", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      question: payload.question,
-      space_id: payload.space_id ?? undefined,
-      session_id: payload.session_id ?? undefined,
-      grounded_tables: payload.grounded_tables?.length
-        ? payload.grounded_tables
-        : undefined,
-    }),
+    headers,
+    body: JSON.stringify(askRequestBody(payload)),
     signal,
   });
   if (!res.ok) {
@@ -192,6 +210,65 @@ export async function postAskConfirm(
   return (await res.json()) as AnswerEnvelope;
 }
 
+/** One tap on a clarify reading. The server runs that reading_id. */
+export function postClarifyPick(
+  body: {
+    question: string;
+    space_id?: string | null;
+    session_id?: string | null;
+    clarify_id: string;
+    reading_id: string;
+  },
+  signal?: AbortSignal,
+  askId?: string,
+): Promise<AnswerEnvelope> {
+  return postAsk(
+    {
+      question: body.question,
+      space_id: body.space_id,
+      session_id: body.session_id,
+      clarify_id: body.clarify_id,
+      reading_id: body.reading_id,
+    },
+    signal,
+    askId,
+  );
+}
+
+export type AccessRequestResult = { ok: true } | { ok: false; missing: boolean };
+
+/** POST /v1/spaces/{id}/access-requests. 404/405/501 means the route is not there. */
+export async function postAccessRequest(
+  spaceId: string,
+  body: { table: string },
+  signal?: AbortSignal,
+): Promise<AccessRequestResult> {
+  const id = spaceId.trim();
+  const table = body.table.trim();
+  if (!id || !table) return { ok: false, missing: false };
+  const res = await fetch(`/api/v1/spaces/${encodeURIComponent(id)}/access-requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ table }),
+    signal,
+  });
+  if (res.status === 404 || res.status === 405 || res.status === 501) {
+    return { ok: false, missing: true };
+  }
+  if (!res.ok) return { ok: false, missing: false };
+  return { ok: true };
+}
+
+/** What the access card does after the POST. A missing route hides the button. */
+export function nextAccessRequestState(result: AccessRequestResult): {
+  routeMissing: boolean;
+  note: string | null;
+} {
+  if (!result.ok && result.missing) return { routeMissing: true, note: null };
+  if (result.ok) return { routeMissing: false, note: "Request sent." };
+  return { routeMissing: false, note: "The access request was refused." };
+}
+
 /* ── Generic JSON read ─────────────────────────────────────────────────────
  * Pages that read reference data render their own error state, so a failed
  * fetch throws with a message worth printing rather than resolving to null.
@@ -212,20 +289,32 @@ function section<K extends string, T>(body: SectionBody<K, T>, key: K): T[] {
   return (body[key] as T[] | undefined) ?? [];
 }
 
-/** One page, one round of fetches — the ontology is small and always shown whole. */
-export async function fetchOntology(signal?: AbortSignal): Promise<OntologyBundle> {
+/** One page, one round of fetches. The active Space id is on every request. */
+export async function fetchOntology(
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<OntologyBundle> {
   const [summary, objects, links, actions, functions, metrics, graph] = await Promise.all([
-    getJson<OntologySummary>("/v1/ontology", signal),
-    getJson<SectionBody<"object_types", OntologyObject>>("/v1/ontology/objects", signal),
-    getJson<SectionBody<"link_types", OntologyLink>>("/v1/ontology/links", signal),
-    getJson<SectionBody<"action_types", OntologyAction>>("/v1/ontology/actions", signal),
-    getJson<SectionBody<"functions", OntologyFunction>>("/v1/ontology/functions", signal),
-    getJson<SectionBody<"metrics", OntologyMetric>>("/v1/ontology/metrics", signal),
+    getJson<OntologySummary>(ontologyReadPath("", spaceId), signal),
+    getJson<SectionBody<"object_types", OntologyObject>>(
+      ontologyReadPath("objects", spaceId),
+      signal,
+    ),
+    getJson<SectionBody<"link_types", OntologyLink>>(ontologyReadPath("links", spaceId), signal),
+    getJson<SectionBody<"action_types", OntologyAction>>(
+      ontologyReadPath("actions", spaceId),
+      signal,
+    ),
+    getJson<SectionBody<"functions", OntologyFunction>>(
+      ontologyReadPath("functions", spaceId),
+      signal,
+    ),
+    getJson<SectionBody<"metrics", OntologyMetric>>(ontologyReadPath("metrics", spaceId), signal),
     getJson<{
       ok: boolean;
       nodes?: OntologyGraphNode[];
       edges?: OntologyGraphEdge[];
-    }>("/v1/ontology/graph", signal),
+    }>(ontologyReadPath("graph", spaceId), signal),
   ]);
   return {
     summary,

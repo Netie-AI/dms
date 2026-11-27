@@ -1,6 +1,11 @@
-import { useEffect, useState } from "react";
-import { describeApiError, postAsk } from "@/lib/api";
-import type { AnswerEnvelope } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import { AccessCard } from "@/components/AccessCard";
+import { useApp } from "@/context/AppContext";
+import { describeApiError, postAsk, postClarifyPick } from "@/lib/api";
+import type { AnswerEnvelope, ClarifyReading, GrantedSpace } from "@/lib/types";
+import { AskStages, useAskStages } from "./AskStages";
+import { ClarifyCard, clarifyPickBody } from "./ClarifyCard";
+import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "./abstainReason";
 
 /** Same sentence as ``dms_core.studio_chat_turn.NOT_PROVIDED``. */
 export const NOT_PROVIDED = "not provided by Cortex";
@@ -70,23 +75,71 @@ function joinLabel(row: JoinItem): string {
 }
 
 export function ChatTurn({ spaceId }: { spaceId: string | null }) {
+  const { setActiveSpaceId, spaces, spacesFromApi } = useApp();
   const [draft, setDraft] = useState("");
   const [edit, setEdit] = useState("");
   const [reply, setReply] = useState("");
   const [turn, setTurn] = useState<StudioTurn | null>(null);
   const [plannedQuestion, setPlannedQuestion] = useState("");
   const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<AnswerEnvelope | null>(null);
+  const [askId, setAskId] = useState<string | null>(null);
+  const [cardError, setCardError] = useState<string | null>(null);
+  const stages = useAskStages(running ? askId : null);
+  const askAbort = useRef<AbortController | null>(null);
+  const reask = useRef<string | null>(null);
+  const askInSpaceRef = useRef<(question: string, nextSpace: string | null) => Promise<void>>(
+    async () => {},
+  );
+
+  const askInSpace = async (question: string, nextSpace: string | null) => {
+    const asked = question.trim();
+    if (!asked) return;
+    setBusy(true);
+    setErr(null);
+    setCardError(null);
+    setResult(null);
+    const id = crypto.randomUUID();
+    const ctrl = new AbortController();
+    askAbort.current = ctrl;
+    setAskId(id);
+    setRunning(true);
+    try {
+      const env = await postAsk({ question: asked, space_id: nextSpace }, ctrl.signal, id);
+      setResult(env);
+    } catch (e) {
+      if (askAbort.current?.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+        setErr("Cancelled.");
+      } else {
+        setErr("The question did not run.");
+      }
+    } finally {
+      askAbort.current = null;
+      setRunning(false);
+      setBusy(false);
+    }
+  };
+  askInSpaceRef.current = askInSpace;
 
   useEffect(() => {
+    const question = reask.current;
+    reask.current = null;
+    if (question) {
+      void askInSpaceRef.current(question, spaceId);
+      return;
+    }
     setDraft("");
     setEdit("");
     setReply("");
     setTurn(null);
     setPlannedQuestion("");
     setErr(null);
+    setCardError(null);
     setResult(null);
+    setAskId(null);
+    setRunning(false);
   }, [spaceId]);
 
   const dirty = turn !== null && edit.trim() !== plannedQuestion.trim();
@@ -124,14 +177,29 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
         setErr("Confirm did not authorize a run.");
         return;
       }
-      const env = await postAsk({
-        question: gate.question,
-        space_id: spaceId,
-      });
+      const id = crypto.randomUUID();
+      const ctrl = new AbortController();
+      askAbort.current = ctrl;
+      setAskId(id);
+      setRunning(true);
+      const env = await postAsk(
+        {
+          question: gate.question,
+          space_id: spaceId,
+        },
+        ctrl.signal,
+        id,
+      );
       setResult(env);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "confirm failed");
+      if (askAbort.current?.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+        setErr("Cancelled.");
+      } else {
+        setErr(e instanceof Error ? e.message : "confirm failed");
+      }
     } finally {
+      askAbort.current = null;
+      setRunning(false);
       setBusy(false);
     }
   };
@@ -140,6 +208,38 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
     result && Object.prototype.hasOwnProperty.call(result, "suggestions")
       ? result.suggestions ?? []
       : null;
+  const clarify = result ? readClarify(result) : null;
+  const access = result ? readAccess(result) : null;
+
+  async function pickReading(reading: ClarifyReading) {
+    if (!clarify || busy) return;
+    setBusy(true);
+    setCardError(null);
+    try {
+      const env = await postClarifyPick(
+        clarifyPickBody(clarify, reading, { question: plannedQuestion, space_id: spaceId }),
+      );
+      setResult(env);
+    } catch {
+      setCardError("The reading did not run.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const memberIds = serverSpaceIds(spaces, spacesFromApi);
+
+  function switchSpace(space: GrantedSpace) {
+    if (!switchableSpaces([space], memberIds).length) return;
+    const asked = (plannedQuestion || edit || draft).trim();
+    if (!asked) return;
+    if (space.id === spaceId) {
+      void askInSpace(asked, space.id);
+      return;
+    }
+    reask.current = asked;
+    setActiveSpaceId(space.id);
+  }
 
   const tables = turn?.ontology.tables;
   const joins = turn?.ontology.joins;
@@ -154,7 +254,7 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
         Studio ask
       </p>
       <p className="mt-2 max-w-3xl text-sm text-[var(--color-ink-muted)]">
-        Plan first. SQL runs only after confirm. An edit re-plans. Not COMPLETE.
+        Plan first. SQL runs only after you confirm. An edit makes a new plan.
       </p>
       <label className="mt-3 block text-sm text-[var(--color-ink)]" htmlFor="studio-chat-question">
         Question
@@ -284,9 +384,23 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
           </div>
         </div>
       )}
+      {running || stages.length > 0 ? (
+        <AskStages stages={stages} onCancel={running ? () => askAbort.current?.abort() : undefined} />
+      ) : null}
       {result && (
         <div className="mt-4" data-testid="studio-chat-result">
           <p className="text-sm text-[var(--color-ink)]">{result.text}</p>
+          {clarify ? (
+            <ClarifyCard block={clarify} busy={busy} error={cardError} onPick={pickReading} />
+          ) : null}
+          {access ? (
+            <AccessCard
+              access={access}
+              busy={busy}
+              serverSpaceIds={memberIds}
+              onSwitch={switchSpace}
+            />
+          ) : null}
           <div className="mt-2" data-testid="studio-chat-suggestions">
             <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
               Follow-up questions

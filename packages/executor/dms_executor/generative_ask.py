@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -27,6 +28,13 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import sqlglot
+from cortex_client.ask_clock import (
+    attach_timings,
+    ensure_clock,
+    note_prompt_ctx,
+    release_clock,
+    span,
+)
 from cortex_client.compute import (
     INSIGHTS_FAIL_AI_ERROR,
     INSIGHTS_FAIL_UNAUTHORIZED,
@@ -44,6 +52,8 @@ from cortex_client.compute import (
     insights_was_reached,
     ontology_ranked_lane_enabled,
     query_plan_from_insights_ranking,
+    recorded_model_calls,
+    schema_retry_enabled,
     typed_query_plan,
 )
 from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
@@ -54,6 +64,7 @@ from cortex_client.qualifiers import (
     rank_window_shape_reason,
     unhonored_qualifier_reason,
 )
+from dms_core.ask_stream import note_rungs, note_stage
 from dms_core.pii import mask_unknown_keys
 from sqlglot import exp
 
@@ -88,7 +99,15 @@ from dms_executor.grant_struct import (
     sqlglot_dialect,
     structural_grant_stop,
 )
+from dms_executor.ground_defs import (
+    GroundedDef,
+    build_grounding,
+    ground_defs_enabled,
+    mismatch_envelope,
+)
+from dms_executor.keyword_routes import vague_question
 from dms_executor.manifest import OpenVaultTokenError
+from dms_executor.measure_link import no_word_rules_enabled, reconfirm_for_reason
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -166,10 +185,6 @@ from dms_executor.verified_queries import (
 )
 
 _KNOWN = frozenset(DEMO_TABLES)
-_UNSURE_ASK = re.compile(
-    r"\b(worry about|is this good|just give me)\b",
-    re.I,
-)
 PLAN_SOURCE_ONTOLOGY = "ontology_plan"
 PLAN_SOURCE_BIND = "bind_plan"
 PLAN_SOURCE_OTHER = "other"
@@ -772,30 +787,47 @@ def validate_compiled_sql(
     file does not know stays a grant miss, and the contract ask is what binds
     a qualifier against the catalog.
     """
-    if sql_has_reserved_as_of(sql):
-        return RESERVED_PARAM_AS_OF
-    cite = dialect is None and warehouse is not None and Path(warehouse).is_file()
-    read = dialect if dialect is not None else (SERVING_DIALECT if cite else None)
-    gap = serve_gap(
-        sql, grantable=grantable, dialect=read, cite_missing=cite
-    )
-    if gap:
-        return gap
-    if warehouse is None or not Path(warehouse).is_file():
-        return "warehouse_missing"
-    # EXPLAIN runs on the pooled serving cursor (read-only, external access
-    # off). Refuse anything that is not one SELECT before EXPLAIN runs.
-    con = connect_serving(Path(warehouse))
+    note_stage("validate_explain", "started")
     try:
-        gate = _refusal_before_explain(con, sql)
-        if gate:
-            return gate
-        con.execute(f"EXPLAIN {sql}")
-    except Exception as exc:  # noqa: BLE001
-        return f"explain:{type(exc).__name__}"
+        return _validate_compiled_sql(
+            sql, grantable=grantable, warehouse=warehouse, dialect=dialect
+        )
     finally:
-        con.close()
-    return None
+        note_stage("validate_explain", "done")
+
+
+def _validate_compiled_sql(
+    sql: str,
+    *,
+    grantable: set[str],
+    warehouse: Path | None,
+    dialect: str | None = None,
+) -> str | None:
+    with span("validate_explain"):
+        if sql_has_reserved_as_of(sql):
+            return RESERVED_PARAM_AS_OF
+        cite = dialect is None and warehouse is not None and Path(warehouse).is_file()
+        read = dialect if dialect is not None else (SERVING_DIALECT if cite else None)
+        gap = serve_gap(
+            sql, grantable=grantable, dialect=read, cite_missing=cite
+        )
+        if gap:
+            return gap
+        if warehouse is None or not Path(warehouse).is_file():
+            return "warehouse_missing"
+        # EXPLAIN runs on the pooled serving cursor (read-only, external access
+        # off). Refuse anything that is not one SELECT before EXPLAIN runs.
+        con = connect_serving(Path(warehouse))
+        try:
+            gate = _refusal_before_explain(con, sql)
+            if gate:
+                return gate
+            con.execute(f"EXPLAIN {sql}")
+        except Exception as exc:  # noqa: BLE001
+            return f"explain:{type(exc).__name__}"
+        finally:
+            con.close()
+        return None
 
 
 REASON_UNTYPED_NUMERIC = "untyped_numeric"
@@ -943,10 +975,47 @@ def _abstain(
     retries: int = 0,
     stage: str = "generative",
     ticket_reason: str | None = None,
+    named: str | None = None,
 ) -> dict[str, Any]:
+    from dms_executor.ask_ladder import ask_ladder_enabled, current_climb
+
+    session = current_climb()
+    if (
+        session is not None
+        and not session.climbing
+        and stage in {"generative", "ai_call"}
+    ):
+        served = session.on_abstain(reason, sql, stage)
+        if isinstance(served, dict) and served.get("abstained") is not True:
+            return served
+        code = session.exhausted_reason(reason)
+        session.finalizing = True
+        session.climbing = True
+        try:
+            return _abstain(
+                question,
+                code,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=(*notes, *session.notes()),
+                sql=sql,
+                retries=retries,
+                stage=stage,
+                ticket_reason=code,
+                named=code,
+            )
+        finally:
+            session.climbing = False
+            session.finalizing = False
+    log_ticket = not (
+        session is not None and session.climbing and not session.finalizing
+    )
     env = build_abstain(
         reason=reason,
         ticket_reason=ticket_reason,
+        abstain_reason=named,
+        log_ticket=log_ticket,
         question=question,
         sql=sql,
         retries=retries,
@@ -962,6 +1031,25 @@ def _abstain(
         ask_mode="live",
         route="generated",
     )
+    if named and log_ticket and ask_ladder_enabled() and not cloop_b_enabled():
+        try:
+            from dms_executor.pipeline_failure import log_pipeline_failure_ticket
+
+            ticket_id = log_pipeline_failure_ticket(
+                reason=ticket_reason or named,
+                question=question,
+                sql=sql,
+                retries=retries,
+                stage=stage,
+                ask_id=str(env.get("answer_id") or ""),
+            )
+            if isinstance(ticket_id, str) and ticket_id:
+                env["ticket_id"] = ticket_id
+        except Exception:
+            pass
+    note_stage(stage, "done")
+    if isinstance(env.get("reconfirm"), dict):
+        note_stage("reconfirm", "done")
     assert_envelope_valid(env)
     # build_abstain already wrote abstain:<stage>. Successes stamp their own.
     return with_plan_source(env, plan_source)
@@ -1145,7 +1233,8 @@ def _submit_validated(
             notes=notes,
         )
     try:
-        result = submit(sql)
+        with span("submit_execute"):
+            result = submit(sql)
     except OpenVaultTokenError:
         raise
     except Exception:  # noqa: BLE001
@@ -1158,6 +1247,20 @@ def _submit_validated(
             question, "submit_had_no_rows",
             space_id=space_id, session_id=session_id, plan_source=plan_source,
         )
+    if not rows_from_submit_result(result):
+        from dms_executor.ask_ladder import current_climb
+
+        # Empty is not a certified figure. The ladder feeds it back. Flag off
+        # (no session) still returns the zero-row envelope below.
+        if current_climb() is not None:
+            return _abstain(
+                question,
+                EMPTY_UNVERIFIED,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
     if keep_gt is not None:
         kept = _rows_gt(rows_from_submit_result(result), str(measure or ""), keep_gt)
         if not kept:
@@ -1262,6 +1365,37 @@ def path_miss_envelope(
     )
 
 
+def _rules_off() -> bool:
+    """Digit 1 only. The ontology compiler stays when the flag is off."""
+    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
+def _rules_off_hold(
+    question: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """No model SQL, and the question-word compiler must not serve.
+
+    The stub has nothing to execute for the model. Reconfirm, do not submit.
+    """
+    env = _abstain(
+        question,
+        "rules_off",
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_ONTOLOGY,
+    )
+    env["reconfirm"] = {
+        "why": "rules_off",
+        "reason_code": "rules_off",
+        "suggested_question": question,
+        "closest_question": question,
+    }
+    return env
+
+
 def _try_multi_grain_envelope(
     q: str,
     *,
@@ -1274,12 +1408,20 @@ def _try_multi_grain_envelope(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     dialect: str | None = None,
-) -> dict[str, Any] | None:
+    space_onto: Ontology | None = None,
+    declared: Ontology | None = None,
+    declared_violations: Sequence[Violation] | None = None,
+    grounded: Sequence[GroundedDef] | None = None,
+    embedder: Any = None,
+) -> dict[str, Any] | _CompileRefused | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
     Runs before one-grain GEN-01 plan/SQL. bind_plan is not this path.
     None means this ask is not a multi-grain compile (caller continues).
+    ``DMS_RULES_OFF`` does not compile this lane.
     """
+    if _rules_off():
+        return None
     lock = _multi_grain_measure(q, onto, payload)
     multi = try_compile_multi_grain(
         onto,
@@ -1343,15 +1485,46 @@ def _try_multi_grain_envelope(
         )
     from dms_executor.ai_first import ai_first_enabled, compile_example, note_example
 
-    ungrounded = _ungrounded_measure(q, multi.measure, onto)
+    ungrounded = _ungrounded_measure(q, multi.measure, onto, embedder=embedder)
     if ungrounded:
         # Do not serve it, and do not hand it to the model as an example.
         if ai_first_enabled():
             return None
+        held = reconfirm_for_reason(
+            ungrounded, question=q, space_id=space_id, session_id=session_id
+        )
+        if held is not None:
+            return held
         return _abstain(
             q, ungrounded,
             space_id=space_id, session_id=session_id, plan_source=source,
         )
+    blocked = ai_lane_sql_check(
+        multi.sql,
+        question=q,
+        grantable=allowed,
+        warehouse=lake,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=list(declared_violations or []),
+        grounded=grounded,
+    )
+    if blocked:
+        # Direct refusals stay abstains. Any other checker miss is not a
+        # serve: the caller hands the question to the AI ladder.
+        if _checker_is_direct(blocked):
+            return _abstain(
+                q,
+                blocked,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=source,
+                sql=multi.sql,
+            )
+        return _CompileRefused(reason=blocked, sql=multi.sql)
     if ai_first_enabled():
         note_example(
             compile_example(
@@ -1388,7 +1561,11 @@ def rank_window_ask(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     dialect: str | None = None,
-) -> dict[str, Any] | None:
+    space_onto: Ontology | None = None,
+    declared: Ontology | None = None,
+    declared_violations: Sequence[Violation] | None = None,
+    grounded: Sequence[GroundedDef] | None = None,
+) -> dict[str, Any] | _CompileRefused | None:
     """RANK-WINDOW-01: "excluding top 3, next 5 SKUs" without a generate call.
 
     Grammar parse + verified ontology compile, then the shared Cortex submit
@@ -1441,6 +1618,24 @@ def rank_window_ask(
         f"Ranks {win.label} of {noun}; ranks 1-{win.offset} are excluded. "
         f"{reading[:1].upper()}{reading[1:]}."
     )
+    blocked = ai_lane_sql_check(
+        compiled.sql,
+        question=q,
+        grantable=allowed,
+        warehouse=lake,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=list(declared_violations or []),
+        grounded=grounded,
+    )
+    if blocked:
+        if _checker_is_direct(blocked):
+            return _no(blocked)
+        # Not a serve. The caller continues into the AI pipeline.
+        return _CompileRefused(reason=blocked, sql=compiled.sql)
     from dms_executor.ai_first import ai_first_enabled, compile_example, note_example
 
     if ai_first_enabled():
@@ -1468,17 +1663,39 @@ def rank_window_ask(
     )
 
 
-def _ungrounded_measure(question: str, measure: str | None, onto: Ontology | None) -> str | None:
+def _ungrounded_measure(
+    question: str,
+    measure: str | None,
+    onto: Ontology | None,
+    *,
+    embedder: Any = None,
+) -> str | None:
     """Gap when a compile would serve a measure the question does not name.
 
     None when there is no measure to judge, or the question grounds it in
     the ontology or the columns the measure expression reads. The caller
     abstains. Reconfirm offers Yes. This is not a phrase list.
+
+    ``DMS_NO_WORD_RULES`` on: only the unique ranked measure is grounded.
+    A tie, a score under the floor, or a different measure reconfirms.
     """
     name = str(measure or "").strip()
     # A name the ontology does not declare is unknown_measure, owned by compile.
     if not name or onto is None or name not in onto.measures:
         return None
+    if no_word_rules_enabled():
+        from dms_executor.measure_link import (
+            REASON_MISMATCH,
+            rank_measure_link,
+        )
+
+        link = rank_measure_link(question, onto, embedder=embedder)
+        if link.reason_code:
+            return link.reason_code
+        if link.name and link.name != name:
+            return REASON_MISMATCH
+        if link.name == name:
+            return None
     if question_grounds_measure(question, name, onto):
         return None
     return f"ungrounded_measure:{name}"
@@ -1535,6 +1752,127 @@ def _space_insights_body(
     return out
 
 
+@dataclass(frozen=True)
+class _CompileRefused:
+    """Compile SQL failed the AI-lane checker. Not an envelope and not a serve."""
+
+    reason: str
+    sql: str
+
+
+_DIRECT_CHECK_HEADS = frozenset(
+    {
+        "multi_statement",
+        "statement_not_allowed",
+        "sql_not_analyzable",
+        "hostile_sql",
+        "ungranted",
+        "sql_relation_not_granted",
+        "pii",
+        "reserved_param",
+    }
+)
+
+
+def _checker_is_direct(reason: str) -> bool:
+    """Ungranted, hostile, and non-SELECT stay abstains. Everything else can climb."""
+    head = str(reason or "").split(":", 1)[0]
+    return head in _DIRECT_CHECK_HEADS or str(reason or "").startswith("hostile_sql")
+
+
+def ai_lane_sql_check(
+    sql: str,
+    *,
+    question: str,
+    grantable: set[str],
+    warehouse: Path | None,
+    dialect: str | None,
+    space_id: str | None,
+    session_id: str | None,
+    space_onto: Ontology | None,
+    declared: Ontology | None,
+    declared_violations: Sequence[Violation],
+    grounded: Sequence[GroundedDef] | None = None,
+    held: dict[str, Any] | None = None,
+) -> str | None:
+    """The extract loop's checker. Compile serves call this before submit.
+
+    None means the SQL may be served. A reason means it must not. The
+    caller does not add a word list: every branch here already ran on
+    model SQL. ``held`` keeps a def_validate or definition envelope the
+    loop already returns instead of a bare reason.
+    """
+    box = held if held is not None else {}
+    if (
+        os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
+        and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+    ):
+        from dms_executor.onto_gap import ask_ontology, undeclared_aggregate_reason
+
+        undeclared = undeclared_aggregate_reason(sql, ask_ontology())
+        if undeclared:
+            return undeclared
+    from dms_executor.def_validate import validate_generated_sql
+
+    gated = validate_generated_sql(
+        sql,
+        grantable=grantable,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+    )
+    if gated is not None:
+        box["provenance"] = gated.provenance
+        if gated.outcome != "pass":
+            if gated.outcome == "reconfirm" and isinstance(gated.envelope, dict):
+                from dms_executor.reconfirm import park_def_validate_hold
+
+                park_def_validate_hold(gated.envelope, sql=sql, grantable=grantable)
+            box["env"] = gated.envelope
+            return gated.reason
+        box.pop("env", None)
+    if dialect is not None and is_multi_statement(sql, dialect):
+        return "multi_statement"
+    if space_onto is not None:
+        # ONTO-DERIVE-01: the Space join rule is the named refusal, and it
+        # runs before EXPLAIN so a grant or syntax miss cannot hide it.
+        try:
+            cols = relation_columns(space_onto, warehouse, sorted(grantable))
+        except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
+            return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
+        join_why = unverified_join_reason(
+            sql, space_onto, declared_violations, columns_of=cols
+        )
+        if join_why:
+            return join_why
+    why = validate_compiled_sql(
+        sql, grantable=grantable, warehouse=warehouse, dialect=dialect
+    )
+    if why and why.startswith("explain:"):
+        code = _explain_error_code(sql, warehouse)
+        if code:
+            why = f"explain:{code}"
+    if why:
+        return why
+    if declared is not None:
+        broken = violations_cited_by_sql(sql, declared, declared_violations)
+        if broken:
+            return violation_reason(broken)
+    grounded_defs = list(grounded or [])
+    if grounded_defs:
+        blocked = mismatch_envelope(
+            sql,
+            grounded_defs,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if blocked is not None:
+            box["env"] = blocked
+            return "definition_mismatch"
+    return None
+
+
 def _run_extract_loop(
     *,
     question: str,
@@ -1553,10 +1891,12 @@ def _run_extract_loop(
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
     budget: AskCallBudget,
+    grounded: Sequence[GroundedDef] | None = None,
 ) -> dict[str, Any]:
     """Read-only extract loop. Empty rows do not retry. Ranking does not serve."""
 
     held: dict[str, Any] = {}
+    grounded_defs = list(grounded or [])
 
     def model_sql(body: dict[str, Any] | None) -> str | None:
         if not isinstance(body, dict):
@@ -1564,56 +1904,20 @@ def _run_extract_loop(
         return query_sql_from_payload(body) or insights_query_sql(body)
 
     def check(sql: str) -> str | None:
-        from dms_executor.def_validate import validate_generated_sql
-
-        gated = validate_generated_sql(
+        return ai_lane_sql_check(
             sql,
-            grantable=grantable,
             question=question,
+            grantable=grantable,
+            warehouse=warehouse,
+            dialect=dialect,
             space_id=space_id,
             session_id=session_id,
+            space_onto=space_onto,
+            declared=declared,
+            declared_violations=declared_violations,
+            grounded=grounded_defs,
+            held=held,
         )
-        if gated is not None:
-            held["provenance"] = gated.provenance
-            if gated.outcome != "pass":
-                if gated.outcome == "reconfirm" and isinstance(gated.envelope, dict):
-                    from dms_executor.reconfirm import park_def_validate_hold
-
-                    park_def_validate_hold(
-                        gated.envelope, sql=sql, grantable=grantable
-                    )
-                held["env"] = gated.envelope
-                return gated.reason
-            held.pop("env", None)
-        if is_multi_statement(sql, dialect):
-            return "multi_statement"
-        if space_onto is not None:
-            # ONTO-DERIVE-01: the Space join rule is the named refusal, and it
-            # runs before EXPLAIN so a grant or syntax miss cannot hide it.
-            try:
-                cols = relation_columns(space_onto, warehouse, sorted(grantable))
-            except Exception:  # noqa: BLE001 - a lake we cannot read proves no join
-                return f"{REASON_UNVERIFIED_JOIN}:check_unavailable"
-            join_why = unverified_join_reason(
-                sql, space_onto, declared_violations, columns_of=cols
-            )
-            if join_why:
-                return join_why
-        why = validate_compiled_sql(
-            sql, grantable=grantable, warehouse=warehouse, dialect=dialect
-        )
-        if why and why.startswith("explain:"):
-            # A typed code reaches the model, never the database message.
-            code = _explain_error_code(sql, warehouse)
-            if code:
-                why = f"explain:{code}"
-        if why:
-            return why
-        if declared is not None:
-            broken = violations_cited_by_sql(sql, declared, declared_violations)
-            if broken:
-                return violation_reason(broken)
-        return None
 
     def vote_rows(sql: str, _attempts: list[dict[str, Any]]) -> dict[str, Any]:
         return _vote_rows(
@@ -1680,6 +1984,16 @@ def _run_extract_loop(
                 stage="extract_loop",
                 ticket_reason=ticket_reason,
             )
+            if (
+                str(reason).startswith("schema_repair_exhausted:")
+                or reason == "sql_dialect_unknown"
+            ):
+                env["reconfirm"] = {
+                    "reason_code": str(reason),
+                    "why": str(reason),
+                    "closest_question": "",
+                }
+                note_stage("reconfirm", "done")
         prov = held.get("provenance")
         if isinstance(prov, dict) and isinstance(env, dict):
             env["ontology_provenance"] = dict(prov)
@@ -1719,6 +2033,17 @@ def _run_extract_loop(
     # Rows only. The customer submit waits until the second reading agrees,
     # so a split does not ledger a number the envelope does not serve.
     direct = reading_prompt(question, reading=1)
+    schema_ladder = None
+    if schema_retry_enabled():
+        from dms_executor.schema_retry import SchemaLadder
+
+        schema_ladder = SchemaLadder(
+            grantable=set(grantable),
+            warehouse=warehouse,
+            dialect=dialect,
+            ontology=space_onto or declared,
+            space_id=space_id,
+        )
     first = run_model_loop(
         question=direct,
         ctx=ctx,
@@ -1732,29 +2057,39 @@ def _run_extract_loop(
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=attempts,
-        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF, "pii", "def_validate"}),
+        no_retry_reasons=frozenset(
+            {RESERVED_PARAM_AS_OF, "pii", "def_validate", "definition_mismatch"}
+        ),
         budget=budget,
+        schema_ladder=schema_ladder,
     )
     if first.get("abstained") or not first.get("rows"):
         return first
-    return _second_reading(
-        first,
-        question=question,
-        ctx=ctx,
-        compute=compute,
-        warehouse=warehouse,
-        dialect=dialect,
-        model_sql=model_sql,
-        check=check,
-        abstain=abstain,
-        empty_answer=empty_answer,
-        publish=submit_sql,
-        attempts=attempts,
-        space_id=space_id,
-        session_id=session_id,
-        grantable=grantable,
-        budget=budget,
-    )
+    # The second reading can change the served SQL. It stays on the path.
+    note_stage("second_reading", "started")
+    try:
+        with span("second_reading"):
+            return _second_reading(
+                first,
+                question=question,
+                ctx=ctx,
+                compute=compute,
+                warehouse=warehouse,
+                dialect=dialect,
+                model_sql=model_sql,
+                check=check,
+                abstain=abstain,
+                empty_answer=empty_answer,
+                publish=submit_sql,
+                attempts=attempts,
+                space_id=space_id,
+                session_id=session_id,
+                grantable=grantable,
+                budget=budget,
+                schema_ladder=schema_ladder,
+            )
+    finally:
+        note_stage("second_reading", "done")
 
 
 def _vote_rows(
@@ -1766,6 +2101,27 @@ def _vote_rows(
     session_id: str | None,
 ) -> dict[str, Any]:
     """Rows for the comparison. The customer submit happens after agreement."""
+    note_stage("sql_vote", "started")
+    try:
+        return _vote_rows_body(
+            sql,
+            warehouse,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+    finally:
+        note_stage("sql_vote", "done")
+
+
+def _vote_rows_body(
+    sql: str,
+    warehouse: Path | None,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
     if warehouse is None or not Path(warehouse).is_file():
         return _abstain(
             question,
@@ -1775,7 +2131,8 @@ def _vote_rows(
             sql=sql,
             stage="sql_vote",
         )
-    rows, err = run_readonly(sql, Path(warehouse))
+    with span("submit_execute"):
+        rows, err = run_readonly(sql, Path(warehouse))
     if err or not rows:
         return _abstain(
             question,
@@ -1806,6 +2163,7 @@ def _second_reading(
     session_id: str | None,
     grantable: set[str],
     budget: AskCallBudget,
+    schema_ladder: Any = None,
 ) -> dict[str, Any]:
     """One plan-then-SQL prompt. Same checker. Same call cap as the first reading."""
     first_sql = str(first.get("sql_used") or "")
@@ -1827,6 +2185,7 @@ def _second_reading(
     )
     ctx2 = dict(ctx)
     ctx2.pop("sql_loop_feedback", None)
+    ctx2.pop("route_hint", None)
     ctx2["sql_vote_prompt"] = second_prompt
     ctx2["sql_vote_kind"] = "reading"
     budget.take()
@@ -1858,10 +2217,14 @@ def _second_reading(
         abstain=abstain,
         empty_answer=empty_answer,
         attempts=second_attempts,
-        no_retry_reasons=frozenset({RESERVED_PARAM_AS_OF, "pii", "def_validate"}),
+        no_retry_reasons=frozenset(
+            {RESERVED_PARAM_AS_OF, "pii", "def_validate", "definition_mismatch"}
+        ),
         recover_failures=True,
         budget=budget,
+        schema_ladder=schema_ladder,
     )
+    note_rungs(second_attempts)
     second_sql = str(second.get("sql_used") or "")
     raw_first = first.get("rows")
     raw_second = second.get("rows")
@@ -1903,6 +2266,7 @@ def _second_reading(
     if budget.allow():
         ctx3 = dict(ctx)
         ctx3.pop("sql_loop_feedback", None)
+        ctx3.pop("route_hint", None)
         ctx3.pop("vq_examples", None)
         ctx3["sql_vote_prompt"] = reconfirm_prompt(question, detail)
         ctx3["sql_vote_kind"] = "reconfirm"
@@ -1914,6 +2278,7 @@ def _second_reading(
     parsed = reconfirm_from_payload(rec if isinstance(rec, dict) else None)
     if parsed:
         why, closest = parsed
+    note_stage("reconfirm", "done")
     return reconfirm_envelope(
         question=question,
         why=why,
@@ -1941,6 +2306,7 @@ def _ladder_after_ai_error(
     ledger_append: Callable[[dict[str, Any]], Any],
     attempts: list[dict[str, Any]],
     budget: AskCallBudget,
+    grounded: Sequence[GroundedDef] | None = None,
 ) -> dict[str, Any]:
     """Retry generate once, then the extract checker. No rule-builder compile.
 
@@ -1986,6 +2352,7 @@ def _ladder_after_ai_error(
             ledger_append=ledger_append,
             attempts=attempts,
             budget=budget,
+            grounded=grounded,
         )
     return _abstain(
         question,
@@ -1998,7 +2365,84 @@ def _ladder_after_ai_error(
     )
 
 
-def maybe_generative_ask(
+def _hand_compile_to_ai(
+    *,
+    question: str,
+    ctx: dict[str, Any],
+    payload: dict[str, Any] | None,
+    rejected_sql: str,
+    reason: str,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    dialect: str,
+    grantable: set[str],
+    declared: Ontology | None,
+    declared_violations: list[Violation],
+    space_onto: Ontology | None,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    attempts: list[dict[str, Any]],
+    budget: AskCallBudget,
+    grounded: Sequence[GroundedDef] | None = None,
+) -> dict[str, Any]:
+    """Compile SQL failed the AI-lane checker. Do not serve it.
+
+    One generate call carries the rejected SQL and the checker reason,
+    then the extract loop (execute, check, schema repair when that flag
+    is on, escalate when that flag is on). No rule-builder compile. A
+    miss abstains with the checker reason and no rows. Reconfirm is the
+    route's job when that envelope is still unchecked.
+    """
+    current: dict[str, Any] | None = payload if isinstance(payload, dict) else None
+    if budget.take():
+        nxt_ctx = dict(ctx)
+        nxt_ctx["sql_loop_feedback"] = {
+            "previous_sql": rejected_sql,
+            "reason": f"checker:{reason}",
+            "prompt": question,
+        }
+        try:
+            got = compute(nxt_ctx)
+        except Exception:  # noqa: BLE001 — retry miss, then abstain
+            got = None
+        if isinstance(got, dict):
+            current = got
+    sql = None
+    if isinstance(current, dict):
+        sql = query_sql_from_payload(current) or insights_query_sql(current)
+    if sql and isinstance(current, dict):
+        return _run_extract_loop(
+            question=question,
+            ctx=ctx,
+            payload=current,
+            compute=compute,
+            warehouse=warehouse,
+            dialect=dialect,
+            grantable=grantable,
+            declared=declared,
+            declared_violations=declared_violations,
+            space_onto=space_onto,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            attempts=attempts,
+            budget=budget,
+            grounded=grounded,
+        )
+    return _abstain(
+        question,
+        reason,
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_ONTOLOGY,
+        stage="extract_loop",
+    )
+
+
+def _maybe_generative_ask_impl(
     question: str,
     *,
     space_id: str | None = None,
@@ -2066,26 +2510,42 @@ def maybe_generative_ask(
     dialect = resolved
     # Armed product asks pass demo_gate=False. The planted paraphrase list
     # stays in front of test fakes; it does not abstain a CortexClient ask.
-    if demo_gate and is_uncertified_paraphrase(q):
-        return _abstain(
-            q, "uncertified paraphrase: not a generative certify boundary",
-            space_id=space_id, session_id=session_id,
-        )
-    if _UNSURE_ASK.search(q):
-        return _abstain(
-            q, "question is too vague or time-unbounded to ground",
-            space_id=space_id, session_id=session_id,
-        )
-    if _is_predictive(q):
-        return _abstain(
-            q, "predictive: history is not a forecast",
-            space_id=space_id, session_id=session_id,
-        )
-    if "2099" in asked_calendar_years(q):
-        return _abstain(
-            q, "year 2099 is not a certified period; all-time history is not that year",
-            space_id=space_id, session_id=session_id,
-        )
+    # DMS_AI_CLARIFY on: the model reading list decides. Those two checkers
+    # do not run, including when the model sends nothing.
+    from dms_executor.ask_ladder import ask_ladder_enabled
+    from dms_executor.clarify import ai_clarify_enabled
+
+    clarify_on = ai_clarify_enabled()
+    ladder_on = ask_ladder_enabled()
+
+    def _phrase_hold() -> dict[str, Any] | None:
+        if demo_gate and is_uncertified_paraphrase(q):
+            return _abstain(
+                q, "uncertified paraphrase: not a generative certify boundary",
+                space_id=space_id, session_id=session_id,
+            )
+        if vague_question(q):
+            return _abstain(
+                q, "question is too vague or time-unbounded to ground",
+                space_id=space_id, session_id=session_id,
+            )
+        if "2099" in asked_calendar_years(q):
+            return _abstain(
+                q, "year 2099 is not a certified period; all-time history is not that year",
+                space_id=space_id, session_id=session_id,
+            )
+        return None
+
+    # DMS_RULES_OFF is the same skip: a question word must not decide.
+    if not clarify_on and not ladder_on and not _rules_off():
+        held_phrase = _phrase_hold()
+        if held_phrase is not None:
+            return held_phrase
+        if _is_predictive(q):
+            return _abstain(
+                q, "predictive: history is not a forecast",
+                space_id=space_id, session_id=session_id,
+            )
 
     lake: Path | None
     if warehouse is not None:
@@ -2125,24 +2585,86 @@ def maybe_generative_ask(
                 declared = onto
                 onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
+    if (
+        os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
+        and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+    ):
+        from dms_executor.onto_gap import bind_gap_context
+
+        bind_gap_context(
+            question=q,
+            warehouse=str(lake) if lake is not None else "",
+            grantable=allowed,
+            ontology=onto,
+            space_id=space_id,
+            session_id=session_id,
+        )
+    if clarify_on and compute is not None:
+        from dms_executor.clarify import clarify_before_sql
+
+        clarified = clarify_before_sql(
+            q,
+            compute=compute,
+            warehouse=lake,
+            grantable=set(allowed),
+            dialect=dialect,
+            ontology=onto,
+            space_id=space_id,
+            session_id=session_id,
+            embedder=embedder,
+        )
+        if isinstance(clarified, dict):
+            return clarified
+        if clarified is None:
+            return _climb_after_silent_verdict(
+                q,
+                compute=compute,
+                submit=submit,
+                ledger_append=ledger_append,
+                warehouse=lake,
+                dialect=dialect,
+                grantable=set(allowed),
+                ontology=onto,
+                space_id=space_id,
+                session_id=session_id,
+            )
+    # A Space ontology (never the demo one). Compile serves run the same
+    # join rule the AI lane runs, so this is known before the rank window.
+    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    held_refusal: _CompileRefused | None = None
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
         dialect=dialect,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=declared_violations,
     )
+    if isinstance(ranked_env, _CompileRefused):
+        held_refusal = ranked_env
+        ranked_env = None
     if ranked_env is not None:
         ranked_env["generate_legs"] = generate_legs_view(None)
         return with_served_attribution(ranked_env, None)
     # Short retrieved context only -- not the full ontology dump.
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
-    ctx = retrieve_short_context(
-        q, warehouse=lake, grantable=allowed, ontology=onto
-    )
+    note_stage("retrieve_context", "started")
+    with span("retrieve_context"):
+        ctx = retrieve_short_context(
+            q,
+            warehouse=lake,
+            grantable=allowed,
+            ontology=onto,
+            embedder=embedder,
+        )
+    note_stage("retrieve_context", "done")
     envelope_prompt = ""
     index_stamp = ""
     if schema_context_enabled():
-        ctx = prepare_generate_context(
+        note_stage("schema_context", "started")
+        with span("schema_context"):
+            ctx = prepare_generate_context(
             ctx,
             question=q,
             serving=lake,
@@ -2159,9 +2681,9 @@ def maybe_generative_ask(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+        note_stage("schema_context", "done")
     # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
-    # generated SQL must follow. Measured just above, against the lake as it is.
-    space_onto = (declared or onto) if not demo_ontology_allowed else None
+    # generated SQL must follow. Measured against the lake as it is.
     space_block = (
         space_catalog(space_onto, declared_violations, allowed)
         if space_onto is not None
@@ -2175,6 +2697,7 @@ def maybe_generative_ask(
         if space_block is not None
         else ctx
     )
+    example_rows: list[dict[str, Any]] = []
     if vq_rag_enabled():
         example_rows = retrieve_verified_examples(
             q,
@@ -2188,6 +2711,28 @@ def maybe_generative_ask(
         if block:
             insights_ctx = dict(insights_ctx)
             insights_ctx["vq_examples"] = block
+    # Flag off: this list stays empty and the catalog is not copied.
+    # On the demo path `onto` is the demo ontology. Outside demo it is the
+    # Space's own, never a demo ontology loaded beside it.
+    grounded: list[GroundedDef] = []
+    if ground_defs_enabled():
+        defs_onto = onto if demo_ontology_allowed else space_onto
+        note_stage("ground_defs", "started")
+        with span("ground_defs"):
+            text, grounded = build_grounding(
+            q,
+            defs_onto,
+            embedder=embedder,
+            examples=example_rows,
+            grantable=allowed,
+        )
+        note_stage("ground_defs", "done")
+        if text:
+            insights_ctx = dict(insights_ctx)
+            insights_ctx["governed_definitions"] = text
+            # The rows already sit in the governed block. A second Examples
+            # section would send the same SQL twice.
+            insights_ctx.pop("vq_examples", None)
     from dms_executor.ai_first import ai_first_enabled, with_examples
 
     held_preview: dict[str, Any] | None = None
@@ -2207,16 +2752,44 @@ def maybe_generative_ask(
             submit=submit,
             ledger_append=ledger_append,
             dialect=dialect,
+            space_onto=space_onto,
+            declared=declared,
+            declared_violations=declared_violations,
+            grounded=grounded,
+            embedder=embedder,
         )
+        if isinstance(preview, _CompileRefused):
+            held_refusal = preview
+            preview = None
         if preview is not None:
             held_preview = preview
         insights_ctx = with_examples(insights_ctx)
         ctx = with_examples(ctx)
+    _compute_fn = compute
+
+    def _timed_compute(ctx: dict[str, Any]) -> dict[str, Any] | None:
+        before = recorded_model_calls()
+        note_stage("insights_generate", "started")
+        try:
+            with span("insights_generate"):
+                try:
+                    if _compute_fn is None:
+                        return None
+                    return _compute_fn(ctx)
+                finally:
+                    if recorded_model_calls() == before:
+                        note_prompt_ctx(ctx)
+        finally:
+            note_stage("insights_generate", "done")
+
+    compute = _timed_compute
     vote_budget: AskCallBudget | None = None
-    if cloop_b_enabled() and not ontology_ranked_lane_enabled():
+    ladder_on = ask_ladder_enabled() and not ontology_ranked_lane_enabled()
+    if not ontology_ranked_lane_enabled() and (cloop_b_enabled() or ladder_on):
         # Direct SQL. Reading 2 is a different instruction under the same cap.
-        insights_ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
-        insights_ctx["sql_vote_kind"] = "direct"
+        if cloop_b_enabled():
+            insights_ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
+            insights_ctx["sql_vote_kind"] = "direct"
         vote_budget = AskCallBudget()
     try:
         if held_preview is not None:
@@ -2253,6 +2826,41 @@ def maybe_generative_ask(
     validate_why: str | None = None
     loop_attempts: list[dict[str, Any]] = []
     gate_state: dict[str, Any] = {}
+    if ladder_on and vote_budget is not None and submit is not None and ledger_append is not None:
+        from dms_executor.ask_ladder import ClimbSession, bind_climb
+
+        bind_climb(
+            ClimbSession(
+                compute=compute,
+                budget=vote_budget,
+                ctx=insights_ctx,
+                question=q,
+                warehouse=lake,
+                dialect=dialect,
+                grantable=set(allowed),
+                space_id=space_id,
+                session_id=session_id,
+                ontology=onto,
+                attempts=loop_attempts,
+                check=lambda sql: validate_compiled_sql(
+                    sql, grantable=set(allowed), warehouse=lake, dialect=dialect
+                ),
+                submit=lambda sql, payload: _submit_validated(
+                    sql,
+                    question=q,
+                    space_id=space_id,
+                    session_id=session_id,
+                    submit=submit,
+                    ledger_append=ledger_append,
+                    notes=(),
+                    plan_source=PLAN_SOURCE_OTHER,
+                    coverage=coverage_from_sql_path(sql=sql),
+                    warehouse=lake,
+                    grantable=set(allowed),
+                    served_route=_sql_route(payload if isinstance(payload, dict) else None),
+                ),
+            )
+        )
 
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
         env = with_setup_fields(env, setup_src)
@@ -2274,6 +2882,7 @@ def maybe_generative_ask(
         stamped = with_served_attribution(env, setup_src)
         if not isinstance(stamped, dict):
             return stamped
+        note_rungs(loop_attempts)
         if loop_attempts:
             stamped["loop"] = list(loop_attempts)
         apply_sql_credit(stamped, setup_src, loop_attempts, dialect=dialect)
@@ -2291,6 +2900,16 @@ def maybe_generative_ask(
         if isinstance(prov, dict) and isinstance(stamped, dict):
             stamped["ontology_provenance"] = dict(prov)
         return freeze_route(stamped)
+
+    def _after_miss() -> dict[str, Any] | None:
+        from dms_executor.ask_ladder import current_climb
+
+        session = current_climb()
+        if session is not None:
+            served = session.finish_miss()
+            if isinstance(served, dict) and served.get("abstained") is not True:
+                return _stamp(served)
+        return _stamp(None)
 
     if held_preview is not None:
         return _stamp(with_plan_origin(held_preview, PLAN_ORIGIN_ONTOLOGY_COMPILE))
@@ -2352,6 +2971,7 @@ def maybe_generative_ask(
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
                     budget=vote_budget,
+                    grounded=grounded,
                 )
             )
         return _stamp(
@@ -2423,11 +3043,16 @@ def maybe_generative_ask(
                     ledger_append=ledger_append,
                     attempts=loop_attempts,
                     budget=vote_budget,
+                    grounded=grounded,
                 )
             )
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
         ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)
+    if kind == "miss" and _rules_off() and ranked_slots is not None:
+        # Insights returned no SQL. Ranking would compile from the question.
+        # That compiler does not serve while DMS_RULES_OFF is on.
+        return _stamp(_rules_off_hold(q, space_id=space_id, session_id=session_id))
     if kind == "miss" and ranked_slots is not None:
         payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
         kind = parse_compute_plan(payload)
@@ -2473,6 +3098,44 @@ def maybe_generative_ask(
                     question=q,
                 )
             )
+    def _ai_budget() -> AskCallBudget:
+        nonlocal vote_budget
+        if vote_budget is None:
+            vote_budget = AskCallBudget()
+        return vote_budget
+
+    def _handoff(refused: _CompileRefused) -> dict[str, Any]:
+        budget = _ai_budget()
+        body = payload if isinstance(payload, dict) else None
+        has_sql = bool(
+            body and (query_sql_from_payload(body) or insights_query_sql(body))
+        )
+        # A charged opening call that returned a plan is not the SQL reading.
+        # Give that slot back so generate plus the second reading fit the cap.
+        if not has_sql and budget.used > 0:
+            budget.used -= 1
+        return _hand_compile_to_ai(
+            question=q,
+            ctx=insights_ctx,
+            payload=payload if isinstance(payload, dict) else None,
+            rejected_sql=refused.sql,
+            reason=refused.reason,
+            compute=compute,
+            warehouse=lake,
+            dialect=dialect,
+            grantable=allowed,
+            declared=declared,
+            declared_violations=declared_violations,
+            space_onto=space_onto,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            attempts=loop_attempts,
+            budget=budget,
+            grounded=grounded,
+        )
+
     multi_env = _try_multi_grain_envelope(
         q,
         onto=onto,
@@ -2484,11 +3147,46 @@ def maybe_generative_ask(
         submit=submit,
         ledger_append=ledger_append,
         dialect=dialect,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=declared_violations,
+        grounded=grounded,
+        embedder=embedder,
     )
+    if isinstance(multi_env, _CompileRefused):
+        held_refusal = multi_env
+        multi_env = None
     if multi_env is not None:
         # DMS's own multi-grain compile is served. Any model SQL in the
         # payload never ran, so its generate origin and model do not apply.
         return _stamp(with_plan_origin(multi_env, PLAN_ORIGIN_ONTOLOGY_COMPILE))
+    if kind == "sql" and held_refusal is not None and isinstance(payload, dict):
+        # The compile candidate failed the checker. Run the model SQL through
+        # the same extract loop (check, execute, repair, escalate).
+        sql_budget = _ai_budget()
+        if sql_budget.used == 0:
+            sql_budget.take()
+        return _stamp(
+            _run_extract_loop(
+                question=q,
+                ctx=insights_ctx,
+                payload=payload,
+                compute=compute,
+                warehouse=lake,
+                dialect=dialect,
+                grantable=allowed,
+                declared=declared,
+                declared_violations=declared_violations,
+                space_onto=space_onto,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                attempts=loop_attempts,
+                budget=sql_budget,
+                grounded=grounded,
+            )
+        )
     if kind == "sql":
         sql = query_sql_from_payload(payload)
         if source == PLAN_SOURCE_OTHER:
@@ -2643,6 +3341,34 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            if (
+                os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
+                and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+            ):
+                from dms_executor.onto_gap import undeclared_aggregate_reason
+
+                undeclared = undeclared_aggregate_reason(sql, onto)
+                if undeclared:
+                    return _stamp(
+                        _abstain(
+                            q,
+                            undeclared,
+                            space_id=space_id,
+                            session_id=session_id,
+                            plan_source=source,
+                            sql=sql,
+                        )
+                    )
+            if grounded:
+                blocked = mismatch_envelope(
+                    sql,
+                    grounded,
+                    question=q,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if blocked is not None:
+                    return _stamp(blocked)
             sql_route = _sql_route(payload if isinstance(payload, dict) else None)
             return _stamp(
                 _submit_validated(
@@ -2693,14 +3419,26 @@ def maybe_generative_ask(
                         plan_source=source if source != PLAN_SOURCE_BIND else PLAN_SOURCE_OTHER,
                     )
                 )
-            return _stamp(None)
+            if held_refusal is not None:
+                return _stamp(_handoff(held_refusal))
+            return _after_miss()
         if not bind_on_miss:
-            return _stamp(None)
-        payload = bind_plan(q, ctx)
+            if held_refusal is not None:
+                return _stamp(_handoff(held_refusal))
+            return _after_miss()
+        payload = bind_plan(q, ctx, ontology=onto, embedder=embedder)
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_BIND
         origin = ""
         if kind == "unsure":
+            code = ""
+            if isinstance(payload, dict):
+                code = str(payload.get("reason_code") or "")
+            blocked = reconfirm_for_reason(
+                code, question=q, space_id=space_id, session_id=session_id
+            )
+            if blocked is not None:
+                return _stamp(blocked)
             return _stamp(
                 _abstain(
                     q, "retrieve bind abstained (unsure)",
@@ -2800,8 +3538,13 @@ def maybe_generative_ask(
                 )
             )
 
-    ungrounded = _ungrounded_measure(q, plan.measure, onto)
+    ungrounded = _ungrounded_measure(q, plan.measure, onto, embedder=embedder)
     if ungrounded:
+        blocked = reconfirm_for_reason(
+            ungrounded, question=q, space_id=space_id, session_id=session_id
+        )
+        if blocked is not None:
+            return _stamp(blocked)
         return _stamp(
             _abstain(
                 q,
@@ -2876,6 +3619,32 @@ def maybe_generative_ask(
             if NOTE_INSIGHTS_RANKING in trail_notes
             else PLAN_ORIGIN_GENERATE_SQL
         )
+    checker_why = ai_lane_sql_check(
+        compiled.sql,
+        question=q,
+        grantable=allowed,
+        warehouse=lake,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
+        space_onto=space_onto,
+        declared=declared,
+        declared_violations=declared_violations,
+        grounded=grounded,
+    )
+    if checker_why:
+        if _checker_is_direct(checker_why):
+            return _stamp(
+                _abstain(
+                    q,
+                    checker_why,
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=source,
+                    sql=compiled.sql,
+                )
+            )
+        return _stamp(_handoff(_CompileRefused(reason=checker_why, sql=compiled.sql)))
     return _stamp(
         _submit_validated(
             compiled.sql,
@@ -2896,3 +3665,114 @@ def maybe_generative_ask(
             served_route=ROUTE_COMPILE,
         )
     )
+
+
+def _climb_after_silent_verdict(
+    question: str,
+    *,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    submit: Callable[[str], Any] | None,
+    ledger_append: Callable[[dict[str, Any]], Any] | None,
+    warehouse: Path | None,
+    dialect: str,
+    grantable: set[str],
+    ontology: Any,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """No understand verdict. Climb repair, context, plan, then escalate.
+
+    The last rung sends route_hint escalate. OpenVault picks the model.
+    Every rung empty is a reconfirm from build_abstain. No phrase checker.
+    """
+    from dms_executor.ask_ladder import ClimbSession, bind_climb, is_direct_abstain
+    from dms_executor.sql_loop import AskCallBudget
+
+    code = "no_sql"
+    notes: tuple[str, ...] = ()
+    served: dict[str, Any] | None = None
+    if submit is not None and ledger_append is not None:
+        attempts: list[dict[str, Any]] = []
+        session = ClimbSession(
+            compute=compute,
+            budget=AskCallBudget(),
+            ctx={},
+            question=question,
+            warehouse=warehouse,
+            dialect=dialect,
+            grantable=set(grantable),
+            space_id=space_id,
+            session_id=session_id,
+            ontology=ontology,
+            attempts=attempts,
+            check=lambda sql: validate_compiled_sql(
+                sql,
+                grantable=set(grantable),
+                warehouse=warehouse,
+                dialect=dialect,
+            ),
+            submit=lambda sql, payload: _submit_validated(
+                sql,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=(),
+                plan_source=PLAN_SOURCE_OTHER,
+                coverage=coverage_from_sql_path(sql=sql),
+                warehouse=warehouse,
+                grantable=set(grantable),
+                served_route=_sql_route(payload if isinstance(payload, dict) else None),
+            ),
+            reserve=False,
+        )
+        bind_climb(session)
+        served = session.finish_miss()
+        code = session.exhausted_reason("no_sql")
+        notes = session.notes()
+    if isinstance(served, dict) and served.get("abstained") is not True:
+        return served
+    env = build_abstain(
+        reason=code,
+        ticket_reason=code,
+        abstain_reason=code,
+        question=question,
+        stage="generative",
+        answer_id="ans_gen01_abstain",
+        text=customer_abstain_text(code),
+        rows=[],
+        sql_used=None,
+        assumptions=[f"GEN-01: {code}", *notes],
+        as_of=_as_of(),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="generated",
+    )
+    if not is_direct_abstain(code):
+        env["reconfirm"] = {
+            "reason_code": code,
+            "reason_text": str(env.get("text") or ""),
+            "suggested_question": "",
+        }
+    assert_envelope_valid(env)
+    return env
+
+
+def maybe_generative_ask(
+    *args: Any, **kwargs: Any
+) -> dict[str, Any] | None:
+    """Bind the ask clock, then stamp ``timings`` on the envelope."""
+    from dms_executor.ask_ladder import bind_climb, reset_climb
+
+    token = ensure_clock()
+    climb = bind_climb(None)
+    try:
+        env = _maybe_generative_ask_impl(*args, **kwargs)
+        if isinstance(env, dict):
+            attach_timings(env)
+        return env
+    finally:
+        reset_climb(climb)
+        release_clock(token)

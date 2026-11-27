@@ -232,7 +232,11 @@ def test_ops_default_ask_does_not_read_finance_upload(
 def test_ops_ticked_finance_upload_does_not_read_it(
     tmp_path: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ticking the other Space's file is a request, not a grant."""
+    """Ticking the other Space's file is a request, not a grant.
+
+    GRANT-READ-02 (dms#307): the tick is refused by name before the cascade
+    reads anything, never dropped while the cascade answers on the Ops grant.
+    """
     world = _world(tmp_path, minter, monkeypatch)
     for label, tables in (
         ("qualified", [world.table]),
@@ -241,7 +245,14 @@ def test_ops_ticked_finance_upload_does_not_read_it(
         response = _ask(
             world, space_id=OPS, tables=tables, session=f"ses_iso_ops_{label}"
         )
-        _assert_ops_closed(response, world, where=f"ops tick {label}")
+        where = f"ops tick {label}"
+        assert response.status_code == 403, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "grounding_not_grantable", detail
+        assert detail["ungrantable_tables"] == tables, detail
+        for needle in NEEDLES:
+            assert needle not in response.text, f"{where}: refusal leaked {needle}"
+        assert world.sql == [], f"{where}: cascade SQL ran on a refused tick: {world.sql}"
 
 
 def test_finance_tick_reaches_the_cascade_table_list(

@@ -1,8 +1,8 @@
 """GRADER-VALUES-01. Served rows from envelopes, not the submit stub.
 
-The seven buckets are disjoint and add up to 52. Gold-broken sits inside
-the non-trap 44. A submit-stub pack is not a score. The exec-SQL stub is
-labelled stub-exec.
+The buckets are disjoint and add up to 52. ops_spend_boundary is a certified
+refusal, so it is not gold-broken. A submit-stub pack is not a score. The
+exec-SQL stub is labelled stub-exec.
 
 The number of record is ``test_grade52_copy_only_main``: real envelopes
 captured from main on the COPY-only layout. ``test_grade52_synthetic_gold_as_served``
@@ -53,24 +53,24 @@ _MAIN_SHA = "57d85c529aa363825aaa566f12b8822fd76a4215"
 _SYNTHETIC_SHA = "c" * 40
 _SYNTHETIC_INCLUDED = (
     f"sha={_SYNTHETIC_SHA} pack_gold_served=included "
-    "52: correct=23 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
-    "empty_gold=0 gold_broken=1 mode=served"
+    "52: correct=23 wrong=0 reconfirm=0 clarify=0 abstain=20 refusal_ok=9 "
+    "refusal_wrong=0 empty_gold=0 gold_broken=0 mode=served"
 )
 _SYNTHETIC_EXCLUDED = (
     f"sha={_SYNTHETIC_SHA} pack_gold_served=excluded "
-    "45: correct=16 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
-    "empty_gold=0 gold_broken=1 mode=served"
+    "45: correct=16 wrong=0 reconfirm=0 clarify=0 abstain=20 refusal_ok=9 "
+    "refusal_wrong=0 empty_gold=0 gold_broken=0 mode=served"
 )
 _COPY_ONLY = ROOT / "tests" / "fixtures" / "ask_guide" / "copy_only_57d85c52.jsonl"
 _COPY_ONLY_INCLUDED = (
     f"sha={_MAIN_SHA} layout=copy-only pack_gold_served=included "
-    "52: correct=16 wrong=0 reconfirm=0 abstain=27 refusal_ok=8 refusal_wrong=0 "
-    "empty_gold=0 gold_broken=1 mode=served"
+    "52: correct=16 wrong=0 reconfirm=0 clarify=0 abstain=27 refusal_ok=9 "
+    "refusal_wrong=0 empty_gold=0 gold_broken=0 mode=served"
 )
 _COPY_ONLY_EXCLUDED = (
     f"sha={_MAIN_SHA} layout=copy-only pack_gold_served=excluded "
-    "45: correct=16 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
-    "empty_gold=0 gold_broken=1 mode=served"
+    "45: correct=16 wrong=0 reconfirm=0 clarify=0 abstain=20 refusal_ok=9 "
+    "refusal_wrong=0 empty_gold=0 gold_broken=0 mode=served"
 )
 _COPY_ONLY_PATHS = (
     "paths correct ai=0 rule=16 L1=16 unattributed=0 "
@@ -292,8 +292,9 @@ def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
     finally:
         con.close()
     assert len(certified) == 43
-    assert len(traps) == 8
-    assert broken == ["ops_spend_boundary"]
+    assert len(traps) == 9
+    assert broken == []
+    assert "ops_spend_boundary" in traps
     assert "trap_categoty" not in traps
     by_gold = {qid: rows for qid, rows in certified}
     assert set(_GOLD_SERVED) <= set(by_gold)
@@ -307,7 +308,6 @@ def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
         records.append({"id": qid, "env": _served(_jsonable(by_gold[qid]))})
     for qid in abstain_ids:
         records.append({"id": qid, "env": _abstain()})
-    records.append({"id": broken[0], "env": _abstain()})
     for qid in traps:
         records.append({"id": qid, "env": _abstain()})
     path = tmp_path / "envelopes.jsonl"
@@ -329,33 +329,33 @@ def test_grade52_synthetic_gold_as_served(tmp_path: Path) -> None:
         + report["empty_gold"]
         + report["gold_broken"]
     )
-    assert non_trap == 44
-    assert report["gold_broken"] == 1
-    assert report["refusal_ok"] == 8
+    assert non_trap == 43
+    assert report["gold_broken"] == 0
+    assert report["refusal_ok"] == 9
     assert report["refusal_wrong"] == 0
+    assert report["clarify"] == 0
     by_case = {item["id"]: item for item in report["cases"]}
     for qid in _GOLD_SERVED:
         assert by_case[qid]["bucket"] == "CORRECT"
-    assert by_case["ops_spend_boundary"]["bucket"] == "GOLD_BROKEN"
+    assert by_case["ops_spend_boundary"]["bucket"] == "REFUSAL_OK"
     without = report["without_pack_gold_served"]
     assert summary_line(without) == _SYNTHETIC_EXCLUDED
     assert _MAIN_SHA not in summary_line(without)
     assert _buckets(without) == 45
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
-    served_broken: list[dict[str, Any]] = []
+    served_trap: list[dict[str, Any]] = []
     for row in records:
         if row["id"] == "ops_spend_boundary":
-            served_broken.append({"id": row["id"], "env": _served([{"n": 1}])})
+            served_trap.append({"id": row["id"], "env": _served([{"n": 1}])})
         else:
-            served_broken.append(row)
-    broken_path = tmp_path / "served_broken.jsonl"
-    _write_jsonl(broken_path, served_broken, _SYNTHETIC_SHA)
-    failed = grade_envelopes_path(broken_path)
+            served_trap.append(row)
+    trap_path = tmp_path / "served_trap.jsonl"
+    _write_jsonl(trap_path, served_trap, _SYNTHETIC_SHA)
+    failed = grade_envelopes_path(trap_path)
     assert failed["gold_broken"] == 0
-    assert failed["wrong"] == 1
+    assert failed["refusal_wrong"] == 1
     failed_case = {item["id"]: item for item in failed["cases"]}
-    assert failed_case["ops_spend_boundary"]["bucket"] == "WRONG"
-    assert failed_case["ops_spend_boundary"]["reason"] == "served on gold-broken"
+    assert failed_case["ops_spend_boundary"]["bucket"] == "REFUSAL_WRONG"
     folder_out = tmp_path / "dir"
     folder_out.mkdir()
     for row in records:
@@ -428,15 +428,16 @@ def test_grade52_stub_exec_main() -> None:
     # misses offer reconfirm. SELECT 1 is not an answer for a refusal.
     assert report["reconfirm"] == 5
     assert report["abstain"] == 0
-    assert report["refusal_ok"] == 3
+    assert report["refusal_ok"] == 4
     assert report["refusal_wrong"] == 0
     assert report["empty_gold"] == 0
-    assert report["gold_broken"] == 1
+    assert report["gold_broken"] == 0
+    assert report["clarify"] == 0
     assert report["pack_gold_served_ids"] == _GOLD_SERVED
     line = summary_line(report)
     assert line.endswith(
-        "52: correct=43 wrong=0 reconfirm=5 abstain=0 refusal_ok=3 refusal_wrong=0 "
-        "empty_gold=0 gold_broken=1 mode=stub-exec"
+        "52: correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 "
+        "refusal_wrong=0 empty_gold=0 gold_broken=0 mode=stub-exec"
     )
     assert "not a score" not in line
     assert paths_line(path_counts(report["cases"])) == (
@@ -452,9 +453,9 @@ def test_grade52_stub_exec_main() -> None:
     assert without["wrong"] == 0
     assert without["reconfirm"] == 5
     assert without["abstain"] == 0
-    assert without["refusal_ok"] == 3
+    assert without["refusal_ok"] == 4
     assert without["refusal_wrong"] == 0
-    assert without["gold_broken"] == 1
+    assert without["gold_broken"] == 0
 
 
 def test_grade52_copy_only_main() -> None:
@@ -503,7 +504,7 @@ def test_grade52_copy_only_main() -> None:
         case = by_case[qid]
         assert case["bucket"] == "ABSTAIN"
         assert case["serve_path"] == "unattributed"
-    assert by_case["ops_spend_boundary"]["bucket"] == "GOLD_BROKEN"
+    assert by_case["ops_spend_boundary"]["bucket"] == "REFUSAL_OK"
     without = report["without_pack_gold_served"]
     assert summary_line(without) == _COPY_ONLY_EXCLUDED
     assert without["layout"] == "copy-only"
