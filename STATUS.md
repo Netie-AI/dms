@@ -12,7 +12,7 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `4713b26`, `grade52 --main`. Same split as `7392972` and main `34f791f`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `b088b3d`, `grade52 --main`, rebased on `0b0e437`. Same split as `7392972`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
