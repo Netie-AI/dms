@@ -3,11 +3,11 @@
 **Deferred until condition is met.**
 **Ledger updated:** 2026-08-05 afternoon — F29 NEEDS-YOU closed **A** (thin EPIC-023 deferred SURFACE; B/H6 rejected; P-DMS-30 stays parked). Accuracy RUN NOW = residual EPIC-017/018 completeness (#33/#35), then EPIC-019. EPIC-023 not ticketed.
 
-## WORD-RULES-OUT-01 - remove the hand-coded measure token locks
+## WORD-RULES-OUT-01 - keyword measure locks behind DMS_NO_WORD_RULES
 
-`semantic_retrieve._locked_measure` and `typed_filters` still map phrases (audit+overdue, utilisation, reorder, chemicals, cctv) onto measure ids. GROUND-DEFS-01 does not delete them.
+The keyword branches live in `keyword_routes.py`. `DMS_NO_WORD_RULES` defaults to 0 and still calls them, so the prompt, envelope, and route stay the same. On, measure linking ranks the ontology name, description, and steward synonyms (`rank_texts`, floor 0.5, top 3). A tie or a score that does not clear the floor reconfirms `measure_tie` or `measure_unranked`.
 
-**Unlock:** an A/B on the box, `DMS_GROUND_DEFS` on vs off, same SHA, the 52 and pack H, 2 runs each. WRONG stays 0 and correct does not drop beyond run-to-run noise. Then delete those token locks. Do not replace them with a new word list.
+**Unlock to delete `keyword_routes.py`:** armed grade52, `DMS_NO_WORD_RULES` on vs off, same SHA, the 52 and pack H, 2 runs each. WRONG stays 0 and correct does not drop beyond run-to-run noise. Do not replace the module with a new word list.
 
 ---
 
