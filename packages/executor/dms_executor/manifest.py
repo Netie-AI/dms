@@ -6,11 +6,14 @@ Signing key material is held in memory only. Never log or put keys in exceptions
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import logging
 import os
 import re
+import stat
+import tempfile
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -46,7 +49,7 @@ class SecurityEvent(ManifestMintError):
 OV_SERVICE_ID = "dms"
 #: Current ``dms`` service Bearer for OpenVault. Wins over the file.
 SERVICE_TOKEN_ENV = "DMS_OV_SERVICE_TOKEN"
-#: Path of the secret file holding that Bearer. A first mint writes it 0600.
+#: Path of the secret file holding that Bearer. A first mint renames a 0600 file onto it.
 SERVICE_TOKEN_FILE_ENV = "DMS_OV_SERVICE_TOKEN_FILE"
 
 OV_TOKEN_MISSING = "ov_service_token_missing"
@@ -108,6 +111,57 @@ def match_service_bearer(presented: str) -> str | None:
     if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
         return None
     return hashlib.sha256(expected.encode("utf-8")).hexdigest()[:12]
+
+
+def _install_token_file(tmp: str, path: Path, token: str) -> None:
+    """Put an issued token at ``path``. Runs only after OV has returned it.
+
+    A rename is atomic and replaces a link instead of following it. Some
+    targets cannot be renamed over (a bind-mounted single file). OV will not
+    issue this token twice, so those are written in place, and said so.
+    """
+    try:
+        os.replace(tmp, path)
+    except OSError as rename_exc:
+        try:
+            # O_NONBLOCK: a FIFO at the path must refuse, not wait for a reader.
+            flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            fd = os.open(path, flags)
+            with os.fdopen(fd, "wb", buffering=0) as fh:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError("token path is not a regular file")
+                os.chmod(fd if os.chmod in os.supports_fd else path, 0o600)
+                os.ftruncate(fd, 0)
+                data = token.encode("utf-8")
+                try:
+                    if fh.write(data) != len(data):
+                        raise OSError("short write")
+                    os.fsync(fd)
+                except BaseException:
+                    # Part of a token is a Bearer the next boot would send.
+                    with contextlib.suppress(OSError):
+                        os.ftruncate(fd, 0)
+                    raise
+        except OSError as exc:
+            raise OpenVaultTokenError(
+                OV_MINT_FAILED,
+                "register succeeded but the token was not stored: "
+                f"rename {type(rename_exc).__name__}, write {type(exc).__name__}. "
+                "An OpenVault admin rotate is needed",
+            ) from exc
+        logger.warning(
+            "OV service token written in place, not atomic: rename refused (%s)",
+            type(rename_exc).__name__,
+        )
+        return
+    if os.name == "posix":
+        # Make the rename itself durable. Best effort: the token is in place.
+        with contextlib.suppress(OSError):
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
 
 
 @dataclass
@@ -263,48 +317,88 @@ class ManifestMinter:
             ) from exc
 
     def _first_mint(self) -> str:
-        """POST /keys/services once, when no token exists, and persist the result."""
+        """POST /keys/services once, when no token exists, and persist the result.
+
+        Nothing a later boot reads is created, truncated or replaced before OV
+        has returned a token (OV-MINT-TOKEN-ATOMIC-01). The token goes to a
+        0600 temp file beside the token file and is renamed over it.
+        """
         path = _token_file()
         if path is None:
             raise OpenVaultTokenError(
                 OV_TOKEN_MISSING, f"set {SERVICE_TOKEN_ENV} or {SERVICE_TOKEN_FILE_ENV}"
             )
-        # Open the file before OV issues the token: an unwritable path must not
-        # cost the only copy of a token that cannot be re-fetched.
+        # Make the temp file before OV issues the token: a directory DMS cannot
+        # write must not cost the only copy of a token that cannot be re-fetched.
+        # mkstemp creates it 0600 and exclusively, so it never follows a link.
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            os.chmod(path, 0o600)
+            if path.is_dir():
+                raise IsADirectoryError("token path is a directory")
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
         except OSError as exc:
             raise OpenVaultTokenError(
                 OV_TOKEN_MISSING, f"token file not writable: {type(exc).__name__}"
             ) from exc
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            try:
-                reg = self._http.post(
-                    f"{self.openvault_url}/keys/services",
-                    json={"service_id": OV_SERVICE_ID},
-                    headers={"X-OpenVault-Reveal": "intentional"},
-                )
-            except httpx.HTTPError as exc:
-                raise OpenVaultTokenError(
-                    OV_MINT_FAILED, f"register: {type(exc).__name__}"
-                ) from exc
-            if reg.status_code == 401:
-                # Already registered on OV. Rotation needs the current Bearer
-                # or admin, and DMS holds neither.
-                raise OpenVaultTokenError(
-                    OV_TOKEN_MISSING, "first mint refused: service already registered (HTTP 401)"
-                )
-            if reg.status_code >= 400:
-                raise OpenVaultTokenError(OV_MINT_FAILED, f"register: HTTP {reg.status_code}")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                token = self._register()
+                try:
+                    fh.write(token)
+                    fh.flush()
+                except OSError as exc:
+                    # OV has issued the token and will not issue it twice. Callers
+                    # catch OpenVaultTokenError only, so a full disk is a named abstain.
+                    raise OpenVaultTokenError(
+                        OV_MINT_FAILED,
+                        "register succeeded but the token was not stored: "
+                        f"write {type(exc).__name__}. An OpenVault admin rotate is needed",
+                    ) from exc
+                # Best effort: the bytes are written, and a filesystem that refuses
+                # fsync (some bind mounts) must not cost the only copy of the token.
+                with contextlib.suppress(OSError):
+                    os.fsync(fh.fileno())
+            _install_token_file(tmp, path, token)
+        finally:
+            # After a rename the temp name is gone. On any failure it must go.
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+        return token
+
+    def _register(self) -> str:
+        """The register call. Returns a token or raises; it writes nothing."""
+        try:
+            reg = self._http.post(
+                f"{self.openvault_url}/keys/services",
+                json={"service_id": OV_SERVICE_ID},
+                headers={"X-OpenVault-Reveal": "intentional"},
+            )
+        except httpx.HTTPError as exc:
+            raise OpenVaultTokenError(OV_MINT_FAILED, f"register: {type(exc).__name__}") from exc
+        if reg.status_code == 401:
+            # Already registered on OV. Rotation needs the current Bearer
+            # or admin, and DMS holds neither.
+            raise OpenVaultTokenError(
+                OV_TOKEN_MISSING, "first mint refused: service already registered (HTTP 401)"
+            )
+        if reg.status_code >= 400:
+            raise OpenVaultTokenError(OV_MINT_FAILED, f"register: HTTP {reg.status_code}")
+        try:
             body = reg.json()
-            if body.get("service_id") != OV_SERVICE_ID:
-                raise OpenVaultTokenError(OV_MINT_FAILED, "register: service_id mismatch")
-            token = str(body.get("token") or "").strip()
-            if not token:
-                raise OpenVaultTokenError(OV_MINT_FAILED, "register: no token in response")
-            fh.write(token)
+        except ValueError:
+            # No ``from``: the decode error carries the body, which may hold a token.
+            raise OpenVaultTokenError(OV_MINT_FAILED, "register: body is not JSON") from None
+        if not isinstance(body, dict):
+            raise OpenVaultTokenError(OV_MINT_FAILED, "register: body is not an object")
+        if body.get("service_id") != OV_SERVICE_ID:
+            raise OpenVaultTokenError(OV_MINT_FAILED, "register: service_id mismatch")
+        raw = body.get("token")
+        token = raw.strip() if isinstance(raw, str) else ""
+        if not token:
+            raise OpenVaultTokenError(OV_MINT_FAILED, "register: no token in response")
+        # The file is read back with strip() and sent as one header value.
+        if not token.isprintable() or any(ch.isspace() for ch in token):
+            raise OpenVaultTokenError(OV_MINT_FAILED, "register: token is not one printable word")
         return token
 
     def _notify_cortex_jwks_refresh(self) -> None:
