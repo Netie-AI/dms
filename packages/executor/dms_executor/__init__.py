@@ -97,6 +97,7 @@ from dms_executor.envelope import (
     envelope_gate_clause,
     normalize_contributing_sources,
     reserved_as_of_abstain,
+    wire_value,
 )
 from dms_executor.gen_path_refuse import GRANT_UNREADABLE
 from dms_executor.generative_ask import (
@@ -880,9 +881,10 @@ class Executor:
                     question=question,
                     stage="envelope_gate",
                     answer_id="ans_envelope_invalid",
+                    # The clause stays in assumptions: the sentence states no code digits.
                     text=(
                         "I can't answer this: the answer failed the DMS answer "
-                        f"check ({clause}). No figure was returned."
+                        "check. No figure was returned."
                     ),
                     values=[],
                     rows=[],
@@ -2130,7 +2132,10 @@ def map_ask_response_to_envelope(
             f"Rather than show you a number under a badge I cannot stand behind, "
             f"I'm abstaining. This usually means DMS is older than the engine."
         )
-    values = list(resp.values or [])
+    # dms#590: a label from the wire is text, not a declaration. ``row_count`` and
+    # ``operand`` exempt a figure from ONTOLOGY-AUDIT-01 and are honoured only on
+    # values DMS producers mint, so a Cortex value carrying one is relabelled.
+    values = [wire_value(v) for v in (resp.values or [])]
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
     if resp.rows:

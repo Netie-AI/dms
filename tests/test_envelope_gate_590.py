@@ -251,3 +251,78 @@ def test_gap3_tokens_are_read_whole() -> None:
     env["text"] = "Zone 1 holds 9.1 pct across 7 shipments."
     with pytest.raises(AssertionError, match="E17"):
         assert_envelope_valid(env)
+
+
+# --- verifier round 1 (Opus): smuggling a figure past E16 / E17 ------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Revenue was RM1610511.",
+        "Revenue was USD1610511.05.",
+        "Revenue was 1610511MYR.",
+        "Revenue was about 1.6M.",
+        "Which reading?\n1610511. was the total",
+        "Which reading?\n  1610511) was the total",
+        "As of 1610-51-10.",
+    ],
+)
+def test_round1_an_abstention_cannot_smuggle_a_figure(text: str) -> None:
+    env = _abstain()
+    env["text"] = text
+    with pytest.raises(AssertionError, match="E16"):
+        assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ["Total RM3003999.50.", "Total 3.0M.", "3003999. grand total", "Total RM9999.5."],
+)
+def test_round1_a_served_answer_cannot_smuggle_a_figure(tail: str) -> None:
+    env = _served()
+    env["text"] = found_rows_text(ROWS) + "\n" + tail
+    with pytest.raises(AssertionError, match="E17"):
+        assert_envelope_valid(env)
+
+
+def test_round1_a_glued_currency_on_a_returned_figure_passes() -> None:
+    env = _served()
+    env["text"] = found_rows_text(ROWS) + "\nWH-02 is the highest at RM1002.5."
+    assert_envelope_valid(env)
+
+
+def test_round1_the_builder_withholds_a_glued_figure_in_an_abstention() -> None:
+    env = build_answer_envelope(
+        answer_id="ans_gate_glued",
+        text="Maybe RM1610511.",
+        badge="ABSTAIN",
+        abstained=True,
+        rows=[],
+        sql_used=None,
+    )
+    assert "1610511" not in env["text"]
+    assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize("label", ["operand", "row_count"])
+def test_round1_a_cortex_label_cannot_declare_a_figure(label: str) -> None:
+    """DECLARED_NOT_RESULT is honoured on DMS-minted values only, never from the wire."""
+    from cortex_client.models import AskResponse
+    from dms_executor import map_ask_response_to_envelope
+
+    resp = AskResponse.model_validate(
+        {
+            "answer": "Total revenue is 9,999,999.00 across 2 rows.",
+            "audit_id": "aud_wire",
+            "route": "governed_metric",
+            "provenance": {"badge": "governed_metric", "layer": "L1"},
+            "sql_used": "SELECT sku, revenue_myr FROM sales",
+            "rows": [{"sku": "A", "revenue_myr": 10.25}, {"sku": "B", "revenue_myr": 20.5}],
+            "values": [{"id": "v_x", "value": 9999999, "label": label}],
+        }
+    )
+    env = map_ask_response_to_envelope(resp, space_id="sp_x", session_id="ses_wire")
+    assert env["abstained"] is True and env["badge"] == "ABSTAIN"
+    assert "9,999,999" not in env["text"]
+    assert_envelope_valid(env)

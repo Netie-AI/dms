@@ -2573,9 +2573,9 @@ def test_a_gate_refusal_on_the_ask_route_is_a_named_abstain_not_a_503(
     assert answer["abstained"] is True and answer["badge"] == "ABSTAIN"
     assert answer["abstain_reason"] == "envelope_invalid"
     assert answer["text"] == (
-        "I can't answer this: the answer failed the DMS answer check (E17). "
-        "No figure was returned."
+        "I can't answer this: the answer failed the DMS answer check. No figure was returned."
     )
+    assert "envelope_invalid:E17" in answer["assumptions"]
     assert answer["rows"] == [] and answer["values"] == []
     assert "412" not in json.dumps(answer)
 

@@ -88,7 +88,7 @@ _HEAD_ONLY_GAPS = frozenset({"no_declared_measure"})
 #: rows, duplicate keys, a measured fan-out). The sentence names the check and
 #: the subject with a fixed explanation; the measured detail stays in the
 #: ``GEN-01:`` assumption.
-_MEASURED_DETAIL_GAPS = frozenset({"ontology_unverified", "fanout_refused"})
+_MEASURED_DETAIL_GAPS = frozenset({"ontology_unverified", "fanout_refused", "ambiguous_path"})
 _CHECK_SAYS = {
     "fk_intact": "rows on this link reference a parent that does not exist",
     "key_unique": "the key does not identify a row",
@@ -105,13 +105,21 @@ _FANOUT_SAYS = (
 )
 
 
+_LINK_COUNT = re.compile(r"^\d+ declared links join")
 _KEY_COLUMNS = re.compile(r"(?<=\s)\(([A-Za-z_][A-Za-z0-9_]*(?:, [A-Za-z_][A-Za-z0-9_]*)*)\)")
 
 
 def _measured_gap_text(head: str, gap: str) -> str:
     """The named gap without the measured detail. Names, never counts."""
+    body = gap.split(":", 1)[1].strip() if ":" in gap else ""
     if head == "fanout_refused":
-        return f"{head}: {_FANOUT_SAYS}"
+        # "reaching 'x' means joining through 'link'" names the join; the
+        # measured fan-out after it is a count from the rows.
+        join, sep, _rest = body.partition(", whose parent side")
+        return f"{head}: {join}; {_FANOUT_SAYS}" if sep and join else f"{head}: {_FANOUT_SAYS}"
+    if head == "ambiguous_path":
+        # The declared-link count leads the detail; the link names follow it.
+        return f"{head}: " + _LINK_COUNT.sub("more than one declared link joins", body, count=1)
     body = gap.split(":", 1)[1] if ":" in gap else ""
     named: list[str] = []
     for part in body.split("; "):

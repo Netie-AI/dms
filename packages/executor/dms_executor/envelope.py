@@ -1205,6 +1205,15 @@ _GAP_PREFIX = "GEN-01: "
 DECLARED_NOT_RESULT = frozenset({"row_count", "operand"})
 
 
+def wire_value(value: Any) -> Any:
+    """A values[] entry from Cortex, with any DMS-only declared label relabelled."""
+    if isinstance(value, dict) and str(value.get("label") or "") in DECLARED_NOT_RESULT:
+        out = dict(value)
+        out["label"] = f"cortex_{value['label']}"
+        return out
+    return value
+
+
 def _literal_figure(literal: str) -> float | None:
     try:
         value = float(literal.replace(",", ""))
@@ -1230,15 +1239,55 @@ def _without_labels(text: str, labels: set[str]) -> str:
 
 #: A calendar date (2026-11-20) is a date, not three figures.
 _ISO_DATE = re.compile(
-    r"(?<![A-Za-z0-9_.-])\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?Z?)?"
-    r"(?![A-Za-z0-9_])"
+    r"(?<![A-Za-z0-9_.-])(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r"(?:[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z?)?(?![A-Za-z0-9_])"
 )
+#: A numbered-list marker at a line start: ``1.`` or ``1)``.
+_ORDINAL = re.compile(r"^(\s*)(\d+)[.)] +")
 
 
 def _without_list_markers(text: str) -> str:
-    """Drop a numbered list's line-start ordinal (``1. ...``), as E14 reads it, and dates."""
+    """Drop a numbered list's line-start ordinals, and calendar dates.
+
+    An ordinal is a marker only when the numbered lines count 1, 2, 3 ... in
+    order; otherwise none is dropped, so ``1610511. was the total`` stays a
+    figure. Bullets (``-``, ``*``) carry no digits and are left alone.
+    """
     text = _ISO_DATE.sub(" ", text)
-    return "\n".join(_LIST_MARKER.sub("", line, count=1) for line in text.split("\n"))
+    lines = text.split("\n")
+    numbered = [(i, _ORDINAL.match(line)) for i, line in enumerate(lines)]
+    hits = [(i, m) for i, m in numbered if m]
+    if not hits or [int(m.group(2)) for _i, m in hits] != list(range(1, len(hits) + 1)):
+        return text
+    for i, m in hits:
+        lines[i] = m.group(1) + lines[i][m.end() :]
+    return "\n".join(lines)
+
+
+#: A digit run glued to a letter (RM1610511, 3.0M, USD12): a figure the
+#: whole-token reader cannot see. Read structurally, never by currency word.
+_GLUED = re.compile(
+    r"[A-Za-z_]+[-+]?\d[\d,]*(?:\.\d+)?[A-Za-z_\d]*|\d[\d,]*(?:\.\d+)?[A-Za-z_]+[A-Za-z_\d]*"
+)
+_GLUED_NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def _glued_figures(text: str) -> list[tuple[str, float | None]]:
+    """Each glued token, with its value when the letters only lead (RM1610511 -> 1610511).
+
+    A token whose digits run into a trailing letter (3.0M, 12k) has no value
+    the envelope can match, so its value is None.
+    """
+    out: list[tuple[str, float | None]] = []
+    # A whole figure (1e-07, 9.1) is read by _FIGURE; only the rest is glued.
+    for hit in _GLUED.finditer(_FIGURE.sub(" ", text)):
+        token = hit.group(0)
+        num = _GLUED_NUMBER.search(token)
+        if num is None:
+            continue
+        tail = token[num.end() :]
+        out.append((token, None if tail else _literal_figure(num.group(0))))
+    return out
 
 
 #: ENVELOPE-GATE-01: the reason codes whose digits E16 reads as part of the
@@ -1307,11 +1356,12 @@ def abstained_figures(text: str, codes: list[str] | None) -> list[str]:
     stripped = _without_list_markers(text or "")
     for code in sorted({c for c in codes or [] if c}, key=len, reverse=True):
         stripped = stripped.replace(code, " ")
-    return [
+    found = [
         hit.group(0)
         for hit in _FIGURE.finditer(stripped)
         if _literal_figure(hit.group(0)) is not None
     ]
+    return found + [token for token, _value in _glued_figures(stripped)]
 
 
 def uncited_figures(
@@ -1346,6 +1396,9 @@ def uncited_figures(
         value = _literal_figure(hit.group(0))
         if value is not None and not any(_close(value, a) for a in allowed):
             out.append(hit.group(0))
+    for token, glued in _glued_figures(stripped):
+        if glued is None or not any(_close(glued, a) for a in allowed):
+            out.append(token)
     return out
 
 
