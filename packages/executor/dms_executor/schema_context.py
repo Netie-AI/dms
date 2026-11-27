@@ -2352,16 +2352,17 @@ def schema_from_serving(
 
 def schema_from_landed(path: Path, qualified: str) -> dict[str, Any]:
     """Schema dict for one landed table, including ``source_name`` when the flag is on."""
+    from dms_executor.demo_warehouse import SERVING_DIALECT, connect_serving
+
     schema, _, table = qualified.partition(".")
     if not table:
         schema, table = "bronze", qualified
     body: dict[str, Any] = {
-        "dialect": "duckdb",
+        "dialect": SERVING_DIALECT,
         "datasets": [{"name": table, "description": "", "columns": []}],
     }
     if not Path(path).is_file():
         return body
-    from dms_executor.demo_warehouse import connect_serving
 
     try:
         con = connect_serving(Path(path))
