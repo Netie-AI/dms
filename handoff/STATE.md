@@ -124,7 +124,7 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-28 05:07 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-28 06:08 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
@@ -134,7 +134,7 @@ open PRs: 36 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #581 | n | `fc633463` | tier:fast | 11 ok | handoff: state refresh |
+| #581 | n | `50a73068` | tier:fast | 11 ok | handoff: state refresh |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
