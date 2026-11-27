@@ -414,7 +414,7 @@ def test_vq04_uncertified_paraphrase_demotes_cortex_l1():
 
     resp = AskResponse.model_validate(
         {
-            "answer": "WH-A 91.0 delayed 3",
+            "answer": "WH-A 91.0",
             "audit_id": "aud_trap_l1",
             "route": "governed_metric",
             "provenance": {"badge": "governed_metric", "layer": "L1"},

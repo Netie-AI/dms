@@ -95,11 +95,14 @@ def _assert_names_orphan_link(env: dict[str, Any]) -> None:
     assert env["badge"] == "ABSTAIN"
     assert env["rows"] == []
     text = env["text"]
-    # kind + link name + orphan row count, in the sentence the customer reads
+    # kind + link name in the sentence the customer reads. The orphan row count
+    # is a figure from the customer's rows: it stays in the GEN-01 assumption
+    # (dms#590 E16), never the sentence.
     assert "fk_intact" in text, text
     assert "order_customer" in text, text
-    assert "2 rows" in text, text
     assert "does not exist" in text, text
+    assert "2 rows" not in text, text
+    assert any("2 rows" in a for a in env["assumptions"]), env["assumptions"]
 
 
 def test_sql_over_failed_declared_link_abstains_named(tmp_path: Path) -> None:

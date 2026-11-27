@@ -117,7 +117,9 @@ def test_count_over_duplicated_business_key_abstains_naming_it(tmp_path: Path) -
     assert env["rows"] == []
     text = env["text"]
     assert "business_key_unique" in text and "customer_code" in text
-    assert "2 rows share 1 duplicate" in text
+    # dms#590: the measured count is in the GEN-01 assumption, never the sentence.
+    assert "2 rows share 1 duplicate" not in text
+    assert any("2 rows share 1 duplicate" in a for a in env["assumptions"])
 
 
 def test_clean_business_key_still_answers_three(tmp_path: Path) -> None:

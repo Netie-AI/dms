@@ -2555,3 +2555,40 @@ def test_the_redaction_count_equals_the_markers_stored() -> None:
     ):
         out, n = mask_pii_counted(text)
         assert n == len(marker.findall(out)), (text, out, n)
+
+
+def test_a_gate_refusal_on_the_ask_route_is_a_named_abstain_not_a_503(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ENVELOPE-GATE-01 (dms#590): a lane whose envelope fails rule 10a answers 200 ABSTAIN."""
+    client, app, _cortex = _real_stack(minter)
+
+    def _gate_refuses(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("E17: figure(s) ['412'] in text are not in values[] or rows")
+
+    monkeypatch.setattr(app.state.ask_service, "_live_ask", _gate_refuses)
+    asked = _ask(client, WHERE_IS_SKU, session_id="ses_gate590")
+    assert asked.status_code == 200, asked.text
+    answer = asked.json()
+    assert answer["abstained"] is True and answer["badge"] == "ABSTAIN"
+    assert answer["abstain_reason"] == "envelope_invalid"
+    assert answer["text"] == (
+        "I can't answer this: the answer failed the DMS answer check (E17). "
+        "No figure was returned."
+    )
+    assert answer["rows"] == [] and answer["values"] == []
+    assert "412" not in json.dumps(answer)
+
+
+def test_a_non_gate_assertion_on_the_ask_route_is_not_relabelled(
+    minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a gate clause becomes the named abstain; any other AssertionError is a defect."""
+    client, app, _cortex = _real_stack(minter)
+
+    def _bug(*_a: Any, **_k: Any) -> dict[str, Any]:
+        raise AssertionError("unexpected state")
+
+    monkeypatch.setattr(app.state.ask_service, "_live_ask", _bug)
+    asked = _ask(client, WHERE_IS_SKU, session_id="ses_gate590_bug")
+    assert asked.status_code == 503, asked.text

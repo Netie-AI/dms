@@ -1229,7 +1229,10 @@ def _without_labels(text: str, labels: set[str]) -> str:
 
 
 #: A calendar date (2026-11-20) is a date, not three figures.
-_ISO_DATE = re.compile(r"(?<![A-Za-z0-9_.-])\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?Z?)?(?![A-Za-z0-9_])")
+_ISO_DATE = re.compile(
+    r"(?<![A-Za-z0-9_.-])\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?Z?)?"
+    r"(?![A-Za-z0-9_])"
+)
 
 
 def _without_list_markers(text: str) -> str:
@@ -1238,17 +1241,39 @@ def _without_list_markers(text: str) -> str:
     return "\n".join(_LIST_MARKER.sub("", line, count=1) for line in text.split("\n"))
 
 
+#: ENVELOPE-GATE-01: the reason codes whose digits E16 reads as part of the
+#: code. A fixed set, each digit's source named. No code here is built from the
+#: customer's rows; a code that is (ontology_unverified, fanout_refused) has no
+#: exemption, so its sentence states no figure (gen_path_refuse).
+_FIXED_CODES = (
+    re.compile(r"insights_call_cap:\d+"),  # configured call budget
+    re.compile(r"unhonored_qualifier:rank_window=\d+-\d+"),  # positions asked
+    re.compile(r"unrequested_offset:\d+"),  # the OFFSET the plan carried
+)
+
+
+_GATE_CLAUSE = re.compile(r"(E\d+[a-z]?)(?:-\d+)?:")
+
+
+def envelope_gate_clause(exc: BaseException) -> str | None:
+    """The clause (``E17``) when ``exc`` is a rule 10a gate refusal, else None."""
+    if not isinstance(exc, AssertionError):
+        return None
+    hit = _GATE_CLAUSE.match(str(exc))
+    return hit.group(1) if hit else None
+
+
 def declared_codes(envelope: dict[str, Any]) -> list[str]:
-    """The reason codes an abstention declares: ``abstain_reason`` and ``GEN-01: <code>``."""
-    out: list[str] = []
+    """E16: the declared reason codes (``abstain_reason``, ``GEN-01: <code>``) in the fixed set."""
+    raw: list[str] = []
     reason = envelope.get("abstain_reason")
     if isinstance(reason, str) and reason.strip():
-        out.append(reason.strip())
+        raw.append(reason.strip())
     for item in envelope.get("assumptions") or []:
-        raw = str(item)
-        if raw.startswith(_GAP_PREFIX) and raw[len(_GAP_PREFIX) :].strip():
-            out.append(raw[len(_GAP_PREFIX) :].strip())
-    return out
+        text = str(item)
+        if text.startswith(_GAP_PREFIX):
+            raw.append(text[len(_GAP_PREFIX) :].strip())
+    return [code for code in raw if any(p.fullmatch(code) for p in _FIXED_CODES)]
 
 
 def abstain_markers(envelope: dict[str, Any]) -> list[str]:

@@ -146,6 +146,26 @@ def test_gap2_an_abstention_may_quote_the_reason_code_it_declares() -> None:
         assert_envelope_valid(env)
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        # built from the customer's rows: a measured count is not exempt
+        "ontology_unverified: fk_intact on order_customer: order -> customer: "
+        "2 rows (2 distinct keys) on order",
+        # outside the fixed code set
+        "total_was:1610511",
+        # a fixed head with a filter value, not a rank window
+        "unhonored_qualifier:year=2024",
+    ],
+)
+def test_gap2_only_a_fixed_code_shape_is_exempt(code: str) -> None:
+    env = _abstain()
+    env["assumptions"] = [f"GEN-01: {code}"]
+    env["text"] = f"I cannot certify that (gap: {code}), so I am not executing one."
+    with pytest.raises(AssertionError, match="E16"):
+        assert_envelope_valid(env)
+
+
 def test_gap2_a_numbered_list_ordinal_is_not_a_figure() -> None:
     env = _abstain()
     env["text"] = "Which reading should I answer?\n1. List sku values\n2. List location ids"

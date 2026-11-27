@@ -10,6 +10,7 @@ Not GEN-03 ask_path 400 containment. Not COMPLETE.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from cortex_client.compute import (
@@ -82,6 +83,49 @@ _GRANT_UNREADABLE_TEXT = (
 #: The customer sentence shows the head only. The measure name stays in assumptions.
 _HEAD_ONLY_GAPS = frozenset({"no_declared_measure"})
 
+#: ENVELOPE-GATE-01 (dms#590): an abstention states no figure from the
+#: customer's rows. These gaps carry measured counts in their detail (orphan
+#: rows, duplicate keys, a measured fan-out). The sentence names the check and
+#: the subject with a fixed explanation; the measured detail stays in the
+#: ``GEN-01:`` assumption.
+_MEASURED_DETAIL_GAPS = frozenset({"ontology_unverified", "fanout_refused"})
+_CHECK_SAYS = {
+    "fk_intact": "rows on this link reference a parent that does not exist",
+    "key_unique": "the key does not identify a row",
+    "key_not_null": "rows have NULL in the key",
+    "business_key_unique": "the business key does not identify a row",
+    "fk_is_child_key": "the link does not run from a child key",
+    "relation_readable": "the relation could not be read",
+    "link_readable": "the link could not be read",
+    "link_unmeasurable": "the link could not be measured",
+}
+_FANOUT_SAYS = (
+    "a join on this path repeats rows and would inflate the measure; "
+    "aggregate across the relationship rather than joining through it"
+)
+
+
+_KEY_COLUMNS = re.compile(r"\(([A-Za-z_][A-Za-z0-9_]*(?:, [A-Za-z_][A-Za-z0-9_]*)*)\)")
+
+
+def _measured_gap_text(head: str, gap: str) -> str:
+    """The named gap without the measured detail. Names, never counts."""
+    if head == "fanout_refused":
+        return f"{head}: {_FANOUT_SAYS}"
+    body = gap.split(":", 1)[1] if ":" in gap else ""
+    named: list[str] = []
+    for part in body.split("; "):
+        lead, _, detail = part.partition(": ")
+        check, sep, subject = lead.strip().partition(" on ")
+        if not sep or not check.strip():
+            continue
+        says = _CHECK_SAYS.get(check.strip(), "it did not verify against the data")
+        # The key columns the detail names, e.g. (customer_code). Names, not counts.
+        cols = [c for c in _KEY_COLUMNS.findall(detail) if not any(ch.isdigit() for ch in c)]
+        named_cols = f" ({cols[-1]})" if cols else ""
+        named.append(f"{check.strip()} on {subject.strip()}{named_cols} - {says}")
+    return f"{head}: " + "; ".join(named) if named else head
+
 
 def gap_reason_name(reason: str) -> str | None:
     """Head token of a compile/ranking refusal, or None if not a named gap."""
@@ -100,7 +144,10 @@ def customer_abstain_text(reason: str) -> str:
     head = gap_reason_name(gap)
     if head is None:
         return _GENERIC_ABSTAIN
-    shown = head if head in _HEAD_ONLY_GAPS else gap
+    if head in _MEASURED_DETAIL_GAPS:
+        shown = _measured_gap_text(head, gap)
+    else:
+        shown = head if head in _HEAD_ONLY_GAPS else gap
     return (
         "I cannot certify an ontology-grounded query for that question "
         f"(gap: {shown}), so I am not executing one."

@@ -94,6 +94,7 @@ from dms_executor.envelope import (
     assert_envelope_valid,
     build_answer_envelope,
     chart_from_rows,
+    envelope_gate_clause,
     normalize_contributing_sources,
     reserved_as_of_abstain,
 )
@@ -867,6 +868,33 @@ class Executor:
                     if ask_took_serving_lease():
                         raise ServingDeadlineExceeded() from exc
                     raise
+            except AssertionError as exc:
+                # ENVELOPE-GATE-01 (dms#590): a lane whose envelope fails the
+                # rule 10a gate answers a named abstain, never a 503. Any other
+                # AssertionError is a defect and propagates.
+                clause = envelope_gate_clause(exc)
+                if clause is None:
+                    raise
+                env = build_abstain(
+                    reason=f"envelope_invalid:{clause}",
+                    question=question,
+                    stage="envelope_gate",
+                    answer_id="ans_envelope_invalid",
+                    text=(
+                        "I can't answer this: the answer failed the DMS answer "
+                        f"check ({clause}). No figure was returned."
+                    ),
+                    values=[],
+                    rows=[],
+                    sql_used=None,
+                    assumptions=[f"envelope_invalid:{clause}"],
+                    space_id=space_id,
+                    session_id=session_id,
+                    ask_mode="live",
+                    route="abstain",
+                    abstain_reason="envelope_invalid",
+                )
+                assert_envelope_valid(env)
             except OpenVaultTokenError as exc:
                 # Every lane needs the signing key; no lane may relabel its absence.
                 env = build_abstain(
