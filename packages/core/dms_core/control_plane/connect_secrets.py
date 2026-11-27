@@ -34,8 +34,43 @@ _SOURCES: dict[str, str] = {
 _OPTIONS: dict[str, str] = {"grant_tables": "str_list"}
 # POST grant and revoke.
 _TABLES: dict[str, str] = {"tables": "str_list"}
+# POST /v1/connect/test. Used only when DMS_CONNECT_V2 is on. The off path
+# keeps schema "sources", so these keys stay undeclared there.
+_TEST: dict[str, str] = {
+    "kind": "str",
+    "host": "str",
+    "port": "int",
+    "db": "str",
+    "cred_ref": "str",
+    "tls": "bool",
+}
+_SOURCES_V2: dict[str, str] = {
+    **_SOURCES,
+    "kind": "str",
+    "host": "str",
+    "port": "int",
+    "db": "str",
+    "mode": "str",
+    "tls": "bool",
+}
+_QUERY: dict[str, str] = {
+    "sql": "str",
+    "offset": "int",
+    "page_size": "int",
+    "confirm_runaway": "bool",
+    "export": "bool",
+}
+_CANCEL: dict[str, str] = {"query_id": "str"}
 
-_SCHEMAS = {"sources": _SOURCES, "tables": _TABLES, "options": _OPTIONS}
+_SCHEMAS = {
+    "sources": _SOURCES,
+    "tables": _TABLES,
+    "options": _OPTIONS,
+    "test": _TEST,
+    "sources_v2": _SOURCES_V2,
+    "query": _QUERY,
+    "cancel": _CANCEL,
+}
 
 
 class ConnectCredentialError(Exception):
@@ -67,6 +102,15 @@ def value_has_secret_shape(value: object) -> bool:
 
 
 def _check(value: Any, kind: str) -> str | None:
+    if kind == "int":
+        # bool is a subclass of int. A JSON true is not a port.
+        if isinstance(value, bool) or not isinstance(value, int):
+            return _BAD
+        return None
+    if kind == "bool":
+        if not isinstance(value, bool):
+            return _BAD
+        return None
     if kind == "str":
         if not isinstance(value, str):
             return _BAD
