@@ -313,6 +313,10 @@ jobs:
         # SCORE-BIRD-01 #184. Pack honesty + judge plants. Does not POST /v1/chat/ask.
         run: python scripts/score_bird.py --self-check
 
+      - name: BENCH-MATRIX self-check (stack-free, not live ask)
+        # BENCH-MATRIX-01. Five synthetic questions. Does not POST /v1/chat/ask.
+        run: python scripts/bench_matrix.py --self-check
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

@@ -8,6 +8,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Not a word rule.** The stage token is the span or attempt field the ladder already stored (`retrieve_context`, `schema_context`, `insights_generate`, `validate_explain`, `sql_vote`, `second_reading`, `reconfirm_build`, `rung1`..`rung9`). Question text is not read. SQL, row values, and relation names are not fields on the event.
 - **Not PASS.** Armed `grade52` and pack H were not run.
 
+## 2026-11-27 - BENCH-MATRIX-01: dataset matrix runner, flag off
+
+- **Flag.** `DMS_BENCH_MATRIX` defaults to off. Only the digit `1` turns it on. Off, `scripts/bench_matrix.py` sends no ask and writes no artifact. `--self-check` is a five-question synthetic SQLite instrument and does not call the live route.
+- **Runner.** One command scores a named slice (BIRD Mini-Dev sqlite/mysql/pg, Spider 2.0-lite SQLite, AdventureWorks PG) through `POST /v1/chat/ask`. Datasets are loaded at run time and are not committed. The artifact records served correct, WRONG, reconfirm, abstain, the 95 percent upper bound on wrong-served, p50/p95 seconds, and OpenVault usage USD for the run label. `--header-lang zh|ms` re-ingests a CSV pack from an operator mapping file. An armed `grade52` or `ab_run.sh` refuses the start.
+- **Not a word rule.** Question text is copied into the ask body. Header translation is a map from table and column names. Gold SQL is one read-only statement. Not PASS. No accuracy target.
+
 ## 2026-11-27 - AO-JSON-01: ontology compile can ask for a JSON schema
 
 - **Flag.** `DMS_AO_RESPONSE_FORMAT` defaults to off. Only the digit `1` turns it on. Off, the OpenVault ontology body is still `role`, `messages`, and the pydantic class name, and a string reply is `json.loads` only. On, the body also sends `response_format` (`type` `json_schema`, name and schema from that class, no `strict`, no model id). A string that is not JSON gets one retry: drop one leading fence line and one trailing fence, then `json.loads` again.
