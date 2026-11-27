@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-26 - SCHEMA-RETRY-01: repair a database error before reconfirm
+
+- **Flag.** `DMS_SCHEMA_RETRY` defaults to 0. Off, an explain or execution failure still retries with the typed code only, and the prompt and envelope stay the same. On, the extract loop climbs three rungs inside the existing `AskCallBudget`: a parsed `repair_hint`, the granted schema slice (samples only when `DMS_SCHEMA_CONTEXT` is already on), then `route_hint=escalate`. The cap is not raised.
+- **Not a word rule.** Parsers key off the engine exception class and vendor code (DuckDB, Postgres SQLSTATE, MySQL/MariaDB errno, SQLite, SQL Server). The identifier is kept only when the model's own SQL wrote it. Candidates are granted names ranked by edit distance and the existing trigram score.
+- **Stop.** `definition_mismatch`, `pii`, `def_validate`, and `reserved_param:as_of` do not retry. A spent budget or a third failure reconfirms `schema_repair_exhausted:<kind>`. A 422 on the escalate role reconfirms the same way. DMS does not pick a model. An unknown dialect reconfirms `sql_dialect_unknown`. It is not parsed as the serving engine.
+
 ## 2026-11-26 - LATENCY-01: ask stage timings, lean cuts default off
 
 - **Timings.** The ask clock always records stage spans, prompt size, and abandoned calls. `DMS_ASK_TIMINGS` defaults to 0. Off, the envelope has no `timings` key. The snapshot is published in-process for `grade52 --armed`. On, the same snapshot is also written on the envelope. It is not in the vendored OpenAPI pin.

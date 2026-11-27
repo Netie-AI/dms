@@ -142,6 +142,23 @@ def label_run(run_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def repair_ok_counts(capture: Mapping[str, Mapping[str, Any]]) -> list[tuple[str, int]]:
+    """``repair_ok@rungN`` from attempt records. Successes are not failure rows."""
+    counts: Counter[str] = Counter()
+    for record in capture.values():
+        env = record.get("env") if isinstance(record, Mapping) else None
+        loop = env.get("loop") if isinstance(env, Mapping) else None
+        if not isinstance(loop, list):
+            continue
+        for item in loop:
+            if not isinstance(item, Mapping):
+                continue
+            name = item.get("repair")
+            if isinstance(name, str) and name.startswith("repair_ok@"):
+                counts[name] += 1
+    return sorted(counts.items())
+
+
 def class_counts(rows: Iterable[Mapping[str, Any]]) -> list[tuple[str, int]]:
     counts = Counter(str(r["failure_class"]) for r in rows)
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -227,6 +244,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"failure_cases n={len(rows)} -> {out}")
     for name, count in class_counts(rows):
         print(f"  {count:3d} {name}")
+    repairs = repair_ok_counts(_load_capture(run_dir))
+    if repairs:
+        print("repair_ok " + " ".join(f"{name}={count}" for name, count in repairs))
     if args.ledger is not None:
         moves = append_ledger(args.ledger, rows, run_dir)
         print("ledger moves " + (" ".join(f"{k}={moves[k]}" for k in sorted(moves)) or "none"))

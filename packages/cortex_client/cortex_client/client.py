@@ -271,6 +271,7 @@ class CortexClient:
         ontology: dict[str, Any] | None = None,
         sql_feedback: dict[str, Any] | None = None,
         schema_context: str | None = None,
+        route_hint: str | None = None,
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
@@ -297,6 +298,7 @@ class CortexClient:
             api_key=self.api_key,
             timeout=bound,
             sql_feedback=sql_feedback,
+            route_hint=route_hint,
         )
 
     def complete(self, prompt: str) -> str:

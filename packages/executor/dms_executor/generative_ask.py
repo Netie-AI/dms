@@ -53,6 +53,7 @@ from cortex_client.compute import (
     ontology_ranked_lane_enabled,
     query_plan_from_insights_ranking,
     recorded_model_calls,
+    schema_retry_enabled,
     typed_query_plan,
 )
 from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
@@ -1722,6 +1723,12 @@ def _run_extract_loop(
                 stage="extract_loop",
                 ticket_reason=ticket_reason,
             )
+            if str(reason).startswith("schema_repair_exhausted:"):
+                env["reconfirm"] = {
+                    "reason_code": str(reason),
+                    "why": str(reason),
+                    "closest_question": "",
+                }
         prov = held.get("provenance")
         if isinstance(prov, dict) and isinstance(env, dict):
             env["ontology_provenance"] = dict(prov)
@@ -1761,6 +1768,17 @@ def _run_extract_loop(
     # Rows only. The customer submit waits until the second reading agrees,
     # so a split does not ledger a number the envelope does not serve.
     direct = reading_prompt(question, reading=1)
+    schema_ladder = None
+    if schema_retry_enabled():
+        from dms_executor.schema_retry import SchemaLadder
+
+        schema_ladder = SchemaLadder(
+            grantable=set(grantable),
+            warehouse=warehouse,
+            dialect=dialect,
+            ontology=space_onto or declared,
+            space_id=space_id,
+        )
     first = run_model_loop(
         question=direct,
         ctx=ctx,
@@ -1778,6 +1796,7 @@ def _run_extract_loop(
             {RESERVED_PARAM_AS_OF, "pii", "def_validate", "definition_mismatch"}
         ),
         budget=budget,
+        schema_ladder=schema_ladder,
     )
     if first.get("abstained") or not first.get("rows"):
         return first
@@ -1800,6 +1819,7 @@ def _run_extract_loop(
         session_id=session_id,
         grantable=grantable,
         budget=budget,
+        schema_ladder=schema_ladder,
     )
 
 
@@ -1853,6 +1873,7 @@ def _second_reading(
     session_id: str | None,
     grantable: set[str],
     budget: AskCallBudget,
+    schema_ladder: Any = None,
 ) -> dict[str, Any]:
     """One plan-then-SQL prompt. Same checker. Same call cap as the first reading."""
     first_sql = str(first.get("sql_used") or "")
@@ -1874,6 +1895,7 @@ def _second_reading(
     )
     ctx2 = dict(ctx)
     ctx2.pop("sql_loop_feedback", None)
+    ctx2.pop("route_hint", None)
     ctx2["sql_vote_prompt"] = second_prompt
     ctx2["sql_vote_kind"] = "reading"
     budget.take()
@@ -1910,6 +1932,7 @@ def _second_reading(
         ),
         recover_failures=True,
         budget=budget,
+        schema_ladder=schema_ladder,
     )
     second_sql = str(second.get("sql_used") or "")
     raw_first = first.get("rows")
@@ -1952,6 +1975,7 @@ def _second_reading(
     if budget.allow():
         ctx3 = dict(ctx)
         ctx3.pop("sql_loop_feedback", None)
+        ctx3.pop("route_hint", None)
         ctx3.pop("vq_examples", None)
         ctx3["sql_vote_prompt"] = reconfirm_prompt(question, detail)
         ctx3["sql_vote_kind"] = "reconfirm"
