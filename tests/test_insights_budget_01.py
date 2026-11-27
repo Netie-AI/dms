@@ -170,8 +170,8 @@ def test_unset_timeout_abstain_is_byte_identical_to_6f7139a3(
         payload = _compute(_Scripted(time_out=leg))
         env = dict(_ask(payload, onto, wh))
         env["as_of"] = "<as_of>"
-        # Only the two keys ROUTE-STAMP-01 adds.
-        for key in ("served_route", "ladder_rung"):
+        # Route stamps, plus the LATENCY-01 timings block. Neither is a served field.
+        for key in ("served_route", "ladder_rung", "timings"):
             env.pop(key, None)
         got[leg] = {"payload": payload, "envelope": env}
         assert payload is not None and payload["insights_fail"] == "insights_timeout"

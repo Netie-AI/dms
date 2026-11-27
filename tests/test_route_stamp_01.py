@@ -42,7 +42,15 @@ PACK = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 # Wall clock, per-run ticket ids, route stamps, the reconfirm token, and the
 # grant-miss code. The copy fixtures predate the offer and the code.
 _VOLATILE = frozenset(
-    {"as_of", "ticket_id", "served_route", "ladder_rung", "reconfirm", "abstain_reason"}
+    {
+        "as_of",
+        "ticket_id",
+        "served_route",
+        "ladder_rung",
+        "reconfirm",
+        "abstain_reason",
+        "timings",
+    }
 )
 # Base pack phrase. The supplier-rank sibling lives in the score fixture,
 # which this copy does not include, so the model abstain there may offer.

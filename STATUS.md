@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-26, ONTO-GAPS-01
+**Last updated:** 2026-11-26, LATENCY-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_ONTO_GAP_PROPOSE` default 0, and it also needs `DMS_ONTO_PG`. Off, the ask envelope and prompt are unchanged. On, a measure gap is proposed off the ask path (OpenVault role `ontology`), stored `proposed` and not served. Only `onto_steward` approves it. Yes does not approve. Unit file 9 passed. Full suite and armed grade52 not run. Not PASS.
+**Tip:** Rebased onto f4fb2676 (ONTO-GAPS-01). `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` default off. Flag off, the envelope has no timings key. DEFER does not skip the second reading. Full suite not run. Not PASS.
 
 ## Direction
 

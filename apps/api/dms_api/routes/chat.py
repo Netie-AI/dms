@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import anyio
 from cortex_client import CortexClient, compliance_gate
+from cortex_client.ask_clock import attach_timings, ensure_clock, release_clock, span
 from dms_core.ask import AskServiceError, AskServicePort, GroundingRefused
 from dms_core.bi_export import export_envelope_bi
 from dms_core.control_plane.spaces import SpaceStorePort
@@ -318,48 +319,62 @@ def chat_ask(
     if body.space_id and store.get(body.space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
 
-    asked_at = datetime.now(UTC)
-    decision = compliance_gate(
-        action="chat.ask",
-        metadata={"question": body.question, "space_id": body.space_id, "task_id": "chat.ask"},
-        client=cortex,
-    )
-
-    # BANK-02 (dms#269): one audit row per ask, written once the outcome is known.
-    # Asks that never reach the gate (the lane refusal, an unknown Space) are
-    # rejected requests, not asks, and are not recorded.
+    # The clock covers the gate and the answer. A refused lane or an unknown
+    # Space never reaches here, so those are not asks.
+    clock_token = ensure_clock()
     try:
-        env = _answer_ask(
-            body,
-            decision,
-            settings=settings,
-            store=store,
-            cortex=cortex,
-            ask=ask,
-            request=request,
-        )
-        env = _offer_reconfirm(ask, env, body, cortex)
-    except Exception as exc:
+        asked_at = datetime.now(UTC)
+        with span("tasks_choose"):
+            decision = compliance_gate(
+                action="chat.ask",
+                metadata={
+                    "question": body.question,
+                    "space_id": body.space_id,
+                    "task_id": "chat.ask",
+                },
+                client=cortex,
+            )
+
+        # BANK-02 (dms#269): one audit row per ask, written once the outcome is known.
+        # Asks that never reach the gate (the lane refusal, an unknown Space) are
+        # rejected requests, not asks, and are not recorded.
+        try:
+            env = _answer_ask(
+                body,
+                decision,
+                settings=settings,
+                store=store,
+                cortex=cortex,
+                ask=ask,
+                request=request,
+            )
+            with span("reconfirm_build"):
+                env = _offer_reconfirm(ask, env, body, cortex)
+        except Exception as exc:
+            record_ask(
+                audit,
+                settings,
+                question=body.question,
+                space_id=body.space_id,
+                asked_at=asked_at,
+                error=exc,
+                executed=take_executed(ask),
+            )
+            raise
+        if isinstance(env, dict):
+            attach_timings(env)
         record_ask(
             audit,
             settings,
             question=body.question,
             space_id=body.space_id,
             asked_at=asked_at,
-            error=exc,
+            envelope=env,
             executed=take_executed(ask),
         )
-        raise
-    record_ask(
-        audit,
-        settings,
-        question=body.question,
-        space_id=body.space_id,
-        asked_at=asked_at,
-        envelope=env,
-        executed=take_executed(ask),
-    )
-    return env
+        return env
+    finally:
+        release_clock(clock_token)
 
 
 def _choice_yes(value: bool | str) -> bool:

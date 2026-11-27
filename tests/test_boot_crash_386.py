@@ -473,7 +473,7 @@ def test_flag_off_fixture_envelopes_match_f9ffc3e1(
             return {
                 key: _drop(val)
                 for key, val in body.items()
-                if key not in {"served_route", "ladder_rung"}
+                if key not in {"served_route", "ladder_rung", "timings"}
             }
         if isinstance(body, list):
             return [_drop(val) for val in body]

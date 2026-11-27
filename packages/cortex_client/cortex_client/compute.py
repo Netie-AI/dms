@@ -22,6 +22,7 @@ import logging
 import math
 import os
 import re
+import time
 from collections.abc import Mapping
 from contextvars import ContextVar
 from typing import Any
@@ -29,6 +30,16 @@ from typing import Any
 import httpx
 from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload
 
+from cortex_client.ask_clock import (
+    deadline_already_passed,
+    give_up,
+    http_timeout,
+    model_slot,
+    note_generate_leg,
+    note_prompt_body,
+    register_inflight,
+    unregister_inflight,
+)
 from cortex_client.insights import (
     INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
     INSIGHTS_FAIL_BEARER_MISSING,
@@ -922,16 +933,22 @@ def _insights_generate_post(
         return refusal_payload(refusal)
     hdr = stamp_generate_headers(headers)
     note_model_call()
+    note_prompt_body("insights_generate", body)
+    started = time.perf_counter()
     try:
-        res = http.post(
-            f"{root}{INSIGHTS_PATH}",
-            json=body,
-            headers=hdr,
-        )
+        with model_slot(voting=cloop_b_enabled()):
+            res = http.post(
+                f"{root}{INSIGHTS_PATH}",
+                json=body,
+                headers=hdr,
+            )
     except httpx.HTTPError as exc:
         if isinstance(exc, httpx.TimeoutException):
+            give_up("timeout")
             raise
         return None
+    finally:
+        note_generate_leg((time.perf_counter() - started) * 1000.0)
     try:
         payload = res.json()
     except ValueError:
@@ -1251,6 +1268,7 @@ def _run_insights_legs(
         try:
             ranking = _insights_ontology_get(http, root, question, headers)
         except httpx.TimeoutException as exc:
+            give_up("timeout:ontology")
             raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:ontology", legs) from exc
         if ranking is not None:
             insights_payload = _merge_ontology_ranking(insights_payload, ranking)
@@ -1359,99 +1377,109 @@ def compute_query(
     cap = insights_call_cap() if call_cap is None else call_cap
     if not dms_query:
         timeout = min(float(timeout), INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS)
+    if deadline_already_passed():
+        give_up("deadline")
+        return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
+    timeout = http_timeout(float(timeout))
     try:
         with httpx.Client(timeout=timeout) as http:
+            register_inflight(http, root, headers)
             try:
-                insights_payload = _run_insights_legs(
-                    http, root, question, insights_body, headers, ontology,
-                    call_cap=cap,
-                )
-            except _BudgetStop as stop:
-                timed_out = stop.reason.startswith(INSIGHTS_FAIL_TIMEOUT)
-                if dms_query and timed_out:
+                try:
+                    insights_payload = _run_insights_legs(
+                        http, root, question, insights_body, headers, ontology,
+                        call_cap=cap,
+                    )
+                except _BudgetStop as stop:
+                    timed_out = stop.reason.startswith(INSIGHTS_FAIL_TIMEOUT)
+                    if dms_query and timed_out:
+                        return None
+                    if timed_out and not insights_timeout_env_set():
+                        # Unset env: the bare pre-budget payload, byte for byte.
+                        return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
+                    # Legs only: a partial ranking/SQL must not reach the ask path.
+                    legs = {"count": len(stop.legs), "legs": stop.legs}
+                    return insights_fail_payload(stop.reason, {"generate_legs": legs})
+                except httpx.TimeoutException:
+                    give_up("timeout")
+                    timed_out = True
+                    if not dms_query:
+                        return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
                     return None
-                if timed_out and not insights_timeout_env_set():
-                    # Unset env: the bare pre-budget payload, byte for byte.
-                    return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
-                # Legs only: a partial ranking/SQL must not reach the ask path.
-                legs = {"count": len(stop.legs), "legs": stop.legs}
-                return insights_fail_payload(stop.reason, {"generate_legs": legs})
-            except httpx.TimeoutException:
-                timed_out = True
-                if not dms_query:
-                    return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
-                return None
-            if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
-                return insights_payload
-            if (
-                not dms_query
-                and isinstance(insights_payload, dict)
-                and not gen01_rules_enabled()
-                and (
-                    insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
-                    or int(insights_payload.get(_HTTP_STATUS_KEY) or 0) in {401, 403}
+                if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
+                    return insights_payload
+                if (
+                    not dms_query
+                    and isinstance(insights_payload, dict)
+                    and not gen01_rules_enabled()
+                    and (
+                        insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
+                        or int(insights_payload.get(_HTTP_STATUS_KEY) or 0) in {401, 403}
+                    )
+                ):
+                    # Ask lane: drop any ontology ranking merged after the error.
+                    # That ranking is the GEN-01 rule builder. Legacy compute_query
+                    # still posts /dms/query. 401/403 keep insights_unauthorized.
+                    out = {
+                        k: v for k, v in insights_payload.items() if k != "ontology"
+                    }
+                    if int(out.get(_HTTP_STATUS_KEY) or 0) in {401, 403}:
+                        return insights_fail_payload(INSIGHTS_FAIL_UNAUTHORIZED, out)
+                    out["insights_fail"] = INSIGHTS_FAIL_AI_ERROR
+                    return out
+                ranked_plan = typed_ranked_retry_plan(
+                    insights_payload, ontology=ontology, question=question
                 )
-            ):
-                # Ask lane: drop any ontology ranking merged after the error.
-                # That ranking is the GEN-01 rule builder. Legacy compute_query
-                # still posts /dms/query. 401/403 keep insights_unauthorized.
-                out = {
-                    k: v for k, v in insights_payload.items() if k != "ontology"
-                }
-                if int(out.get(_HTTP_STATUS_KEY) or 0) in {401, 403}:
-                    return insights_fail_payload(INSIGHTS_FAIL_UNAUTHORIZED, out)
-                out["insights_fail"] = INSIGHTS_FAIL_AI_ERROR
-                return out
-            ranked_plan = typed_ranked_retry_plan(
-                insights_payload, ontology=ontology, question=question
-            )
-            if isinstance(insights_payload, dict):
-                if ranked_plan:
-                    dms_body.setdefault(
-                        "query_plan",
-                        {k: v for k, v in ranked_plan.items() if k != "ranked_id"},
-                    )
-                    dms_body["ranked_metric"] = (
-                        ranked_plan.get("ranked_id") or ranked_plan["measure"]
-                    )
-                else:
-                    rid = first_ranked_metric_id(insights_payload)
-                    if rid:
+                if isinstance(insights_payload, dict):
+                    if ranked_plan:
                         dms_body.setdefault(
                             "query_plan",
-                            {"measure": rid, "group_by": [], "filters": []},
+                            {k: v for k, v in ranked_plan.items() if k != "ranked_id"},
                         )
-                        dms_body["ranked_metric"] = rid
-                normalized = normalize_insights_compute(insights_payload)
-                if normalized is not None:
-                    return normalized
-                if not dms_query:
-                    fail = classify_insights_fail(
-                        insights_payload, timed_out=timed_out
-                    )
+                        dms_body["ranked_metric"] = (
+                            ranked_plan.get("ranked_id") or ranked_plan["measure"]
+                        )
+                    else:
+                        rid = first_ranked_metric_id(insights_payload)
+                        if rid:
+                            dms_body.setdefault(
+                                "query_plan",
+                                {"measure": rid, "group_by": [], "filters": []},
+                            )
+                            dms_body["ranked_metric"] = rid
+                    normalized = normalize_insights_compute(insights_payload)
+                    if normalized is not None:
+                        return normalized
+                    if not dms_query:
+                        fail = classify_insights_fail(
+                            insights_payload, timed_out=timed_out
+                        )
+                        if fail:
+                            return insights_fail_payload(fail, insights_payload)
+                        return insights_miss_payload(insights_payload)
+                elif not dms_query:
+                    fail = classify_insights_fail(insights_payload, timed_out=timed_out)
                     if fail:
                         return insights_fail_payload(fail, insights_payload)
-                    return insights_miss_payload(insights_payload)
-            elif not dms_query:
-                fail = classify_insights_fail(insights_payload, timed_out=timed_out)
-                if fail:
-                    return insights_fail_payload(fail, insights_payload)
-                return None
-            try:
-                dms_res = http.post(
-                    f"{root}{COMPUTE_PATH}",
-                    json=dms_body,
-                    headers=headers,
-                )
-            except httpx.TimeoutException:
-                if insights_payload is not None:
-                    return insights_miss_payload(insights_payload)
-                return None
-            except httpx.HTTPError:
-                if insights_payload is not None:
-                    return insights_miss_payload(insights_payload)
-                return None
+                    return None
+                try:
+                    dms_res = http.post(
+                        f"{root}{COMPUTE_PATH}",
+                        json=dms_body,
+                        headers=headers,
+                    )
+                except httpx.TimeoutException:
+                    if insights_payload is not None:
+                        return insights_miss_payload(insights_payload)
+                    return None
+                except httpx.HTTPError:
+                    if insights_payload is not None:
+                        return insights_miss_payload(insights_payload)
+                    return None
+            finally:
+                unregister_inflight(http)
     except httpx.TimeoutException:
+        give_up("timeout")
         if not dms_query:
             return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
         return None

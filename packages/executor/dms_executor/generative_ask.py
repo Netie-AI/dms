@@ -28,6 +28,15 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import sqlglot
+from cortex_client.ask_clock import (
+    ask_lean_defer,
+    attach_timings,
+    ensure_clock,
+    note_prompt_ctx,
+    note_skipped,
+    release_clock,
+    span,
+)
 from cortex_client.compute import (
     INSIGHTS_FAIL_AI_ERROR,
     INSIGHTS_FAIL_UNAUTHORIZED,
@@ -45,6 +54,7 @@ from cortex_client.compute import (
     insights_was_reached,
     ontology_ranked_lane_enabled,
     query_plan_from_insights_ranking,
+    recorded_model_calls,
     typed_query_plan,
 )
 from cortex_client.insights import SCHEMA_CONTEXT_FIELD, schema_context_enabled
@@ -778,30 +788,31 @@ def validate_compiled_sql(
     file does not know stays a grant miss, and the contract ask is what binds
     a qualifier against the catalog.
     """
-    if sql_has_reserved_as_of(sql):
-        return RESERVED_PARAM_AS_OF
-    cite = dialect is None and warehouse is not None and Path(warehouse).is_file()
-    read = dialect if dialect is not None else (SERVING_DIALECT if cite else None)
-    gap = serve_gap(
-        sql, grantable=grantable, dialect=read, cite_missing=cite
-    )
-    if gap:
-        return gap
-    if warehouse is None or not Path(warehouse).is_file():
-        return "warehouse_missing"
-    # EXPLAIN runs on the pooled serving cursor (read-only, external access
-    # off). Refuse anything that is not one SELECT before EXPLAIN runs.
-    con = connect_serving(Path(warehouse))
-    try:
-        gate = _refusal_before_explain(con, sql)
-        if gate:
-            return gate
-        con.execute(f"EXPLAIN {sql}")
-    except Exception as exc:  # noqa: BLE001
-        return f"explain:{type(exc).__name__}"
-    finally:
-        con.close()
-    return None
+    with span("validate_explain"):
+        if sql_has_reserved_as_of(sql):
+            return RESERVED_PARAM_AS_OF
+        cite = dialect is None and warehouse is not None and Path(warehouse).is_file()
+        read = dialect if dialect is not None else (SERVING_DIALECT if cite else None)
+        gap = serve_gap(
+            sql, grantable=grantable, dialect=read, cite_missing=cite
+        )
+        if gap:
+            return gap
+        if warehouse is None or not Path(warehouse).is_file():
+            return "warehouse_missing"
+        # EXPLAIN runs on the pooled serving cursor (read-only, external access
+        # off). Refuse anything that is not one SELECT before EXPLAIN runs.
+        con = connect_serving(Path(warehouse))
+        try:
+            gate = _refusal_before_explain(con, sql)
+            if gate:
+                return gate
+            con.execute(f"EXPLAIN {sql}")
+        except Exception as exc:  # noqa: BLE001
+            return f"explain:{type(exc).__name__}"
+        finally:
+            con.close()
+        return None
 
 
 REASON_UNTYPED_NUMERIC = "untyped_numeric"
@@ -1155,7 +1166,8 @@ def _submit_validated(
             notes=notes,
         )
     try:
-        result = submit(sql)
+        with span("submit_execute"):
+            result = submit(sql)
     except OpenVaultTokenError:
         raise
     except Exception:  # noqa: BLE001
@@ -1771,7 +1783,16 @@ def _run_extract_loop(
     )
     if first.get("abstained") or not first.get("rows"):
         return first
-    return _second_reading(
+    first_sql = str(first.get("sql_used") or "")
+    # The checker already passed inside the loop. A second model reading is
+    # not needed to serve that SQL. Defer skips it; the published SQL is the
+    # first reading's SQL.
+    if ask_lean_defer() and first_sql and check(first_sql) is None:
+        with span("second_reading"):
+            note_skipped("second_reading")
+        return submit_sql(first_sql, attempts)
+    with span("second_reading"):
+        return _second_reading(
         first,
         question=question,
         ctx=ctx,
@@ -1809,7 +1830,8 @@ def _vote_rows(
             sql=sql,
             stage="sql_vote",
         )
-    rows, err = run_readonly(sql, Path(warehouse))
+    with span("submit_execute"):
+        rows, err = run_readonly(sql, Path(warehouse))
     if err or not rows:
         return _abstain(
             question,
@@ -2036,7 +2058,7 @@ def _ladder_after_ai_error(
     )
 
 
-def maybe_generative_ask(
+def _maybe_generative_ask_impl(
     question: str,
     *,
     space_id: str | None = None,
@@ -2188,13 +2210,15 @@ def maybe_generative_ask(
     # Short retrieved context only -- not the full ontology dump.
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
-    ctx = retrieve_short_context(
-        q, warehouse=lake, grantable=allowed, ontology=onto
-    )
+    with span("retrieve_context"):
+        ctx = retrieve_short_context(
+            q, warehouse=lake, grantable=allowed, ontology=onto
+        )
     envelope_prompt = ""
     index_stamp = ""
     if schema_context_enabled():
-        ctx = prepare_generate_context(
+        with span("schema_context"):
+            ctx = prepare_generate_context(
             ctx,
             question=q,
             serving=lake,
@@ -2247,7 +2271,8 @@ def maybe_generative_ask(
     grounded: list[GroundedDef] = []
     if ground_defs_enabled():
         defs_onto = onto if demo_ontology_allowed else space_onto
-        text, grounded = build_grounding(
+        with span("ground_defs"):
+            text, grounded = build_grounding(
             q,
             defs_onto,
             embedder=embedder,
@@ -2284,6 +2309,20 @@ def maybe_generative_ask(
             held_preview = preview
         insights_ctx = with_examples(insights_ctx)
         ctx = with_examples(ctx)
+    _compute_fn = compute
+
+    def _timed_compute(ctx: dict[str, Any]) -> dict[str, Any] | None:
+        before = recorded_model_calls()
+        with span("insights_generate"):
+            try:
+                if _compute_fn is None:
+                    return None
+                return _compute_fn(ctx)
+            finally:
+                if recorded_model_calls() == before:
+                    note_prompt_ctx(ctx)
+
+    compute = _timed_compute
     vote_budget: AskCallBudget | None = None
     if cloop_b_enabled() and not ontology_ranked_lane_enabled():
         # Direct SQL. Reading 2 is a different instruction under the same cap.
@@ -3008,3 +3047,17 @@ def maybe_generative_ask(
             served_route=ROUTE_COMPILE,
         )
     )
+
+
+def maybe_generative_ask(
+    *args: Any, **kwargs: Any
+) -> dict[str, Any] | None:
+    """Bind the ask clock, then stamp ``timings`` on the envelope."""
+    token = ensure_clock()
+    try:
+        env = _maybe_generative_ask_impl(*args, **kwargs)
+        if isinstance(env, dict):
+            attach_timings(env)
+        return env
+    finally:
+        release_clock(token)
