@@ -933,52 +933,63 @@ class Executor:
                 # serving open must not wait again.
                 token = block_serving_lease(exc.code)
                 try:
-                    if exc.code == ServingLeaseQueueFull.code:
-                        text = (
-                            "I can't answer this right now: the serving wait "
-                            f"queue is full ({exc.code}). No figure was returned."
-                        )
-                        answer_id = "ans_serving_lease_queue_full"
-                    elif exc.code == SERVING_DEADLINE_EXCEEDED_REASON:
-                        text = (
-                            "I can't answer this right now: the ask ran out of "
-                            f"time after a serving connection was granted ({exc.code}). "
-                            "No figure was returned."
-                        )
-                        answer_id = "ans_serving_deadline_exceeded"
-                    elif exc.code == SERVING_DEADLINE_RESERVE_REASON:
-                        text = (
-                            "I can't answer this right now: there is not enough "
-                            f"time left to start ({exc.code}). No figure was returned."
-                        )
-                        answer_id = "ans_serving_deadline_reserve"
-                    else:
-                        text = (
-                            "I can't answer this right now: serving connections are "
-                            f"at the cap ({exc.code}). No figure was returned."
-                        )
-                        answer_id = "ans_serving_lease_cap"
                     deadline_hit = exc.code in {
                         SERVING_DEADLINE_EXCEEDED_REASON,
                         SERVING_DEADLINE_RESERVE_REASON,
                     }
-                    env = build_abstain(
-                        reason=exc.code,
-                        question=question,
-                        stage="serving_lease",
-                        answer_id=answer_id,
-                        text=text,
-                        values=[],
-                        rows=[],
-                        sql_used=None,
-                        assumptions=[exc.code],
-                        space_id=space_id,
-                        session_id=session_id,
-                        ask_mode="live",
-                        route="abstain",
-                        abstain_reason=exc.code if deadline_hit else None,
-                    )
-                    if deadline_hit:
+                    from dms_executor.scale_miss import enabled as scale_miss_enabled
+
+                    if deadline_hit and scale_miss_enabled():
+                        from dms_executor.scale_miss import stop_envelope
+
+                        env = stop_envelope(
+                            question,
+                            space_id=space_id,
+                            session_id=session_id,
+                        )
+                    else:
+                        if exc.code == ServingLeaseQueueFull.code:
+                            text = (
+                                "I can't answer this right now: the serving wait "
+                                f"queue is full ({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_lease_queue_full"
+                        elif exc.code == SERVING_DEADLINE_EXCEEDED_REASON:
+                            text = (
+                                "I can't answer this right now: the ask ran out of "
+                                "time after a serving connection was granted "
+                                f"({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_deadline_exceeded"
+                        elif exc.code == SERVING_DEADLINE_RESERVE_REASON:
+                            text = (
+                                "I can't answer this right now: there is not enough "
+                                f"time left to start ({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_deadline_reserve"
+                        else:
+                            text = (
+                                "I can't answer this right now: serving connections are "
+                                f"at the cap ({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_lease_cap"
+                        env = build_abstain(
+                            reason=exc.code,
+                            question=question,
+                            stage="serving_lease",
+                            answer_id=answer_id,
+                            text=text,
+                            values=[],
+                            rows=[],
+                            sql_used=None,
+                            assumptions=[exc.code],
+                            space_id=space_id,
+                            session_id=session_id,
+                            ask_mode="live",
+                            route="abstain",
+                            abstain_reason=exc.code if deadline_hit else None,
+                        )
+                    if deadline_hit and not scale_miss_enabled():
                         env["serving_deadline_s"] = ask_budget_s
                     assert_envelope_valid(env)
                 finally:
@@ -1758,6 +1769,7 @@ class Executor:
         """
         from dms_executor.reconfirm import (
             decline_envelope,
+            file_proposed_join,
             held_ready,
             reconfirm_run_held_enabled,
             take_pending,
@@ -1772,6 +1784,25 @@ class Executor:
             if cortex_origin:
                 return self._cortex_confirm_no(pending)
             return decline_envelope(pending)
+        if pending.get("join_confirm") is True:
+            from cortex_client.insights import schema_context_enabled
+
+            if schema_context_enabled():
+                blocked = self._join_confirm_block(pending)
+                if blocked is not None:
+                    return blocked
+                env = self._run_held_sql(pending)
+                served = (
+                    env.get("abstained") is not True
+                    and str(env.get("badge") or "") != "ABSTAIN"
+                )
+                if served and not file_proposed_join(pending):
+                    assumptions = env.get("assumptions")
+                    if not isinstance(assumptions, list):
+                        assumptions = []
+                        env["assumptions"] = assumptions
+                    assumptions.append("join_link:not_filed")
+                return env
         if reconfirm_run_held_enabled() and held_ready(pending):
             return self._run_held_sql(pending)
         suggested = str(pending.get("suggested_question") or "").strip()
@@ -1877,6 +1908,66 @@ class Executor:
         )
         assert_envelope_valid(env)
         return env
+
+    def _join_confirm_block(self, pending: dict[str, Any]) -> dict[str, Any] | None:
+        """Ask back when the confirmed join fails the shared submit gates.
+
+        None means ``validated_sql_reason`` passed and the SQL may run.
+        A miss is not a served number.
+        """
+        from dms_executor.abstain import build_abstain
+        from dms_executor.generative_ask import validated_sql_reason
+
+        sql = str(pending.get("sql") or "").strip()
+        question = str(
+            pending.get("suggested_question") or pending.get("question") or ""
+        ).strip()
+        raw_grants = pending.get("grantable")
+        grantable = (
+            {str(name) for name in raw_grants if str(name).strip()}
+            if isinstance(raw_grants, list)
+            else set()
+        )
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        blocked = validated_sql_reason(
+            sql,
+            question=question,
+            warehouse=self._warehouse,
+            grantable=grantable,
+        )
+        if not blocked:
+            return None
+        held = build_abstain(
+            reason=blocked,
+            question=question,
+            stage="join_confirm",
+            answer_id="ans_join_confirm",
+            text=blocked,
+            rows=[],
+            sql_used=None,
+            values=[],
+            assumptions=[f"reconfirm: {blocked}"],
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="generated",
+            log_ticket=False,
+        )
+        held["reconfirm"] = {"definition": blocked, "why": blocked}
+        raw_tables = pending.get("tables")
+        raw_path = pending.get("ask_path")
+        return self.offer_reconfirm(
+            held,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            tables=list(raw_tables) if isinstance(raw_tables, list) else None,
+            ask_path=raw_path if isinstance(raw_path, str) else None,
+            cortex=self._cortex,
+        )
 
     def _run_held_sql(self, pending: dict[str, Any]) -> dict[str, Any]:
         """Execute SQL the user confirmed. Grant and read-only checks run again."""

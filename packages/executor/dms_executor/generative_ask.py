@@ -134,6 +134,7 @@ from dms_executor.route_stamp import (
 from dms_executor.schema_context import (
     SCHEMA_CONTEXT_ENVELOPE_KEY,
     SCHEMA_INDEX_STAMP_KEY,
+    join_key_facts,
     prepare_generate_context,
 )
 from dms_executor.semantic_retrieve import (
@@ -1162,6 +1163,32 @@ def _l2_envelope(
     return env
 
 
+def validated_sql_reason(
+    sql: str,
+    *,
+    question: str,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+) -> str | None:
+    """Pre-execute gates shared with ``_submit_validated``.
+
+    Qualifier, a stated value, currency, reserved ``$as_of``, and an untyped
+    numeric. None means those gates passed. Coverage and the compile-only
+    hold stay with the caller.
+    """
+    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
+        question, sql, warehouse, grantable=grantable
+    )
+    if gap:
+        return gap
+    ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
+    if ccy_why:
+        return ccy_why
+    if sql_has_reserved_as_of(sql):
+        return RESERVED_PARAM_AS_OF
+    return untyped_numeric_reason(sql, warehouse)
+
+
 def _submit_validated(
     sql: str,
     *,
@@ -1182,53 +1209,41 @@ def _submit_validated(
     served_route: str = "",
     grantable: set[str] | None = None,
 ) -> dict[str, Any]:
-    if not coverage_valid(coverage):
-        return _abstain(
-            question,
-            "coverage_invalid: numeric answer missing include/exclude/unsure",
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-            notes=notes,
+    def _sql_checks(statement: str) -> dict[str, Any] | None:
+        """Qualifier, currency, and numeric checks. None means the SQL may be served."""
+        if not coverage_valid(coverage):
+            return _abstain(
+                question,
+                "coverage_invalid: numeric answer missing include/exclude/unsure",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
+        blocked = validated_sql_reason(
+            statement, question=question, warehouse=warehouse, grantable=grantable
         )
-    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
-        question, sql, warehouse, grantable=grantable
-    )
-    if gap:
-        return _abstain(
-            question,
-            gap,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-            notes=notes,
-        )
-    ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
-    if ccy_why:
-        return _abstain(
-            question,
-            ccy_why,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-        )
-    if sql_has_reserved_as_of(sql):
-        return reserved_as_of_abstain(
-            space_id=space_id,
-            session_id=session_id,
-            route="generated",
-            question=question,
-        )
-    num_why = untyped_numeric_reason(sql, warehouse)
-    if num_why:
-        return _abstain(
-            question,
-            num_why,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-            notes=notes,
-        )
+        if blocked == RESERVED_PARAM_AS_OF:
+            return reserved_as_of_abstain(
+                space_id=space_id,
+                session_id=session_id,
+                route="generated",
+                question=question,
+            )
+        if blocked:
+            return _abstain(
+                question,
+                blocked,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=() if str(blocked).startswith("currency_mismatch") else notes,
+            )
+        return None
+
+    stopped = _sql_checks(sql)
+    if stopped is not None:
+        return stopped
     from dms_executor.ai_first import (
         NO_MODEL_SQL,
         ai_first_enabled,
@@ -1250,6 +1265,24 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
+    if served_route == ROUTE_COMPILE and _scale_miss_on():
+        from dms_executor.scale_miss import compile_override
+
+        replacement = compile_override(
+            sql,
+            question,
+            grantable=grantable,
+            warehouse=warehouse,
+        )
+        if replacement:
+            sql = replacement
+            served_route = ROUTE_MODEL
+            plan_origin = PLAN_ORIGIN_GENERATE_SQL
+            notes = (*tuple(notes), "scale_miss:ai_over_compile")
+            # Same checks as the first SQL. A failed replacement is not served.
+            stopped = _sql_checks(sql)
+            if stopped is not None:
+                return stopped
     try:
         with span("submit_execute"):
             result = submit(sql)
@@ -1411,6 +1444,24 @@ def _offer_rowset_sql(
 def _rules_off() -> bool:
     """Digit 1 only. The ontology compiler stays when the flag is off."""
     return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
+def _scale_miss_on() -> bool:
+    from dms_executor.scale_miss import enabled
+
+    return enabled()
+
+
+def _scale_turn_ready() -> bool:
+    from dms_executor.scale_miss import turn_ready
+
+    return turn_ready()
+
+
+def _scale_ladder_reserve() -> bool:
+    from dms_executor.scale_miss import ladder_reserves
+
+    return ladder_reserves()
 
 
 def _rules_off_hold(
@@ -1823,6 +1874,137 @@ def _checker_is_direct(reason: str) -> bool:
     return head in _DIRECT_CHECK_HEADS or str(reason or "").startswith("hostile_sql")
 
 
+JOIN_CONFIRM_CODE = "join_unconfirmed"
+
+
+def _no_ontology_file_join(sql: str, dialect: str | None = None) -> str | None:
+    """The file-join case: two base tables and a schema other than main.
+
+    Demo SQL names main tables and does not hit this. One table, including
+    a table inside a CTE, does not hit this. Callers do not abstain on it.
+    ``DMS_SCHEMA_CONTEXT`` turns it into a confirm card. The flag off leaves
+    the SQL on the path it already had.
+    """
+    read = dialect or SERVING_DIALECT
+    try:
+        trees = [tree for tree in sqlglot.parse(sql or "", read=read) if tree is not None]
+    except Exception:  # noqa: BLE001 - the parser refusal is the other checker
+        return None
+    if len(trees) != 1:
+        return None
+    root = trees[0]
+    cte_names = {
+        str(cte.alias_or_name).lower()
+        for cte in root.find_all(exp.CTE)
+        if getattr(cte, "alias_or_name", None)
+    }
+    reads = 0
+    outside_main = False
+    for table in root.find_all(exp.Table):
+        name = str(table.name or "")
+        db = table.args.get("db")
+        schema = str(getattr(db, "name", "") or "") if db is not None else ""
+        if not schema and name.lower() in cte_names:
+            continue
+        if not name:
+            continue
+        reads += 1
+        if schema and schema.lower() != "main":
+            outside_main = True
+    if reads >= 2 and outside_main:
+        return JOIN_CONFIRM_CODE
+    return None
+
+
+def _join_definition(sql: str, keys: list[dict[str, str]]) -> str:
+    """The card body: catalog keys, then the SQL. No question words."""
+    lines = ["Proposed join keys:"]
+    if not keys:
+        lines.append("- none reported")
+    for key in keys:
+        marks = [
+            f"{key[side + '_table']}.{key[side + '_column']} {key[side + '_key']}"
+            for side in ("left", "right")
+            if key.get(side + "_key")
+        ]
+        if key.get("reported"):
+            marks.append(str(key["reported"]))
+        suffix = f" ({', '.join(marks)})" if marks else ""
+        left = f"{key['left_table']}.{key['left_column']} {key.get('left_type', '')}"
+        right = f"{key['right_table']}.{key['right_column']} {key.get('right_type', '')}"
+        lines.append(f"- {left} = {right}{suffix}".rstrip())
+    lines.append("SQL:")
+    lines.append((sql or "").strip())
+    if keys:
+        lines.append(
+            "Yes runs this SQL. Each key above is filed as a proposed ontology "
+            "link for a steward. It is not approved."
+        )
+    else:
+        lines.append(
+            "Yes runs this SQL. No catalog key was reported, so no ontology link is filed."
+        )
+    return "\n".join(lines)
+
+
+def _join_confirm_envelope(
+    *,
+    question: str,
+    sql: str,
+    grantable: set[str],
+    warehouse: Path | None,
+    dialect: str | None,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Confirm card for a granted join that has no stored ontology."""
+    from dms_executor.envelope import assert_envelope_valid
+    from dms_executor.reconfirm import park_join_confirm
+
+    keys = join_key_facts(warehouse, grantable, sql, dialect)
+    definition = _join_definition(sql, keys)
+    env = build_abstain(
+        reason=JOIN_CONFIRM_CODE,
+        question=question,
+        stage="join_confirm",
+        answer_id="ans_join_confirm",
+        text=definition,
+        rows=[],
+        sql_used=None,
+        values=[],
+        assumptions=[f"reconfirm: {JOIN_CONFIRM_CODE}"],
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="generated",
+        log_ticket=False,
+    )
+    env["reconfirm"] = {
+        "reason_code": JOIN_CONFIRM_CODE,
+        "reason_text": definition,
+        "definition": definition,
+        "suggested_question": question,
+        "why": JOIN_CONFIRM_CODE,
+        "closest_question": question,
+    }
+    park_join_confirm(
+        env,
+        sql=sql,
+        grantable=grantable,
+        links=[
+            {
+                "left_table": key["left_table"],
+                "left_column": key["left_column"],
+                "right_table": key["right_table"],
+                "right_column": key["right_column"],
+            }
+            for key in keys
+        ],
+    )
+    assert_envelope_valid(env)
+    return env
+
+
 def ai_lane_sql_check(
     sql: str,
     *,
@@ -1897,6 +2079,24 @@ def ai_lane_sql_check(
             why = f"explain:{code}"
     if why:
         return why
+    # A granted file join with no stored ontology is not an abstain. The
+    # schema-context flag asks the user to confirm it. An ungranted name
+    # already returned above.
+    if (
+        space_onto is None
+        and schema_context_enabled()
+        and _no_ontology_file_join(sql, dialect)
+    ):
+        box["env"] = _join_confirm_envelope(
+            question=question,
+            sql=sql,
+            grantable=grantable,
+            warehouse=warehouse,
+            dialect=dialect,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        return JOIN_CONFIRM_CODE
     if declared is not None:
         broken = violations_cited_by_sql(sql, declared, declared_violations)
         if broken:
@@ -2077,7 +2277,7 @@ def _run_extract_loop(
     # so a split does not ledger a number the envelope does not serve.
     direct = reading_prompt(question, reading=1)
     schema_ladder = None
-    if schema_retry_enabled():
+    if schema_retry_enabled() or _scale_miss_on():
         from dms_executor.schema_retry import SchemaLadder
 
         schema_ladder = SchemaLadder(
@@ -2101,7 +2301,13 @@ def _run_extract_loop(
         empty_answer=empty_answer,
         attempts=attempts,
         no_retry_reasons=frozenset(
-            {RESERVED_PARAM_AS_OF, "pii", "def_validate", "definition_mismatch"}
+            {
+                RESERVED_PARAM_AS_OF,
+                "pii",
+                "def_validate",
+                "definition_mismatch",
+                JOIN_CONFIRM_CODE,
+            }
         ),
         budget=budget,
         schema_ladder=schema_ladder,
@@ -2261,7 +2467,13 @@ def _second_reading(
         empty_answer=empty_answer,
         attempts=second_attempts,
         no_retry_reasons=frozenset(
-            {RESERVED_PARAM_AS_OF, "pii", "def_validate", "definition_mismatch"}
+            {
+                RESERVED_PARAM_AS_OF,
+                "pii",
+                "def_validate",
+                "definition_mismatch",
+                JOIN_CONFIRM_CODE,
+            }
         ),
         recover_failures=True,
         budget=budget,
@@ -2567,7 +2779,7 @@ def _maybe_generative_ask_impl(
                 q, "uncertified paraphrase: not a generative certify boundary",
                 space_id=space_id, session_id=session_id,
             )
-        if vague_question(q):
+        if vague_question(q) and not _scale_miss_on():
             return _abstain(
                 q, "question is too vague or time-unbounded to ground",
                 space_id=space_id, session_id=session_id,
@@ -2642,7 +2854,23 @@ def _maybe_generative_ask_impl(
             space_id=space_id,
             session_id=session_id,
         )
-    if clarify_on and compute is not None:
+    if _scale_miss_on():
+        from dms_executor.scale_miss import begin as scale_begin
+
+        stopped = scale_begin(
+            question=q,
+            compute=compute,
+            ontology=onto,
+            warehouse=lake,
+            grantable=set(allowed),
+            dialect=dialect,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if isinstance(stopped, dict):
+            return stopped
+    # SCALE-MISS-01 already generated. Clarify must not spend the clock first.
+    if clarify_on and compute is not None and not _scale_miss_on():
         from dms_executor.clarify import clarify_before_sql
 
         clarified = clarify_before_sql(
@@ -2692,6 +2920,12 @@ def _maybe_generative_ask_impl(
     # Short retrieved context only -- not the full ontology dump.
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
+    if _scale_miss_on():
+        from dms_executor.scale_miss import budget_stop as scale_budget_stop
+
+        stopped = scale_budget_stop(q, space_id=space_id, session_id=session_id)
+        if isinstance(stopped, dict):
+            return stopped
     note_stage("retrieve_context", "started")
     with span("retrieve_context"):
         ctx = retrieve_short_context(
@@ -2837,6 +3071,12 @@ def _maybe_generative_ask_impl(
     try:
         if held_preview is not None:
             payload = None
+        elif _scale_miss_on() and _scale_turn_ready():
+            from dms_executor.scale_miss import cached_payload, calls_used
+
+            payload = cached_payload()
+            if vote_budget is not None:
+                vote_budget.used = max(vote_budget.used, calls_used())
         elif vote_budget is not None and not vote_budget.take():
             payload = None
         else:
@@ -2877,6 +3117,7 @@ def _maybe_generative_ask_impl(
                 compute=compute,
                 budget=vote_budget,
                 ctx=insights_ctx,
+                reserve=_scale_ladder_reserve(),
                 question=q,
                 warehouse=lake,
                 dialect=dialect,
@@ -2973,6 +3214,18 @@ def _maybe_generative_ask_impl(
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
     if budget_stop:
         # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
+        # Flag on: a partial or an ask-back. Never the timeout abstain.
+        if _scale_miss_on():
+            from dms_executor.scale_miss import budget_stop_envelope
+
+            return _stamp(
+                budget_stop_envelope(
+                    q,
+                    payload if isinstance(payload, dict) else None,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+            )
         return _stamp(
             _abstain(
                 q,
@@ -3324,6 +3577,24 @@ def _maybe_generative_ask_impl(
                 join_why = unverified_join_reason(
                     sql, space_onto, declared_violations, columns_of=cols
                 )
+        elif (
+            not why
+            and schema_context_enabled()
+            and _no_ontology_file_join(sql, dialect)
+        ):
+            # Granted file join, no stored ontology. Confirm the keys and
+            # the SQL. Do not serve the number and do not abstain.
+            return _stamp(
+                _join_confirm_envelope(
+                    question=q,
+                    sql=sql,
+                    grantable=allowed,
+                    warehouse=lake,
+                    dialect=dialect,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+            )
         if join_why:
             # No guessed joins: on a Space with a derived ontology, generated
             # SQL may join two relations only over a link the source declared
@@ -3809,14 +4080,17 @@ def maybe_generative_ask(
 ) -> dict[str, Any] | None:
     """Bind the ask clock, then stamp ``timings`` on the envelope."""
     from dms_executor.ask_ladder import bind_climb, reset_climb
+    from dms_executor.scale_miss import bind_turn, reset_turn
 
     token = ensure_clock()
     climb = bind_climb(None)
+    turn_token = bind_turn(None)
     try:
         env = _maybe_generative_ask_impl(*args, **kwargs)
         if isinstance(env, dict):
             attach_timings(env)
         return env
     finally:
+        reset_turn(turn_token)
         reset_climb(climb)
         release_clock(token)

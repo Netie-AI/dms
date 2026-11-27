@@ -907,8 +907,8 @@ def run_model_loop(
 
     ``budget`` is the ask's one cap. The opening compute already took a
     call. Retries take from what is left. They do not start a new cap.
-    ``schema_ladder`` is set only when ``DMS_SCHEMA_RETRY`` is on. Off,
-    it stays None and this loop is the pre-ladder retry.
+    ``schema_ladder`` is set when ``DMS_SCHEMA_RETRY`` or ``DMS_SCALE_MISS``
+    is on. Off, it stays None and this loop is the pre-ladder retry.
 
     ``recover_failures`` is the second reading only. It feeds back a reply
     with no SQL, a statement refused before execute, and an empty result.
@@ -938,6 +938,16 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            from dms_executor.scale_miss import enabled as scale_miss_enabled
+
+            if scale_miss_enabled():
+                from dms_executor.scale_miss import empty_sql_askback, fill_empty_sql
+
+                filled = fill_empty_sql(compute, ctx, question)
+                if isinstance(filled, dict):
+                    current = filled
+                    continue
+                return empty_sql_askback(question)
             if recover_failures and _can_retry(retries=retries, budget=budget):
                 retries += 1
                 budget.take()

@@ -1,6 +1,7 @@
 """SCHEMA-RETRY-01: structured repair after a database error.
 
-The ladder runs only when ``DMS_SCHEMA_RETRY`` is on. It parses engine
+The ladder runs when ``DMS_SCHEMA_RETRY`` is on, and when ``DMS_SCALE_MISS``
+is on. It parses engine
 exceptions (class and vendor code, then the engine's own message shape)
 into a typed hint. It does not read the question. The database message
 and cell values never leave this module.
@@ -156,6 +157,13 @@ def identifier_in_sql(sql: str, token: str | None, dialect: str) -> str | None:
     return found.get(token.lower())
 
 
+def _schema_ladder_on() -> bool:
+    """Schema retry, or the scale-miss flag, both feed EXPLAIN back to the model."""
+    from dms_executor.scale_miss import enabled as scale_miss_enabled
+
+    return schema_retry_enabled() or scale_miss_enabled()
+
+
 def is_schema_db_outcome(outcome: str) -> bool:
     """EXPLAIN or execution failure. Grant, hostile, and policy codes are not."""
     text = str(outcome or "")
@@ -209,7 +217,7 @@ class SchemaLadder:
         question: str,
     ) -> RungPlan | None:
         """None when this failure is not a schema-retry database error."""
-        if not schema_retry_enabled() or not is_schema_db_outcome(outcome):
+        if not _schema_ladder_on() or not is_schema_db_outcome(outcome):
             return None
         # The caller dialect is the connector/grant dialect. An unknown name
         # is not the serving engine. Reconfirm. Do not parse the SQL.

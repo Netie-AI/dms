@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, JOIN-HOLE-01, R1-RULES-OUT-01
+**Last updated:** 2026-11-27, SCALE-MISS-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_RULES_OFF` default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 (two runs). On, the question-word compiler does not submit: correct=23 wrong=0 refusal_wrong=0 reconfirm=18 refusal_ok=8 ai=0 rule=23, and that rule is certified pack L1 only. Phrase checkers do not run. The stub has no model SQL. Armed and pack H unmeasured. `DMS_ASK_LADDER`, `DMS_AI_CLARIFY`, and `DMS_RUNTIME_SELFCHECK` default off. Not PASS.
+**Tip:** `DMS_SCALE_MISS` default off (`363b1aa`, base `d4e414c`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, the same stub stays correct=43 wrong=0 reconfirm=5 ai=0 rule=43: the stub returns no SQL, so compile is not replaced. That stays above `DMS_RULES_OFF` 23/0/18. Armed and pack H unmeasured. Not PASS.
 
 ## Direction
 
@@ -12,11 +12,12 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `b088b3d`, `grade52 --main`, rebased on `0b0e437`. Same split as `7392972`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `363b1aa`, `grade52 --main`, base `d4e414c`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
 | defaults | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| DMS_SCALE_MISS=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | DMS_AI_FIRST=1 | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
 Both on this branch's stub: refusal_ok=4, refusal_wrong=0, gold_broken=0, clarify=0 (ops_spend_boundary is a certified refusal). Flag off wrong_ub95=6.7%, coverage 43/43. COMPILE-CHECK-01 remeasured the stub before (f286c4a) and after the checker: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Those compile answers pass the checker. Pack H and armed grade52 not measured. Not PASS.
@@ -43,8 +44,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
-| P0 JOIN-HOLE-01: a CTE self-join takes the same join gate | #527 |
-| COMPILE-CHECK-01: compile SQL must pass the AI-lane checker before it is served | this branch |
+| SCALE-MISS-01: generate first, repair EXPLAIN, ask back. Flag off. | this branch |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |

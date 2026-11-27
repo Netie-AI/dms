@@ -386,6 +386,89 @@ def park_def_validate_hold(
     block["hold_id"] = hold_id
 
 
+def park_join_confirm(
+    env: dict[str, Any],
+    *,
+    sql: str,
+    grantable: set[str],
+    links: list[dict[str, str]],
+) -> None:
+    """Remember a granted join until Yes. Rows stay out. The link is not approved."""
+    block = env.get("reconfirm")
+    if not isinstance(block, dict):
+        return
+    statement = str(sql or "").strip()
+    definition = block.get("definition")
+    if not statement or not isinstance(definition, str) or not definition.strip():
+        return
+    from dms_core.ids import mint_id
+
+    hold_id = mint_id("hld")
+    payload = {
+        "sql": statement,
+        "grantable": sorted({str(name) for name in grantable if str(name).strip()}),
+        "definition": definition.strip(),
+        "reason_code": "join_unconfirmed",
+        "join_confirm": True,
+        "links": [dict(item) for item in links if isinstance(item, dict)],
+    }
+    with _LOCK:
+        if len(_HOLDS) >= _HOLD_CAP:
+            _HOLDS.pop(next(iter(_HOLDS)))
+        _HOLDS[hold_id] = payload
+    block["hold_id"] = hold_id
+
+
+def file_proposed_join(pending: dict[str, Any]) -> bool:
+    """Store the confirmed keys as a proposed link. Yes does not approve it.
+
+    No keys means there is nothing to file, which is success. A store
+    failure returns False and leaves the answer in place.
+    """
+    raw = pending.get("links")
+    if not isinstance(raw, list) or not raw:
+        return True
+    rows: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        left_table = str(item.get("left_table") or "")
+        left_column = str(item.get("left_column") or "")
+        right_table = str(item.get("right_table") or "")
+        right_column = str(item.get("right_column") or "")
+        if left_table and left_column and right_table and right_column:
+            rows.append(
+                {
+                    "left_table": left_table,
+                    "left_column": left_column,
+                    "right_table": right_table,
+                    "right_column": right_column,
+                }
+            )
+    if not rows:
+        return True
+    try:
+        from dms_core.control_plane.onto_data import store_proposal
+
+        stored = store_proposal(
+            {
+                "status": "proposed",
+                "served": False,
+                "source": "join_confirm",
+                "joins": rows,
+            },
+            created_by="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            space_id=pending.get("space_id") if isinstance(pending.get("space_id"), str) else None,
+        )
+    except Exception:
+        return False
+    items = stored.get("items") if isinstance(stored, dict) else None
+    return isinstance(items, list) and any(
+        isinstance(item, dict) and item.get("kind") == "link" and item.get("status") == "proposed"
+        for item in items
+    )
+
+
 def take_hold(hold_id: str) -> dict[str, Any] | None:
     with _LOCK:
         found = _HOLDS.pop(str(hold_id or ""), None)
@@ -540,6 +623,10 @@ def apply_reconfirm(
         pending["grantable"] = list(hold["grantable"])
         pending["definition"] = hold["definition"]
         pending["reason_code"] = hold["reason_code"]
+        if hold.get("join_confirm") is True:
+            pending["join_confirm"] = True
+            raw_links = hold.get("links")
+            pending["links"] = list(raw_links) if isinstance(raw_links, list) else []
     token = _save_pending(pending)
     out = dict(env)
     block: dict[str, Any] = {
