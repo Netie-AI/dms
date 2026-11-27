@@ -1791,9 +1791,12 @@ def build_answer_envelope(
             demote=masked,
         )
     # CHART-SPEC-01. Off, this returns the same dict and sends no prompt.
+    # R1-RUNTIME-01. Off, the same dict. On and degraded, banner keys only.
+    from cortex_client.runtime_check import attach_runtime_banner
+
     from dms_executor.chart_spec import attach_chart_spec
 
-    return attach_chart_spec(masked)
+    return attach_runtime_banner(attach_chart_spec(masked))
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:
@@ -2056,11 +2059,45 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
         raise AssertionError(f"E8: as_of not parseable: {as_of!r}") from exc
 
 
+def attach_clarify_block(
+    env: dict[str, Any],
+    *,
+    question: str,
+    readings: list[dict[str, Any]],
+    clarify_id: str,
+) -> dict[str, Any]:
+    """Attach the clarify block. Does not change badge, rows, values, or sql_used.
+
+    ``route`` becomes ``needs_clarification``. Each reading is ``id``, ``text``,
+    and ``sql_preview``. ``blocks`` is true: nothing was executed.
+    """
+    shown: list[dict[str, str]] = []
+    for item in readings[:4]:
+        if not isinstance(item, dict):
+            continue
+        shown.append(
+            {
+                "id": str(item.get("id") or ""),
+                "text": str(item.get("text") or ""),
+                "sql_preview": str(item.get("sql_preview") or ""),
+            }
+        )
+    env["clarify"] = {
+        "question": question,
+        "readings": shown,
+        "blocks": True,
+        "clarify_id": clarify_id,
+    }
+    env["route"] = "needs_clarification"
+    return env
+
+
 __all__ = [
     "ALLOWED_BADGES",
     "DOCUMENT_ROUTE",
     "asked_calendar_years",
     "assert_envelope_valid",
+    "attach_clarify_block",
     "build_answer_envelope",
     "build_audit_receipt",
     "chart_from_rows",

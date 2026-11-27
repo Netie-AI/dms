@@ -173,6 +173,13 @@ def insights_timeout_s(env: Mapping[str, str] | None = None) -> float:
     )
 
 
+def log_effective_insights_timeout(env: Mapping[str, str] | None = None) -> float:
+    """Log the timeout the process will use. Does not change the 8s default."""
+    seconds = insights_timeout_s(env)
+    _log.info("%s effective %s", INSIGHTS_TIMEOUT_ENV, seconds)
+    return seconds
+
+
 def _flag_on(env: Mapping[str, str] | None, name: str) -> bool:
     src = os.environ if env is None else env
     raw = str(src.get(name) or "").strip().lower()
@@ -1200,7 +1207,9 @@ def _insights_body(
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
             asked += _repair_question_suffix(sql_feedback)
-    preference = "escalate" if route_hint == "escalate" else FREEROUTE_PREFERENCE
+    preference = (
+        route_hint if route_hint in {"escalate", "reason"} else FREEROUTE_PREFERENCE
+    )
     onto, schema_context = _split_schema_context(ontology)
     onto, examples = lift_verified_examples(onto)
     evidence = None
@@ -1672,6 +1681,7 @@ __all__ = [
     "insights_query_sql",
     "insights_timeout_env_set",
     "insights_timeout_s",
+    "log_effective_insights_timeout",
     "insights_was_reached",
     "ontology_ranked_lane_enabled",
     "normalize_insights_compute",

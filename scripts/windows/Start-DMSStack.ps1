@@ -276,6 +276,7 @@ if (-not $apiOk -and -not $NoLocalApiFallback) {
     "`$env:CORTEX_URL='$CortexUrl'",
     "`$env:DMS_ASK_MODE='$($env:DMS_ASK_MODE)'",
     "`$env:DMS_DEMO_FALLBACK='$($env:DMS_DEMO_FALLBACK)'",
+    "`$env:DMS_INSIGHTS_TIMEOUT_S='$(if ($env:DMS_INSIGHTS_TIMEOUT_S) { $env:DMS_INSIGHTS_TIMEOUT_S } else { 60 })'",
     "`$env:DMS_WAREHOUSE_DB='$($env:DMS_WAREHOUSE_DB)'",
     "`$env:CORTEX_WAREHOUSE_DB='$($env:CORTEX_WAREHOUSE_DB)'",
     "Set-Location '$RepoRoot'",
