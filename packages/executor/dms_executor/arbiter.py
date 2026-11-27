@@ -242,30 +242,20 @@ def _check_pair(
 
     def one(item: ResultSet) -> str:
         columns = list(item.columns)
-        sample = [list(row) for row in item.rows[:_SAMPLE]]
         shaped = [
-            {columns[i]: row[i] for i in range(len(columns)) if i < len(row)} for row in sample
+            {columns[i]: row[i] for i in range(len(columns)) if i < len(row)}
+            for row in item.rows[:_SAMPLE]
         ]
         try:
-            try:
-                # shape_check.py (R1-SHAPE-CHECK-01) is keyword-only after sql.
-                got = check_answer_shape(
-                    question,
-                    item.sql,
-                    columns=[{"name": name} for name in columns],
-                    sample_rows=shaped,
-                    row_count=len(item.rows),
-                    ontology=dict(ontology_slice),
-                )
-            except TypeError:
-                got = check_answer_shape(
-                    question,
-                    item.sql,
-                    columns,
-                    sample,
-                    len(item.rows),
-                    dict(ontology_slice),
-                )
+            # shape_check.check_answer_shape is keyword-only after sql.
+            got = check_answer_shape(
+                question,
+                item.sql,
+                columns=[{"name": name} for name in columns],
+                sample_rows=shaped,
+                row_count=len(item.rows),
+                ontology=dict(ontology_slice),
+            )
         except Exception:
             return "unknown"
         return _verdict_of(got)

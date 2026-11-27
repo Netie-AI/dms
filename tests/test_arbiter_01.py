@@ -116,14 +116,22 @@ def _shape_module_missing() -> Iterator[None]:
 def _grain_check(
     question: str,
     sql: str,
-    columns: list[str],
-    sample_rows: list[list[Any]],
-    row_count: int,
-    ontology_slice: dict[str, Any],
+    *,
+    columns: list[Any] | None = None,
+    sample_rows: list[Any] | None = None,
+    row_count: int = 0,
+    ontology: dict[str, Any] | None = None,
+    **_k: Any,
 ) -> SimpleNamespace:
     del question, sql, sample_rows
-    grain = [str(name) for name in ontology_slice.get("group_by") or []]
-    present = [name for name in grain if name in columns]
+    names: list[str] = []
+    for col in columns or []:
+        if isinstance(col, dict) and isinstance(col.get("name"), str):
+            names.append(col["name"])
+        elif isinstance(col, str):
+            names.append(col)
+    grain = [str(name) for name in (ontology or {}).get("group_by") or []]
+    present = [name for name in grain if name in names]
     if grain and not present:
         return SimpleNamespace(verdict="misfit", reasons=["missing_grain_column"], fix_hint=None)
     if grain and present and row_count >= 1:
