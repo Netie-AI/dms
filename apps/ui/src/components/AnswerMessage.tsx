@@ -4,6 +4,9 @@ import { Badge } from "@/components/Badge";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
+import { AccessCard } from "@/components/AccessCard";
+import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
+import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "@/components/studio/abstainReason";
 import { ResultView } from "@/components/studio/ResultView";
 import { useApp } from "@/context/AppContext";
 import {
@@ -20,7 +23,7 @@ import {
   type BiTarget,
 } from "@/lib/biExport";
 import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
-import { postAskConfirm } from "@/lib/api";
+import { postAskConfirm, postClarifyPick } from "@/lib/api";
 import {
   csvDownloadName,
   isSummaryExport,
@@ -28,7 +31,7 @@ import {
   xlsxDownloadName,
 } from "@/lib/rowsToCsv";
 import { splitInsights } from "@/lib/splitInsights";
-import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
+import type { AnswerEnvelope, BadgeKind, ClarifyReading, GrantedSpace } from "@/lib/types";
 
 const EXCLUSION_YES_RE = /^Yes — exclude\b/i;
 const EXCLUSION_NO_RE = /^No — show\b|without excluding/i;
@@ -164,8 +167,19 @@ export function AnswerMessage({
   envelope: AnswerEnvelope;
   question?: string;
 }) {
-  const { selectValue, setSourcePanelOpen, ask, suggestions, productMode, role, activeSpaceId } =
-    useApp();
+  const {
+    selectValue,
+    setSourcePanelOpen,
+    ask,
+    suggestions,
+    productMode,
+    role,
+    activeSpaceId,
+    setActiveSpaceId,
+    sessionId,
+    spaces,
+    spacesFromApi,
+  } = useApp();
   const [follow, setFollow] = useState<AnswerEnvelope | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -183,10 +197,14 @@ export function AnswerMessage({
   const [biNote, setBiNote] = useState<string | null>(null);
   const [checkNote, setCheckNote] = useState<string | null>(null);
   const [confirmLeft, setConfirmLeft] = useState<number | null>(null);
+  const [cardBusy, setCardBusy] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
   const confirmFired = useRef(false);
   useEffect(() => {
     setFollow(null);
     setConfirmError(null);
+    setCardError(null);
+    setCardBusy(false);
   }, [envelope]);
 
   const rows = envelope.rows ?? [];
@@ -347,6 +365,37 @@ export function AnswerMessage({
   }
 
   const offer = reconfirmCard(envelope);
+  const clarify = readClarify(envelope);
+  const access = readAccess(envelope);
+
+  async function pickReading(reading: ClarifyReading) {
+    if (!clarify || cardBusy) return;
+    setCardBusy(true);
+    setCardError(null);
+    try {
+      const next = await postClarifyPick(
+        clarifyPickBody(clarify, reading, {
+          question,
+          space_id: activeSpaceId,
+          session_id: sessionId,
+        }),
+      );
+      setFollow(next);
+    } catch {
+      setCardError("The reading did not run.");
+    } finally {
+      setCardBusy(false);
+    }
+  }
+
+  const memberIds = serverSpaceIds(spaces, spacesFromApi);
+
+  function switchSpace(space: GrantedSpace) {
+    if (!switchableSpaces([space], memberIds).length) return;
+    setActiveSpaceId(space.id);
+    const asked = (question ?? "").trim();
+    if (asked) void ask(asked);
+  }
 
   async function choose(yes: boolean) {
     if (!offer) return;
@@ -493,6 +542,17 @@ export function AnswerMessage({
         )}
       </div>
       <AbstainNote envelope={envelope} />
+      {clarify ? (
+        <ClarifyCard block={clarify} busy={cardBusy} error={cardError} onPick={pickReading} />
+      ) : null}
+      {access ? (
+        <AccessCard
+          access={access}
+          busy={cardBusy}
+          serverSpaceIds={memberIds}
+          onSwitch={switchSpace}
+        />
+      ) : null}
       {showLayer && (
         <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
           <p className="text-sm font-medium text-[var(--color-ink)]">
