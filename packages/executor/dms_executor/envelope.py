@@ -2056,11 +2056,45 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
         raise AssertionError(f"E8: as_of not parseable: {as_of!r}") from exc
 
 
+def attach_clarify_block(
+    env: dict[str, Any],
+    *,
+    question: str,
+    readings: list[dict[str, Any]],
+    clarify_id: str,
+) -> dict[str, Any]:
+    """Attach the clarify block. Does not change badge, rows, values, or sql_used.
+
+    ``route`` becomes ``needs_clarification``. Each reading is ``id``, ``text``,
+    and ``sql_preview``. ``blocks`` is true: nothing was executed.
+    """
+    shown: list[dict[str, str]] = []
+    for item in readings[:3]:
+        if not isinstance(item, dict):
+            continue
+        shown.append(
+            {
+                "id": str(item.get("id") or ""),
+                "text": str(item.get("text") or ""),
+                "sql_preview": str(item.get("sql_preview") or ""),
+            }
+        )
+    env["clarify"] = {
+        "question": question,
+        "readings": shown,
+        "blocks": True,
+        "clarify_id": clarify_id,
+    }
+    env["route"] = "needs_clarification"
+    return env
+
+
 __all__ = [
     "ALLOWED_BADGES",
     "DOCUMENT_ROUTE",
     "asked_calendar_years",
     "assert_envelope_valid",
+    "attach_clarify_block",
     "build_answer_envelope",
     "build_audit_receipt",
     "chart_from_rows",

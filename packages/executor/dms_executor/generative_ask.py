@@ -2386,24 +2386,37 @@ def _maybe_generative_ask_impl(
     dialect = resolved
     # Armed product asks pass demo_gate=False. The planted paraphrase list
     # stays in front of test fakes; it does not abstain a CortexClient ask.
-    if demo_gate and is_uncertified_paraphrase(q):
-        return _abstain(
-            q, "uncertified paraphrase: not a generative certify boundary",
-            space_id=space_id, session_id=session_id,
-        )
-    if _UNSURE_ASK.search(q):
-        return _abstain(
-            q, "question is too vague or time-unbounded to ground",
-            space_id=space_id, session_id=session_id,
-        )
+    # DMS_AI_CLARIFY asks the model first. These three gates stay when the
+    # flag is off, and when the model returns no verdict.
+    from dms_executor.clarify import ai_clarify_enabled
+
+    clarify_on = ai_clarify_enabled()
+
+    def _phrase_hold() -> dict[str, Any] | None:
+        if demo_gate and is_uncertified_paraphrase(q):
+            return _abstain(
+                q, "uncertified paraphrase: not a generative certify boundary",
+                space_id=space_id, session_id=session_id,
+            )
+        if _UNSURE_ASK.search(q):
+            return _abstain(
+                q, "question is too vague or time-unbounded to ground",
+                space_id=space_id, session_id=session_id,
+            )
+        if "2099" in asked_calendar_years(q):
+            return _abstain(
+                q, "year 2099 is not a certified period; all-time history is not that year",
+                space_id=space_id, session_id=session_id,
+            )
+        return None
+
+    if not clarify_on:
+        held_phrase = _phrase_hold()
+        if held_phrase is not None:
+            return held_phrase
     if _is_predictive(q):
         return _abstain(
             q, "predictive: history is not a forecast",
-            space_id=space_id, session_id=session_id,
-        )
-    if "2099" in asked_calendar_years(q):
-        return _abstain(
-            q, "year 2099 is not a certified period; all-time history is not that year",
             space_id=space_id, session_id=session_id,
         )
 
@@ -2459,6 +2472,26 @@ def _maybe_generative_ask_impl(
             space_id=space_id,
             session_id=session_id,
         )
+    if clarify_on and compute is not None:
+        from dms_executor.clarify import clarify_before_sql
+
+        clarified = clarify_before_sql(
+            q,
+            compute=compute,
+            warehouse=lake,
+            grantable=set(allowed),
+            dialect=dialect,
+            ontology=onto,
+            space_id=space_id,
+            session_id=session_id,
+            embedder=embedder,
+        )
+        if isinstance(clarified, dict):
+            return clarified
+        if clarified is None:
+            held_phrase = _phrase_hold()
+            if held_phrase is not None:
+                return held_phrase
     # A Space ontology (never the demo one). Compile serves run the same
     # join rule the AI lane runs, so this is known before the rank window.
     space_onto = (declared or onto) if not demo_ontology_allowed else None
