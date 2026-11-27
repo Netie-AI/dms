@@ -124,24 +124,21 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-27 21:04 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-27 22:11 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `5f24f0bc` R1-UI-CLARIFY-01: Clarify chips and access card in Chat and Studio (#575)
+main: `b7ee406f` R1-RUNTIME-01: pin the insights timeout and flag a loopback caller (#576)
 
-open PRs: 42 (cap 60)
+open PRs: 39 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #587 | y | `20102683` | - | 8 ok, 1 running | STUDIO-FIX-C: reserve ask-back time when the serving deadline is in force |
-| #586 | y | `d0188ef2` | - | 6 ok, 3 running | STUDIO-FIX-A: GET /v1/spaces/{id}/sources must not pass a Query into UUID |
+| #587 | y | `3e45d386` | - | 10 ok | STUDIO-FIX-C: reserve ask-back time when the serving deadline is in force |
 | #582 | y | `4b6f9d4a` | - | 11 ok | R2-CONNECT-CORE-01: Persisted connections, test, introspect, and auto-grant |
-| #581 | n | `ef5c9d2d` | tier:fast | 8 ok, 2 FAIL | handoff: state refresh |
-| #579 | y | `4b0cb7c0` | - | 6 ok, 3 running | R1-RULES-OUT-01: gate question-word lanes behind DMS_RULES_OFF |
-| #576 | y | `b1285ff9` | - | 10 ok | R1-RUNTIME-01: pin the insights timeout and flag a loopback caller |
+| #581 | n | `ec453b81` | tier:fast | 10 ok | handoff: state refresh |
+| #579 | y | `f086d6c8` | - | 10 ok | R1-RULES-OUT-01: gate question-word lanes behind DMS_RULES_OFF |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
-| #570 | y | `61facf95` | - | 10 ok | DMS-AI-ABSTAIN-01: climb misses, and ask back when the question is ambiguous |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
 | #542 | y | `e08f4664` | - | 3 ok, 1 FAIL | T5 install hardening: #387 TLS host guard (carried) + IPv4 serve; #388 and #377  |
