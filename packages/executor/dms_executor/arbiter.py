@@ -1,17 +1,19 @@
 """DMS_AI_ARBITER. Default off.
 
-On, compile SQL is context for the model lane, the same way DMS_AI_FIRST
-holds it, and it is not submitted as the answer. When that compile SQL and
-a model SQL both executed, equal result sets serve the model SQL. Different
-result sets ask the shape checker. The one verdict of ``fits`` is served.
-Both, neither, or a missing checker reconfirm ``arbiter_disagree`` and
-serve no rows.
+COMPILE-CHECK already decides whether a compile SQL may be submitted. This
+module does not take that lane and does not turn ``DMS_AI_FIRST`` on.
+
+The arbiter runs only when a compile SQL and a model SQL both exist and
+their result sets differ. Equal sets serve the model SQL, stamped ``ai``
+with ``agreed_with=compile``. Different sets call
+``shape_check.check_answer_shape``. One ``fit`` wins. Both, neither, or a
+missing checker reconfirm ``arbiter_disagree`` and serve no rows.
 
 A missing ``shape_check`` module is a verdict of unknown, not a crash and
-not a permission to keep the compile rows.
+not a permission to keep either candidate.
 
-This module does not read the question for a phrase, and it does not name
-a provider or a model.
+This module does not read the question for a phrase, does not parse SQL
+into shape facts, and does not name a provider or a model.
 """
 
 from __future__ import annotations
@@ -58,25 +60,8 @@ def arbiter_enabled(env: Mapping[str, str] | None = None) -> bool:
 
 @contextmanager
 def compile_context():
-    """Flag on: compile submit becomes an example. Flag off: the env is untouched."""
-    if not arbiter_enabled():
-        yield
-        return
-    from dms_executor.ai_first import AI_FIRST_ENV, ai_first_enabled
-
-    previous = os.environ.get(AI_FIRST_ENV)
-    turned = False
-    if not ai_first_enabled():
-        os.environ[AI_FIRST_ENV] = "1"
-        turned = True
-    try:
-        yield
-    finally:
-        if turned:
-            if previous is None:
-                os.environ.pop(AI_FIRST_ENV, None)
-            else:
-                os.environ[AI_FIRST_ENV] = previous
+    """No-op. Compile submit stays with COMPILE-CHECK. The env is not touched."""
+    yield
 
 
 def _cell(value: Any) -> str:
@@ -233,6 +218,9 @@ def _verdict_of(got: Any) -> str:
     if verdict is None and isinstance(got, Mapping):
         verdict = got.get("verdict")
     text = str(verdict or "").strip().lower()
+    # R1-SHAPE-CHECK-01 says "fit". The ticket word is "fits". Same decision.
+    if text == "fit":
+        return "fits"
     if text in {"fits", "misfit", "unknown"}:
         return text
     return "unknown"
@@ -253,16 +241,31 @@ def _check_pair(
         return None
 
     def one(item: ResultSet) -> str:
+        columns = list(item.columns)
         sample = [list(row) for row in item.rows[:_SAMPLE]]
+        shaped = [
+            {columns[i]: row[i] for i in range(len(columns)) if i < len(row)} for row in sample
+        ]
         try:
-            got = check_answer_shape(
-                question,
-                item.sql,
-                list(item.columns),
-                sample,
-                len(item.rows),
-                dict(ontology_slice),
-            )
+            try:
+                # shape_check.py (R1-SHAPE-CHECK-01) is keyword-only after sql.
+                got = check_answer_shape(
+                    question,
+                    item.sql,
+                    columns=[{"name": name} for name in columns],
+                    sample_rows=shaped,
+                    row_count=len(item.rows),
+                    ontology=dict(ontology_slice),
+                )
+            except TypeError:
+                got = check_answer_shape(
+                    question,
+                    item.sql,
+                    columns,
+                    sample,
+                    len(item.rows),
+                    dict(ontology_slice),
+                )
         except Exception:
             return "unknown"
         return _verdict_of(got)
@@ -567,55 +570,14 @@ def apply_generative(
         held_examples = [dict(row) for row in examples if isinstance(row, Mapping)]
     compile_sql = _compile_sql(held_examples)
     onto = dict(ontology_slice or {})
-    if isinstance(env, dict) and _is_compile_env(env):
-        return serve(
-            question=question,
-            compile=_held(str(env.get("sql_used") or compile_sql)),
-            examples=held_examples,
-            ontology_slice=onto,
-            space_id=space_id,
-            session_id=session_id,
-        )
     ai_sql = _ai_sql(env) if isinstance(env, dict) else ""
-    if ai_sql and isinstance(env, dict):
-        ai_item = _from_envelope(env, sql=ai_sql)
-        if not compile_sql:
-            return serve(
-                question=question,
-                ai=ai_item,
-                examples=held_examples,
-                ontology_slice=onto,
-                space_id=space_id,
-                session_id=session_id,
-            )
-        ran = _run_sql(submit, compile_sql)
-        if ran is None:
-            return serve(
-                question=question,
-                compile=_held(compile_sql),
-                examples=held_examples,
-                ontology_slice=onto,
-                space_id=space_id,
-                session_id=session_id,
-            )
-        columns, data = ran
-        compile_item = ResultSet(
-            sql=compile_sql,
-            columns=tuple(columns),
-            rows=tuple(tuple(row) for row in data),
-            envelope=None,
-            executed=True,
-        )
-        return serve(
-            question=question,
-            ai=ai_item,
-            compile=compile_item,
-            examples=held_examples,
-            ontology_slice=onto,
-            space_id=space_id,
-            session_id=session_id,
-        )
-    if compile_sql:
+    # One SQL is not a disagreement. Compile-only and model-only stay as served.
+    if not ai_sql or not compile_sql or not isinstance(env, dict):
+        return env
+    ai_item = _from_envelope(env, sql=ai_sql)
+    ran = _run_sql(submit, compile_sql)
+    if ran is None:
+        # Cannot compare. Do not serve a guess.
         return serve(
             question=question,
             compile=_held(compile_sql),
@@ -624,7 +586,23 @@ def apply_generative(
             space_id=space_id,
             session_id=session_id,
         )
-    return env
+    columns, data = ran
+    compile_item = ResultSet(
+        sql=compile_sql,
+        columns=tuple(columns),
+        rows=tuple(tuple(row) for row in data),
+        envelope=None,
+        executed=True,
+    )
+    return serve(
+        question=question,
+        ai=ai_item,
+        compile=compile_item,
+        examples=held_examples,
+        ontology_slice=onto,
+        space_id=space_id,
+        session_id=session_id,
+    )
 
 
 def served_routes() -> frozenset[str]:

@@ -28,7 +28,6 @@ from dms_executor.route_stamp import (
     ROUTE_AI,
     ROUTE_AI_EXAMPLE,
     ROUTE_CERTIFIED,
-    ROUTE_COMPILE,
     ROUTE_L1,
     ROUTE_RULE,
     route_of,
@@ -196,13 +195,15 @@ def test_compile_context_off_does_not_set_ai_first(monkeypatch: pytest.MonkeyPat
     assert "DMS_AI_FIRST" not in __import__("os").environ
 
 
-def test_compile_context_on_restores_ai_first(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_context_on_does_not_take_the_compile_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("DMS_AI_ARBITER", "1")
     monkeypatch.delenv("DMS_AI_FIRST", raising=False)
     from dms_executor.ai_first import ai_first_enabled
 
     with compile_context():
-        assert ai_first_enabled() is True
+        assert ai_first_enabled() is False
     assert ai_first_enabled() is False
 
 
@@ -404,62 +405,36 @@ def test_apply_generative_serves_model_sql_not_compile() -> None:
     assert len(env["rows"]) == 2
 
 
-def test_compile_envelope_is_not_served() -> None:
+def test_compile_only_envelope_is_unchanged() -> None:
     from dms_executor.arbiter import apply_generative
 
-    env = apply_generative(
-        {
-            "abstained": False,
-            "sql_used": COMPILE_SQL,
-            "rows": [{"total_qty": 15}],
-            "served_route": "ontology_compile",
-            "ladder_rung": "compile",
-            "plan_origin": "ontology_compile",
-            "badge": "L2_VALIDATED",
-        },
+    env = {
+        "abstained": False,
+        "sql_used": COMPILE_SQL,
+        "rows": [{"total_qty": 15}],
+        "served_route": "ontology_compile",
+        "ladder_rung": "compile",
+        "plan_origin": "ontology_compile",
+        "badge": "L2_VALIDATED",
+    }
+    got = apply_generative(
+        env,
         question="stock",
         submit=lambda _sql: (_ for _ in ()).throw(AssertionError("submit")),
     )
-    assert env is not None
-    assert env["abstained"] is True
-    assert env["rows"] == []
-    assert env["served_route"] == ROUTE_RULE
+    assert got is env
 
 
-def test_flag_on_compile_route_does_not_submit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DMS_AI_ARBITER", "1")
-    monkeypatch.delenv("DMS_AI_FIRST", raising=False)
-    from dms_executor.ai_first import begin_example_turn, end_example_turn
-    from dms_executor.generative_ask import _submit_validated
-    from dms_executor.ontology import NO_SILENT_PAD, Coverage
+def test_model_only_envelope_is_unchanged() -> None:
+    from dms_executor.arbiter import apply_generative
 
-    token = begin_example_turn()
-
-    def _submit(sql: str) -> None:
-        raise AssertionError(sql)
-
-    try:
-        with compile_context():
-            env = _submit_validated(
-                "SELECT 1 AS n",
-                question="how many",
-                space_id=FINANCE,
-                session_id="ses_arbiter",
-                submit=_submit,
-                ledger_append=lambda _payload: None,
-                notes=(),
-                plan_source="ontology_plan",
-                coverage=Coverage(
-                    include=("n",),
-                    exclude=(NO_SILENT_PAD,),
-                    unsure=("none",),
-                ),
-                served_route=ROUTE_COMPILE,
-            )
-    finally:
-        end_example_turn(token)
-    assert env["abstained"] is True
-    assert env["rows"] == []
+    env = _ai_env(MODEL_SQL, [{"location": "A", "qty": 10}])
+    got = apply_generative(
+        env,
+        question="stock",
+        submit=lambda _sql: (_ for _ in ()).throw(AssertionError("submit")),
+    )
+    assert got is env
 
 
 def test_no_question_phrase_rules_in_arbiter() -> None:
