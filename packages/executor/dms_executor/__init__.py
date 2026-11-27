@@ -933,52 +933,63 @@ class Executor:
                 # serving open must not wait again.
                 token = block_serving_lease(exc.code)
                 try:
-                    if exc.code == ServingLeaseQueueFull.code:
-                        text = (
-                            "I can't answer this right now: the serving wait "
-                            f"queue is full ({exc.code}). No figure was returned."
-                        )
-                        answer_id = "ans_serving_lease_queue_full"
-                    elif exc.code == SERVING_DEADLINE_EXCEEDED_REASON:
-                        text = (
-                            "I can't answer this right now: the ask ran out of "
-                            f"time after a serving connection was granted ({exc.code}). "
-                            "No figure was returned."
-                        )
-                        answer_id = "ans_serving_deadline_exceeded"
-                    elif exc.code == SERVING_DEADLINE_RESERVE_REASON:
-                        text = (
-                            "I can't answer this right now: there is not enough "
-                            f"time left to start ({exc.code}). No figure was returned."
-                        )
-                        answer_id = "ans_serving_deadline_reserve"
-                    else:
-                        text = (
-                            "I can't answer this right now: serving connections are "
-                            f"at the cap ({exc.code}). No figure was returned."
-                        )
-                        answer_id = "ans_serving_lease_cap"
                     deadline_hit = exc.code in {
                         SERVING_DEADLINE_EXCEEDED_REASON,
                         SERVING_DEADLINE_RESERVE_REASON,
                     }
-                    env = build_abstain(
-                        reason=exc.code,
-                        question=question,
-                        stage="serving_lease",
-                        answer_id=answer_id,
-                        text=text,
-                        values=[],
-                        rows=[],
-                        sql_used=None,
-                        assumptions=[exc.code],
-                        space_id=space_id,
-                        session_id=session_id,
-                        ask_mode="live",
-                        route="abstain",
-                        abstain_reason=exc.code if deadline_hit else None,
-                    )
-                    if deadline_hit:
+                    from dms_executor.scale_miss import enabled as scale_miss_enabled
+
+                    if deadline_hit and scale_miss_enabled():
+                        from dms_executor.scale_miss import stop_envelope
+
+                        env = stop_envelope(
+                            question,
+                            space_id=space_id,
+                            session_id=session_id,
+                        )
+                    else:
+                        if exc.code == ServingLeaseQueueFull.code:
+                            text = (
+                                "I can't answer this right now: the serving wait "
+                                f"queue is full ({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_lease_queue_full"
+                        elif exc.code == SERVING_DEADLINE_EXCEEDED_REASON:
+                            text = (
+                                "I can't answer this right now: the ask ran out of "
+                                "time after a serving connection was granted "
+                                f"({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_deadline_exceeded"
+                        elif exc.code == SERVING_DEADLINE_RESERVE_REASON:
+                            text = (
+                                "I can't answer this right now: there is not enough "
+                                f"time left to start ({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_deadline_reserve"
+                        else:
+                            text = (
+                                "I can't answer this right now: serving connections are "
+                                f"at the cap ({exc.code}). No figure was returned."
+                            )
+                            answer_id = "ans_serving_lease_cap"
+                        env = build_abstain(
+                            reason=exc.code,
+                            question=question,
+                            stage="serving_lease",
+                            answer_id=answer_id,
+                            text=text,
+                            values=[],
+                            rows=[],
+                            sql_used=None,
+                            assumptions=[exc.code],
+                            space_id=space_id,
+                            session_id=session_id,
+                            ask_mode="live",
+                            route="abstain",
+                            abstain_reason=exc.code if deadline_hit else None,
+                        )
+                    if deadline_hit and not scale_miss_enabled():
                         env["serving_deadline_s"] = ask_budget_s
                     assert_envelope_valid(env)
                 finally:

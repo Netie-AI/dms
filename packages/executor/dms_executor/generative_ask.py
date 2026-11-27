@@ -1258,6 +1258,20 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
+    if served_route == ROUTE_COMPILE and _scale_miss_on():
+        from dms_executor.scale_miss import compile_override
+
+        replacement = compile_override(
+            sql,
+            question,
+            grantable=grantable,
+            warehouse=warehouse,
+        )
+        if replacement:
+            sql = replacement
+            served_route = ROUTE_MODEL
+            plan_origin = PLAN_ORIGIN_GENERATE_SQL
+            notes = (*tuple(notes), "scale_miss:ai_over_compile")
     try:
         with span("submit_execute"):
             result = submit(sql)
@@ -1419,6 +1433,24 @@ def _offer_rowset_sql(
 def _rules_off() -> bool:
     """Digit 1 only. The ontology compiler stays when the flag is off."""
     return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
+def _scale_miss_on() -> bool:
+    from dms_executor.scale_miss import enabled
+
+    return enabled()
+
+
+def _scale_turn_ready() -> bool:
+    from dms_executor.scale_miss import turn_ready
+
+    return turn_ready()
+
+
+def _scale_ladder_reserve() -> bool:
+    from dms_executor.scale_miss import ladder_reserves
+
+    return ladder_reserves()
 
 
 def _rules_off_hold(
@@ -2234,7 +2266,7 @@ def _run_extract_loop(
     # so a split does not ledger a number the envelope does not serve.
     direct = reading_prompt(question, reading=1)
     schema_ladder = None
-    if schema_retry_enabled():
+    if schema_retry_enabled() or _scale_miss_on():
         from dms_executor.schema_retry import SchemaLadder
 
         schema_ladder = SchemaLadder(
@@ -2736,7 +2768,7 @@ def _maybe_generative_ask_impl(
                 q, "uncertified paraphrase: not a generative certify boundary",
                 space_id=space_id, session_id=session_id,
             )
-        if vague_question(q):
+        if vague_question(q) and not _scale_miss_on():
             return _abstain(
                 q, "question is too vague or time-unbounded to ground",
                 space_id=space_id, session_id=session_id,
@@ -2811,7 +2843,23 @@ def _maybe_generative_ask_impl(
             space_id=space_id,
             session_id=session_id,
         )
-    if clarify_on and compute is not None:
+    if _scale_miss_on():
+        from dms_executor.scale_miss import begin as scale_begin
+
+        stopped = scale_begin(
+            question=q,
+            compute=compute,
+            ontology=onto,
+            warehouse=lake,
+            grantable=set(allowed),
+            dialect=dialect,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if isinstance(stopped, dict):
+            return stopped
+    # SCALE-MISS-01 already generated. Clarify must not spend the clock first.
+    if clarify_on and compute is not None and not _scale_miss_on():
         from dms_executor.clarify import clarify_before_sql
 
         clarified = clarify_before_sql(
@@ -2861,6 +2909,12 @@ def _maybe_generative_ask_impl(
     # Short retrieved context only -- not the full ontology dump.
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
+    if _scale_miss_on():
+        from dms_executor.scale_miss import budget_stop
+
+        stopped = budget_stop(q, space_id=space_id, session_id=session_id)
+        if isinstance(stopped, dict):
+            return stopped
     note_stage("retrieve_context", "started")
     with span("retrieve_context"):
         ctx = retrieve_short_context(
@@ -3006,6 +3060,12 @@ def _maybe_generative_ask_impl(
     try:
         if held_preview is not None:
             payload = None
+        elif _scale_miss_on() and _scale_turn_ready():
+            from dms_executor.scale_miss import cached_payload, calls_used
+
+            payload = cached_payload()
+            if vote_budget is not None:
+                vote_budget.used = max(vote_budget.used, calls_used())
         elif vote_budget is not None and not vote_budget.take():
             payload = None
         else:
@@ -3046,6 +3106,7 @@ def _maybe_generative_ask_impl(
                 compute=compute,
                 budget=vote_budget,
                 ctx=insights_ctx,
+                reserve=_scale_ladder_reserve(),
                 question=q,
                 warehouse=lake,
                 dialect=dialect,
@@ -3996,14 +4057,17 @@ def maybe_generative_ask(
 ) -> dict[str, Any] | None:
     """Bind the ask clock, then stamp ``timings`` on the envelope."""
     from dms_executor.ask_ladder import bind_climb, reset_climb
+    from dms_executor.scale_miss import bind_turn, reset_turn
 
     token = ensure_clock()
     climb = bind_climb(None)
+    turn_token = bind_turn(None)
     try:
         env = _maybe_generative_ask_impl(*args, **kwargs)
         if isinstance(env, dict):
             attach_timings(env)
         return env
     finally:
+        reset_turn(turn_token)
         reset_climb(climb)
         release_clock(token)
