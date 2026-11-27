@@ -1,10 +1,14 @@
 """Read-only GETs against Cortex surfaces that are **not** in the frozen contract.
 
 The contract (``openapi-1.2.0.json``, via ``cortex_client``) stays the only way DMS
-*asks questions, submits SQL, or touches the ledger*. Ontology and benchmark
+*asks questions, submits SQL, or touches the ledger*. Trust and benchmark
 metadata are read-only descriptions of the engine, so they travel over plain httpx
-here rather than forcing a contract minor before their shape has settled — the same
+here rather than forcing a contract minor before their shape has settled. The same
 precedent ``routes/health.py`` already sets for probing Cortex.
+
+Ontology does not travel here. Cortex removed ``/dms/ontology``. ``GET /v1/ontology``
+reads the Space store (``routes/ontology.py``) and must not be proxied through
+``cortex_get``.
 
 Two rules this module exists to keep:
 

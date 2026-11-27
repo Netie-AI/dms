@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dms.ontology.read",
+  "title": "GET /v1/ontology",
+  "description": "DMS read of one Space ontology for the Ontology page, R3-ONTO-API-01, and the Constructor bridge. Not a Cortex OpenAPI pin. space_id is required. source is store only when space_ontology or approved onto_data items exist for that Space. A missing Space, an empty store, or an unreadable store is ok false, source none, and a named reason. The pack spine is not a substitute. GET /v1/ontology, /graph, /objects, /links, /actions, /functions, and /metrics all return this object.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ok", "section", "space_id", "source", "reason", "hint", "counts", "object_types", "link_types", "action_types", "functions", "metrics", "nodes", "edges"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "section": {"type": "string"},
+    "space_id": {"type": "string"},
+    "source": {"enum": ["store", "none"]},
+    "reason": {"enum": ["", "space_required", "empty_store", "store_unreadable"]},
+    "hint": {"type": "string"},
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_types", "properties", "sensitive_properties", "link_types", "action_types", "action_tools", "action_events", "functions", "metrics"],
+      "properties": {
+        "object_types": {"type": "integer"},
+        "properties": {"type": "integer"},
+        "sensitive_properties": {"type": "integer"},
+        "link_types": {"type": "integer"},
+        "action_types": {"type": "integer"},
+        "action_tools": {"type": "integer"},
+        "action_events": {"type": "integer"},
+        "functions": {"type": "integer"},
+        "metrics": {"type": "integer"}
+      }
+    },
+    "object_types": {"type": "array", "items": {"type": "object"}},
+    "link_types": {"type": "array", "items": {"type": "object"}},
+    "action_types": {"type": "array", "items": {"type": "object"}},
+    "functions": {"type": "array", "items": {"type": "object"}},
+    "metrics": {"type": "array", "items": {"type": "object"}},
+    "nodes": {"type": "array", "items": {"type": "object"}},
+    "edges": {"type": "array", "items": {"type": "object"}}
+  }
+}

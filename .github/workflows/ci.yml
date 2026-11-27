@@ -222,6 +222,86 @@ jobs:
           echo "shard ${{ matrix.shard }} of 3: $(wc -l < "$RUNNER_TEMP/shard_files.txt") test files"
           xargs -a "$RUNNER_TEMP/shard_files.txt" python -m pytest -q --tb=short
 
+  # R1-LIVE-FIX-01. Boots the API on the seeded Postgres and GETs every
+  # page-load path. A 4xx or 5xx fails the job. lint-type-test waits on it.
+  live-pages-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [protected-paths, contract-pin]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dms
+          POSTGRES_PASSWORD: dms
+          POSTGRES_DB: dms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dms -d dms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PYTHONUTF8: "1"
+      DATABASE_URL: postgresql://dms:dms@127.0.0.1:5432/dms
+      DMS_DEMO_FALLBACK: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev]"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Boot the API and GET every page-load path
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          python -m uvicorn dms_api.app:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
+          pid=$!
+          ok=0
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/health >/dev/null; then
+              ok=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              echo "API exited during startup"
+              cat "$RUNNER_TEMP/api.log"
+              exit 1
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "API did not answer /health"
+            cat "$RUNNER_TEMP/api.log"
+            exit 1
+          fi
+          python scripts/verify/live_pages_smoke.py --base http://127.0.0.1:8000
+
   lint-type-test:
     runs-on: ubuntu-latest
     # The cap dates from when pytest ran inside this job (18.5 min on main
@@ -229,10 +309,10 @@ jobs:
     # and this job takes about a minute. The cap is not raised.
     timeout-minutes: 30
     # This job keeps its name and stays the single gate: it is red unless the
-    # two gates and every pytest shard are green. `!cancelled()` is needed so a
-    # failed shard makes this job FAIL. Without it the job would be skipped, and
-    # a skipped required check counts as passing.
-    needs: [protected-paths, contract-pin, pytest]
+    # two gates, every pytest shard, and the live-pages smoke are green.
+    # `!cancelled()` is needed so a failed shard makes this job FAIL. Without it
+    # the job would be skipped, and a skipped required check counts as passing.
+    needs: [protected-paths, contract-pin, pytest, live-pages-smoke]
     if: ${{ !cancelled() }}
     env:
       PYTHONUTF8: "1"
@@ -241,8 +321,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }}"
-          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ]; then
+          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }} live-pages-smoke=${{ needs.live-pages-smoke.result }}"
+          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ] || [ "${{ needs.live-pages-smoke.result }}" != "success" ]; then
             echo "::error::a required job is not green (see the line above)"
             exit 1
           fi
@@ -305,6 +385,9 @@ jobs:
       - name: grade52 metric self-test (stack-free, not a score)
         run: python scripts/verify/grade52.py --self-test
 
+      - name: Live pages smoke self-check (path list, not a booted API)
+        run: python scripts/verify/live_pages_smoke.py --self-check
+
       - name: Oracle self-test (stack-free, not live ask)
         # F42 / EPIC-018: recomputes hostile-pack oracles. Does not POST /v1/chat/ask.
         run: python scripts/score_answers.py --docs tests/fixtures/hostile_score --oracle-only
@@ -330,7 +413,7 @@ jobs:
         working-directory: apps/ui
         run: |
           npm ci
-          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts
+          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/ontologyRead.test.ts
 
   # BANK-04 (#271). Brings the appliance compose stack up and asserts the TLS
   # contract against the live containers: HTTPS answers /health, plain HTTP does

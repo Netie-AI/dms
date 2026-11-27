@@ -1,5 +1,6 @@
 /** DMS API client — browser talks only to DMS (proxied /api). Never Cortex. */
 
+import { ontologyReadPath } from "./ontologyRead";
 import type {
   AdminOverview,
   AnswerEnvelope,
@@ -215,20 +216,32 @@ function section<K extends string, T>(body: SectionBody<K, T>, key: K): T[] {
   return (body[key] as T[] | undefined) ?? [];
 }
 
-/** One page, one round of fetches — the ontology is small and always shown whole. */
-export async function fetchOntology(signal?: AbortSignal): Promise<OntologyBundle> {
+/** One page, one round of fetches. The active Space id is on every request. */
+export async function fetchOntology(
+  spaceId?: string | null,
+  signal?: AbortSignal,
+): Promise<OntologyBundle> {
   const [summary, objects, links, actions, functions, metrics, graph] = await Promise.all([
-    getJson<OntologySummary>("/v1/ontology", signal),
-    getJson<SectionBody<"object_types", OntologyObject>>("/v1/ontology/objects", signal),
-    getJson<SectionBody<"link_types", OntologyLink>>("/v1/ontology/links", signal),
-    getJson<SectionBody<"action_types", OntologyAction>>("/v1/ontology/actions", signal),
-    getJson<SectionBody<"functions", OntologyFunction>>("/v1/ontology/functions", signal),
-    getJson<SectionBody<"metrics", OntologyMetric>>("/v1/ontology/metrics", signal),
+    getJson<OntologySummary>(ontologyReadPath("", spaceId), signal),
+    getJson<SectionBody<"object_types", OntologyObject>>(
+      ontologyReadPath("objects", spaceId),
+      signal,
+    ),
+    getJson<SectionBody<"link_types", OntologyLink>>(ontologyReadPath("links", spaceId), signal),
+    getJson<SectionBody<"action_types", OntologyAction>>(
+      ontologyReadPath("actions", spaceId),
+      signal,
+    ),
+    getJson<SectionBody<"functions", OntologyFunction>>(
+      ontologyReadPath("functions", spaceId),
+      signal,
+    ),
+    getJson<SectionBody<"metrics", OntologyMetric>>(ontologyReadPath("metrics", spaceId), signal),
     getJson<{
       ok: boolean;
       nodes?: OntologyGraphNode[];
       edges?: OntologyGraphEdge[];
-    }>("/v1/ontology/graph", signal),
+    }>(ontologyReadPath("graph", spaceId), signal),
   ]);
   return {
     summary,

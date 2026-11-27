@@ -213,11 +213,13 @@ export type OntologyGraphEdge = {
   cardinality: string;
 };
 
-/** Every ontology read degrades to `ok: false` + hint when Cortex is down. */
-export type Degradable = { ok: boolean; error?: string; hint?: string };
+/** An ontology read with no store rows is `ok: false` plus a named reason. */
+export type Degradable = { ok: boolean; error?: string; hint?: string; reason?: string };
 
 export type OntologySummary = Degradable & {
   pack?: string;
+  space_id?: string;
+  source?: string;
   counts?: OntologyCounts;
   objects_without_metrics?: string[];
 };
