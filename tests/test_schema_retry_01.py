@@ -30,6 +30,7 @@ from dms_executor.ontology import demo_ontology
 from dms_executor.schema_retry import (
     SchemaLadder,
     build_repair_hint,
+    identifier_in_sql,
     parse_engine_error,
     select_candidates,
 )
@@ -308,6 +309,54 @@ def test_sqlite_prefixes() -> None:
     with pytest.raises(sqlite3.OperationalError) as ambiguous:
         con.execute("SELECT revenue FROM sales JOIN buyers")
     assert parse_engine_error(ambiguous.value)[0] == "ambiguous_column"
+
+
+def test_unknown_dialect_reconfirms_without_a_duckdb_parse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DMS_SCHEMA_RETRY", "1")
+    calls: list[Any] = []
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        calls.append(ctx)
+        return _names(query_sql=_GOOD)
+
+    budget = AskCallBudget()
+    budget.take()
+    env = run_model_loop(
+        question=_QUESTION,
+        ctx={},
+        payload=_names(query_sql=_BAD),
+        compute=compute,
+        warehouse=None,
+        dialect="not-a-dialect",
+        model_sql=lambda payload: (payload or {}).get("query_sql"),
+        check=lambda _sql: "explain:BinderException",
+        submit_sql=lambda _sql, _attempts: {"abstained": False, "rows": [{"sku": "a"}]},
+        abstain=lambda why, attempts, **_kw: {"abstained": True, "reason": why, "loop": attempts},
+        empty_answer=lambda _sql, _attempts: {"abstained": True},
+        attempts=[],
+        budget=budget,
+        schema_ladder=SchemaLadder(
+            grantable={"inventory"}, warehouse=None, dialect="not-a-dialect"
+        ),
+    )
+    assert env["reason"] == "sql_dialect_unknown"
+    assert calls == []
+    assert identifier_in_sql("SELECT revenu FROM sales", "revenu", "") is None
+    assert identifier_in_sql("SELECT revenu FROM sales", "revenu", "not-a-dialect") is None
+    assert (
+        select_candidates(
+            "missing_column",
+            "revenu",
+            sql="SELECT revenu FROM sales",
+            warehouse=None,
+            grantable={"sales", "sales.revenue"},
+            dialect="not-a-dialect",
+            columns=[("sales", "revenue", "INTEGER")],
+        )
+        == []
+    )
 
 
 def test_message_token_is_dropped_when_the_sql_did_not_write_it() -> None:

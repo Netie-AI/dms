@@ -1723,7 +1723,10 @@ def _run_extract_loop(
                 stage="extract_loop",
                 ticket_reason=ticket_reason,
             )
-            if str(reason).startswith("schema_repair_exhausted:"):
+            if (
+                str(reason).startswith("schema_repair_exhausted:")
+                or reason == "sql_dialect_unknown"
+            ):
                 env["reconfirm"] = {
                     "reason_code": str(reason),
                     "why": str(reason),

@@ -23,8 +23,6 @@ from typing import Any
 from cortex_client.compute import schema_retry_enabled
 from cortex_client.insights import schema_context_enabled
 
-from dms_executor.demo_warehouse import SERVING_DIALECT
-
 _REPAIR_LINE = "Fix only the identifier and kind named in repair_hint."
 _KINDS = frozenset(
     {
@@ -80,7 +78,6 @@ _SQLSERVER_KIND = {
     8114: "type_mismatch",
     102: "syntax",
 }
-_FROM_JOIN = re.compile(rf"\b(?:from|join)\s+({_IDENT})\b", re.I)
 _TABLE_WITH_NAME = re.compile(rf"Table with name ({_IDENT}) does not exist", re.I)
 _FUNC_MATCH = re.compile(
     rf"function matches the given name and argument types '({_IDENT})",
@@ -214,6 +211,12 @@ class SchemaLadder:
         """None when this failure is not a schema-retry database error."""
         if not schema_retry_enabled() or not is_schema_db_outcome(outcome):
             return None
+        # The caller dialect is the connector/grant dialect. An unknown name
+        # is not the serving engine. Reconfirm. Do not parse the SQL.
+        if _read_dialect(self.dialect) is None:
+            if attempts:
+                attempts[-1]["error_kind"] = "other"
+            return RungPlan(abstain="sql_dialect_unknown", kind="other")
         hint = build_repair_hint(
             sql,
             warehouse=self.warehouse,
@@ -514,39 +517,54 @@ def _is_sqlite(exc: BaseException) -> bool:
     return type(exc).__name__ in {"OperationalError", "DatabaseError"} and module == "sqlite3"
 
 
+def _read_dialect(dialect: str | None) -> str | None:
+    """sqlglot name for a connector kind. None when the kind is unknown.
+
+    There is no serving-engine default. A missing dialect does not become DuckDB.
+    """
+    from dms_executor.grant_struct import sqlglot_dialect
+
+    return sqlglot_dialect(dialect)
+
+
+def _parse_tree(sql: str, dialect: str) -> Any:
+    """Parsed statement, or None. A parse failure is empty, not a text scan."""
+    read = _read_dialect(dialect)
+    if not read:
+        return None
+    try:
+        from sqlglot import parse_one
+
+        return parse_one(sql or "", read=read)
+    except Exception:
+        return None
+
+
 def _sql_identifiers(sql: str, dialect: str) -> dict[str, str]:
     """Lower name to the spelling the SQL wrote. Literals are not identifiers."""
     found: dict[str, str] = {}
-    try:
-        from sqlglot import exp, parse_one
-
-        tree = parse_one(sql or "", read=dialect or SERVING_DIALECT)
-    except Exception:
-        tree = None
-    if tree is not None:
-        for node in tree.find_all(exp.Column, exp.Table):
-            name = node.name
-            if isinstance(name, str) and name:
-                found.setdefault(name.lower(), name)
-        for node in tree.find_all(exp.Anonymous):
-            name = node.name
-            if isinstance(name, str) and name:
-                found.setdefault(name.lower(), name)
+    tree = _parse_tree(sql, dialect)
+    if tree is None:
         return found
-    for token in re.findall(_IDENT, sql or ""):
-        found.setdefault(token.lower(), token)
+    from sqlglot import exp
+
+    for node in tree.find_all(exp.Column, exp.Table):
+        name = node.name
+        if isinstance(name, str) and name:
+            found.setdefault(name.lower(), name)
+    for node in tree.find_all(exp.Anonymous):
+        name = node.name
+        if isinstance(name, str) and name:
+            found.setdefault(name.lower(), name)
     return found
 
 
 def _referenced_tables(sql: str, dialect: str) -> list[str]:
-    try:
-        from sqlglot import exp, parse_one
-
-        tree = parse_one(sql or "", read=dialect or SERVING_DIALECT)
-    except Exception:
-        tree = None
+    tree = _parse_tree(sql, dialect)
     if tree is None:
-        return [match.group(1) for match in _FROM_JOIN.finditer(sql or "")]
+        return []
+    from sqlglot import exp
+
     ctes = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE) if cte.alias_or_name}
     names: list[str] = []
     seen: set[str] = set()
