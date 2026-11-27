@@ -1,12 +1,39 @@
 from __future__ import annotations
 
+import os
+import re
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import unquote
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AskMode = Literal["demo", "live"]
+
+# ENV-EXAMPLE-SENTINEL (#388). The one definition of a placeholder: the word the
+# shipped .env.example files put where a secret goes. Boot refuses it, by the
+# variable's name and never its value, so an unedited copy cannot start.
+#: What .env.example ships in a secret's place.
+PLACEHOLDER = "CHANGE_ME"
+# Any case, with - _ . space or nothing between the words, percent-encoded or
+# not, alone or inside a URL. Letter boundaries keep "exchange-medium" a real value.
+_PLACEHOLDER_RE = re.compile(r"(?<![a-z])change[-_. ]?me(?![a-z])", re.IGNORECASE)
+#: Settings fields that carry a secret (env name = the field name upper-cased).
+_SECRET_FIELDS = ("database_url", "cortex_api_key")
+#: Secrets the packages read straight from the environment, not through Settings.
+_SECRET_ENV = ("OPENVAULT_API_KEY", "DMS_OV_SERVICE_TOKEN")
+
+
+class PlaceholderSecretError(RuntimeError):
+    """A secret-bearing setting still holds the shipped placeholder."""
+
+
+def is_placeholder(value: str | None) -> bool:
+    text = str(value or "")
+    for _ in range(3):  # a percent-encoded sentinel, encoded more than once
+        text = unquote(text)
+    return bool(_PLACEHOLDER_RE.search(text))
 
 
 class Settings(BaseSettings):
@@ -83,6 +110,25 @@ class Settings(BaseSettings):
         return text or None
 
 
+def refuse_placeholder_secrets(settings: Settings) -> None:
+    """Raise, naming every secret-bearing variable that holds a placeholder."""
+    found = {name.upper(): getattr(settings, name) for name in _SECRET_FIELDS}
+    found.update({name: os.environ.get(name) for name in _SECRET_ENV})
+    names = sorted(name for name, value in found.items() if is_placeholder(value))
+    if names:
+        raise PlaceholderSecretError(
+            f"placeholder_secret: {', '.join(names)} still holds the placeholder shipped "
+            "in .env.example. Set a real value. Refusing to start."
+            + (
+                " In compose, DATABASE_URL is built from DMS_DB_PASSWORD."
+                if "DATABASE_URL" in names
+                else ""
+            )
+        )
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    refuse_placeholder_secrets(settings)
+    return settings

@@ -39,6 +39,8 @@ GOOD = [
     "192.168.1.20",
     "xn--mnchen-3ya.example",  # an IDN in its ASCII (punycode) form
     "3com.example",
+    "1.2.3.4.example",  # numeric labels are fine when the last label is a name
+    "255.255.255.255",
     "a" * 63 + ".example",
     ".".join(["a" * 61] * 4),  # 247 characters, labels of 61
     ".".join(["a" * 63] * 3 + ["a" * 61]),  # exactly 253 characters
@@ -84,6 +86,16 @@ REFUSED = {
     "label of 64": "a" * 64 + ".example",
     "254 characters": ".".join(["a" * 62] * 4) + ".bb",
     "import": "localhost\nimport /etc/caddy/tls/*",
+    # An all-numeric last label is a host only as a dotted IPv4 address.
+    "numeric, not IPv4 (999)": "999.999.999.999",
+    "numeric, five parts": "1.2.3.4.5",
+    "numeric, one part (decimal IPv4)": "2130706433",
+    "numeric, two parts": "0x7f.1",
+    "numeric, three parts": "1.2.3",
+    "numeric zero": "0",
+    "unspecified address": "0.0.0.0",
+    "leading zero part": "010.1.1.1",
+    "part of 256": "256.1.1.1",
 }
 
 
@@ -164,12 +176,29 @@ def test_guard_is_an_allowlist_and_runs_before_caddy() -> None:
 def test_compose_default_and_caddyfile_site_are_unchanged() -> None:
     ui = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]["ui"]
     assert ui["environment"]["DMS_TLS_HOST"] == "${DMS_TLS_HOST:-localhost}"
-    sites = [
-        ln for ln in CADDYFILE.read_text(encoding="utf-8").splitlines() if "DMS_TLS_HOST" in ln
+    spliced = [
+        ln.strip()
+        for ln in CADDYFILE.read_text(encoding="utf-8").splitlines()
+        if "DMS_TLS_HOST" in ln and not ln.lstrip().startswith("#")
     ]
-    assert sites == ["https://{$DMS_TLS_HOST:localhost}:8080 {"], (
-        "the host is spliced somewhere new"
-    )
+    # Exactly two splice points, both behind the entry guard: the site address and
+    # default_sni (which lets a client that sends no SNI, as one typing an IP
+    # address does, be served the certificate for the same host).
+    assert spliced == [
+        "default_sni {$DMS_TLS_HOST:localhost}",
+        "https://{$DMS_TLS_HOST:localhost}:8080 {",
+    ], "the host is spliced somewhere new"
+
+
+def test_ip_host_is_served_without_sni() -> None:
+    """An IPv4 host is admitted by the guard, so it must also be served. A TLS
+    client does not send SNI for an IP address; without ``default_sni`` Caddy has
+    no name to pick the certificate by and the handshake fails (tlsv1 alert
+    internal error). The global block must carry it, ahead of the first site."""
+    text = CADDYFILE.read_text(encoding="utf-8")
+    code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+    assert "default_sni {$DMS_TLS_HOST:localhost}" in code
+    assert code.index("default_sni") < code.index("https://{$DMS_TLS_HOST")
 
 
 def test_smoke_proves_a_good_and_a_refused_host_live() -> None:
@@ -182,3 +211,4 @@ def test_smoke_proves_a_good_and_a_refused_host_live() -> None:
     assert code.count('"DMS_TLS_HOST must be') >= 3, "the refused hosts are not tied to the guard"
     assert "INJECTED" in code, "the smoke no longer sends the second-site payload"
     assert '--noproxy "${GOOD_HOST}"' in code, "F1 would ask a workstation proxy for the host"
+    assert 'pass "F2' in code and 'fail "F2' in code, "an IPv4 host is not proved live"
