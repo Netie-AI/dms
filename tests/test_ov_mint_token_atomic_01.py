@@ -128,6 +128,37 @@ def _fail(ov: _OpenVault) -> OpenVaultTokenError:
     return ei.value
 
 
+def _fail_without_blocking(
+    ov: _OpenVault, path: Path, seconds: float = 20.0
+) -> OpenVaultTokenError:
+    """``_fail`` for a path where a blocking ``open`` would hang the suite.
+
+    The first mint runs in a thread. If it is still there after ``seconds`` the
+    test fails ("without blocking" is its claim) instead of hanging the job; the
+    blocked ``open`` is released first so the thread ends.
+    """
+    box: dict[str, BaseException] = {}
+
+    def run() -> None:
+        try:
+            ov.minter().fetch_intermediate()
+        except BaseException as exc:  # noqa: BLE001 - handed to the test thread
+            box["exc"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        release = os.open(path, os.O_RDONLY | os.O_NONBLOCK)  # lets a blocked writer open return
+        worker.join(5)
+        os.close(release)
+        pytest.fail(f"the first mint blocked for {seconds}s on a FIFO at the token path")
+    exc = box.get("exc")
+    assert isinstance(exc, OpenVaultTokenError), f"expected a named failure, got {exc!r}"
+    assert MINTED not in f"{exc!r} {exc} {exc.__cause__!r}"
+    return exc
+
+
 @pytest.mark.parametrize("case", sorted(FAILURES))
 def test_failed_register_leaves_no_file_behind(secret: Path, case: str) -> None:
     """The issue's own words: no file and no empty file left behind."""
@@ -451,7 +482,7 @@ def test_in_place_write_refuses_a_fifo_without_blocking(
     rfd = os.open(secret, os.O_RDONLY | os.O_NONBLOCK) if reader else None
     try:
         _refuse_rename(monkeypatch)
-        err = _fail(_OpenVault())
+        err = _fail_without_blocking(_OpenVault(), secret)
         assert err.code == OV_MINT_FAILED and "not stored" in str(err)
         assert rfd is None or os.read(rfd, 64) == b"", "the token was written into the FIFO"
     finally:
