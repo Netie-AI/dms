@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-27, R1-RUNTIME-01, R1-CLARIFY-01, DMS-AI-ABSTAIN-01, R1-RULES-OUT-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_RULES_OFF` default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 (two runs). On, the question-word compiler does not submit: correct=23 wrong=0 refusal_wrong=0 reconfirm=20 ai=0 rule=23, and that rule is certified pack L1 only. The stub has no model SQL. Armed and pack H unmeasured. `DMS_ASK_LADDER`, `DMS_AI_CLARIFY`, and `DMS_RUNTIME_SELFCHECK` default off. Not PASS.
+**Tip:** `DMS_RULES_OFF` default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 (two runs). On, the question-word compiler does not submit: correct=23 wrong=0 refusal_wrong=0 reconfirm=18 refusal_ok=8 ai=0 rule=23, and that rule is certified pack L1 only. Phrase checkers do not run. The stub has no model SQL. Armed and pack H unmeasured. `DMS_ASK_LADDER`, `DMS_AI_CLARIFY`, and `DMS_RUNTIME_SELFCHECK` default off. Not PASS.
 
 ## Direction
 
