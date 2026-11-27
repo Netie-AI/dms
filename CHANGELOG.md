@@ -42,6 +42,11 @@ Append-only. Never edited, only added to. Newest first.
 - **Flag.** `DMS_RUNTIME_SELFCHECK` defaults off. Off, the offline banner is the previous sentence. On, it states the runtime problem in plain language. The ask path does not read the flag.
 - **52.** Unmeasured (stub). No serving change. Not PASS.
 
+## 2026-11-27 - R1-RULES-OUT-01: the question-word compiler does not submit
+
+- **Miss.** With `DMS_RULES_OFF=1`, a generate miss that has a ranking plan reconfirms (`rules_off`) and does not submit. Multi-grain compile returns None on that flag. Flag off is unchanged.
+- **Stub 52.** Two runs, same commit. Flag off: correct=43 wrong=0 refusal_wrong=0 reconfirm=5 ai=0 rule=43. Flag on: correct=23 wrong=0 refusal_wrong=0 reconfirm=20 abstain=3 ai=0 rule=23. The 23 are certified pack L1 (`demo_pack.py` `match_pack_phrase`). Compile served is 0. The stub's Insights payload is a miss (`model_calls=0`), so there is no AI SQL to run. Armed and pack H not run. Not PASS.
+
 ## 2026-11-27 - R1-RULES-OUT-01: question-word lanes behind DMS_RULES_OFF
 
 - **Flag.** `DMS_RULES_OFF` defaults to off. Only the digit `1` turns it on. Off, prompt bytes, the envelope, and the served route stay the same. On, `answer_demo_question` returns None, `_is_predictive` and `is_uncertified_paraphrase` return False, and the bronze sheet lane names no table. `DMS_RULES_OFF` implies `DMS_NO_WORD_RULES`, so measure linking ranks instead of the keyword locker. `locked_measure` returns None.
