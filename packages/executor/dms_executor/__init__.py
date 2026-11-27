@@ -350,6 +350,15 @@ def _insights_compute_seam(
             kwargs["sql_feedback"] = feedback
         if route_hint in {"escalate", "reason"}:
             kwargs["route_hint"] = route_hint
+        from cortex_client.ask_clock import generate_budget_left_s
+
+        left = generate_budget_left_s()
+        if left is not None and left <= 0:
+            # Do not spend the ask-back reserve on another generate. The
+            # existing unsure abstain is what offer_reconfirm turns into a card.
+            return {"unsure": True}
+        if left is not None:
+            kwargs["timeout"] = left
         try:
             return fn(asked, **kwargs)
         except TypeError:
