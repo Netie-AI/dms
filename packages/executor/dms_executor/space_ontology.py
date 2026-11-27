@@ -51,6 +51,7 @@ from dms_core.control_plane.onto_store import (
 from sqlglot import exp
 from sqlglot.optimizer.scope import Scope, traverse_scope
 
+from dms_executor.bronze import has_non_ascii, ident_safe, unicode_ident_enabled
 from dms_executor.demo_warehouse import SERVING_DIALECT, connect_file
 from dms_executor.ontology import Ontology, Violation, from_manifest
 
@@ -579,6 +580,9 @@ def budget_space_block(space: Mapping[str, Any], *, used: int) -> dict[str, Any]
 
 def _wire_id(name: str) -> str | None:
     """A link id Cortex will accept (one identifier part), or None."""
+    if unicode_ident_enabled() and has_non_ascii(name):
+        landed = ident_safe(name)
+        return landed if _IDENT.fullmatch(landed) else None
     cleaned = re.sub(r"[^A-Za-z0-9_]", "_", name)
     if cleaned and cleaned[0].isdigit():
         cleaned = "_" + cleaned

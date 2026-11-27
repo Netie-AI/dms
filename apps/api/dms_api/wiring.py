@@ -498,6 +498,14 @@ def sql_source_ingest(
                 "column_types": dict(p.column_types),
                 "untyped_columns": dict(p.untyped_columns),
                 "note": p.note,
+                **(
+                    {
+                        "source_name": p.source_name,
+                        "column_sources": dict(p.column_sources),
+                    }
+                    if p.column_sources
+                    else {}
+                ),
             }
             for p in extract.pulls
         ],

@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - UNICODE-IDENT-01: keep non-ASCII headers beside an ASCII id
+
+- **Flag.** `DMS_UNICODE_IDENT` defaults to off. Only the digit `1` turns it on. Off, `ident_safe`, wire ids, bronze names, CSV headers, and schema prompts stay the previous fold. On, a name that still has a non-ASCII character lands as `<ascii stem or t>_<8 hex of sha256(the full source name)>`. The original is `source_name` on the registry row, the ingest receipt, and `schema_context`. Answer row headers use that source name.
+- **Not a word rule.** The suffix is sha256 of the source string. ASCII names, including Malay `jumlah_jualan`, are unchanged. Nothing inspects question text. The model reads `source_name` and writes the ASCII reference.
+
 ## 2026-11-27 - STREAM-STAGES-01: live ask stages over SSE
 
 - **Flag.** `DMS_ASK_STREAM` defaults to off. Off, `GET /v1/studio/ask/{id}/events` is not mounted and `POST /v1/chat/ask` is unchanged. On, the ladder stages already recorded (retrieve, plan, generate, validate, retry rung N, vote, reconfirm) are pushed as `{stage, t_ms, status}`. Studio shows elapsed seconds and Cancel. Cancel aborts the ask request, which is the existing client-disconnect path.
