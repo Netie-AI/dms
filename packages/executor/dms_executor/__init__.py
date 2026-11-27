@@ -1363,7 +1363,7 @@ class Executor:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
             raise_if_ask_stopped()
-            from dms_executor.arbiter import compile_context, gate_generative
+            from dms_executor.arbiter import arbitrate_generative, compile_context
 
             with compile_context():
                 gen_env = maybe_generative_ask(
@@ -1402,7 +1402,7 @@ class Executor:
                     embedder=openvault_embedder(self._cortex),
                     demo_gate=not armed_product,
                 )
-            gen_env = gate_generative(
+            gen_env = arbitrate_generative(
                 gen_env,
                 question=question,
                 space_id=space_id,

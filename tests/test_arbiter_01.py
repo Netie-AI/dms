@@ -20,8 +20,8 @@ import pytest
 from dms_executor.arbiter import (
     ResultSet,
     arbiter_enabled,
+    arbitrate_generative,
     compile_context,
-    gate_generative,
     serve,
 )
 from dms_executor.route_stamp import (
@@ -210,7 +210,7 @@ def test_compile_context_on_does_not_take_the_compile_lane(
 def test_flag_off_gate_is_the_same_object(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DMS_AI_ARBITER", raising=False)
     env = {"served_route": ROUTE_L1, "ladder_rung": "l1", "rows": [{"n": 1}]}
-    got = gate_generative(env, question="q", submit=lambda _sql: None)
+    got = arbitrate_generative(env, question="q", submit=lambda _sql: None)
     assert got is env
     assert got["served_route"] == ROUTE_L1
 

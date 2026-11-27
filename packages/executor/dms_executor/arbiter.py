@@ -541,7 +541,7 @@ def _run_sql(submit: Callable[[str], Any], sql: str) -> tuple[list[str], list[li
     return columns, data
 
 
-def gate_generative(
+def arbitrate_generative(
     env: dict[str, Any] | None,
     **kwargs: Any,
 ) -> dict[str, Any] | None:
