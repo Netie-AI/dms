@@ -1,8 +1,11 @@
 """GEN-01 multi-method semantic retrieve → short context.
 
-Ideas-only from DB-GPT-class schema linking (no clone, no embeddings, no extra
-dep): SQL-filter over information_schema + ontology overlay + bounded DISTINCT
-encodings, then summarize. Token overlap is O(n) over granted columns.
+Ideas-only from DB-GPT-class schema linking (no clone, no extra dep): SQL-filter
+over information_schema + ontology overlay + bounded DISTINCT encodings, then
+summarize. Token overlap is O(n) over granted columns.
+
+``DMS_NO_WORD_RULES`` off keeps the keyword measure lock. On, that lock is
+``rank_texts`` over the ontology (name, description, steward synonyms).
 
 ponytail: token overlap, not a vector index. Ceiling: wide lakes. Upgrade: Cortex
 schema-link service behind the existing compute HTTP call.
@@ -11,16 +14,38 @@ schema-link service behind the existing compute HTTP call.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 from cortex_client.compute import pack_id_shape, ranked_measure_tokens
-from cortex_client.qualifiers import parse_rank_window, rank_window_group, rank_window_measure
+from cortex_client.qualifiers import parse_rank_window
 from dms_core.pii import column_is_pii, sanitize_retrieve_parts
 
 from dms_executor.demo_warehouse import connect_serving
+from dms_executor.keyword_routes import (
+    _DIM_HINTS,
+    asks_for_dimension,
+    locked_measure,
+    lookup_bound_values,
+)
+from dms_executor.keyword_routes import (
+    bind_plan as _keyword_bind_plan,
+)
+from dms_executor.keyword_routes import (
+    intent_slots as _keyword_intent_slots,
+)
+from dms_executor.measure_link import no_word_rules_enabled, rank_measure_link
 from dms_executor.ontology import Ontology
+
+
+def _keyword_lock_off() -> bool:
+    """Keyword measure lock is off. ``DMS_RULES_OFF`` implies ``DMS_NO_WORD_RULES``."""
+    if os.environ.get("DMS_RULES_OFF", "0").strip() == "1":
+        return True
+    return no_word_rules_enabled()
+
 
 MAX_CONTEXT_CHARS = 2400
 MAX_TABLES = 6
@@ -29,26 +54,7 @@ MAX_MEASURES = 10
 MAX_LINKS = 8
 MAX_SAMPLE = 6
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_TIME = re.compile(
-    r"\b(last|this|next|month|week|year|quarter|yesterday|today|ago|ytd|qtd|"
-    r"daily|weekly|monthly|quarterly|yearly|annually)\b",
-    re.I,
-)
-_NEEDS_DIM = re.compile(r"\b(by|per|each|grouped|across)\b", re.I)
-_ENTITY_PREFIX = re.compile(r"^\s*(which|list|rank)\b", re.I)
 _SPINE_PATH = Path(__file__).with_name("ontology_spine.yaml")
-_WH_A = re.compile(r"\b(warehouse a|wh-a)\b", re.I)
-_COLD = re.compile(r"cold[\s-]?storage", re.I)
-_COLD_NEGATED = re.compile(
-    r"(?:\b(?:not|excluding|other\s+than)\b.{0,48}cold[\s-]?storage)"
-    r"|(?:non-cold)",
-    re.I,
-)
-_STILL_UNTYPED = re.compile(
-    r"\b(delayed|alerts?|storage bin|high-risk|pending shipment|risk and lead)\b",
-    re.I,
-)
-_ABOVE_PCT = re.compile(r"above\s+(\d{1,2})\s+percent", re.I)
 
 
 def load_ontology_spine(path: Path | None = None) -> dict[str, Any] | None:
@@ -80,40 +86,6 @@ def load_measure_aliases(path: Path | None = None) -> dict[str, str]:
     return out
 
 
-_TOP_N = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
-_DIM_HINTS: tuple[tuple[tuple[str, ...], str, str], ...] = (
-    (("by country", "supplier country"), "supplier", "country"),
-    (
-        ("by destination", "per destination", "by location"),
-        "location",
-        "location_code",
-    ),
-    (("by plant", "by warehouse"), "location", "location_code"),
-    (
-        (
-            "by category",
-            "per category",
-            "in each category",
-            "categoty",
-            "categories by",
-            "category sales",
-        ),
-        "product",
-        "category",
-    ),
-    (("by sku", "selling sku", "skus by"), "product", "sku"),
-    (("by supplier",), "supplier", "supplier_id"),
-    (("by lane", "per lane"), "lane", "origin_plant_id"),
-    (("by day", "per day", "each day", "daily"), "day", "day"),
-    (("by week", "per week", "each week", "weekly"), "day", "week"),
-    (("by month", "per month", "each month", "monthly"), "day", "month"),
-    (
-        ("by quarter", "per quarter", "each quarter", "quarterly"),
-        "day",
-        "quarter",
-    ),
-    (("by year", "per year", "each year", "yearly"), "day", "year"),
-)
 _STOP = frozenset(
     {
         "the",
@@ -268,40 +240,30 @@ def retrieve_value_encodings(
     return encodings
 
 
-def intent_slots(question: str, ontology: Ontology | None = None) -> dict[str, Any]:
-    """Locked measure / group / limit / keep_gt for Cortex generate. No SQL."""
-    q = question or ""
-    lock = _locked_measure(q)
-    if lock and ontology is not None and lock not in ontology.measures:
-        lock = None
-    hinted = _group_from_hints(q)
-    top = _TOP_N.search(q)
-    above = _ABOVE_PCT.search(q)
-    out: dict[str, Any] = {}
-    if lock:
-        out["measure"] = lock
-    if hinted:
-        out["group_by"] = hinted
-    if top:
-        out["limit"] = int(top.group(1))
-    if above:
-        out["keep_gt"] = float(above.group(1))
-    win = parse_rank_window(q)
-    if win is not None:
-        # "excluding top 3": 3 is the skipped prefix, never the limit.
-        out.pop("limit", None)
-        out["offset"] = win.offset
-        if win.limit is not None:
-            out["limit"] = win.limit
-        pair = rank_window_group(win)
-        if pair and not hinted:
-            out["group_by"] = [list(pair)]
-        if not lock and ontology is not None:
-            specs = {n: m.description or "" for n, m in ontology.measures.items()}
-            measure = rank_window_measure(q, specs)[0]
-            if measure:
-                out["measure"] = measure
-    return out
+def intent_slots(
+    question: str,
+    ontology: Ontology | None = None,
+    *,
+    embedder: Any = None,
+) -> dict[str, Any]:
+    """Locked measure / group / limit / keep_gt for Cortex generate. No SQL.
+
+    Flag off is the keyword lock. Flag on ranks the ontology and does not
+    keep a keyword measure when that rank is a tie or under the floor.
+    """
+    if not _keyword_lock_off():
+        return _keyword_intent_slots(question, ontology)
+    slots = _keyword_intent_slots(question, ontology, keyword_lock=False)
+    link = rank_measure_link(question, ontology, embedder=embedder)
+    window = parse_rank_window(question or "")
+    if window is None:
+        slots.pop("measure", None)
+    if link.name and link.reason_code is None:
+        if ontology is None or link.name in ontology.measures:
+            slots["measure"] = link.name
+    elif link.reason_code and window is None:
+        slots.pop("measure", None)
+    return slots
 
 
 def retrieve_ontology_slice(onto: Ontology | None, toks: set[str]) -> dict[str, Any]:
@@ -389,99 +351,6 @@ def summarize_context(parts: dict[str, Any]) -> dict[str, Any]:
     return trimmed
 
 
-def _one_value(warehouse: Path, sql: str) -> str | None:
-    con = connect_serving(warehouse)
-    try:
-        rows = con.execute(sql).fetchall()
-    except Exception:  # noqa: BLE001 -- empty retrieve, do not 503
-        return None
-    finally:
-        con.close()
-    vals = [str(r[0]) for r in rows if r and r[0] is not None]
-    uniq = list(dict.fromkeys(vals))
-    return uniq[0] if len(uniq) == 1 else None
-
-
-def lookup_bound_values(question: str, warehouse: Path | None) -> dict[str, str]:
-    """Lake encodings for typed filters. Not a certified-pack lookup."""
-    if warehouse is None or not Path(warehouse).is_file():
-        return {}
-    qn = (question or "").lower()
-    path = Path(warehouse)
-    out: dict[str, str] = {}
-    if _WH_A.search(question or ""):
-        code = _one_value(
-            path,
-            "SELECT location_code FROM locations WHERE "
-            "lower(CAST(location_code AS VARCHAR)) = 'wh-a' "
-            "OR lower(CAST(name AS VARCHAR)) = 'warehouse a' LIMIT 3",
-        )
-        if code:
-            out["location.location_code"] = code
-    if "chemical" in qn:
-        cat = _one_value(
-            path,
-            "SELECT DISTINCT CAST(category AS VARCHAR) FROM inventory "
-            "WHERE lower(CAST(category AS VARCHAR)) LIKE '%chemical%' LIMIT 3",
-        )
-        if cat:
-            out["lot.category"] = cat
-            out["product.category"] = cat
-    return out
-
-
-def _has_col(context: dict[str, Any], obj: str, col: str) -> bool:
-    cols = context.get("columns") or {}
-    got = cols.get(obj) or []
-    return col in got
-
-
-def typed_filters(question: str, context: dict[str, Any]) -> list[list[Any]] | None:
-    """None = needs a filter we cannot type. [] = no extra filters."""
-    qn = (question or "").lower()
-    bound = context.get("bound_values") or {}
-    filters: list[list[Any]] = []
-    if _COLD.search(question or ""):
-        if not _has_col(context, "location", "is_cold_storage"):
-            return None
-        want_cold = not bool(_COLD_NEGATED.search(question or ""))
-        filters.append(["location", "is_cold_storage", "=", want_cold])
-    if re.search(r"\bexpir", qn):
-        if not _has_col(context, "lot", "expiry_date"):
-            return None
-        from datetime import date
-
-        filters.append(["lot", "expiry_date", "<", date.today().isoformat()])
-    if _WH_A.search(question or ""):
-        code = bound.get("location.location_code")
-        if not code or not _has_col(context, "location", "location_code"):
-            return None
-        filters.append(["location", "location_code", "=", code])
-    if "chemical" in qn:
-        cat = bound.get("lot.category") or bound.get("product.category")
-        obj = "lot" if _has_col(context, "lot", "category") else "product"
-        if not cat or not _has_col(context, obj, "category"):
-            return None
-        filters.append([obj, "category", "=", cat])
-    if "audit" in qn and "overdue" in qn:
-        measures = context.get("measures") or {}
-        if _has_col(context, "supplier", "last_audit_date"):
-            from datetime import date, timedelta
-
-            cutoff = (date.today() - timedelta(days=90)).isoformat()
-            filters.append(["supplier", "last_audit_date", "<", cutoff])
-        elif "audit_overdue" not in measures:
-            # Measure FILTER already encodes the 90-day cutoff. Missing retrieve
-            # column must not None-out bind when the verified measure exists.
-            return None
-    if ("cctv" in qn or "camera" in qn) and not _has_col(
-        context, "location", "cctv_camera_id"
-    ):
-        return None
-    if "reorder" in qn and "below_reorder_lots" not in (context.get("measures") or {}):
-        return None
-    return filters
-
 
 def retrieve_short_context(
     question: str,
@@ -489,6 +358,7 @@ def retrieve_short_context(
     warehouse: Path | None = None,
     grantable: set[str] | None = None,
     ontology: Ontology | None = None,
+    embedder: Any = None,
 ) -> dict[str, Any]:
     """Schema SQL + ontology + value encodings, summarized. No measure SQL, no secrets."""
     toks = question_tokens(question)
@@ -515,7 +385,11 @@ def retrieve_short_context(
                 onto_slice.setdefault("objects", {}).setdefault(
                     grain, {"key": list(ontology.objects[grain].key)}
                 )
-    lock = _locked_measure(question)
+    if _keyword_lock_off():
+        link = rank_measure_link(question, ontology, embedder=embedder)
+        lock = link.name if link.reason_code is None else None
+    else:
+        lock = locked_measure(question)
     if lock and ontology is not None and lock in ontology.measures:
         spec = ontology.measures[lock]
         onto_slice.setdefault("measures", {})[lock] = {
@@ -567,76 +441,12 @@ def retrieve_short_context(
         "schema": schema,
         "encodings": encodings,
         "bound_values": bound,
-        "intent_slots": intent_slots(question, ontology),
+        "intent_slots": intent_slots(question, ontology, embedder=embedder),
         "measure_aliases": aliases,
         **onto_slice,
     }
     return summarize_context(parts)
 
-
-def _locked_measure(question: str) -> str | None:
-    """One measure the question names, or None. Not a certified-pack lookup.
-
-    WORD-RULES-OUT-01: these token locks stay until DMS_GROUND_DEFS is
-    measured equal or better. Do not add another phrase here.
-    """
-    qn = (question or "").lower()
-    if "quantity sold" in qn or "qty sold" in qn:
-        return "outbound_kg"
-    if "sku count" in qn or "how many sku" in qn or "how many unique sku" in qn:
-        return "sku_count"
-    if "shipment cost" in qn or "shipping cost" in qn or "freight" in qn:
-        return "shipping_cost_myr"
-    if "capacity utilisation" in qn or "capacity utilization" in qn:
-        return "utilisation_pct"
-    if _COLD.search(question or ""):
-        return "utilisation_pct"
-    if _ABOVE_PCT.search(question or "") or "90 percent" in qn:
-        return "utilisation_pct"
-    if "cctv" in qn or "camera" in qn:
-        return "utilisation_pct"
-    if "reorder" in qn:
-        return "below_reorder_lots"
-    if re.search(r"\brank(?:ing)?\b", qn) and "supplier" in qn:
-        return "supplier_rank_score"
-    if "audit" in qn and "overdue" in qn:
-        return "audit_overdue"
-    if "expir" in qn or "chemical" in qn:
-        return "stock_value_myr"
-    if (
-        "stock value" in qn
-        or "inventory worth" in qn
-        or "value of stock" in qn
-        or "worth per category" in qn
-    ):
-        return "stock_value_myr"
-    if "total spend" in qn or "spend by" in qn:
-        return "stock_value_myr"
-    if "revenue" in qn or "selling sku" in qn:
-        return "outbound_value_myr"
-    if "categoty" in qn or (
-        "sales" in qn and ("category" in qn or "categories" in qn)
-    ):
-        return "outbound_value_myr"
-    return None
-
-
-def _group_from_hints(question: str) -> list[list[str]] | None:
-    qn = (question or "").lower()
-    hits = [
-        [obj, col]
-        for needles, obj, col in _DIM_HINTS
-        if any(n in qn for n in needles)
-    ]
-    if not hits:
-        return None
-    unique: list[list[str]] = []
-    for pair in hits:
-        if pair not in unique:
-            unique.append(pair)
-    if len(unique) > 1:
-        return None
-    return unique
 
 
 def _dimension_tokens(onto: Ontology | None, grain: str) -> set[str]:
@@ -709,116 +519,54 @@ def shape_from_metric_id(metric_id: str) -> dict[str, Any]:
     return pack_id_shape(metric_id)
 
 
-def bind_plan(question: str, context: dict[str, Any] | None) -> dict[str, Any] | None:
+
+def bind_plan(
+    question: str,
+    context: dict[str, Any] | None,
+    *,
+    ontology: Ontology | None = None,
+    embedder: Any = None,
+    link_measures: bool | None = None,
+) -> dict[str, Any] | None:
     """Typed plan from retrieved context. Not a certified-pack lookup.
 
-    Time language and leftover untyped traps miss. Typed lake filters bind.
-    Tied top measures are unsure. A by/per/each or top-N ask with no bound
-    dimension misses rather than blocking Cortex.
+    Flag off is the keyword binder. Flag on links the measure by rank.
+    A tie or a score under the floor is unsure and does not pick a measure.
+    ``link_measures=False`` types slots for a measure the caller already chose.
     """
-    if not isinstance(context, dict):
-        return None
-    q = question or ""
-    if _TIME.search(q) or _STILL_UNTYPED.search(q):
-        return None
-    filters = typed_filters(q, context)
-    if filters is None:
-        return None
-    measures = context.get("measures") or {}
-    if not isinstance(measures, dict) or not measures:
-        return None
-    lock = _locked_measure(q)
-    entity = bool(_ENTITY_PREFIX.search(q))
-    if entity and not filters and not lock:
-        return None
-    toks = question_tokens(q)
-    ranked = sorted(
-        (
-            (
-                _score(name, toks) * 2
-                + _score(str((spec or {}).get("description") or ""), toks),
-                name,
-            )
-            for name, spec in measures.items()
-            if isinstance(spec, dict)
-        ),
-        reverse=True,
+    use_link = _keyword_lock_off() if link_measures is None else link_measures
+    if not use_link:
+        return _keyword_bind_plan(question, context)
+    ctx_in = context if isinstance(context, dict) else None
+    link = rank_measure_link(
+        question, ontology, embedder=embedder, context=ctx_in
     )
-    ranked = [(sc, name) for sc, name in ranked if sc > 0]
-    if lock and lock in measures:
-        ranked = [(sc, name) for sc, name in ranked if name == lock] or [(1, lock)]
-    if not ranked:
-        return None
-    if len(ranked) > 1 and ranked[0][0] == ranked[1][0]:
-        return {"unsure": True, "plan_source": "bind_plan"}
-    measure = ranked[0][1]
-    grain = str((measures.get(measure) or {}).get("grain") or "")
-    needs_dim = bool(_NEEDS_DIM.search(q))
-    top = _TOP_N.search(q)
-    hinted = _group_from_hints(q)
-    group_by: list[list[str]] = []
-    qn = q.lower()
-    if "cctv" in qn or "camera" in qn:
-        if _has_col(context, "location", "cctv_camera_id"):
-            group_by = [["location", "cctv_camera_id"]]
-    elif _COLD.search(q) or (entity and "location" in qn):
-        if _has_col(context, "location", "location_code"):
-            group_by = [["location", "location_code"]]
-    elif "audit" in qn and "overdue" in qn:
-        group_by = [["supplier", "supplier_id"]]
-    elif "expir" in qn or "chemical" in qn or "reorder" in qn:
-        group_by = [["product", "sku"]]
-    elif hinted:
-        group_by = hinted
-    else:
-        objects = context.get("objects") or {}
-        columns = context.get("columns") or {}
-        candidates: list[tuple[int, str, str]] = []
-        if isinstance(objects, dict) and isinstance(columns, dict):
-            for obj_name, spec in objects.items():
-                keys = list((spec or {}).get("key") or []) if isinstance(spec, dict) else []
-                cols = set(keys) | set(columns.get(obj_name) or [])
-                for col in cols:
-                    col_s = str(col)
-                    col_sc = _score(col_s, toks)
-                    if col_sc <= 0:
-                        continue
-                    obj_sc = _score(str(obj_name), toks)
-                    candidates.append((col_sc + obj_sc, str(obj_name), col_s))
-        if candidates:
-            dim_cands = [c for c in candidates if c[1] != grain] or candidates
-            dim_cands.sort(reverse=True)
-            if len(dim_cands) > 1 and dim_cands[0][0] == dim_cands[1][0] and (
-                dim_cands[0][1], dim_cands[0][2]
-            ) != (dim_cands[1][1], dim_cands[1][2]):
-                if dim_cands[0][2] != dim_cands[1][2]:
-                    return {"unsure": True, "plan_source": "bind_plan"}
-            _sc, obj, col = dim_cands[0]
-            group_by = [[obj, col]]
-    if measure == "utilisation_pct" and not group_by:
-        group_by = [["location", "location_code"]]
-    if (needs_dim or top) and not group_by:
-        return None
+    if link.reason_code:
+        return {
+            "unsure": True,
+            "plan_source": "bind_plan",
+            "reason_code": link.reason_code,
+        }
+    ctx = context
     if (
-        not needs_dim
-        and not top
-        and not entity
-        and not filters
-        and measure != "utilisation_pct"
+        link.name
+        and ontology is not None
+        and isinstance(context, dict)
+        and link.name in ontology.measures
     ):
-        group_by = []
-    limit = int(top.group(1)) if top else 50
-    win = parse_rank_window(q)
-    plan: dict[str, Any] = {"measure": measure, "group_by": group_by, "limit": limit}
-    if win is not None:
-        plan["offset"] = win.offset
-        plan["limit"] = win.limit
-    if filters:
-        plan["filters"] = filters
-    above = _ABOVE_PCT.search(q)
-    if above:
-        plan["keep_gt"] = float(above.group(1))
-    return {"query_plan": plan, "plan_source": "bind_plan"}
+        measures = dict(context.get("measures") or {})
+        if link.name not in measures:
+            spec = ontology.measures[link.name]
+            measures[link.name] = {
+                "grain": spec.grain,
+                "description": spec.description,
+            }
+            ctx = dict(context)
+            ctx["measures"] = measures
+    return _keyword_bind_plan(
+        question, ctx, keyword_lock=False, lock_override=link.name
+    )
+
 
 
 def slots_for_measure(
@@ -844,11 +592,10 @@ def slots_for_measure(
         spec = {"grain": "", "description": ""}
     locked = dict(context)
     locked["measures"] = {mid: spec}
-    bound = bind_plan(question, locked)
+    # The measure is already chosen. Do not rank a different one.
+    bound = bind_plan(question, locked, link_measures=False)
     q = question or ""
-    needs_dim = bool(
-        _NEEDS_DIM.search(q) or _TOP_N.search(q) or _ENTITY_PREFIX.search(q)
-    )
+    needs_dim = asks_for_dimension(q)
     shape = shape_from_metric_id(ranked_id or "")
     shape_group = list(shape.get("group_by") or [])
 

@@ -135,16 +135,15 @@ def test_flag_on_never_calls_phrase_checkers(
     monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "4")
     hits = {"unsure": 0, "predictive": 0}
 
-    class _Search:
-        def search(self, *_args: object, **_kwargs: object) -> None:
-            hits["unsure"] += 1
-            return None
+    def _vague(*_args: object, **_kwargs: object) -> bool:
+        hits["unsure"] += 1
+        return False
 
     def _predictive(*_args: object, **_kwargs: object) -> bool:
         hits["predictive"] += 1
         return False
 
-    monkeypatch.setattr("dms_executor.generative_ask._UNSURE_ASK", _Search())
+    monkeypatch.setattr("dms_executor.generative_ask.vague_question", _vague)
     monkeypatch.setattr("dms_executor.generative_ask._is_predictive", _predictive)
     monkeypatch.setattr("dms_executor.demo_ask._is_predictive", _predictive)
 
@@ -207,6 +206,37 @@ def test_flag_on_never_calls_phrase_checkers(
     assert hits == {"unsure": 0, "predictive": 0}
     assert continued is None or continued.get("reconfirm", {}).get("reason_code") != "predictive"
     assert "predictive: history" not in json.dumps(continued)
+
+
+def test_rules_off_never_calls_phrase_checkers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DMS_RULES_OFF on: the same wording checkers stay at zero."""
+    _arm(monkeypatch, flag=None)
+    monkeypatch.setenv("DMS_RULES_OFF", "1")
+    monkeypatch.delenv("DMS_ASK_LADDER", raising=False)
+    hits = {"unsure": 0, "predictive": 0}
+
+    def _vague(*_args: object, **_kwargs: object) -> bool:
+        hits["unsure"] += 1
+        return False
+
+    def _predictive(*_args: object, **_kwargs: object) -> bool:
+        hits["predictive"] += 1
+        return False
+
+    monkeypatch.setattr("dms_executor.generative_ask.vague_question", _vague)
+    monkeypatch.setattr("dms_executor.generative_ask._is_predictive", _predictive)
+    monkeypatch.setattr("dms_executor.demo_ask._is_predictive", _predictive)
+
+    def _silent(ctx: dict[str, Any]) -> dict[str, Any]:
+        return {"generative": {"query_sql": "SELECT 1"}}
+
+    env = _ask(tmp_path / "rules-off.duckdb", _silent, [], "What should I worry about?")
+    assert hits == {"unsure": 0, "predictive": 0}
+    blob = json.dumps(env)
+    assert "too vague" not in blob
+    assert "predictive: history" not in blob
 
 
 def test_ambiguous_readings_are_checked_and_not_executed(
@@ -480,8 +510,10 @@ def test_no_question_word_rule_in_clarify_or_new_generative_patterns() -> None:
     assert _compile_count(clarify) == 0
     assert _string_in_count(clarify) == 0
     assert "import re" not in clarify
-    # Baselines on main before this ticket: 4 re.compile calls, 2 string memberships.
-    assert _compile_count(ask) == 4
+    # The vague regex lives in keyword_routes.vague_question. This file calls
+    # it only when DMS_AI_CLARIFY, DMS_ASK_LADDER, and DMS_RULES_OFF are off.
+    # 3 re.compile calls, 2 string memberships. A new one fails.
+    assert _compile_count(ask) == 3
     assert _string_in_count(ask) == 2
 
 

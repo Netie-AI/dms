@@ -5,9 +5,10 @@ Intents: total revenue, scale/divide, top SKUs, capacity. Unknown → ABSTAIN.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from dms_executor.abstain import build_abstain
 from dms_executor.demo_warehouse import (
@@ -93,7 +94,15 @@ _PREDICTIVE = re.compile(
 )
 
 
+def _rules_off() -> bool:
+    """Digit 1 only. Unset, ``0``, and ``true`` leave the regex router in place."""
+    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
 def _is_predictive(question: str) -> bool:
+    # Flag on: the predictive regex does not decide. The ask falls through.
+    if _rules_off():
+        return False
     return bool(_PREDICTIVE.search(question or ""))
 
 
@@ -280,7 +289,13 @@ def _rank_window(question: str) -> tuple[int, int] | None:
 
 
 def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[str, Any]:
-    """Return UI answer envelope from DuckDB. Badge is always L2 or ABSTAIN."""
+    """Return UI answer envelope from DuckDB. Badge is always L2 or ABSTAIN.
+
+    ``DMS_RULES_OFF=1`` returns None. The regex router does not decide, and
+    the ask falls through to the AI lane. Callers still type a dict.
+    """
+    if _rules_off():
+        return cast(dict[str, Any], None)
     q = question.lower().strip()
 
     # Mirror Cortex live path, ahead of every keyword match: a predictive ask must
