@@ -1061,6 +1061,7 @@ def _abstain(
         except Exception:
             pass
     note_stage(stage, "done")
+    _offer_rowset_sql(env, question, reason, sql)
     if isinstance(env.get("reconfirm"), dict):
         note_stage("reconfirm", "done")
     assert_envelope_valid(env)
@@ -1371,6 +1372,7 @@ def path_miss_envelope(
     *,
     space_id: str | None,
     session_id: str | None,
+    sql: str | None = None,
 ) -> dict[str, Any]:
     """Isolated A/B miss: ABSTAIN, do not mix Cortex/pack into the other lane."""
     return _abstain(
@@ -1379,7 +1381,31 @@ def path_miss_envelope(
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_OTHER,
+        sql=sql,
     )
+
+
+def _offer_rowset_sql(
+    env: dict[str, Any], question: str, reason: str, sql: str | None
+) -> None:
+    """One-table set operation: show the generated SQL and ask back.
+
+    The badge stays the abstain envelope every reconfirm card uses. The SQL
+    is the card definition, so the customer sees the statement. A fan-out
+    join does not come here.
+    """
+    statement = str(sql or "").strip()
+    if not statement or "rowset_reconfirm" not in str(reason or ""):
+        return
+    block = env.get("reconfirm")
+    if not isinstance(block, dict):
+        block = {}
+    block["definition"] = statement
+    block["reason_code"] = str(reason)
+    block["why"] = str(reason)
+    block["suggested_question"] = question
+    block["closest_question"] = question
+    env["reconfirm"] = block
 
 
 def _rules_off() -> bool:
@@ -3310,6 +3336,7 @@ def _maybe_generative_ask_impl(
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
+                    sql=sql,
                 )
             )
         if why:
