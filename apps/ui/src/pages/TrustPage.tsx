@@ -270,9 +270,9 @@ export function TrustPage() {
   return (
     <Page>
       <PageHeader
-        phase="Assurance · engine benchmarks"
+        phase="Answer checks"
         title="Trust"
-        blurb="Invariant 12 says a green badge on a wrong number is a P0. This page is where you check that instead of taking it: how many questions were scored, how many came back wrong, and whether the claim is currently backed by enough evidence to make. Chat suggested asks are the certified walkthrough a CEO can click; a typo trap that stays green is a fail. Filters must use the stored encoding (SKU-BETA, not BETA). Coverage (questions answered) never buys a wrong number. We do not invent an accuracy percent here."
+        blurb="See how many questions were answered and whether any answered number was wrong."
         actions={
           <button
             type="button"
@@ -287,18 +287,15 @@ export function TrustPage() {
       {data?.ok === false && (
         <DependencyNotice
           tone="danger"
-          title="Evidence unavailable — Cortex did not answer"
-          hint={data.hint ?? "Start the engine on :8010, then Refresh."}
+          title="Evidence is unavailable"
+          hint={data.hint ?? "The answer engine did not respond. Refresh to try again."}
         />
       )}
 
       {!!data?.ask_path?.length && (
-        <Section title="DMS ask-path (this app, not the Cortex corpus)">
+        <Section title="Questions answered in this app">
           <p className="mb-3 text-sm text-[var(--color-ink-muted)]">
-            Live <code className="font-mono">score_answers</code> /{" "}
-            <code className="font-mono">score_curated</code> against POST /v1/chat/ask.
-            Precision-on-answered is the law. Coverage never buys a WRONG. This does not
-            substitute for the Cortex claim above.
+            These counts come from questions this app answered. A wrong number is never traded for more coverage.
           </p>
           <ul className="space-y-2">
             {data.ask_path.map((row) => (
@@ -309,7 +306,7 @@ export function TrustPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-medium">{row.pack}</p>
                   <Pill tone={row.wrong === 0 && row.passed ? "ok" : "danger"}>
-                    {row.wrong === 0 ? "0 WRONG" : `${row.wrong} WRONG`}
+                    {row.wrong === 0 ? "no wrong answers" : `${row.wrong} wrong answers`}
                   </Pill>
                   <Pill>
                     precision {row.precision_on_answered.toFixed(2)}% ({row.correct}/
@@ -369,7 +366,7 @@ export function TrustPage() {
             label="Confidently wrong"
             value={claim?.confidently_wrong ?? "—"}
             tone={claim?.confidently_wrong ? "danger" : "ok"}
-            hint="hard zero — any violation blocks merge"
+            hint="A confident wrong number is not allowed."
           />
           <StatTile
             label="Verified corpus"

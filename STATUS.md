@@ -1,14 +1,14 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-10-28, DEF-VALIDATE-02
+**Last updated:** 2026-11-27, R1-RUNTIME-01, R1-CLARIFY-01, DMS-AI-ABSTAIN-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_DEF_VALIDATE` default 0. On, a plain aggregate of an approved column passes with `derived:<agg>(<table>.<col>)`. A granted name outside the ontology reconfirms `not_in_ontology`. Reconfirm `code` is an identifier so #477 Yes (`DMS_RECONFIRM_RUN_HELD`) can run the held SQL. Rebased onto main `6bbc372e` (#480). Suite on `f5a8707`: 3633 passed, 44 skipped, 33 xfailed, exit 0, 1433.83s. n=348 not run. Not PASS.
+**Tip:** `DMS_UNICODE_IDENT` defaults off. Off, identifiers and prompts stay the previous fold. On, a non-ASCII name lands as `<ascii stem or t>_<8 hex of sha256(source)>` and the original is `source_name`. `DMS_ASK_STREAM` default off. Off, the events route is not mounted and the envelope is unchanged. `DMS_BENCH_MATRIX` defaults off. Off, the matrix runner sends no ask. No live dataset score. `DMS_STUDIO_ADJUST` default off. Off, the adjust router is absent and the answer view has no button. On, a steward runs SQL through the model gates. Save writes `steward_adjusted` only when `DMS_VQ_RAG` is on, and lookup never replays that provenance. Full suite before the commit: 4625 passed, 119 skipped, 34 xfailed. The 8 failures and 4 errors were grade52 refusing a dirty tree. Those files on this commit: 46 passed. Stub 52 flag off and on stayed correct=43 wrong=0. Not PASS. `DMS_RUNTIME_SELFCHECK` defaults off. Off, `/health` and envelopes gain no runtime key. On, a loopback caller or an insights timeout under 30s stamps `runtime_degraded`. Compose pins `DMS_INSIGHTS_TIMEOUT_S` to 60. Process default stays 8s. Armed grade52 not run.
 
 ## Direction
 
 AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 
-Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm with Yes. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not route provider keys.
+Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, richer context, plan, then an OpenVault escalate role. `DMS_AI_CLARIFY` defaults off. On, role `reason` asks back with 2 to 4 checked readings. No verdict keeps the old gates. Direct abstain only for ungranted tables, PII, and destructive SQL. DMS does not name a model.
 
 ## 52 pack - number of record (STUB)
 
@@ -19,7 +19,7 @@ STUB at `7392972`, `grade52 --main`. In-process replay, not a live model. Label,
 | flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43, tries omitted_pin_mismatch=0. Suite 3573 passed, 41 skipped, 33 xfailed. n=348 not run. Armed 52 not re-run.
+Both on this branch's stub: refusal_ok=4, refusal_wrong=0, gold_broken=0, clarify=0 (ops_spend_boundary is a certified refusal). Flag off wrong_ub95=6.7%, coverage 43/43. COMPILE-CHECK-01 remeasured the stub before (f286c4a) and after the checker: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Those compile answers pass the checker. Pack H and armed grade52 not measured. Not PASS.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
@@ -43,6 +43,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
+| COMPILE-CHECK-01: compile SQL must pass the AI-lane checker before it is served | this branch |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
@@ -56,5 +57,3 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
 | GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
 | GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |
-
-Not listed: 15 older open drafts (#424, #408, #398, #397, #391, #379, #378, #376, #375, #344, #343, #339, #336, #331, #329).

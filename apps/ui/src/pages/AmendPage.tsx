@@ -30,7 +30,7 @@ export function AmendPage() {
     setMsg(null);
     try {
       const body = await postAmendProposal(summary, activeSpaceId);
-      setMsg(`Proposed v${body.version_num} — token ${body.idempotency_token?.slice(0, 12)}…`);
+      setMsg(`Proposed version ${body.version_num}.`);
       reload();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : String(e));
@@ -62,7 +62,7 @@ export function AmendPage() {
       : "no receipt";
     setMsg(
       body.mutation?.executed === false
-        ? `Recorded ${p.id.slice(0, 8)}… (${receipt}) — proposal accepted, no warehouse data changed yet.`
+        ? `Recorded ${p.id.slice(0, 8)}… (${receipt}). Proposal accepted. No warehouse data changed yet.`
         : `Applied ${p.id.slice(0, 8)}… (${receipt})`,
     );
     reload();
@@ -71,16 +71,13 @@ export function AmendPage() {
   return (
     <div className="h-full overflow-y-auto px-8 py-8">
       <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
-        U4 · T4
+        Corrections
       </p>
       <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
         Amend
       </h1>
       <p className="mt-3 max-w-xl text-[var(--color-ink-muted)]">
-        Plain-language first. Confirm passes compliance_gate, takes an advisory lock, records the
-        proposal version once, and writes a ledger receipt — the receipt is part of the write, so a
-        confirm that cannot be recorded is refused rather than applied silently. It does not change
-        warehouse data yet.
+        Write a correction in plain language and confirm it. Confirm records the proposal and does not change warehouse data yet.
       </p>
       <div className="mt-6 flex max-w-xl gap-2">
         <input
@@ -100,7 +97,7 @@ export function AmendPage() {
       <ul className="mt-8 divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/70">
         {list.length === 0 && (
           <li className="px-3 py-4 text-sm text-[var(--color-ink-muted)]">
-            No proposals — needs DATABASE_URL + seed.
+            No proposals yet.
           </li>
         )}
         {list.map((p) => (

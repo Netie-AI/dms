@@ -73,6 +73,22 @@ describe("Chat reconfirm card", () => {
     expect(html).toContain("no measure matched");
   });
 
+  it("stays byte-identical when clarify and access_needed are absent", () => {
+    const base = envelope(null);
+    const html = markup(base);
+    const withNulls = markup({ ...base, clarify: null, access_needed: null });
+    const junk = markup({
+      ...base,
+      clarify: { question: "Which one?" } as AnswerEnvelope["clarify"],
+      access_needed: { table: "orders" } as AnswerEnvelope["access_needed"],
+    });
+    expect(withNulls).toBe(html);
+    expect(junk).toBe(html);
+    expect(html).not.toContain("clarify-card");
+    expect(html).not.toContain("access-card");
+    expect(html).not.toContain("Ask the steward for access");
+  });
+
   it("hides the card when the offer has no suggestion and no definition", () => {
     const html = markup(
       envelope({

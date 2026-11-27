@@ -1,0 +1,690 @@
+{
+ "ar01_invoiced_by_currency_2025": {
+  "columns": [
+   "currency",
+   "invoiced"
+  ],
+  "rows": [
+   [
+    "SGD",
+    3227224.36
+   ],
+   [
+    "MYR",
+    11482586.02
+   ],
+   [
+    "USD",
+    1504080.24
+   ]
+  ]
+ },
+ "ar02_top10_outstanding_myr": {
+  "columns": [
+   "legal_name",
+   "outstanding"
+  ],
+  "rows": [
+   [
+    "Debtor 051 Bhd",
+    153359.04
+   ],
+   [
+    "Debtor 107 Bhd",
+    149464.07
+   ],
+   [
+    "Debtor 059 Bhd",
+    135348.28
+   ],
+   [
+    "Debtor 010 Bhd",
+    130905.49
+   ],
+   [
+    "Debtor 007 Bhd",
+    120446.09
+   ],
+   [
+    "Debtor 004 Bhd",
+    112823.34
+   ],
+   [
+    "Debtor 025 Bhd",
+    111752.37
+   ],
+   [
+    "Debtor 119 Bhd",
+    110014.03
+   ],
+   [
+    "Debtor 024 Bhd",
+    109665.88
+   ],
+   [
+    "Debtor 054 Bhd",
+    104268.1
+   ]
+  ]
+ },
+ "ar03_aging_buckets_myr": {
+  "columns": [
+   "bucket",
+   "outstanding"
+  ],
+  "rows": [
+   [
+    "not yet due",
+    1063375.33
+   ],
+   [
+    "31-60",
+    441718.01
+   ],
+   [
+    "61-90",
+    305432.21
+   ],
+   [
+    "1-30",
+    620998.02
+   ],
+   [
+    "90+",
+    3050740.19
+   ]
+  ]
+ },
+ "ar04_over_credit_limit": {
+  "columns": [
+   "legal_name",
+   "outstanding_myr",
+   "credit_limit"
+  ],
+  "rows": [
+   [
+    "Debtor 013 Bhd",
+    105329.05,
+    20000.0
+   ],
+   [
+    "Debtor 064 Bhd",
+    88879.62,
+    20000.0
+   ],
+   [
+    "Debtor 019 Bhd",
+    29709.7,
+    20000.0
+   ],
+   [
+    "Debtor 066 Bhd",
+    22512.02,
+    20000.0
+   ],
+   [
+    "Debtor 018 Bhd",
+    140328.85,
+    100000.0
+   ],
+   [
+    "Debtor 106 Bhd",
+    99757.18,
+    50000.0
+   ],
+   [
+    "Debtor 073 Bhd",
+    301160.18,
+    250000.0
+   ],
+   [
+    "Debtor 034 Bhd",
+    92690.48,
+    50000.0
+   ],
+   [
+    "Debtor 006 Bhd",
+    479969.8,
+    250000.0
+   ],
+   [
+    "Debtor 079 Bhd",
+    157208.79,
+    100000.0
+   ],
+   [
+    "Debtor 089 Bhd",
+    156304.67,
+    20000.0
+   ],
+   [
+    "Debtor 071 Bhd",
+    315994.63,
+    20000.0
+   ],
+   [
+    "Debtor 087 Bhd",
+    70636.55,
+    20000.0
+   ],
+   [
+    "Debtor 090 Bhd",
+    93258.58,
+    50000.0
+   ],
+   [
+    "Debtor 120 Bhd",
+    92743.02,
+    20000.0
+   ],
+   [
+    "Debtor 115 Bhd",
+    208431.9,
+    50000.0
+   ],
+   [
+    "Debtor 051 Bhd",
+    153359.04,
+    20000.0
+   ],
+   [
+    "Debtor 005 Bhd",
+    54018.33,
+    20000.0
+   ],
+   [
+    "Debtor 083 Bhd",
+    73170.16,
+    50000.0
+   ],
+   [
+    "Debtor 046 Bhd",
+    32979.66,
+    20000.0
+   ],
+   [
+    "Debtor 105 Bhd",
+    193671.76,
+    20000.0
+   ],
+   [
+    "Debtor 108 Bhd",
+    122079.62,
+    20000.0
+   ],
+   [
+    "Debtor 112 Bhd",
+    259552.31,
+    100000.0
+   ],
+   [
+    "Debtor 116 Bhd",
+    331287.14,
+    50000.0
+   ],
+   [
+    "Debtor 040 Bhd",
+    295409.26,
+    50000.0
+   ],
+   [
+    "Debtor 002 Bhd",
+    103141.8,
+    100000.0
+   ],
+   [
+    "Debtor 025 Bhd",
+    111752.37,
+    20000.0
+   ],
+   [
+    "Debtor 037 Bhd",
+    171843.3,
+    20000.0
+   ],
+   [
+    "Debtor 063 Bhd",
+    81861.6,
+    20000.0
+   ],
+   [
+    "Debtor 049 Bhd",
+    37070.24,
+    20000.0
+   ],
+   [
+    "Debtor 024 Bhd",
+    109665.88,
+    50000.0
+   ],
+   [
+    "Debtor 084 Bhd",
+    385482.13,
+    20000.0
+   ],
+   [
+    "Debtor 070 Bhd",
+    231894.44,
+    50000.0
+   ],
+   [
+    "Debtor 103 Bhd",
+    259753.65,
+    250000.0
+   ],
+   [
+    "Debtor 075 Bhd",
+    468795.4,
+    100000.0
+   ],
+   [
+    "Debtor 057 Bhd",
+    56435.9,
+    50000.0
+   ],
+   [
+    "Debtor 032 Bhd",
+    90468.89,
+    50000.0
+   ],
+   [
+    "Debtor 016 Bhd",
+    506760.24,
+    100000.0
+   ],
+   [
+    "Debtor 081 Bhd",
+    220605.4,
+    50000.0
+   ],
+   [
+    "Debtor 009 Bhd",
+    70277.65,
+    50000.0
+   ],
+   [
+    "Debtor 030 Bhd",
+    202281.09,
+    20000.0
+   ],
+   [
+    "Debtor 111 Bhd",
+    219312.02,
+    50000.0
+   ],
+   [
+    "Debtor 010 Bhd",
+    130905.49,
+    100000.0
+   ],
+   [
+    "Debtor 028 Bhd",
+    232108.8,
+    100000.0
+   ],
+   [
+    "Debtor 017 Bhd",
+    132991.08,
+    50000.0
+   ],
+   [
+    "Debtor 080 Bhd",
+    89012.01,
+    50000.0
+   ],
+   [
+    "Debtor 107 Bhd",
+    149464.07,
+    100000.0
+   ],
+   [
+    "Debtor 058 Bhd",
+    118667.32,
+    50000.0
+   ],
+   [
+    "Debtor 043 Bhd",
+    281605.42,
+    50000.0
+   ],
+   [
+    "Debtor 086 Bhd",
+    73130.7,
+    20000.0
+   ],
+   [
+    "Debtor 074 Bhd",
+    39810.56,
+    20000.0
+   ],
+   [
+    "Debtor 050 Bhd",
+    350101.31,
+    20000.0
+   ],
+   [
+    "Debtor 004 Bhd",
+    112823.34,
+    100000.0
+   ],
+   [
+    "Debtor 054 Bhd",
+    104268.1,
+    100000.0
+   ],
+   [
+    "Debtor 101 Bhd",
+    521717.35,
+    250000.0
+   ],
+   [
+    "Debtor 007 Bhd",
+    120446.09,
+    100000.0
+   ],
+   [
+    "Debtor 038 Bhd",
+    223854.07,
+    20000.0
+   ],
+   [
+    "Debtor 102 Bhd",
+    51563.1,
+    20000.0
+   ],
+   [
+    "Debtor 104 Bhd",
+    25925.5,
+    20000.0
+   ]
+  ]
+ },
+ "ar05_void_by_region_2025": {
+  "columns": [
+   "region",
+   "voided"
+  ],
+  "rows": [
+   [
+    "East Malaysia",
+    15
+   ],
+   [
+    "Southern",
+    2
+   ],
+   [
+    "Singapore",
+    10
+   ],
+   [
+    "Northern",
+    9
+   ],
+   [
+    "Central",
+    11
+   ]
+  ]
+ },
+ "ar06_cash_by_month_h1": {
+  "columns": [
+   "month",
+   "cash"
+  ],
+  "rows": [
+   [
+    "2026-01",
+    862011.61
+   ],
+   [
+    "2026-02",
+    976320.85
+   ],
+   [
+    "2026-03",
+    1288169.97
+   ],
+   [
+    "2026-04",
+    1024660.62
+   ],
+   [
+    "2026-05",
+    965238.63
+   ],
+   [
+    "2026-06",
+    901695.68
+   ]
+  ]
+ },
+ "ar07_unapplied_cash": {
+  "columns": [
+   "legal_name",
+   "unapplied"
+  ],
+  "rows": [
+   [
+    "Debtor 024 Bhd",
+    1463.58
+   ],
+   [
+    "Debtor 040 Bhd",
+    3999.34
+   ],
+   [
+    "Debtor 002 Bhd",
+    7861.78
+   ],
+   [
+    "Debtor 048 Bhd",
+    3161.36
+   ],
+   [
+    "Debtor 074 Bhd",
+    611.31
+   ],
+   [
+    "Debtor 082 Bhd",
+    2775.15
+   ],
+   [
+    "Debtor 105 Bhd",
+    2678.18
+   ],
+   [
+    "Debtor 111 Bhd",
+    4365.37
+   ],
+   [
+    "Debtor 096 Bhd",
+    3349.62
+   ],
+   [
+    "Debtor 019 Bhd",
+    5265.06
+   ],
+   [
+    "Debtor 063 Bhd",
+    2768.55
+   ],
+   [
+    "Debtor 009 Bhd",
+    3540.7
+   ],
+   [
+    "Debtor 107 Bhd",
+    4171.98
+   ],
+   [
+    "Debtor 101 Bhd",
+    4501.57
+   ],
+   [
+    "Debtor 034 Bhd",
+    1527.75
+   ],
+   [
+    "Debtor 053 Bhd",
+    3397.36
+   ],
+   [
+    "Debtor 091 Bhd",
+    1636.29
+   ],
+   [
+    "Debtor 109 Bhd",
+    1680.61
+   ],
+   [
+    "Debtor 097 Bhd",
+    5056.6
+   ],
+   [
+    "Debtor 033 Bhd",
+    4211.86
+   ],
+   [
+    "Debtor 045 Bhd",
+    1942.89
+   ],
+   [
+    "Debtor 010 Bhd",
+    1750.23
+   ]
+  ]
+ },
+ "ar08_days_to_pay_by_region": {
+  "columns": [
+   "region",
+   "avg_days"
+  ],
+  "rows": [
+   [
+    "Northern",
+    66.5
+   ],
+   [
+    "Central",
+    74.3
+   ],
+   [
+    "Singapore",
+    68.3
+   ],
+   [
+    "Southern",
+    66.5
+   ],
+   [
+    "East Malaysia",
+    67.6
+   ]
+  ]
+ },
+ "ar09_credit_note_pct_by_region_2025": {
+  "columns": [
+   "region",
+   "credit_note_pct"
+  ],
+  "rows": [
+   [
+    "Northern",
+    0.98
+   ],
+   [
+    "Central",
+    0.84
+   ],
+   [
+    "Singapore",
+    1.28
+   ],
+   [
+    "East Malaysia",
+    0.96
+   ],
+   [
+    "Southern",
+    1.02
+   ]
+  ]
+ },
+ "ar10_most_overdue_invoices": {
+  "columns": [
+   "legal_name",
+   "overdue_invoices"
+  ],
+  "rows": [
+   [
+    "Debtor 010 Bhd",
+    12
+   ]
+  ]
+ },
+ "ar11_invoiced_myr_equiv_2025": {
+  "columns": [
+   "invoiced_myr"
+  ],
+  "rows": [
+   [
+    29336948.63
+   ]
+  ]
+ },
+ "ar12_largest_invoice_2026": {
+  "columns": [
+   "invoice_no",
+   "legal_name",
+   "amount"
+  ],
+  "rows": [
+   [
+    "INV-2026-01639",
+    "Debtor 074 Bhd",
+    30006.56
+   ]
+  ]
+ },
+ "ar13_lapsed_customers": {
+  "columns": [
+   "lapsed_customers"
+  ],
+  "rows": [
+   [
+    9
+   ]
+  ]
+ },
+ "ar14_cash_by_method_2025": {
+  "columns": [
+   "method",
+   "collected"
+  ],
+  "rows": [
+   [
+    "cheque",
+    2114264.64
+   ],
+   [
+    "card",
+    1876723.17
+   ],
+   [
+    "bank_transfer",
+    5996827.29
+   ]
+  ]
+ },
+ "ar15_sgd_outstanding_total": {
+  "columns": [
+   "outstanding_sgd"
+  ],
+  "rows": [
+   [
+    1371938.83
+   ]
+  ]
+ }
+}

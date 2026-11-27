@@ -1,0 +1,159 @@
+company: hr
+title: Harmoni Group (HR and people analytics)
+pii_columns: [employees.full_name, employees.email]
+glossary:
+  active on a date D: "hire_date <= D and (termination_date is null or termination_date > D)"
+  current salary: "the salary_history row with the latest effective_date on or before the as-of date"
+  direct reports: "employees whose manager_id is that employee"
+questions:
+  - id: hr01_headcount_by_dept
+    question: What's headcount by department as of 30 June 2026?
+    gold_sql: |
+      SELECT d.dept_name, COUNT(*) AS headcount
+      FROM employees e JOIN departments d ON d.dept_id = e.dept_id
+      WHERE e.hire_date <= DATE '2026-06-30'
+        AND (e.termination_date IS NULL OR e.termination_date > DATE '2026-06-30')
+      GROUP BY d.dept_name
+  - id: hr02_leavers_2025_by_dept
+    question: How many people left each department during 2025?
+    gold_sql: |
+      SELECT d.dept_name, COUNT(*) AS leavers
+      FROM employees e JOIN departments d ON d.dept_id = e.dept_id
+      WHERE e.termination_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY d.dept_name
+  - id: hr03_avg_salary_by_level_myr
+    question: For active employees paid in MYR, what's the average current annual base salary at each job level as of 30 June 2026? Two decimals.
+    gold_sql: |
+      WITH cur AS (
+        SELECT s.*, ROW_NUMBER() OVER (PARTITION BY s.emp_id ORDER BY s.effective_date DESC) AS rn
+        FROM salary_history s WHERE s.effective_date <= DATE '2026-06-30'
+      )
+      SELECT e.job_level, ROUND(AVG(c.base_salary_annual), 2) AS avg_salary
+      FROM employees e JOIN cur c ON c.emp_id = e.emp_id AND c.rn = 1
+      WHERE c.currency = 'MYR' AND e.hire_date <= DATE '2026-06-30'
+        AND (e.termination_date IS NULL OR e.termination_date > DATE '2026-06-30')
+      GROUP BY e.job_level
+  - id: hr04_biggest_team
+    question: Which manager currently has the most active direct reports (as of 30 June 2026), and how many?
+    ordered: true
+    gold_sql: |
+      SELECT m.emp_id, m.full_name, COUNT(*) AS direct_reports
+      FROM employees e JOIN employees m ON m.emp_id = e.manager_id
+      WHERE e.hire_date <= DATE '2026-06-30'
+        AND (e.termination_date IS NULL OR e.termination_date > DATE '2026-06-30')
+      GROUP BY m.emp_id, m.full_name
+      ORDER BY direct_reports DESC, m.emp_id
+      LIMIT 1
+  - id: hr05_annual_leave_2025_by_dept
+    question: Total approved annual leave days taken in 2025 per department (by leave start date).
+    gold_sql: |
+      SELECT d.dept_name, SUM(l.days) AS leave_days
+      FROM leave_requests l
+      JOIN employees e ON e.emp_id = l.emp_id
+      JOIN departments d ON d.dept_id = e.dept_id
+      WHERE l.status = 'approved' AND l.leave_type = 'annual'
+        AND l.start_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY d.dept_name
+  - id: hr06_tenure_by_city
+    question: Average tenure in years of active staff as of 30 June 2026, by office city. Two decimals, using days divided by 365.25.
+    gold_sql: |
+      SELECT lo.city, ROUND(AVG(DATE_DIFF('day', e.hire_date, DATE '2026-06-30') / 365.25), 2) AS avg_tenure_years
+      FROM employees e JOIN locations lo ON lo.location_id = e.location_id
+      WHERE e.hire_date <= DATE '2026-06-30'
+        AND (e.termination_date IS NULL OR e.termination_date > DATE '2026-06-30')
+      GROUP BY lo.city
+  - id: hr07_big_raises
+    question: How many employees got more than a 10% increase in their most recent salary change?
+    gold_sql: |
+      WITH s AS (
+        SELECT emp_id, base_salary_annual,
+               LAG(base_salary_annual) OVER (PARTITION BY emp_id ORDER BY effective_date) AS prev,
+               ROW_NUMBER() OVER (PARTITION BY emp_id ORDER BY effective_date DESC) AS rn
+        FROM salary_history
+      )
+      SELECT COUNT(*) AS employees
+      FROM s WHERE rn = 1 AND prev IS NOT NULL AND base_salary_annual > prev * 1.10
+  - id: hr08_gender_by_level
+    question: Gender split by job level among active employees as of 30 June 2026.
+    gold_sql: |
+      SELECT job_level, gender, COUNT(*) AS employees
+      FROM employees
+      WHERE hire_date <= DATE '2026-06-30'
+        AND (termination_date IS NULL OR termination_date > DATE '2026-06-30')
+      GROUP BY job_level, gender
+  - id: hr09_hires_by_month_h1
+    question: New hires per month from January to June 2026.
+    ordered: true
+    gold_sql: |
+      SELECT STRFTIME(hire_date, '%Y-%m') AS month, COUNT(*) AS hires
+      FROM employees WHERE hire_date BETWEEN DATE '2026-01-01' AND DATE '2026-06-30'
+      GROUP BY 1 ORDER BY 1
+  - id: hr10_contractor_share
+    question: What percent of each department's active workforce is on contract as of 30 June 2026? Two decimals.
+    gold_sql: |
+      SELECT d.dept_name,
+             ROUND(100.0 * SUM(CASE WHEN e.employment_type = 'contract' THEN 1 ELSE 0 END) / COUNT(*), 2) AS contract_pct
+      FROM employees e JOIN departments d ON d.dept_id = e.dept_id
+      WHERE e.hire_date <= DATE '2026-06-30'
+        AND (e.termination_date IS NULL OR e.termination_date > DATE '2026-06-30')
+      GROUP BY d.dept_name
+  - id: hr11_low_rated_depts_2025
+    question: Which departments had an average 2025 performance rating below 3?
+    gold_sql: |
+      SELECT d.dept_name, ROUND(AVG(r.rating), 2) AS avg_rating
+      FROM performance_reviews r
+      JOIN employees e ON e.emp_id = r.emp_id
+      JOIN departments d ON d.dept_id = e.dept_id
+      WHERE r.review_year = 2025
+      GROUP BY d.dept_name
+      HAVING AVG(r.rating) < 3
+  - id: hr12_missing_reviews_2025
+    question: How many people who were employed for the whole of 2025 have no 2025 performance review?
+    gold_sql: |
+      SELECT COUNT(*) AS missing_reviews
+      FROM employees e
+      WHERE e.hire_date < DATE '2025-01-01'
+        AND (e.termination_date IS NULL OR e.termination_date > DATE '2025-12-31')
+        AND NOT EXISTS (SELECT 1 FROM performance_reviews r WHERE r.emp_id = e.emp_id AND r.review_year = 2025)
+  - id: hr13_payroll_by_currency
+    question: Total current annual base payroll for active staff as of 30 June 2026, by pay currency.
+    gold_sql: |
+      WITH cur AS (
+        SELECT s.*, ROW_NUMBER() OVER (PARTITION BY s.emp_id ORDER BY s.effective_date DESC) AS rn
+        FROM salary_history s WHERE s.effective_date <= DATE '2026-06-30'
+      )
+      SELECT c.currency, ROUND(SUM(c.base_salary_annual), 2) AS annual_payroll
+      FROM employees e JOIN cur c ON c.emp_id = e.emp_id AND c.rn = 1
+      WHERE e.hire_date <= DATE '2026-06-30'
+        AND (e.termination_date IS NULL OR e.termination_date > DATE '2026-06-30')
+      GROUP BY c.currency
+  - id: hr14_pending_leave_old
+    question: How many leave requests are still pending even though the leave was due to start before 1 June 2026?
+    gold_sql: |
+      SELECT COUNT(*) AS stale_pending
+      FROM leave_requests WHERE status = 'pending' AND start_date < DATE '2026-06-01'
+  - id: hr15_sick_days_by_city_2025
+    question: Approved sick leave days in 2025 by office city.
+    gold_sql: |
+      SELECT lo.city, SUM(l.days) AS sick_days
+      FROM leave_requests l
+      JOIN employees e ON e.emp_id = l.emp_id
+      JOIN locations lo ON lo.location_id = e.location_id
+      WHERE l.status = 'approved' AND l.leave_type = 'sick'
+        AND l.start_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+      GROUP BY lo.city
+  - id: hr16_engineering_attrition_2025
+    question: What was Engineering's 2025 attrition rate - leavers in 2025 divided by headcount on 1 January 2025 - as a percent with two decimals?
+    gold_sql: |
+      SELECT ROUND(100.0 *
+        (SELECT COUNT(*) FROM employees e JOIN departments d ON d.dept_id = e.dept_id
+         WHERE d.dept_name = 'Engineering' AND e.termination_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31')
+        / (SELECT COUNT(*) FROM employees e JOIN departments d ON d.dept_id = e.dept_id
+           WHERE d.dept_name = 'Engineering' AND e.hire_date <= DATE '2025-01-01'
+             AND (e.termination_date IS NULL OR e.termination_date > DATE '2025-01-01')), 2) AS attrition_pct
+  - id: hr17_top_performers
+    question: Who are our top performers?
+    expect: clarify
+  - id: hr18_legal_headcount
+    question: How many people work in the Legal department?
+    expect: refuse

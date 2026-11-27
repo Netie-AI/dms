@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -32,10 +35,39 @@ class IngestReceipt:
     ingest_id: str
     source_ref_id: str
     table: str | None = None
+    #: Original file stem. Set only when ``DMS_UNICODE_IDENT`` is on.
+    source_name: str | None = None
+    #: Landed column identifier -> original header. Same flag.
+    column_sources: dict[str, str] | None = None
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def unicode_ident_enabled() -> bool:
+    """``DMS_UNICODE_IDENT=1`` keeps a stable ASCII id plus the original name."""
+    return os.environ.get("DMS_UNICODE_IDENT", "0").strip() == "1"
+
+
+def has_non_ascii(name: str) -> bool:
+    return any(not c.isascii() for c in name)
+
+
+def _ascii_stem(name: str) -> str:
+    """ASCII letters and digits from ``name``, or ``t`` when none remain."""
+    kept = "".join(c for c in name if c.isascii() and c.isalnum())[:40]
+    if not kept:
+        return "t"
+    if not kept[0].isalpha():
+        kept = f"t_{kept}"[:40]
+    return kept
+
+
+def stable_suffix_ident(source: str) -> str:
+    """``<ascii stem or t>_<8 hex of sha256(source)>``. The hash is the full name."""
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:8]
+    return f"{_ascii_stem(source)}_{digest}"
 
 
 def ident_safe(stem: str) -> str:
@@ -45,10 +77,16 @@ def ident_safe(stem: str) -> str:
     (``2024_sales``). Either breaks the SHARED NAMING RULE, and
     ``cortex_row_predicates`` then refuses the whole Space's manifest, so one
     such table made every ask on the Space abstain ``submit_failed``.
+
+    With ``DMS_UNICODE_IDENT`` off this is that fold and nothing else. On, a
+    name that still contains a non-ASCII character lands as
+    ``stable_suffix_ident`` so two different headers cannot share one id.
     """
     out = "".join(c if (c.isascii() and c.isalnum()) else "_" for c in stem)
     if not out or not (out[0].isalpha() or out[0] == "_"):
         out = f"t_{out}"
+    if unicode_ident_enabled() and has_non_ascii(stem):
+        return stable_suffix_ident(stem)
     return out
 
 
@@ -68,7 +106,10 @@ def quote_ident(name: str) -> str:
 
 
 def _safe_table_stem(filename: str) -> str:
-    return ident_safe("".join(c if c.isalnum() else "_" for c in Path(filename).stem)[:40])
+    raw = Path(filename).stem
+    if unicode_ident_enabled() and has_non_ascii(raw):
+        return ident_safe(raw)
+    return ident_safe("".join(c if c.isalnum() else "_" for c in raw)[:40])
 
 
 def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
@@ -76,6 +117,8 @@ def bronze_table_for_sheet(filename: str, sheet: str | None = None) -> str:
     stem = Path(filename).stem
     if sheet:
         stem = f"{stem}_{sheet}"
+    if unicode_ident_enabled() and has_non_ascii(stem):
+        return f"bronze.{ident_safe(stem)}"
     ident = ident_safe("".join(c if c.isalnum() else "_" for c in stem)[:40])
     return f"bronze.{ident}"
 
@@ -143,6 +186,12 @@ def _ensure_registry(con: duckdb.DuckDBPyConnection) -> None:
         # '9.50' > '100.25'.
         if "untyped_numeric" not in cols:
             con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN untyped_numeric VARCHAR")
+        # Original table and column names. NULL when the flag is off, so the
+        # insert column list above stays the one every existing caller uses.
+        if "source_name" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN source_name VARCHAR")
+        if "column_sources" not in cols:
+            con.execute(f"ALTER TABLE {_REGISTRY} ADD COLUMN column_sources VARCHAR")
 
 
 def _claim_table_name(
@@ -298,6 +347,8 @@ def record_source_pull(
     path: Path | None = None,
     extracted_at: str | None = None,
     untyped_numeric: list[str] | None = None,
+    source_name: str | None = None,
+    column_sources: dict[str, str] | None = None,
 ) -> str:
     """Name the SQL source a bronze table was pulled from (DR-0005 part 4).
 
@@ -342,6 +393,13 @@ def record_source_pull(
             f"UPDATE {_REGISTRY} SET untyped_numeric = ? WHERE table_name = ?",
             [",".join(untyped_numeric or []) or None, table_name],
         )
+        if unicode_ident_enabled() and (source_name is not None or column_sources):
+            _write_source_names(
+                con,
+                table_name,
+                source_name,
+                column_sources,
+            )
     finally:
         con.close()
     return fingerprint
@@ -423,6 +481,134 @@ def stamp_contributing_source_watermarks(
     return stamped
 
 
+def _write_source_names(
+    con: duckdb.DuckDBPyConnection,
+    table_name: str,
+    source_name: str | None,
+    column_sources: dict[str, str] | None,
+) -> None:
+    """Store the original names beside the landed ASCII identifiers."""
+    if not unicode_ident_enabled():
+        return
+    payload = None
+    if column_sources:
+        payload = json.dumps(column_sources, ensure_ascii=False, sort_keys=True)
+    con.execute(
+        f"UPDATE {_REGISTRY} SET source_name = ?, column_sources = ? WHERE table_name = ?",
+        [source_name, payload, table_name],
+    )
+
+
+def _rewrite_unicode_columns(
+    con: duckdb.DuckDBPyConnection, table: str
+) -> dict[str, str]:
+    """Rename non-ASCII columns on a bronze staging table. ``{landed: source}``."""
+    rows = con.execute(
+        """
+        SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'bronze' AND table_name = ?
+        ORDER BY ordinal_position
+        """,
+        [table],
+    ).fetchall()
+    names = [str(row[0]) for row in rows]
+    keep = {"_src", "_ingest_id"}
+    used = {name.lower() for name in names}
+    mapping: dict[str, str] = {}
+    for name in names:
+        if name in keep:
+            continue
+        landed = ident_safe(name) if has_non_ascii(name) else name
+        base, n = landed, 2
+        # ponytail: an 8-hex clash inside one table gets a numeric tail.
+        # Ceiling: one table. Upgrade: longer digest if a warehouse ever hits it.
+        while landed.lower() in used and landed.lower() != name.lower():
+            landed = f"{base}_{n}"
+            n += 1
+        if landed != name:
+            used.discard(name.lower())
+            con.execute(
+                f"ALTER TABLE bronze.{quote_ident(table)} "
+                f"RENAME COLUMN {quote_ident(name)} TO {quote_ident(landed)}"
+            )
+        used.add(landed.lower())
+        mapping[landed] = name
+    return mapping
+
+
+def column_source_maps(con: duckdb.DuckDBPyConnection) -> dict[str, dict[str, str]]:
+    """``{table: {landed identifier: original header}}`` from the registry."""
+    if not unicode_ident_enabled():
+        return {}
+    try:
+        rows = con.execute(
+            f"SELECT table_name, column_sources FROM {_REGISTRY}"
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - registry or the column may not exist yet
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    for table_name, raw in rows:
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            out[str(table_name)] = {str(key): str(val) for key, val in parsed.items()}
+    return out
+
+
+def load_column_source_index(path: Path | None = None) -> dict[str, str]:
+    """Flat ``{landed identifier: original header}`` for answer headers."""
+    if not unicode_ident_enabled():
+        return {}
+    db = Path(path or warehouse_path())
+    if not db.is_file():
+        return {}
+    try:
+        con = connect_serving(db)
+    except Exception:  # noqa: BLE001 - a locked or missing lake has no labels
+        return {}
+    try:
+        grouped = column_source_maps(con)
+    finally:
+        con.close()
+    flat: dict[str, str] = {}
+    for mapping in grouped.values():
+        flat.update(mapping)
+    return flat
+
+
+def relabel_row_headers(
+    rows: list[dict[str, Any]], *, path: Path | None = None
+) -> list[dict[str, Any]]:
+    """Show the original header on answer rows. Flag off returns ``rows`` unchanged."""
+    if not unicode_ident_enabled() or not rows:
+        return rows
+    mapping = load_column_source_index(path)
+    if not mapping:
+        return rows
+    changed = False
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            out.append(row)
+            continue
+        new: dict[str, Any] = {}
+        row_changed = False
+        for key, value in row.items():
+            label = mapping.get(str(key), str(key))
+            if label in new:
+                label = str(key)
+            if label != key:
+                row_changed = True
+            new[label] = value
+        out.append(new if row_changed else row)
+        changed = changed or row_changed
+    return out if changed else rows
+
+
 def ingest_csv_bytes(
     *,
     filename: str,
@@ -479,6 +665,8 @@ def ingest_csv_bytes(
     digest = _sha256(data)
     safe = table_name or _safe_table_stem(filename)
     collision_note: str | None = None
+    column_sources: dict[str, str] = {}
+    table_source: str | None = None
     # Prefer medallion schema bronze.<name>; also keep bronze_<name> alias path via schema
     table_qual = f"bronze.{safe}"
     tmp = db.parent / f"_ingest_{ingest_id}.csv"
@@ -526,6 +714,9 @@ def ingest_csv_bytes(
             ) AS src
             """
         )
+        if unicode_ident_enabled():
+            table_source = Path(filename).stem
+            column_sources = _rewrite_unicode_columns(con, staging)
         # Parse succeeded — only now is it safe to replace the previous table.
         # Swap and record as one transaction. Ensuring the registry exists fixes
         # the reported symptom, but the class is that a step *after* an
@@ -544,6 +735,8 @@ def ingest_csv_bytes(
                 ingest_id=ingest_id,
                 space_id=space_id,
             )
+            if unicode_ident_enabled():
+                _write_source_names(con, safe, table_source, column_sources)
         except Exception:  # noqa: BLE001
             con.execute("ROLLBACK")
             raise
@@ -582,7 +775,74 @@ def ingest_csv_bytes(
         ingest_id=ingest_id,
         source_ref_id=ref_id,
         table=table_qual,
+        source_name=table_source,
+        column_sources=column_sources or None,
     )
+
+
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _varchar_text(value: Any) -> str | None | bool:
+    """The text DuckDB's VARCHAR cast gives ``value`` on the executemany path.
+
+    Returns ``False`` for a value whose cast is not reproduced here exactly, so the
+    caller keeps the row-at-a-time path for that table (FDE-BULK-LAND-01). Covered
+    shapes were checked against DuckDB's own cast: str, int64, naive datetime,
+    date, finite plain-notation float and Decimal (``-0.00`` lands as ``0.00``).
+    """
+    if value is None:
+        return None
+    kind = type(value)
+    if kind is str:
+        return value
+    if kind is int:
+        return str(value) if _INT64_MIN <= value <= _INT64_MAX else False
+    if kind is datetime:
+        if value.tzinfo is not None:
+            return False
+        text = value.strftime("%Y-%m-%d %H:%M:%S")
+        if value.microsecond:
+            text += f".{value.microsecond:06d}".rstrip("0")
+        return text
+    if kind is date:
+        return value.isoformat()
+    if kind is float:
+        text = repr(value)
+        return False if ("e" in text or "n" in text) else text
+    if kind is Decimal:
+        if not value.is_finite():
+            return False
+        text = str(abs(value) if value.is_zero() else value)
+        return False if "E" in text else text
+    return False
+
+
+def _bulk_text_columns(rows: list[list[Any]], width: int) -> list[list[str | None]] | None:
+    """Column-major text for a columnar insert, or None to keep executemany."""
+    cols: list[list[str | None]] = [[] for _ in range(width)]
+    for row in rows:
+        if len(row) != width:
+            return None
+        for i, value in enumerate(row):
+            text = _varchar_text(value)
+            if text is False:
+                return None
+            cols[i].append(text)  # type: ignore[arg-type]
+    return cols
+
+
+def _insert_text_columns(con: Any, cols: list[list[str | None]], names: list[str]) -> None:
+    """One INSERT ... SELECT from an Arrow table. Row order is preserved, so the
+    ``row_number()`` provenance below numbers rows as the executemany path did."""
+    import pyarrow as pa
+
+    batch = pa.table({f"c{i}": pa.array(col, type=pa.string()) for i, col in enumerate(cols)})
+    con.register("_bronze_bulk", batch)
+    try:
+        con.execute("INSERT INTO _bronze_raw SELECT * FROM _bronze_bulk")
+    finally:
+        con.unregister("_bronze_bulk")
 
 
 def write_bronze_rows(
@@ -614,10 +874,14 @@ def write_bronze_rows(
         con.execute(f"DROP TABLE IF EXISTS {rel}")
         con.execute(f"CREATE TEMP TABLE _bronze_raw ({col_defs})")
         if rows:
-            con.executemany(
-                f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * len(columns))})",
-                rows,
-            )
+            text_cols = _bulk_text_columns(rows, len(columns))
+            if text_cols is not None:
+                _insert_text_columns(con, text_cols, columns)
+            else:
+                con.executemany(
+                    f"INSERT INTO _bronze_raw VALUES ({', '.join(['?'] * len(columns))})",
+                    rows,
+                )
         con.execute(
             f"""
             CREATE TABLE {rel} AS

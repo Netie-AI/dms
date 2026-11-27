@@ -4,7 +4,15 @@ import { Badge } from "@/components/Badge";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
-import { isAbstain } from "@/components/studio/abstainReason";
+import { AccessCard } from "@/components/AccessCard";
+import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
+import {
+  isAbstain,
+  readAccess,
+  readClarify,
+  serverSpaceIds,
+  switchableSpaces,
+} from "@/components/studio/abstainReason";
 import { ResultView } from "@/components/studio/ResultView";
 import { useApp } from "@/context/AppContext";
 import {
@@ -21,7 +29,7 @@ import {
   type BiTarget,
 } from "@/lib/biExport";
 import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
-import { postAskConfirm } from "@/lib/api";
+import { postAskConfirm, postClarifyPick } from "@/lib/api";
 import {
   csvDownloadName,
   isSummaryExport,
@@ -29,7 +37,7 @@ import {
   xlsxDownloadName,
 } from "@/lib/rowsToCsv";
 import { splitInsights } from "@/lib/splitInsights";
-import type { AnswerEnvelope, BadgeKind } from "@/lib/types";
+import type { AnswerEnvelope, BadgeKind, ClarifyReading, GrantedSpace } from "@/lib/types";
 import { useIsLg } from "@/lib/viewport";
 
 const EXCLUSION_YES_RE = /^Yes — exclude\b/i;
@@ -196,8 +204,26 @@ function ToolsStrip({ children }: { children: ReactNode }) {
   );
 }
 
-export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
-  const { selectValue, setSourcePanelOpen, ask, suggestions, productMode } = useApp();
+export function AnswerMessage({
+  envelope,
+  question,
+}: {
+  envelope: AnswerEnvelope;
+  question?: string;
+}) {
+  const {
+    selectValue,
+    setSourcePanelOpen,
+    ask,
+    suggestions,
+    productMode,
+    role,
+    activeSpaceId,
+    setActiveSpaceId,
+    sessionId,
+    spaces,
+    spacesFromApi,
+  } = useApp();
   const isLg = useIsLg();
   const [follow, setFollow] = useState<AnswerEnvelope | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -216,10 +242,14 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   const [biNote, setBiNote] = useState<string | null>(null);
   const [checkNote, setCheckNote] = useState<string | null>(null);
   const [confirmLeft, setConfirmLeft] = useState<number | null>(null);
+  const [cardBusy, setCardBusy] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
   const confirmFired = useRef(false);
   useEffect(() => {
     setFollow(null);
     setConfirmError(null);
+    setCardError(null);
+    setCardBusy(false);
   }, [envelope]);
 
   const rows = envelope.rows ?? [];
@@ -380,6 +410,37 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   }
 
   const offer = reconfirmCard(envelope);
+  const clarify = readClarify(envelope);
+  const access = readAccess(envelope);
+
+  async function pickReading(reading: ClarifyReading) {
+    if (!clarify || cardBusy) return;
+    setCardBusy(true);
+    setCardError(null);
+    try {
+      const next = await postClarifyPick(
+        clarifyPickBody(clarify, reading, {
+          question,
+          space_id: activeSpaceId,
+          session_id: sessionId,
+        }),
+      );
+      setFollow(next);
+    } catch {
+      setCardError("The reading did not run.");
+    } finally {
+      setCardBusy(false);
+    }
+  }
+
+  const memberIds = serverSpaceIds(spaces, spacesFromApi);
+
+  function switchSpace(space: GrantedSpace) {
+    if (!switchableSpaces([space], memberIds).length) return;
+    setActiveSpaceId(space.id);
+    const asked = (question ?? "").trim();
+    if (asked) void ask(asked);
+  }
 
   async function choose(yes: boolean) {
     if (!offer) return;
@@ -396,7 +457,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   }
 
   if (follow) {
-    return <AnswerMessage envelope={follow} />;
+    return <AnswerMessage envelope={follow} question={question} />;
   }
 
   // Below lg an abstained answer has no rows and no executed SQL. The tools that act on
@@ -549,7 +610,22 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
     )}
     </>
   );
-  const abstainNote = <AbstainNote envelope={envelope} />;
+  const abstainNote = (
+    <>
+      <AbstainNote envelope={envelope} />
+      {clarify ? (
+        <ClarifyCard block={clarify} busy={cardBusy} error={cardError} onPick={pickReading} />
+      ) : null}
+      {access ? (
+        <AccessCard
+          access={access}
+          busy={cardBusy}
+          serverSpaceIds={memberIds}
+          onSwitch={switchSpace}
+        />
+      ) : null}
+    </>
+  );
   const layerPanel = (
     <>
     {showLayer && (
@@ -872,7 +948,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   );
   const detailsPanel = (
     <AnswerDetails envelope={envelope}>
-      <ResultView envelope={envelope} />
+      <ResultView envelope={envelope} question={question} spaceId={activeSpaceId} role={role} />
     </AnswerDetails>
   );
 

@@ -8,8 +8,10 @@ import {
   Section,
   StatTile,
 } from "@/components/PageShell";
+import { useApp } from "@/context/AppContext";
 import { fetchOntology } from "@/lib/api";
 import { neighbourhood } from "@/lib/spaceOntology";
+import { ontologyHonestCard } from "@/lib/ontologyRead";
 import { useIsLg } from "@/lib/viewport";
 import { useAsync } from "@/lib/useAsync";
 import type {
@@ -379,8 +381,10 @@ function MetricRow({ metric }: { metric: OntologyMetric }) {
 /* ── Page ────────────────────────────────────────────────────────────────── */
 
 export function OntologyPage() {
-  const { data, error, loading, reload } = useAsync<OntologyBundle>((signal) =>
-    fetchOntology(signal),
+  const { activeSpaceId } = useApp();
+  const { data, error, loading, reload } = useAsync<OntologyBundle>(
+    (signal) => fetchOntology(activeSpaceId, signal),
+    [activeSpaceId],
   );
   const [tab, setTab] = useState<Tab>("objects");
   const [query, setQuery] = useState("");
@@ -389,7 +393,7 @@ export function OntologyPage() {
   const isLg = useIsLg();
 
   const counts = data?.summary.counts;
-  const degraded = data ? data.summary.ok === false : false;
+  const honest = ontologyHonestCard(data?.summary);
 
   const q = query.trim().toLowerCase();
   const objects = (data?.objects ?? []).filter(
@@ -415,9 +419,9 @@ export function OntologyPage() {
       {/* Shared components set 10-11px labels; below lg lift them to the 12px floor. */}
       <div className="max-lg:[&_[class*='text-[10px]']]:!text-xs max-lg:[&_[class*='text-[11px]']]:!text-xs">
       <PageHeader
-        phase="Ontology · Cortex registry"
+        phase="Shared vocabulary"
         title="Ontology"
-        blurb="The shared vocabulary underneath every answer: what objects exist, how they join, which properties an agent may see, what may be written back, and the governed ways to ask. Authored as YAML in the engine pack — this page reads it, never edits it."
+        blurb="The names, links, and measures every answer is allowed to use. An empty or unreadable store stays empty."
         actions={
           <button
             type="button"
@@ -429,20 +433,15 @@ export function OntologyPage() {
         }
       />
 
-      {degraded && !isLg ? (
+      {honest && !isLg ? (
         <div
           role="status"
           data-testid="ontology-unavailable"
+          data-reason={honest.reason}
           className="mt-6 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-4 py-6"
         >
-          <p className="font-semibold text-[var(--color-danger)]">Ontology unavailable</p>
-          <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
-            Object types, links, metrics and actions come from the Cortex engine, and it did not
-            answer. Nothing is shown here until it does.
-          </p>
-          <p className="mt-2 text-sm">
-            {data?.summary.hint ?? "Start the engine on :8010, then Refresh."}
-          </p>
+          <p className="font-semibold text-[var(--color-danger)]">{honest.title}</p>
+          <p className="mt-2 text-sm">{honest.hint}</p>
           {data?.summary.error && (
             <p className="mt-2 break-all font-mono text-xs text-[var(--color-ink-muted)]">
               {data.summary.error}
@@ -451,14 +450,18 @@ export function OntologyPage() {
         </div>
       ) : (
       <>
-      {degraded && (
+      {honest && (
         <DependencyNotice
+          data-testid="ontology-honest-card"
+          data-reason={honest.reason}
           tone="danger"
-          title="Ontology unavailable — Cortex did not answer"
-          hint={data?.summary.hint ?? "Start the engine on :8010, then Refresh."}
+          title={honest.title}
+          hint={honest.hint}
         />
       )}
 
+      {!honest && (
+      <>
       <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile label="Object types" value={counts?.object_types ?? "—"} />
         <StatTile label="Links" value={counts?.link_types ?? "—"} />
@@ -668,6 +671,8 @@ export function OntologyPage() {
           </Section>
         )}
       </AsyncBoundary>
+      </>
+      )}
       </>
       )}
       </div>

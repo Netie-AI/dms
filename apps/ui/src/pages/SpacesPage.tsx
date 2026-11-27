@@ -86,8 +86,8 @@ export function SpacesPage() {
       setName("");
       setNotice(
         body.persisted
-          ? `Space created — ${body.space.name}. Reload to see it in the switcher.`
-          : `Space created in memory — ${body.space.name}. ${body.hint ?? ""}`,
+          ? `Space created. ${body.space.name}. Reload to see it in the switcher.`
+          : `Space created in memory. ${body.space.name}. ${body.hint ?? ""}`,
       );
     } catch (err) {
       setFailure(err instanceof Error ? err.message : String(err));
@@ -99,12 +99,12 @@ export function SpacesPage() {
   return (
     <Page>
       <PageHeader
-        phase="T3 · scope"
+        phase="Question scope"
         title="Spaces"
         blurb={
           productMode === "cream"
-            ? "A Space is what a question can see. Share one, open the Warehouse Ops mock, then ask in Chat — badge, rows, and CSV come back without Studio jargon."
-            : "A Space is a sandbox of sources. Asking inside one is the difference between “the AI can see everything” and a scope a steward can point at. Attach sources in Studio; the scope chip above the composer always reports the Space in force."
+            ? "A Space is the data a question is allowed to see."
+            : "A Space is a named set of sources, and a question asked here only sees those sources."
         }
         actions={
           <button
@@ -119,25 +119,25 @@ export function SpacesPage() {
 
       {!spacesFromApi && (
         <DependencyNotice
-          title="Showing offline Space fixtures"
-          hint="The DMS API did not return a Space list, so the switcher is running on built-in examples."
+          title="Showing example spaces"
+          hint="The server did not return a space list, so these are the built-in examples."
         />
       )}
       {spacesPersisted === false && (
         <DependencyNotice
           tone="danger"
-          title="Spaces are not persisted — they die on restart"
+          title="Spaces are not saved. They disappear when the server restarts."
           hint={
             spacesStorageHint ??
-            "This catalog is in-memory only. Nothing you create here survives an API restart. Set DATABASE_URL and apply migrations only when you need durable Spaces."
+            "Nothing you create here is kept after the server restarts."
           }
           data-testid="spaces-memory-banner"
         />
       )}
       {databaseConfigured === false && spacesPersisted !== false && (
         <DependencyNotice
-          title="No Postgres control plane"
-          hint="Spaces created here live in the API process and disappear on restart. Set DATABASE_URL and apply migrations for durable Spaces, members, and ACL grants."
+          title="No saved database"
+          hint="Spaces created here disappear when the server restarts. Turn on a saved database when you need spaces, members, and access to last."
         />
       )}
 
@@ -190,7 +190,7 @@ export function SpacesPage() {
           error={sourcesErr}
           onRetry={() => window.location.reload()}
           empty={spaces.length === 0}
-          emptyMessage="No Spaces yet — create one above, then attach sources in Studio."
+          emptyMessage="No spaces yet. Create one above, then attach sources in Studio."
         >
           <ul className="flex flex-col gap-2">
             {spaces.map((space) => {
@@ -299,7 +299,7 @@ export function SpacesPage() {
       <Section
         title="Company scope"
         count={companyScoped.length}
-        description="Visible to anyone with the default ACL — what a question sees when no Space is selected."
+        description="Visible to anyone when no space is selected."
       >
         <ul className="divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
           {companyScoped.map((src) => (

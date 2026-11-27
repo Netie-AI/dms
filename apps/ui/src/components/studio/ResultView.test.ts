@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ResultView, type StudioAskEnvelope } from "./ResultView";
+import type { AskStageEvent } from "./AskStages";
 import { STAMP_SLOTS } from "./stamps";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -52,12 +53,16 @@ describe("Studio result view", () => {
     expect(markup).toContain(">Copy<");
     expect(markup).toContain("font-mono");
     expect(markup).not.toContain("<textarea");
+    expect(markup).not.toContain("studio-adjust-open");
+    expect(markup).not.toContain("Adjust SQL");
     expect(markup).toContain('data-testid="studio-insight"');
     expect(markup).toContain("Spend is higher in MY.");
     expect(markup).toContain("Check the KL lane");
     expect(markup).toContain('data-testid="studio-chart"');
     expect(markup).toContain('data-chart-kind="bar"');
     expect(markup).toContain("<svg");
+    expect(markup).not.toContain('data-testid="studio-chart-adjust"');
+    expect(markup).not.toContain("data-chart-shape");
     expect(markup).toContain('data-testid="studio-rows"');
     expect(markup).toContain("Showing 1-10 of 12 rows");
     expect(markup).toContain(">Next<");
@@ -153,6 +158,67 @@ describe("Studio result view", () => {
     expect(markup).toContain(">No<");
     expect(markup).not.toContain('data-testid="studio-abstain"');
     expect(markup).not.toContain('data-testid="studio-rows"');
+  });
+
+  it("shows ask stages and cancel while the envelope is still empty", () => {
+    const stages: AskStageEvent[] = [
+      { stage: "retrieve", t_ms: 1500, status: "done" },
+      { stage: "generate", t_ms: 4000, status: "started" },
+    ];
+    const markup = renderToStaticMarkup(
+      createElement(ResultView, {
+        envelope: null,
+        stages,
+        onCancel: () => undefined,
+      }),
+    );
+    expect(markup).toContain('data-testid="ask-stages"');
+    expect(markup).toContain("Retrieve");
+    expect(markup).toContain("Generate");
+    expect(markup).toContain(">1s<");
+    expect(markup).toContain('data-testid="ask-stages-cancel"');
+    expect(markup).not.toContain('data-testid="studio-sql"');
+  });
+
+  it("an empty stage list leaves the answered view unchanged", () => {
+    const plain = html(answered());
+    const withEmpty = renderToStaticMarkup(
+      createElement(ResultView, { envelope: answered(), stages: [] }),
+    );
+    expect(withEmpty).toBe(plain);
+    expect(withEmpty).not.toContain("ask-stages");
+  });
+
+  it("a valid chart spec replaces the column-type chart", () => {
+    const markup = html(
+      answered({
+        chart_spec: { kind: "pie", x: "country", y: ["spend"], series: null },
+        chart_adjust: {
+          kinds: ["bar", "pie"],
+          x: ["country"],
+          y: ["spend"],
+          series: [],
+        },
+      }),
+    );
+    expect(markup).toContain('data-chart-kind="pie"');
+    expect(markup).toContain('data-chart-shape="pie"');
+    expect(markup).toContain('data-testid="studio-chart-adjust"');
+    expect(markup).toContain('data-testid="studio-chart-kind-pie"');
+    expect(markup).toContain('data-testid="studio-chart-x-country"');
+    expect(markup).toContain('data-testid="studio-chart-y-spend"');
+    expect(markup).not.toContain("<select");
+  });
+
+  it("a spec that names a missing column falls back to today's chart", () => {
+    const markup = html(
+      answered({
+        chart_spec: { kind: "pie", x: "missing", y: ["spend"] },
+      }),
+    );
+    expect(markup).toContain('data-chart-kind="bar"');
+    expect(markup).not.toContain('data-chart-shape="pie"');
+    expect(markup).not.toContain('data-testid="studio-chart-adjust"');
   });
 
   it("Chat answer card mounts ResultView", () => {

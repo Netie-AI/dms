@@ -1,0 +1,139 @@
+company: saas
+title: Awan Cloud (B2B SaaS subscriptions)
+glossary:
+  active subscription on D: "start_date <= D and (end_date is null or end_date > D)"
+  MRR on D: "SUM(subscriptions.mrr) over subscriptions active on D"
+  ARR: "MRR * 12"
+  open ticket on D: "opened_at <= D end of day and (closed_at is null or closed_at > D end of day)"
+questions:
+  - id: ss01_mrr_by_tier
+    question: What was MRR by plan tier on 30 June 2026?
+    gold_sql: |
+      SELECT p.tier, ROUND(SUM(s.mrr), 2) AS mrr
+      FROM subscriptions s JOIN plans p ON p.plan_id = s.plan_id
+      WHERE s.start_date <= DATE '2026-06-30' AND (s.end_date IS NULL OR s.end_date > DATE '2026-06-30')
+      GROUP BY p.tier
+  - id: ss02_churn_events_q2
+    question: How many churn events did we have in Q2 2026, and how much MRR did they take with them?
+    gold_sql: |
+      SELECT COUNT(*) AS churn_events, ROUND(-SUM(mrr_delta), 2) AS churned_mrr
+      FROM subscription_events
+      WHERE event_type = 'churn' AND event_date BETWEEN DATE '2026-04-01' AND DATE '2026-06-30'
+  - id: ss03_net_new_mrr_by_month
+    question: Net new MRR each month from January to June 2026, from the subscription event log.
+    ordered: true
+    gold_sql: |
+      SELECT STRFTIME(event_date, '%Y-%m') AS month, ROUND(SUM(mrr_delta), 2) AS net_new_mrr
+      FROM subscription_events
+      WHERE event_date BETWEEN DATE '2026-01-01' AND DATE '2026-06-30'
+      GROUP BY 1 ORDER BY 1
+  - id: ss04_top10_accounts_mrr
+    question: Top 10 accounts by MRR on 30 June 2026.
+    ordered: true
+    gold_sql: |
+      SELECT a.company_name, ROUND(SUM(s.mrr), 2) AS mrr
+      FROM subscriptions s JOIN accounts a ON a.account_id = s.account_id
+      WHERE s.start_date <= DATE '2026-06-30' AND (s.end_date IS NULL OR s.end_date > DATE '2026-06-30')
+      GROUP BY a.company_name
+      ORDER BY mrr DESC, a.company_name
+      LIMIT 10
+  - id: ss05_avg_seats_by_plan
+    question: Average seats per active subscription on each plan as of 30 June 2026 (one decimal).
+    gold_sql: |
+      SELECT p.plan_name, ROUND(AVG(s.seats), 1) AS avg_seats
+      FROM subscriptions s JOIN plans p ON p.plan_id = s.plan_id
+      WHERE s.start_date <= DATE '2026-06-30' AND (s.end_date IS NULL OR s.end_date > DATE '2026-06-30')
+      GROUP BY p.plan_name
+  - id: ss06_accounts_open_urgent
+    question: How many accounts had at least one urgent ticket still open at the end of 30 June 2026?
+    gold_sql: |
+      SELECT COUNT(DISTINCT account_id) AS accounts
+      FROM support_tickets
+      WHERE priority = 'urgent' AND opened_at < TIMESTAMP '2026-07-01 00:00:00'
+        AND (closed_at IS NULL OR closed_at >= TIMESTAMP '2026-07-01 00:00:00')
+  - id: ss07_median_close_hours_2026
+    question: Median hours to close a ticket by priority, for tickets opened in 2026 that are closed. One decimal.
+    gold_sql: |
+      SELECT priority, ROUND(MEDIAN(DATE_DIFF('second', opened_at, closed_at) / 3600.0), 1) AS median_hours
+      FROM support_tickets
+      WHERE opened_at >= TIMESTAMP '2026-01-01 00:00:00' AND closed_at IS NOT NULL
+      GROUP BY priority
+  - id: ss08_overdue_unpaid
+    question: How much is sitting in unpaid invoices dated before 31 May 2026?
+    gold_sql: |
+      SELECT ROUND(SUM(amount), 2) AS unpaid FROM invoices
+      WHERE paid_date IS NULL AND invoice_date < DATE '2026-05-31'
+  - id: ss09_arr_top5_countries
+    question: Which 5 countries bring in the most ARR as of 30 June 2026?
+    ordered: true
+    gold_sql: |
+      SELECT a.country, ROUND(SUM(s.mrr) * 12, 2) AS arr
+      FROM subscriptions s JOIN accounts a ON a.account_id = s.account_id
+      WHERE s.start_date <= DATE '2026-06-30' AND (s.end_date IS NULL OR s.end_date > DATE '2026-06-30')
+      GROUP BY a.country
+      ORDER BY arr DESC
+      LIMIT 5
+  - id: ss10_usage_drop
+    question: How many accounts saw weekly active users fall by more than half between the week starting 6 April 2026 and the week starting 29 June 2026?
+    gold_sql: |
+      SELECT COUNT(*) AS accounts FROM usage_weekly a
+      JOIN usage_weekly b ON b.account_id = a.account_id
+      WHERE a.week_start = DATE '2026-04-06' AND b.week_start = DATE '2026-06-29'
+        AND b.active_users < 0.5 * a.active_users
+  - id: ss11_logo_retention
+    question: Of the accounts with an active subscription on 30 June 2025, what percent still had one on 30 June 2026? Two decimals.
+    gold_sql: |
+      WITH a25 AS (
+        SELECT DISTINCT account_id FROM subscriptions
+        WHERE start_date <= DATE '2025-06-30' AND (end_date IS NULL OR end_date > DATE '2025-06-30')),
+      a26 AS (
+        SELECT DISTINCT account_id FROM subscriptions
+        WHERE start_date <= DATE '2026-06-30' AND (end_date IS NULL OR end_date > DATE '2026-06-30'))
+      SELECT ROUND(100.0 * COUNT(a26.account_id) / COUNT(*), 2) AS logo_retention_pct
+      FROM a25 LEFT JOIN a26 ON a26.account_id = a25.account_id
+  - id: ss12_upgrades_by_owner_2026
+    question: Count of upgrades in 2026 by sales owner.
+    gold_sql: |
+      SELECT a.sales_owner, COUNT(*) AS upgrades
+      FROM subscription_events e
+      JOIN subscriptions s ON s.subscription_id = e.subscription_id
+      JOIN accounts a ON a.account_id = s.account_id
+      WHERE e.event_type = 'upgrade' AND e.event_date >= DATE '2026-01-01'
+      GROUP BY a.sales_owner
+  - id: ss13_arpa_by_industry
+    question: Average MRR per paying account by industry on 30 June 2026, two decimals.
+    gold_sql: |
+      SELECT industry, ROUND(AVG(mrr), 2) AS arpa FROM (
+        SELECT a.account_id, a.industry, SUM(s.mrr) AS mrr
+        FROM subscriptions s JOIN accounts a ON a.account_id = s.account_id
+        WHERE s.start_date <= DATE '2026-06-30' AND (s.end_date IS NULL OR s.end_date > DATE '2026-06-30')
+        GROUP BY a.account_id, a.industry) x
+      GROUP BY industry
+  - id: ss14_api_calls_by_tier_q2
+    question: Total API calls in Q2 2026 by the plan tier each account was on that week.
+    gold_sql: |
+      SELECT p.tier, SUM(u.api_calls) AS api_calls
+      FROM usage_weekly u
+      JOIN subscriptions s ON s.account_id = u.account_id
+        AND s.start_date <= u.week_start AND (s.end_date IS NULL OR s.end_date > u.week_start)
+      JOIN plans p ON p.plan_id = s.plan_id
+      WHERE u.week_start BETWEEN DATE '2026-03-30' AND DATE '2026-06-29'
+      GROUP BY p.tier
+  - id: ss15_tickets_by_category_h1
+    question: Ticket volume by category for tickets opened in the first half of 2026.
+    gold_sql: |
+      SELECT category, COUNT(*) AS tickets FROM support_tickets
+      WHERE opened_at >= TIMESTAMP '2026-01-01 00:00:00' AND opened_at < TIMESTAMP '2026-07-01 00:00:00'
+      GROUP BY category
+  - id: ss16_late_payers_2025
+    question: What share of 2025 invoices were paid more than 30 days after the invoice date? Two decimals.
+    gold_sql: |
+      SELECT ROUND(100.0 * SUM(CASE WHEN paid_date IS NOT NULL AND DATE_DIFF('day', invoice_date, paid_date) > 30 THEN 1 ELSE 0 END)
+                   / COUNT(*), 2) AS late_pct
+      FROM invoices WHERE invoice_date BETWEEN DATE '2025-01-01' AND DATE '2025-12-31'
+  - id: ss17_at_risk
+    question: Which customers are at risk?
+    expect: clarify
+  - id: ss18_enterprise_plus
+    question: What's MRR on the Enterprise Plus plan?
+    expect: refuse

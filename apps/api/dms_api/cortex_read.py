@@ -1,10 +1,14 @@
 """Read-only GETs against Cortex surfaces that are **not** in the frozen contract.
 
 The contract (``openapi-1.2.0.json``, via ``cortex_client``) stays the only way DMS
-*asks questions, submits SQL, or touches the ledger*. Ontology and benchmark
+*asks questions, submits SQL, or touches the ledger*. Trust and benchmark
 metadata are read-only descriptions of the engine, so they travel over plain httpx
-here rather than forcing a contract minor before their shape has settled — the same
+here rather than forcing a contract minor before their shape has settled. The same
 precedent ``routes/health.py`` already sets for probing Cortex.
+
+Ontology does not travel here. Cortex removed ``/dms/ontology``. ``GET /v1/ontology``
+reads the Space store (``routes/ontology.py``) and must not be proxied through
+``cortex_get``.
 
 Two rules this module exists to keep:
 
@@ -22,9 +26,11 @@ from typing import Any
 
 import httpx
 
-#: Cortex's own default demo viewer key (packs/dms/security/api_auth._DEMO_KEYS).
-#: Overridden by CORTEX_API_KEY in any deployment that sets DMS_API_KEYS.
-DEFAULT_VIEWER_KEY = "dms-demo-viewer-key"
+#: Named error when a keyed Cortex read has no key. KEY-01 (dms#273): this module
+#: has no default key and no fallback. No key means no request, and the product
+#: shows ``error=cortex_key_missing`` plus a hint, not a Cortex 200 under a
+#: published demo key.
+KEY_MISSING = "cortex_key_missing"
 
 
 class CortexReadResult(dict[str, Any]):
@@ -43,9 +49,25 @@ def cortex_get(
 
     On success the engine payload is merged in under ``data``; on failure the
     reason is carried as ``error`` plus a ``hint`` the UI can print verbatim.
+
+    ``api_key`` is required. A missing, empty or blank key makes no HTTP call and
+    returns ``error="cortex_key_missing"``: there is no default viewer key.
     """
     url = f"{base_url.rstrip('/')}{path}"
-    headers = {"X-API-Key": api_key or DEFAULT_VIEWER_KEY}
+    key = (api_key or "").strip()
+    if not key:
+        return CortexReadResult(
+            ok=False,
+            source="cortex",
+            url=url,
+            error=KEY_MISSING,
+            hint=(
+                "No Cortex key is configured, so DMS did not call Cortex. "
+                "Set CORTEX_API_KEY (from OpenVault or your explicit config), then reload."
+            ),
+            data=None,
+        )
+    headers = {"X-API-Key": key}
     try:
         with httpx.Client(timeout=timeout) as client:
             res = client.get(url, headers=headers, params=params)
@@ -95,4 +117,4 @@ def cortex_get(
     return CortexReadResult(ok=True, source="cortex", url=url, data=payload)
 
 
-__all__ = ["DEFAULT_VIEWER_KEY", "CortexReadResult", "cortex_get"]
+__all__ = ["KEY_MISSING", "CortexReadResult", "cortex_get"]

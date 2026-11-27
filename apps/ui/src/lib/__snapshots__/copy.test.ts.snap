@@ -1,0 +1,63 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`product copy > 'Admin' header is a plain sentence 1`] = `
+"People and access
+Admin
+See people, the role each person holds, their departments, who can see which data, and where questions run. This page is read-only."
+`;
+
+exports[`product copy > 'Amend' header is a plain sentence 1`] = `
+"Corrections
+Amend
+Write a correction in plain language and confirm it. Confirm records the proposal and does not change warehouse data yet."
+`;
+
+exports[`product copy > 'Audit' header is a plain sentence 1`] = `
+"Record
+Audit
+Every recorded change, in the order it was written."
+`;
+
+exports[`product copy > 'Insights' header is a plain sentence 1`] = `
+"Checked figures
+Proven insights
+Each figure comes from a query that was run twice and checked against its total."
+`;
+
+exports[`product copy > 'Library' header is a plain sentence 1`] = `
+"Files
+Library
+Folders and files for Finance . Excel files stay as sources and are not written back."
+`;
+
+exports[`product copy > 'Ontology' header is a plain sentence 1`] = `
+"Shared vocabulary
+Ontology
+The names, links, and measures every answer is allowed to use. An empty or unreadable store stays empty."
+`;
+
+exports[`product copy > 'Runs' header is a plain sentence 1`] = `
+"What ran
+Runs
+Ingest receipts and questions that ran, with the file and the fix named when something needs attention."
+`;
+
+exports[`product copy > 'Spaces' header is a plain sentence 1`] = `
+"Question scope
+Spaces
+A Space is the data a question is allowed to see."
+`;
+
+exports[`product copy > 'Studio' header is a plain sentence 1`] = `
+"Your files
+Studio
+Bring files and databases in, see what was made of them, and start a question from here."
+`;
+
+exports[`product copy > 'Trust' header is a plain sentence 1`] = `
+"Answer checks
+Trust
+See how many questions were answered and whether any answered number was wrong."
+`;
+
+exports[`runtime banner flag > flag off is the previous offline sentence 1`] = `"<div role="status" class="border-b border-[var(--color-line)] bg-[var(--color-warn-soft)] px-4 py-2 text-sm text-[var(--color-warn)]">DMS API unreachable at <code class="font-mono text-xs">/api/health</code> — chrome stays interactive on fixtures until the API is up.</div>"`;

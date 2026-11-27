@@ -106,9 +106,12 @@ def space_sources(space_id: str, store: SpaceStoreDep, settings: SettingsDep) ->
     """Sources attached to this Space — the concrete answer to "what can it see"."""
     if store.get(space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
-    from dms_api.routes.library import list_sources
+    # The route function's space_id default is a FastAPI Query object. Calling
+    # it as a plain function made that object the filter, and UUID() raised
+    # AttributeError only when DATABASE_URL was set.
+    from dms_api.routes.library import _list_sources
 
-    sources = [s for s in list_sources(settings) if s.get("space_id") == space_id]
+    sources = _list_sources(settings, space_id=space_id)
     return {"space_id": space_id, "sources": sources, "count": len(sources)}
 
 
@@ -118,7 +121,7 @@ def space_sources(space_id: str, store: SpaceStoreDep, settings: SettingsDep) ->
 class OntologySourceIn(BaseModel):
     """A source connection for a keys-only catalog read. Never stored, never echoed."""
 
-    kind: Literal["sqlserver", "mysql", "postgresql"]
+    kind: Literal["sqlserver", "mysql", "postgresql", "sqlite"]
     host: str
     database: str
     user: str

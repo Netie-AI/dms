@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/api";
+import { useAskStages, type AskStageEvent } from "@/components/studio/AskStages";
 import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import { storedProductMode, type ProductMode } from "@/lib/productMode";
@@ -70,6 +71,8 @@ type AppState = {
   suggestions: string[];
   askError: string | null;
   asking: boolean;
+  askStages: AskStageEvent[];
+  cancelAsk: () => void;
   askQueueDepth: number;
   composerPaused: boolean;
   composerPauseReason: string | null;
@@ -138,6 +141,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [groundedTables, setGroundedTables] = useState<string[]>([]);
   const [groundedLabels, setGroundedLabels] = useState<string[]>([]);
   const [asking, setAsking] = useState(false);
+  const [askStreamId, setAskStreamId] = useState<string | null>(null);
+  const askStages = useAskStages(asking ? askStreamId : null);
+  const askAbort = useRef<AbortController | null>(null);
   const [askQueueDepth, setAskQueueDepth] = useState(0);
   const [composerPaused, setComposerPaused] = useState(false);
   const [composerPauseReason, setComposerPauseReason] = useState<string | null>(null);
@@ -351,13 +357,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setComposerPauseReason(null);
     setSelectedValueId(null);
     setFocusedSourceId(null);
+    const askId = crypto.randomUUID();
+    const ctrl = new AbortController();
+    askAbort.current = ctrl;
+    setAskStreamId(askId);
     try {
-      const envelope = await postAsk({
-        question: trimmed,
-        space_id: activeSpaceIdRef.current,
-        session_id: sessionIdRef.current,
-        grounded_tables: groundedTablesRef.current,
-      });
+      const envelope = await postAsk(
+        {
+          question: trimmed,
+          space_id: activeSpaceIdRef.current,
+          session_id: sessionIdRef.current,
+          grounded_tables: groundedTablesRef.current,
+        },
+        ctrl.signal,
+        askId,
+      );
       setMessages((prev) => [
         ...prev,
         { id: envelope.answer_id || `a_${Date.now()}`, role: "assistant", envelope },
@@ -367,6 +381,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setSourcePanelOpen(true);
       }
     } catch (err) {
+      if (ctrl.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+        setAskError("Cancelled.");
+        return;
+      }
       const msg = err instanceof Error ? err.message : "ask failed";
       setAskError(msg);
       const pause = classifyPause(msg);
@@ -375,9 +393,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setComposerPauseReason(pause);
       }
     } finally {
+      askAbort.current = null;
       setAsking(false);
       setActivity(null);
     }
+  }, []);
+
+  const cancelAsk = useCallback(() => {
+    askAbort.current?.abort();
   }, []);
 
   const drainQueue = useCallback(async () => {
@@ -456,6 +479,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     suggestions,
     askError,
     asking,
+    askStages,
+    cancelAsk,
     askQueueDepth,
     composerPaused,
     composerPauseReason,

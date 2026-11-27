@@ -59,6 +59,31 @@ export type AuditReceipt = {
   unsure: AuditReceiptPart;
 };
 
+/** One reading the user can run. The text is the envelope's label, not a local phrase. */
+export type ClarifyReading = {
+  reading_id: string;
+  label: string;
+};
+
+/** R1-CLARIFY-01 block. Absent on every envelope the server does not ask back. */
+export type ClarifyBlock = {
+  clarify_id: string;
+  question: string;
+  readings: ClarifyReading[];
+};
+
+export type GrantedSpace = {
+  id: string;
+  name: string;
+};
+
+/** R2-GRANT-POLICY-01. can_request is true only when the access route exists. */
+export type AccessNeeded = {
+  table: string;
+  granted_in_spaces: GrantedSpace[];
+  can_request: boolean;
+};
+
 export type AnswerEnvelope = {
   answer_id: string;
   text: string;
@@ -101,6 +126,10 @@ export type AnswerEnvelope = {
     token: string;
     definition?: string;
   } | null;
+  /** Present only when DMS asks the user to pick a reading. */
+  clarify?: ClarifyBlock | null;
+  /** Present only when the table is not shared with this Space. */
+  access_needed?: AccessNeeded | null;
 };
 
 export type SpaceSummary = {
@@ -213,11 +242,13 @@ export type OntologyGraphEdge = {
   cardinality: string;
 };
 
-/** Every ontology read degrades to `ok: false` + hint when Cortex is down. */
-export type Degradable = { ok: boolean; error?: string; hint?: string };
+/** An ontology read with no store rows is `ok: false` plus a named reason. */
+export type Degradable = { ok: boolean; error?: string; hint?: string; reason?: string };
 
 export type OntologySummary = Degradable & {
   pack?: string;
+  space_id?: string;
+  source?: string;
   counts?: OntologyCounts;
   objects_without_metrics?: string[];
 };
