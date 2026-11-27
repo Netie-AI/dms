@@ -307,6 +307,89 @@ jobs:
           fi
           python scripts/verify/live_pages_smoke.py --base http://127.0.0.1:8000
 
+  # R2-CONNECT-CORE-01. Postgres is the connection store and a source.
+  # MariaDB is the second source. The pytest shards skip these engine cases.
+  connect-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: dms
+          POSTGRES_PASSWORD: dms
+          POSTGRES_DB: dms
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U dms -d dms"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: ci-only-mariadb
+          MARIADB_DATABASE: connect_src
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      PYTHONUTF8: "1"
+      DATABASE_URL: postgresql://dms:dms@127.0.0.1:5432/dms
+      DMS_CONNECT_V2_ENGINES: "1"
+      CONNECT_V2_PG_HOST: 127.0.0.1
+      CONNECT_V2_PG_PORT: "5432"
+      CONNECT_V2_PG_USER: dms
+      CONNECT_V2_PG_PASSWORD: dms
+      CONNECT_V2_PG_DB: connect_src
+      CONNECT_V2_MY_HOST: 127.0.0.1
+      CONNECT_V2_MY_PORT: "3306"
+      CONNECT_V2_MY_USER: root
+      CONNECT_V2_MY_PASSWORD: ci-only-mariadb
+      CONNECT_V2_MY_DB: connect_src
+      CONNECT_V2_NOPERM_PASSWORD: ci-only-noperm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev]"
+          pip install "PyMySQL>=1.1"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Connect v2 against Postgres and MariaDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          python -m pytest tests/test_connect_v2.py -q --tb=short -p no:cacheprovider
+
   lint-type-test:
     runs-on: ubuntu-latest
     # The cap dates from when pytest ran inside this job (18.5 min on main
@@ -314,10 +397,11 @@ jobs:
     # and this job takes about a minute. The cap is not raised.
     timeout-minutes: 30
     # This job keeps its name and stays the single gate: it is red unless the
-    # two gates, every pytest shard, and the live-pages smoke are green.
-    # `!cancelled()` is needed so a failed shard makes this job FAIL. Without it
-    # the job would be skipped, and a skipped required check counts as passing.
-    needs: [protected-paths, contract-pin, pytest, live-pages-smoke]
+    # two gates, every pytest shard, the live-pages smoke, and connect-v2 are
+    # green. `!cancelled()` is needed so a failed shard makes this job FAIL.
+    # Without it the job would be skipped, and a skipped required check counts
+    # as passing.
+    needs: [protected-paths, contract-pin, pytest, live-pages-smoke, connect-v2]
     if: ${{ !cancelled() }}
     env:
       PYTHONUTF8: "1"
@@ -326,8 +410,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }} live-pages-smoke=${{ needs.live-pages-smoke.result }}"
-          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ] || [ "${{ needs.live-pages-smoke.result }}" != "success" ]; then
+          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }} live-pages-smoke=${{ needs.live-pages-smoke.result }} connect-v2=${{ needs.connect-v2.result }}"
+          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ] || [ "${{ needs.live-pages-smoke.result }}" != "success" ] || [ "${{ needs.connect-v2.result }}" != "success" ]; then
             echo "::error::a required job is not green (see the line above)"
             exit 1
           fi

@@ -1,5 +1,6 @@
 ---
-status: accepted
+status: superseded
+superseded-by: DR-0010
 date: 2026-09-03
 decision-makers: founder, delegated to the Claude Code lane on 2026-09-03 ("these two I leave the decisions to you, completely solve them") - PRD-001 feedback ledger F36 and F37
 outcome: F36 resolves as path (a). F27 stands. EPIC-020 becomes wave foundation. F37 approved as EPIC-024.

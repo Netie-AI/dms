@@ -14,8 +14,8 @@ When one of those definitions has a predicate, the L2 check compares the
 generated SQL's predicate on those columns to the governed predicate. The
 comparison is the normalized sqlglot tree, not a search of the SQL text. A
 mismatch returns the reconfirm envelope with ``reason_code``
-``definition_mismatch`` and is not served. The token locks in
-``semantic_retrieve`` stay until WORD-RULES-OUT-01.
+``definition_mismatch`` and is not served. Keyword measure locks stay
+behind ``DMS_NO_WORD_RULES`` (default off) until that armed A/B deletes them.
 """
 
 from __future__ import annotations

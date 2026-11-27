@@ -220,6 +220,9 @@ class Measure:
     # not a guarantee today.
     additive: bool = True
     description: str = ""
+    # Steward-edited phrases. The compiler does not read them. Ranking does,
+    # and only when DMS_NO_WORD_RULES is on. Empty stays off the catalog.
+    synonyms: tuple[str, ...] = ()
 
 
 @dataclass
@@ -585,6 +588,7 @@ class Ontology:
         *,
         additive: bool = True,
         description: str = "",
+        synonyms: Sequence[str] | None = None,
     ) -> None:
         """Reject a measure at authoring time if its grain is not an object.
 
@@ -597,7 +601,14 @@ class Ontology:
                 f"measure {name!r} declares grain {grain!r}, which is not an object type. "
                 "A measure with no grain cannot be protected from fan-out."
             )
-        self.measures[name] = Measure(name, grain, expression, additive, description)
+        phrases = tuple(
+            " ".join(str(item or "").split())
+            for item in (synonyms or ())
+            if " ".join(str(item or "").split())
+        )
+        self.measures[name] = Measure(
+            name, grain, expression, additive, description, phrases
+        )
 
     @classmethod
     def from_store(cls, items: Sequence[Mapping[str, Any]] | None = None) -> Ontology:
@@ -2146,12 +2157,14 @@ def _apply_stored_item(onto: Ontology, row: Mapping[str, Any]) -> bool:
         if not name or not grain or not expression:
             return False
         try:
+            raw_syn = payload.get("synonyms")
             onto.add_measure(
                 name,
                 grain,
                 expression,
                 additive=bool(payload.get("additive", True)),
                 description=str(payload.get("description") or ""),
+                synonyms=raw_syn if isinstance(raw_syn, list) else None,
             )
         except KeyError:
             return False
@@ -2372,6 +2385,9 @@ def demo_ontology(warehouse: Path) -> Ontology:
                 "one contribution per overdue supplier"
             ),
         )
+    from dms_executor.measure_link import attach_spine_synonyms
+
+    attach_spine_synonyms(o)
     return o
 
 

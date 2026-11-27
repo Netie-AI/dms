@@ -42,6 +42,23 @@ Append-only. Never edited, only added to. Newest first.
 - **Flag.** `DMS_RUNTIME_SELFCHECK` defaults off. Off, the offline banner is the previous sentence. On, it states the runtime problem in plain language. The ask path does not read the flag.
 - **52.** Unmeasured (stub). No serving change. Not PASS.
 
+## 2026-11-27 - R1-RULES-OUT-01: the question-word compiler does not submit
+
+- **Miss.** With `DMS_RULES_OFF=1`, a generate miss that has a ranking plan reconfirms (`rules_off`) and does not submit. Multi-grain compile returns None on that flag. Flag off is unchanged.
+- **Stub 52.** Two runs, same commit. Flag off: correct=43 wrong=0 refusal_wrong=0 reconfirm=5 ai=0 rule=43. Flag on: correct=23 wrong=0 refusal_wrong=0 reconfirm=20 abstain=3 ai=0 rule=23. The 23 are certified pack L1 (`demo_pack.py` `match_pack_phrase`). Compile served is 0. The stub's Insights payload is a miss (`model_calls=0`), so there is no AI SQL to run. Armed and pack H not run. Not PASS.
+
+## 2026-11-27 - R1-RULES-OUT-01: question-word lanes behind DMS_RULES_OFF
+
+- **Flag.** `DMS_RULES_OFF` defaults to off. Only the digit `1` turns it on. Off, prompt bytes, the envelope, and the served route stay the same. On, `answer_demo_question` returns None, `_is_predictive` and `is_uncertified_paraphrase` return False, and the bronze sheet lane names no table. `DMS_RULES_OFF` implies `DMS_NO_WORD_RULES`, so measure linking ranks instead of the keyword locker. `locked_measure` returns None.
+- **Guard.** `scripts/verify/rule_inventory.py` lists every regex or `in` test that traces to a question argument (`file:line`). Today's 166 sites are the allowlist and the day-1 ceiling. A new key fails CI. The ceiling hash is pinned. Deletion of the lanes waits on the armed A/B.
+- **Stub 52.** `grade52 --main`, two runs each, flag off and flag on, same commit. Flag off: correct=43 wrong=0 reconfirm=5 refusal_wrong=0 ai=0 rule=43. Flag on: correct=37 wrong=4 (printed wrong includes refusal_wrong) refusal_wrong=1 reconfirm=2 abstain=3 ai=0 rule=41. Clarify and p50 are not in this stub. Armed and pack H were not run. Not PASS.
+
+## 2026-11-27 - WORD-RULES-OUT-01: rank measures instead of keyword locks
+
+- **Flag.** `DMS_NO_WORD_RULES` defaults to 0. Off, `semantic_retrieve` still calls the keyword locker in `keyword_routes.py`. Prompt, envelope, and served route stay the same. On, measure linking uses `rank_texts` (embedder, else BM25) over the ontology name, description, and synonyms stored on the measure. Floor 0.5, top 3. A unique top score links that measure. A tie or nothing above the floor reconfirms `measure_tie` or `measure_unranked` and is not served.
+- **Not a word rule.** The ranker does not test question text for a phrase. Synonyms are ontology data (`ontology_spine.yaml` for the demo, the measure payload for a Space). A renamed measure links from its own synonyms.
+- **Not in this change.** The keyword module stays until the armed A/B. `DMS_NO_WORD_RULES` is not added to `ARMED_ALL_FLAGS_ON`. No live grade52 score.
+
 ## 2026-11-27 - COMPILE-CHECK-01: compile SQL must pass the AI-lane checker
 
 - **Gate.** Rank-window, multi-grain, and one-grain compile call `ai_lane_sql_check` before submit. That is the extract loop's checker: the Space join rule, `def_validate` when its flag is on, grants, one SELECT, EXPLAIN, cited violations, and definition mismatch when grounded defs are on. No new flag. No new word or phrase rule.
