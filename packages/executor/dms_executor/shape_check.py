@@ -23,6 +23,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict
 from sqlglot import exp, parse_one
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
+
 SHAPE_CHECK_ENV = "DMS_SHAPE_CHECK"
 ROLE_ALIAS = "reason"
 SCHEMA_NAME = "AnswerShapeReply"
@@ -122,7 +124,7 @@ def sql_shape_facts(sql: str, dialect: str | None = None) -> dict[str, Any]:
     if isinstance(group, exp.Group):
         for node in group.expressions[:_GROUP_CAP]:
             try:
-                text = node.sql(dialect=dialect or "duckdb")
+                text = node.sql(dialect=dialect or SERVING_DIALECT)
             except Exception:
                 text = ""
             text = text.strip()
@@ -357,7 +359,7 @@ def _parse(sql: str, dialect: str | None) -> Any:
     if not isinstance(sql, str) or not sql.strip():
         return None
     try:
-        return parse_one(sql, read=dialect or "duckdb")
+        return parse_one(sql, read=dialect or SERVING_DIALECT)
     except Exception:
         return None
 

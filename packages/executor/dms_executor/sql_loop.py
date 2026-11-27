@@ -759,12 +759,11 @@ def _shape_reconfirm(
     env = abstain("shape_misfit", attempts, sql=sql, retries=retries)
     if not isinstance(env, dict):
         env = {}
-    env["abstained"] = True
-    env["badge"] = "ABSTAIN"
+    # Badge, abstained, and abstain_reason stay on the builder. This only
+    # clears the served figure and attaches the typed reconfirm.
     env["rows"] = []
     env["values"] = []
     env["sql_used"] = None
-    env["abstain_reason"] = "shape_misfit"
     shown = "; ".join(reasons) if reasons else kind
     env["text"] = f"shape_misfit: {shown}"
     assumptions = [item for item in (env.get("assumptions") or []) if isinstance(item, str)]
