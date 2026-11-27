@@ -5,6 +5,7 @@ Regenerate with ``just sync-contract``. Do not hand-edit ``generated/``.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -272,6 +273,7 @@ class CortexClient:
         sql_feedback: dict[str, Any] | None = None,
         schema_context: str | None = None,
         route_hint: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any] | None:
         """Ask-lane Insights planner. Never POST /dms/query.
 
@@ -289,6 +291,13 @@ class CortexClient:
             onto = dict(ontology or {})
             onto[SCHEMA_CONTEXT_FIELD] = schema_context
         bound = min(insights_timeout_s(), float(self.timeout))
+        if timeout is not None:
+            bound = min(bound, max(float(timeout), 0.0))
+        from cortex_client.ask_clock import generate_budget_left_s
+
+        left = generate_budget_left_s()
+        if left is not None:
+            bound = min(bound, left) if left > 0 else 0.0
         return post_compute_insights(
             self.base_url,
             question=question,
@@ -307,16 +316,26 @@ class CortexClient:
         A dead engine or a refused generate returns ``""``. Nothing is filled in.
         Skipped when this ask already used ``insights_call_cap`` generate posts,
         so the suggestion cannot take a call the answer still needs.
+        ``DMS_DEADLINE_ASKBACK=1`` allows this one call once only the reserve
+        remains. The flag off path does not.
 
         The body is ``InsightsAskIn`` only. No ``max_tokens``: contract 1.9.0
         does not declare it, and Cortex answers an undeclared field with 422
         ``unknown_request_fields`` (WIRE-CONFORM-01, #276).
         """
+        from cortex_client.ask_clock import askback_window_open, current_clock
         from cortex_client.compute import insights_call_cap, note_model_call, recorded_model_calls
 
-        if recorded_model_calls() >= insights_call_cap():
+        if recorded_model_calls() >= insights_call_cap() and not askback_window_open():
             return ""
         note_model_call()
+        timeout = min(2.0, float(self.timeout))
+        clock = current_clock()
+        if askback_window_open() and clock is not None and clock.deadline is not None:
+            left = clock.deadline - time.monotonic()
+            if left <= 0:
+                return ""
+            timeout = min(timeout, left)
         try:
             payload = insights_post(
                 self.base_url,
@@ -324,7 +343,7 @@ class CortexClient:
                 ask=False,
                 generate=True,
                 api_key=self.api_key,
-                timeout=min(2.0, float(self.timeout)),
+                timeout=timeout,
             )
         except Exception:
             return ""
