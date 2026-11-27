@@ -11,6 +11,25 @@ Append-only. Never edited, only added to. Newest first.
 - **BIRD.** Download stays outside the repo and is refused while `scripts/verify/bird_minidev_2026.sha256` says `UNPINNED`. No estimated EX.
 - **Stub 52.** flag off: correct=43 WRONG=0 refusal_wrong=0 reconfirm=5 clarify=0 abstain=0 AI=0 rule=43 unattributed=0. flag on (existing AI-first stub): correct=0 WRONG=0 reconfirm=48 clarify=0 AI=0 rule=0. p50 unmeasured (stub). Not PASS.
 
+## 2026-11-27 - R1-CLARIFY-01: drop the phrase label, build abstains in one place
+
+- **Phrase label.** `phrase_gate_reason` matched question wording, so it is gone. With `DMS_AI_CLARIFY` on, a card comes from the model's reading list. A silent verdict still uses the existing early returns.
+- **Builder.** Ladder abstains pass their named reason into `build_abstain`. No other call sets `abstain_reason`.
+
+## 2026-11-27 - R1-CLARIFY-01: the model decides an ambiguous question
+
+- **Flag.** `DMS_AI_CLARIFY` defaults off. Off, phrase gates and the ladder are unchanged. On, one OpenVault call with role `reason` returns answerable, ambiguous, or unanswerable. A verdict replaces the phrase gates. No verdict, or an invalid verdict, keeps them, so a silent stub cannot serve a trap.
+- **Ask back.** Ambiguous returns `route=needs_clarification` with 2 to 4 readings. Each SQL preview passed the grant and read-only check and was not executed. `POST /v1/chat/clarify/pick` re-checks grants and asks the chosen reading. Ungranted is a refusal. Unanswerable is reconfirm `not_in_data`.
+- **Grading.** R1-EVAL-01 (#572) already grades a clarify card. This change does not edit the harness.
+- **52.** Stub numbers are in the PR. Armed grade52 and pack H were not run. Not PASS.
+
+## 2026-11-27 - DMS-AI-ABSTAIN-01: generative misses climb before they abstain
+
+- **Flag.** `DMS_ASK_LADDER` defaults off. Off, phrase gates and a checker failure still stop where they did. On, a generative-stage miss climbs four rungs inside the existing insights cap: feed the error, empty result, or check failure back; retry with ontology joins, masked column samples, and retrieved verified examples; plan then solve; send `route_hint=escalate` so OpenVault picks a stronger route. One call stays unused for reconfirm. The armed AI-first profile turns the flag on and sets `DMS_INSIGHTS_CALL_CAP=4`.
+- **Stop.** Ungranted tables, PII, and destructive or hostile SQL do not climb. Every other remaining abstain carries a named reason (`ladder_exhausted:<code>`, or the direct code) and is logged. Question text and SQL text stay out of that log.
+- **Not a word rule.** The ladder does not add a phrase list. The old gates still classify vague, predictive, and year-2099 asks. With the flag on, those asks call the model; a miss abstains with that named code instead of a compiled figure.
+- **52.** Flag-off stub counts are the recorded STATUS numbers (correct=43 wrong=0). This change does not remeasure them. Armed AI vs rules and WRONG were not measured here.
+
 ## 2026-11-27 - R1-UI-COPY-01: plain page headers, no developer notes
 
 - **Copy.** Page headers say what the page does in one sentence. Eyebrow codes, buyer-walk notes, script names, and the refuse demo are gone. The five starter questions stay.

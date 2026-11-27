@@ -72,7 +72,8 @@ the log gets move counts, the artifact gets the ids.
 
 ``--armed --ai-first`` is the AI-first profile (AIF-GRADE-01). It sets
 ``AI_FIRST_FLAGS`` (``DMS_AI_FIRST``, ``DMS_CLOOP_B``,
-``DMS_RECONFIRM_RUN_HELD`` on, ``DMS_DEMO_FALLBACK=0``) for the run and
+``DMS_RECONFIRM_RUN_HELD``, ``DMS_ASK_LADDER`` on, ``DMS_INSIGHTS_CALL_CAP=4``,
+``DMS_DEMO_FALLBACK=0``) for the run and
 restores the process env after it. ``DMS_GRAIN_AI`` and ``DMS_AO_COMPILE``
 stay off unless named with ``--ai-first-also``: they 422 on OpenVault main
 until OpenVault #172 lands. The capture header and the artifact record every
@@ -199,6 +200,8 @@ AI_FIRST_FLAGS: dict[str, str] = {
     "DMS_CLOOP_B": "1",
     "DMS_RECONFIRM_RUN_HELD": "1",
     "DMS_DEMO_FALLBACK": "0",
+    "DMS_ASK_LADDER": "1",
+    "DMS_INSIGHTS_CALL_CAP": "4",
 }
 # 422 on OpenVault main until OpenVault #172 lands. Off unless named.
 AI_FIRST_HELD_FLAGS = ("DMS_GRAIN_AI", "DMS_AO_COMPILE")

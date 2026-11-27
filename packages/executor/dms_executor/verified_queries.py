@@ -544,12 +544,14 @@ def retrieve_verified_examples(
     grantable: set[str] | None = None,
     dialect: str | None = None,
     embedder: Callable[[list[str]], Any] | None = None,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     """Similar Space examples for the SQL writer. Never an answer to execute.
 
-    Off when ``DMS_VQ_RAG`` is off. Revoked rows and scored-pack rows are absent.
+    Off when ``DMS_VQ_RAG`` is off, unless ``force`` (the ask ladder's context
+    rung). Revoked rows and scored-pack rows are absent.
     """
-    if not vq_rag_enabled():
+    if not force and not vq_rag_enabled():
         return []
     q = (question or "").strip()
     if not q:

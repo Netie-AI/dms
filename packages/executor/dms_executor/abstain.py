@@ -72,6 +72,7 @@ def build_abstain(
     abstain_reason: str | None = None,
     demote: dict[str, Any] | None = None,
     ticket_reason: str | None = None,
+    log_ticket: bool = True,
     **envelope: Any,
 ) -> dict[str, Any]:
     """Build one ABSTAIN envelope and, when the flag is on, its ticket.
@@ -97,15 +98,16 @@ def build_abstain(
                     assumptions = []
                     demote["assumptions"] = assumptions
                 assumptions.append(note)
-        _stamp_ticket(
-            demote,
-            reason=ticket_reason or reason,
-            question=question,
-            sql=sql,
-            retries=retries,
-            stage=stage,
-            ask_id=ask_id,
-        )
+        if log_ticket:
+            _stamp_ticket(
+                demote,
+                reason=ticket_reason or reason,
+                question=question,
+                sql=sql,
+                retries=retries,
+                stage=stage,
+                ask_id=ask_id,
+            )
         hide_echo(demote, ticket_reason or reason)
         # After the scrub, so a cleared sql_used still gets abstain:<stage>,
         # and the stamp is not a field the scrub rewrites.
@@ -121,15 +123,16 @@ def build_abstain(
     env = build_answer_envelope(_from_builder=True, **envelope)
     if abstain_reason is not None:
         env["abstain_reason"] = abstain_reason
-    _stamp_ticket(
-        env,
-        reason=ticket_reason or reason,
-        question=question,
-        sql=sql if isinstance(sql, str) else None,
-        retries=retries,
-        stage=stage,
-        ask_id=ask_id,
-    )
+    if log_ticket:
+        _stamp_ticket(
+            env,
+            reason=ticket_reason or reason,
+            question=question,
+            sql=sql if isinstance(sql, str) else None,
+            retries=retries,
+            stage=stage,
+            ask_id=ask_id,
+        )
     hide_echo(env, ticket_reason or reason)
     # After the scrub, so a cleared sql_used still gets abstain:<stage>.
     _stamp_no_sql(env, stage=stage)
