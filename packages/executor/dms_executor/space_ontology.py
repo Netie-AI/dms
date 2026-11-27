@@ -857,11 +857,102 @@ def _under_predicate(node: exp.Expression, stop: exp.Expression) -> bool:
     return False
 
 
+def _from_items(select: exp.Select) -> list[exp.Expression] | None:
+    """What this SELECT's FROM and JOIN clauses name, or None if a JOIN is opaque.
+
+    A comma FROM is a JOIN in the AST. Scope sources are not this list: a scope
+    also lists every CTE visible to it, used or not.
+    """
+    items: list[exp.Expression] = []
+    frm = select.args.get("from")
+    if isinstance(frm, exp.From):
+        if frm.this is not None:
+            items.append(frm.this)
+        items.extend(frm.expressions)
+    for join in select.args.get("joins") or []:
+        if not isinstance(join, exp.Join) or join.this is None:
+            return None
+        items.append(join.this)
+    return items
+
+
+def _base_or_cte(item: exp.Expression, ctes: set[str]) -> str | None:
+    """``cte:<name>`` or ``base`` when ``item`` is one table, else None.
+
+    A parenthesized table (``FROM (orders)``) is that table. A qualified name
+    is a base table: a CTE reference is unqualified.
+    """
+    table = item
+    if isinstance(item, exp.Subquery) and isinstance(item.this, exp.Table):
+        table = item.this
+    if not isinstance(table, exp.Table) or not isinstance(table.this, exp.Identifier):
+        return None
+    name = table.name.lower()
+    if not table.db and not table.catalog and name in ctes:
+        return f"cte:{name}"
+    return "base"
+
+
+def _one_base_read(root: exp.Expression) -> bool:
+    """True only for one read of one base table and nothing else.
+
+    The early return in ``_JoinRule.check`` is this shape alone. Every other
+    statement, including a CTE joined to itself, stays on the join gate:
+
+    * every FROM, in the main query, in each CTE body and in each subquery,
+      names exactly one item (no JOIN, no comma);
+    * each CTE name is used as a FROM item at most once;
+    * no recursive CTE, and no set operation;
+    * exactly one base table is named, once.
+
+    A base table, a CTE name, a derived table and a row constructor all count.
+    Anything the AST does not place is not one read.
+    """
+    if any(w.args.get("recursive") for w in root.find_all(exp.With)):
+        return False
+    if root.find(*_SET_OPS):
+        return False
+    ctes = {
+        str(cte.alias_or_name).lower()
+        for cte in root.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
+    selects = list(root.find_all(exp.Select))
+    if not selects:
+        return False
+    uses: dict[str, int] = {}
+    base = 0
+    for select in selects:
+        items = _from_items(select)
+        if items is None or len(items) > 1:
+            return False
+        if not items:
+            continue
+        item = items[0]
+        kind = _base_or_cte(item, ctes)
+        if kind == "base":
+            base += 1
+            continue
+        if isinstance(kind, str) and kind.startswith("cte:"):
+            name = kind.split(":", 1)[1]
+            uses[name] = uses.get(name, 0) + 1
+            continue
+        if isinstance(item, exp.Subquery) and isinstance(item.this, exp.Select):
+            continue
+        return False
+    if any(n > 1 for n in uses.values()):
+        return False
+    return base == 1
+
+
 class _JoinRule:
     """An allowlist, not a blocklist (adversary rounds 1 and 2, ONTO-DERIVE-01).
 
-    SQL reading one table reference has nothing to join and passes. SQL reading
-    two or more must be ONE flat SELECT over base tables:
+    One read of one base table has nothing to join and passes. A join does not
+    take that shortcut: a CTE used twice, a self-join, a second FROM item, a
+    recursive CTE, or a set operation is judged by the same checks as any other
+    join. SQL reading two or more base tables must be ONE flat SELECT over
+    base tables:
 
     * no set operation, no CTE, no derived table, no subquery outside the
       top-level WHERE conjuncts;
@@ -1027,7 +1118,9 @@ class _JoinRule:
             if not isinstance(t.this, exp.Identifier):
                 # query('...'), read_csv(...): a table function can hide any join.
                 raise _Refuse("table_function")
-        if len(tables) <= 1:
+        # One physical table is not one read. A CTE self-join names that table
+        # once and joins the CTE to itself; it takes these same checks.
+        if len(tables) <= 1 and _one_base_read(root_expr):
             return
         if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
             raise _Refuse("set_operation")

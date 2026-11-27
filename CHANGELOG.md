@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - JOIN-HOLE-01 (P0): a CTE self-join takes the join gate
+
+- **Hole.** `_JoinRule.check` returned before the join checks when the statement named at most one base table. A CTE name is not a base table, so a CTE joined to itself never reached the gate, and a fanned-out total was served under L2_VALIDATED.
+- **Gate.** The early return is one read of one base table, counted from the sqlglot AST. Every FROM names one item, each CTE name is used at most once, there is no recursive CTE and no set operation, and exactly one base table is named once. A join, including a CTE self-join, takes the same checks (`cte_over_join`, `derived_table_over_join`, `set_operation`, or the link rules).
+- **Cost.** A CTE read a second time, a one-table statement with a constant UNION branch, a one-row constant cross join, and `WITH RECURSIVE` over one table now abstain. Statements that read two or more base tables are unchanged. Refs #527. Not a word rule. The adversary round is a different run.
+
 ## 2026-11-27 - R1-EVAL-01: one eval report for the 52, pack H, BIRD, and an ambiguity pack
 
 - **Harness.** `scripts/verify/eval_all.py --stub` writes `report.md` and `report.json`. It grades the 52 with `grade52 --main` and `--main --ai-first`. Pack H, BIRD execution accuracy, and OpenVault hop-stamp pin splits are `unmeasured (stub)`. `--armed` is the box run and refuses when Cortex settings are missing. No new serving flag.

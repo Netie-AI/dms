@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, R1-RUNTIME-01, R1-CLARIFY-01, DMS-AI-ABSTAIN-01, R1-RULES-OUT-01
+**Last updated:** 2026-11-27, JOIN-HOLE-01, R1-RULES-OUT-01
 **Remote:** https://github.com/Netie-AI/dms
 **Tip:** `DMS_RULES_OFF` default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 (two runs). On, the question-word compiler does not submit: correct=23 wrong=0 refusal_wrong=0 reconfirm=18 refusal_ok=8 ai=0 rule=23, and that rule is certified pack L1 only. Phrase checkers do not run. The stub has no model SQL. Armed and pack H unmeasured. `DMS_ASK_LADDER`, `DMS_AI_CLARIFY`, and `DMS_RUNTIME_SELFCHECK` default off. Not PASS.
 
@@ -43,6 +43,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
+| P0 JOIN-HOLE-01: a CTE self-join takes the same join gate | #527 |
 | COMPILE-CHECK-01: compile SQL must pass the AI-lane checker before it is served | this branch |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
