@@ -124,24 +124,24 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-28 00:00 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-28 01:06 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `0b0e4379` R2-CONNECT-CORE-01: Persisted connections, test, introspect, and auto-grant (#582)
+main: `b84563fe` JOIN-HOLE-01: a CTE self-join takes the same join gate (#589)
 
 open PRs: 39 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #591 | y | `4a38eb20` | - | 11 ok | DUCKDB-PIN-01: pin duckdb>=1.0,<2 so Cortex can open serving files |
-| #589 | y | `5cbb9438` | - | 11 ok | JOIN-HOLE-01: a CTE self-join takes the same join gate |
-| #588 | y | `d4af5649` | - | 11 ok | DEMO-SCOPE-01: demo lanes answer only in the demo Space (#417) |
-| #581 | n | `e5eba322` | tier:fast | 10 ok | handoff: state refresh |
+| #593 | y | `6acbb15f` | - | 9 ok, 1 running | CATALOG-SCHEMA-01: read the schemas the Space grants name |
+| #592 | y | `f0c6c4d2` | - | 8 ok, 3 FAIL | SCALE-MISS-01: generate first, repair EXPLAIN, ask back |
+| #591 | y | `2e4bf2d5` | - | 7 ok, 3 running | DUCKDB-PIN-01: pin duckdb>=1.0,<2 so Cortex can open serving files |
+| #581 | n | `0c29ea28` | tier:fast | 11 ok | handoff: state refresh |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
-| #542 | y | `6195feb3` | - | 8 ok, 2 running | T5 install hardening: #387 TLS host guard (carried) + IPv4 serve; #388 and #377  |
+| #542 | y | `6195feb3` | - | 11 ok | T5 install hardening: #388 env sentinel, #387 IPv4 + numeric-host guard, #377 at |
 | #539 | y | `cb96299a` | - | 11 ok, 4 FAIL | Answer fidelity: FIG-FIDELITY-01 (#508) E14, BIRD-ALLOWLIST-01 (#304) preflight, |
 | #538 | y | `3d972da8` | - | 5 ok, 2 FAIL | CONNECT-ASK-05: a join check that raises abstains check_unavailable (no 503, no  |
 | #536 | y | `befc5712` | - | 4 ok | ENV-EXAMPLE-SENTINEL: a placeholder left in a secret refuses boot, by name (Refs |
