@@ -6,8 +6,8 @@ does not route on question words.
 
 Wall-clock fields are placeholders. Every other key and value is
 compared, including ``served_check_shadow``. A key main does not send
-fails the test. Removed before the compare: ``served_route``,
-``ladder_rung``, and the LATENCY-01 ``timings`` block.
+fails the test. The two ROUTE-STAMP-01 keys (``served_route`` and
+``ladder_rung``) are new and are the only keys removed before the compare;
 ``plan_origin``, ``served_model`` and ``abstain_reason`` stay compared.
 
 Against main 57d85c52, as_of stays masked. ``checker_version`` is not
@@ -111,8 +111,8 @@ def _freeze(env: dict[str, Any]) -> dict[str, Any]:
     return frozen
 
 
-# Route stamps, plus the LATENCY-01 timings block. Not served fields.
-_NEW_ROUTE_KEYS = frozenset({"served_route", "ladder_rung", "timings"})
+# New in ROUTE-STAMP-01. Main never sends them. Nothing else is masked.
+_NEW_ROUTE_KEYS = frozenset({"served_route", "ladder_rung"})
 
 
 def _drop_new_route_keys(env: dict[str, Any]) -> dict[str, Any]:

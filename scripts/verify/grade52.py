@@ -3045,8 +3045,12 @@ def _armed_ask(
                 "env": env,
                 "served": _served_block(env, cortex.payloads),
             }
-            if isinstance(env.get("timings"), dict):
-                record["timings"] = env["timings"]
+            from cortex_client.ask_clock import take_published_timings
+
+            published = take_published_timings()
+            timings = env.get("timings") if isinstance(env.get("timings"), dict) else published
+            if isinstance(timings, dict):
+                record["timings"] = timings
             pending = record
             if profile == PROFILE_AI_FIRST:
                 record["served"]["example_sql_sha256"] = sorted(cortex.examples)

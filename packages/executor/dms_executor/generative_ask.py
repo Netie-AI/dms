@@ -29,11 +29,9 @@ from typing import Any, cast
 
 import sqlglot
 from cortex_client.ask_clock import (
-    ask_lean_defer,
     attach_timings,
     ensure_clock,
     note_prompt_ctx,
-    note_skipped,
     release_clock,
     span,
 )
@@ -1783,14 +1781,7 @@ def _run_extract_loop(
     )
     if first.get("abstained") or not first.get("rows"):
         return first
-    first_sql = str(first.get("sql_used") or "")
-    # The checker already passed inside the loop. A second model reading is
-    # not needed to serve that SQL. Defer skips it; the published SQL is the
-    # first reading's SQL.
-    if ask_lean_defer() and first_sql and check(first_sql) is None:
-        with span("second_reading"):
-            note_skipped("second_reading")
-        return submit_sql(first_sql, attempts)
+    # The second reading can change the served SQL. It stays on the path.
     with span("second_reading"):
         return _second_reading(
         first,

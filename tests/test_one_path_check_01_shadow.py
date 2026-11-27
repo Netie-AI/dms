@@ -96,7 +96,7 @@ def _stable(env: dict[str, Any]) -> dict[str, Any]:
     # ROUTE-STAMP-01. This capture is the answer body from before either.
     out.pop("reconfirm", None)
     out.pop("abstain_reason", None)
-    for key in ("served_route", "ladder_rung", "timings"):
+    for key in ("served_route", "ladder_rung"):
         out.pop(key, None)
     if "as_of" in out:
         out["as_of"] = _AS_OF
@@ -252,7 +252,6 @@ def _without_row_order(env: dict[str, Any]) -> dict[str, Any]:
     out.pop("text", None)
     out.pop("served_route", None)
     out.pop("ladder_rung", None)
-    out.pop("timings", None)
     out.pop("reconfirm", None)
     out.pop("abstain_reason", None)
     shadow = out.get("served_check_shadow")
@@ -348,7 +347,7 @@ def test_flag_off_executing_matches_main_except_row_order_and_checker(
     Served rows are an exact ORDER BY key sequence, or a multiset when the
     served SQL has no top-level ORDER BY. Answer text, value cells, and
     sql_used stay strict. Excluded paths: ``served_route``, ``ladder_rung``,
-    ``timings``, ``reconfirm``, ``abstain_reason``. A rule answer's ``route`` and ``lane``
+    ``reconfirm``, ``abstain_reason``. A rule answer's ``route`` and ``lane``
     are aligned to the live rung only when that rung matches ``served_route``.
     The two pack grant misses are asserted as a direct abstain before those
     keys are dropped.

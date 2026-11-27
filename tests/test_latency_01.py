@@ -255,10 +255,12 @@ def test_flag_off_timeout_does_not_post_cancel(monkeypatch: pytest.MonkeyPatch) 
     assert server.open_count == 0
 
 
-def test_deferred_insights_keep_the_served_sql(
+def test_defer_keeps_the_second_reading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Skipping the second reading does not change the SQL or the rows."""
+    """DEFER does not skip the second reading. Served SQL and rows stay put."""
+    from cortex_client.ask_clock import take_published_timings
+
     _loop(monkeypatch)
     question = "Which locations are cold storage?"
 
@@ -267,28 +269,28 @@ def test_deferred_insights_keep_the_served_sql(
 
     monkeypatch.delenv("DMS_ASK_LEAN", raising=False)
     monkeypatch.delenv("DMS_ASK_LEAN_DEFER", raising=False)
+    monkeypatch.delenv("DMS_ASK_TIMINGS", raising=False)
     sync = _ask(tmp_path / "sync", question, fast)
     assert sync is not None and sync.get("abstained") is False
+    assert "timings" not in sync
+    take_published_timings()
 
     calls = {"n": 0}
 
-    def slow(ctx: dict[str, Any]) -> dict[str, Any]:
+    def counted(ctx: dict[str, Any]) -> dict[str, Any]:
         calls["n"] += 1
-        if calls["n"] > 1:
-            time.sleep(0.4)
         return _names(query_sql=_COLD)
 
     monkeypatch.setenv("DMS_ASK_LEAN_DEFER", "1")
-    started = time.perf_counter()
-    deferred = _ask(tmp_path / "defer", question, slow)
-    elapsed = time.perf_counter() - started
+    deferred = _ask(tmp_path / "defer", question, counted)
     assert deferred is not None
-    assert calls["n"] == 1
-    assert elapsed < 0.35
+    assert calls["n"] >= 2
+    assert "timings" not in deferred
     assert _served(deferred) == _served(sync)
-    timings = deferred.get("timings")
+    timings = take_published_timings()
     assert isinstance(timings, dict)
-    assert "second_reading" in (timings.get("skipped") or [])
+    assert "second_reading" not in (timings.get("skipped") or [])
+    assert float(timings["spans_ms"]["second_reading"]) >= 0
 
 
 def test_trim_respects_the_token_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -334,7 +336,10 @@ def test_timings_are_present_and_monotonic(
 
     env = _ask(tmp_path, "Which locations are cold storage?", compute)
     assert env is not None
-    timings = env.get("timings")
+    assert "timings" not in env
+    from cortex_client.ask_clock import take_published_timings
+
+    timings = take_published_timings()
     assert isinstance(timings, dict)
     spans = timings.get("spans_ms")
     assert isinstance(spans, dict)
@@ -411,11 +416,10 @@ def test_flag_off_prompt_and_served_fields_are_byte_identical(
     right = _ask(tmp_path / "b", "Which locations are cold storage?", compute)
     assert left is not None and right is not None
     assert _served(left) == _served(right)
-    assert "timings" in left and "timings" in right
+    assert "timings" not in left and "timings" not in right
     # as_of is the wall clock. Two asks a second apart differ there only.
-    drop = {"timings", "as_of"}
-    bare_left = {key: value for key, value in left.items() if key not in drop}
-    bare_right = {key: value for key, value in right.items() if key not in drop}
+    bare_left = {key: value for key, value in left.items() if key != "as_of"}
+    bare_right = {key: value for key, value in right.items() if key != "as_of"}
     assert bare_left == bare_right
 
 
@@ -519,6 +523,87 @@ def test_stage_table_and_timeout_dominant_stage(tmp_path: Path) -> None:
         {"dms_sha": "abc"},
     )
     assert "dominant_stage" not in plain
+
+
+def test_timings_flag_puts_the_block_on_the_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _loop(monkeypatch)
+    monkeypatch.setenv("DMS_ASK_TIMINGS", "1")
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        return _names(query_sql=_COLD)
+
+    env = _ask(tmp_path, "Which locations are cold storage?", compute)
+    assert env is not None
+    assert isinstance(env.get("timings"), dict)
+    assert "total" in env["timings"]["spans_ms"]
+
+
+def test_defer_skips_the_suggestion_call_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The suggestion model call is not the answer. The reason code still attaches."""
+    from dms_executor.reconfirm import apply_reconfirm
+
+    calls = {"n": 0}
+
+    def complete(_prompt: str) -> str:
+        calls["n"] += 1
+        return "Which locations are cold storage?"
+
+    env = {
+        "badge": "ABSTAIN",
+        "abstained": True,
+        "text": "no certified query",
+        "rows": [],
+        "values": [],
+        "sql_used": None,
+        "route": "generated",
+        "abstain_reason": "no_sql",
+    }
+    monkeypatch.delenv("DMS_ASK_LEAN", raising=False)
+    monkeypatch.delenv("DMS_ASK_LEAN_DEFER", raising=False)
+    off = apply_reconfirm(
+        dict(env),
+        question="How many locations are there?",
+        space_id=None,
+        session_id=None,
+        tables=None,
+        ask_path=None,
+        ontology="locations",
+        schema="locations",
+        complete=complete,
+    )
+    assert calls["n"] == 1
+    assert off.get("sql_used") is None
+    assert off["reconfirm"]["suggested_question"]
+
+    calls["n"] = 0
+    monkeypatch.setenv("DMS_ASK_LEAN_DEFER", "1")
+    token = ensure_clock()
+    try:
+        on = apply_reconfirm(
+            dict(env),
+            question="How many locations are there?",
+            space_id=None,
+            session_id=None,
+            tables=None,
+            ask_path=None,
+            ontology="locations",
+            schema="locations",
+            complete=complete,
+        )
+        from cortex_client.ask_clock import current_clock
+
+        clock = current_clock()
+        assert clock is not None
+        assert "reconfirm_suggestion" in clock.skipped
+    finally:
+        release_clock(token)
+    assert calls["n"] == 0
+    assert on.get("sql_used") is None
+    assert on["rows"] == off["rows"]
+    assert on["reconfirm"]["reason_code"]
+    assert on["reconfirm"]["suggested_question"] == ""
 
 
 def test_direct_spans_are_monotonic() -> None:

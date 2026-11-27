@@ -1,9 +1,11 @@
 """Per-ask monotonic timings and the DMS_ASK_LEAN switches.
 
-Measurement is always on once a clock is bound: it only records spans.
+The clock always records spans. The envelope gains a ``timings`` key
+only when ``DMS_ASK_TIMINGS`` is on (default off), so a flag-off ask is
+byte-identical. The same snapshot is published for the armed capture.
 The four cuts stay off unless ``DMS_ASK_LEAN`` is on, or that cut's own
 variable is on. A cut variable set to 0 wins over the master, so each
-cut can be measured alone.
+cut can be measured alone. DEFER does not skip the second reading.
 
 Cortex's vendored contract has no cancel route. When the cancel cut is
 on, a give-up closes the HTTP client and POSTs ``/v1/insights/cancel``.
@@ -29,6 +31,7 @@ LEAN_CANCEL = "DMS_ASK_LEAN_CANCEL"
 LEAN_DEFER = "DMS_ASK_LEAN_DEFER"
 LEAN_TRIM = "DMS_ASK_LEAN_TRIM"
 LEAN_SINGLE = "DMS_ASK_LEAN_SINGLE"
+TIMINGS_ENV = "DMS_ASK_TIMINGS"
 TRIM_TOKENS_ENV = "DMS_ASK_LEAN_TRIM_TOKENS"
 DEFAULT_TRIM_TOKENS = 1200
 CANCEL_PATH = "/v1/insights/cancel"
@@ -68,6 +71,11 @@ def ask_lean_trim() -> bool:
 
 def ask_lean_single() -> bool:
     return _on(LEAN_SINGLE)
+
+
+def ask_timings_enabled() -> bool:
+    """Envelope key only. Does not follow ``DMS_ASK_LEAN``."""
+    return os.environ.get(TIMINGS_ENV, "").strip().lower() in _TRUE
 
 
 def trim_token_budget() -> int:
@@ -235,12 +243,35 @@ def release_clock(token: Token[AskClock | None] | None) -> None:
     _clock.reset(token)
 
 
+_published_lock = threading.Lock()
+_published: dict[str, Any] | None = None
+
+
 def attach_timings(env: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Publish the snapshot. Write it on the envelope only when asked.
+
+    Flag off leaves the envelope untouched. ``grade52 --armed`` reads
+    ``take_published_timings`` from this process.
+    """
     clock = _clock.get()
-    if clock is None or not isinstance(env, dict):
+    if clock is None:
         return env
-    env["timings"] = clock.snapshot()
+    snap = clock.snapshot()
+    global _published
+    with _published_lock:
+        _published = snap
+    if ask_timings_enabled() and isinstance(env, dict):
+        env["timings"] = snap
     return env
+
+
+def take_published_timings() -> dict[str, Any] | None:
+    """The latest snapshot, then clear it. None when this ask published nothing."""
+    global _published
+    with _published_lock:
+        snap = _published
+        _published = None
+        return snap
 
 
 @contextmanager
