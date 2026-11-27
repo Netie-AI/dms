@@ -1209,34 +1209,41 @@ def _submit_validated(
     served_route: str = "",
     grantable: set[str] | None = None,
 ) -> dict[str, Any]:
-    if not coverage_valid(coverage):
-        return _abstain(
-            question,
-            "coverage_invalid: numeric answer missing include/exclude/unsure",
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-            notes=notes,
+    def _gate(statement: str) -> dict[str, Any] | None:
+        """Qualifier, currency, and numeric gates. None means the SQL may be served."""
+        if not coverage_valid(coverage):
+            return _abstain(
+                question,
+                "coverage_invalid: numeric answer missing include/exclude/unsure",
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
+        blocked = validated_sql_reason(
+            statement, question=question, warehouse=warehouse, grantable=grantable
         )
-    blocked = validated_sql_reason(
-        sql, question=question, warehouse=warehouse, grantable=grantable
-    )
-    if blocked == RESERVED_PARAM_AS_OF:
-        return reserved_as_of_abstain(
-            space_id=space_id,
-            session_id=session_id,
-            route="generated",
-            question=question,
-        )
-    if blocked:
-        return _abstain(
-            question,
-            blocked,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-            notes=() if str(blocked).startswith("currency_mismatch") else notes,
-        )
+        if blocked == RESERVED_PARAM_AS_OF:
+            return reserved_as_of_abstain(
+                space_id=space_id,
+                session_id=session_id,
+                route="generated",
+                question=question,
+            )
+        if blocked:
+            return _abstain(
+                question,
+                blocked,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=() if str(blocked).startswith("currency_mismatch") else notes,
+            )
+        return None
+
+    stopped = _gate(sql)
+    if stopped is not None:
+        return stopped
     from dms_executor.ai_first import (
         NO_MODEL_SQL,
         ai_first_enabled,
@@ -1272,6 +1279,10 @@ def _submit_validated(
             served_route = ROUTE_MODEL
             plan_origin = PLAN_ORIGIN_GENERATE_SQL
             notes = (*tuple(notes), "scale_miss:ai_over_compile")
+            # Same gates as the first SQL. A failed replacement is not served.
+            stopped = _gate(sql)
+            if stopped is not None:
+                return stopped
     try:
         with span("submit_execute"):
             result = submit(sql)
@@ -3203,6 +3214,18 @@ def _maybe_generative_ask_impl(
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
     if budget_stop:
         # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
+        # Flag on: a partial or an ask-back. Never the timeout abstain.
+        if _scale_miss_on():
+            from dms_executor.scale_miss import budget_stop_envelope
+
+            return _stamp(
+                budget_stop_envelope(
+                    q,
+                    payload if isinstance(payload, dict) else None,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+            )
         return _stamp(
             _abstain(
                 q,

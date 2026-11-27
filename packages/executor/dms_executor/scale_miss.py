@@ -47,6 +47,7 @@ class Turn:
         self.ready = False
         self.payload: dict[str, Any] | None = None
         self.checked_sql = ""
+        self.sql_so_far = ""
         self.plan_tried = False
         self.repairs = 0
         self.calls = 0
@@ -190,6 +191,8 @@ def begin(
         payload, sql = _plan_then_sql(turn)
     if sql:
         payload, sql = _repair_explain(turn, payload, sql)
+    if sql:
+        turn.sql_so_far = sql
     turn.payload = payload if isinstance(payload, dict) else None
     if sql and _passes(turn, sql):
         turn.checked_sql = sql
@@ -307,6 +310,116 @@ def empty_sql_askback(question: str) -> dict[str, Any]:
         space_id=space_id,
         session_id=session_id,
     )
+
+
+def budget_stop_envelope(
+    question: str,
+    payload: dict[str, Any] | None,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Insights budget stop. A stored partial, or an ask-back. Not an abstain.
+
+    The card says what was understood and the SQL so far, and offers
+    continue and narrow it. It does not use the timeout reason.
+    """
+    turn = _TURN.get()
+    if (
+        turn is not None
+        and isinstance(turn.partial, dict)
+        and turn.partial.get("abstained") is not True
+        and str(turn.partial.get("badge") or "") != "ABSTAIN"
+    ):
+        return turn.partial
+    sql = ""
+    if turn is not None and turn.sql_so_far.strip():
+        sql = turn.sql_so_far.strip()
+    elif isinstance(payload, dict):
+        sql = str(payload.get("query_sql") or "").strip()
+    understood = _understood(payload)
+    return _budget_card(
+        question,
+        understood=understood,
+        sql=sql,
+        space_id=space_id,
+        session_id=session_id,
+    )
+
+
+def _understood(payload: dict[str, Any] | None) -> str:
+    """Measure and tables from the plan. Empty when the plan named neither."""
+    plan: dict[str, Any] | None = None
+    if isinstance(payload, dict):
+        from dms_executor.sql_vote import vote_plan_from_payload
+
+        parsed = vote_plan_from_payload(payload)
+        if isinstance(parsed, dict):
+            plan = parsed
+        elif isinstance(payload.get("query_plan"), dict):
+            plan = payload["query_plan"]
+    if not isinstance(plan, dict):
+        return "I have not locked a measure yet."
+    measure = _safe(str(plan.get("measure") or ""))
+    raw_tables = plan.get("tables")
+    names = []
+    if isinstance(raw_tables, list):
+        for item in raw_tables[:3]:
+            label = _safe(str(item))
+            if label:
+                names.append(label)
+    if measure and names:
+        return f"Understood measure {measure} on {', '.join(names)}."
+    if measure:
+        return f"Understood measure {measure}."
+    return "I have not locked a measure yet."
+
+
+def _budget_card(
+    question: str,
+    *,
+    understood: str,
+    sql: str,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    from datetime import UTC, datetime
+
+    from dms_executor.abstain import build_abstain
+    from dms_executor.envelope import assert_envelope_valid
+
+    text = f"I can continue, or narrow it. {understood}"
+    env = build_abstain(
+        reason="budget_askback",
+        question=question,
+        stage="generative",
+        answer_id="ans_scale_miss_budget",
+        text=text,
+        rows=[],
+        sql_used=None,
+        values=[],
+        assumptions=["reconfirm: budget", "action: continue", "action: narrow it"],
+        as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="generated",
+    )
+    assert_envelope_valid(env)
+    env["reconfirm"] = {
+        "why": "budget",
+        "reason_code": "budget",
+        "reason_text": text,
+        "suggested_question": question,
+        "closest_question": question,
+        "understood": understood,
+        "sql": sql,
+        "actions": [
+            {"id": "continue", "label": "continue"},
+            {"id": "narrow", "label": "narrow it"},
+        ],
+    }
+    return env
 
 
 def explain_askback(
