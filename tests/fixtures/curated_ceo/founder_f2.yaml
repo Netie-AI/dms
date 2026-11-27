@@ -1,0 +1,4 @@
+# Founder ruling F2. Data, not code.
+# An id with expect clarify_or_answer is a pass when the product clarifies
+# or serves a gold match. Add ids here. Do not add them in Python.
+rulings: []

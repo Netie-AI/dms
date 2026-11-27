@@ -88,7 +88,8 @@ questions:
   - id: ops_spend_boundary
     space: ops
     expect: abstain
-    why: Ops is not granted suppliers (DR-0002).
+    refusal_expected: true
+    why: Ops is not granted suppliers (DR-0002). The refusal is the certified outcome in oracles.yaml.
     question: What is our total spend by supplier country?
 
   - id: trap_categoty

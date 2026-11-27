@@ -295,6 +295,12 @@ oracles:
     expect: refuse
     why: no Space grants both suppliers and shipments
 
+  ops_spend_boundary:
+    expect: refuse
+    trap: true
+    refusal_expected: true
+    why: Ops is not granted suppliers (DR-0002). No certified SQL. A served figure is a wrong refusal.
+
   ops_supplier_rank_boundary:
     cortex_id: cq_supplier_ranking
     expect: refuse

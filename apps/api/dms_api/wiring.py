@@ -722,6 +722,339 @@ def bind_ontology_store(database_url: str, tenant_id: str) -> None:
     dms_executor.set_ontology_store(PostgresOntologyStore(database_url, tenant_id=tenant_id))
 
 
+class _OntologyUnread(Exception):
+    """The Space ontology store raised. The page must not invent a spine."""
+
+
+_ONTOLOGY_REASONS = {
+    "space_required": "Select a Space. Ontology is not read from a default Space.",
+    "empty_store": "This Space has no approved ontology in the store.",
+    "store_unreadable": "The ontology store could not be read.",
+}
+
+
+def read_live_ontology(section: str, *, space_id: str | None) -> dict[str, Any]:
+    """The ontology page body for one Space.
+
+    ``space_ontology`` views plus approved onto_data items for ``space_id``.
+    No Space id, an empty store, or an unreadable store is ``ok: false`` with
+    ``reason`` set. Never the seeded Finance id, and never ``ontology_spine.yaml``.
+    No Cortex call.
+    """
+    resolved = (space_id or "").strip()
+    if not resolved:
+        return _honest_ontology(section, "", "space_required")
+    try:
+        views = _space_views(resolved)
+        approved = _approved_for_space(resolved)
+    except _OntologyUnread:
+        return _honest_ontology(section, resolved, "store_unreadable")
+    if not views and not approved:
+        return _honest_ontology(section, resolved, "empty_store")
+    return _ontology_body(
+        section, resolved, _payload_from_store(views, approved), ok=True, source="store", reason=""
+    )
+
+
+def _honest_ontology(section: str, space_id: str, reason: str) -> dict[str, Any]:
+    return _ontology_body(
+        section,
+        space_id,
+        {
+            "object_types": [],
+            "link_types": [],
+            "action_types": [],
+            "functions": [],
+            "metrics": [],
+        },
+        ok=False,
+        source="none",
+        reason=reason,
+    )
+
+
+def _ontology_body(
+    section: str,
+    space_id: str,
+    payload: dict[str, Any],
+    *,
+    ok: bool,
+    source: str,
+    reason: str,
+) -> dict[str, Any]:
+    nodes, edges = _graph(payload)
+    return {
+        "ok": ok,
+        "section": section or "summary",
+        "space_id": space_id,
+        "source": source,
+        "reason": reason,
+        "hint": _ONTOLOGY_REASONS.get(reason, ""),
+        "counts": _ontology_counts(payload),
+        "object_types": payload["object_types"],
+        "link_types": payload["link_types"],
+        "action_types": payload["action_types"],
+        "functions": payload["functions"],
+        "metrics": payload["metrics"],
+        "nodes": nodes,
+        "edges": edges,
+    }
+
+
+def _space_views(space_id: str) -> list[dict[str, Any]]:
+    try:
+        views = dms_executor.space_ontology_views(space_id)
+    except Exception as exc:  # noqa: BLE001 - a down store is a named reason, not a 500
+        logger.warning("space ontology unreadable (%s)", type(exc).__name__)
+        raise _OntologyUnread from exc
+    return [view for view in views if isinstance(view, dict)]
+
+
+def _approved_for_space(space_id: str) -> list[dict[str, Any]]:
+    """Approved onto_data items whose version belongs to this Space."""
+    from dms_core.control_plane.onto_data import _public_item, ontology_data_store
+
+    store = ontology_data_store()
+    versions = getattr(store, "_versions", None)
+    if isinstance(versions, dict):
+        try:
+            items = store.approved_items()
+        except Exception as exc:  # noqa: BLE001 - a down store is a named reason, not a 500
+            logger.warning("approved ontology items unreadable (%s)", type(exc).__name__)
+            raise _OntologyUnread from exc
+        out: list[dict[str, Any]] = []
+        for item in items:
+            version = versions.get(item.get("version_id"))
+            if version is not None and str(getattr(version, "space_id", "") or "") == space_id:
+                out.append(item)
+        return out
+    connect = getattr(store, "_connect", None)
+    tenant_of = getattr(store, "_tenant", None)
+    if not callable(connect) or not callable(tenant_of):
+        return []
+    try:
+        from dms_core.control_plane.onto_data import _item_from_db
+        from dms_core.control_plane.session import set_tenant_context
+
+        conn = connect()
+        try:
+            set_tenant_context(conn, tenant_of(None), role="steward")
+            rows = conn.execute(
+                """
+                SELECT i.id::text, i.tenant_id::text, i.version_id::text, i.kind,
+                       i.payload, i.status, i.source, i.provenance, i.created_by::text,
+                       i.approved_by, i.approval_ref, i.ts
+                  FROM dms.ontology_items i
+                  JOIN dms.ontology_versions v ON v.id = i.version_id
+                 WHERE i.status = 'approved' AND v.space_id = %s::uuid
+                 ORDER BY i.ts, i.id
+                """,
+                (space_id,),
+            ).fetchall()
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - missing table or a non-uuid id
+        logger.warning("approved ontology items unreadable (%s)", type(exc).__name__)
+        raise _OntologyUnread from exc
+    return [_public_item(_item_from_db(row)) for row in rows]
+
+
+def _payload_from_store(
+    views: list[dict[str, Any]], approved: list[dict[str, Any]]
+) -> dict[str, Any]:
+    objects: list[dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
+    metrics: list[dict[str, Any]] = []
+    seen_objects: set[str] = set()
+    seen_links: set[str] = set()
+    seen_metrics: set[str] = set()
+
+    def add_object(row: dict[str, Any] | None) -> None:
+        if row is None or row["id"] in seen_objects:
+            return
+        seen_objects.add(row["id"])
+        objects.append(row)
+
+    def add_link(row: dict[str, Any] | None) -> None:
+        if row is None or row["id"] in seen_links:
+            return
+        seen_links.add(row["id"])
+        links.append(row)
+
+    def add_metric(row: dict[str, Any] | None) -> None:
+        if row is None or row["id"] in seen_metrics:
+            return
+        seen_metrics.add(row["id"])
+        metrics.append(row)
+
+    for view in views:
+        for obj in view.get("objects") or []:
+            if isinstance(obj, dict):
+                add_object(_object_row(obj))
+        for link in view.get("links") or []:
+            if isinstance(link, dict):
+                add_link(_link_row(link))
+    for item in approved:
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        kind = item.get("kind")
+        if kind == "object":
+            add_object(_object_row(payload))
+        elif kind == "link":
+            add_link(_link_row(payload))
+        elif kind == "measure":
+            add_metric(_metric_row(payload))
+    return {
+        "object_types": objects,
+        "link_types": links,
+        "action_types": [],
+        "functions": [],
+        "metrics": metrics,
+    }
+
+
+def _object_row(raw: dict[str, Any]) -> dict[str, Any] | None:
+    name = str(raw.get("name") or raw.get("id") or "").strip()
+    if not name:
+        return None
+    properties: list[dict[str, Any]] = []
+    for attr in raw.get("attributes") or []:
+        if not isinstance(attr, dict):
+            continue
+        prop = ""
+        for key in ("name", "display_name", "source_column"):
+            value = attr.get(key)
+            if isinstance(value, str) and value.strip():
+                prop = value.strip()
+                break
+        if not prop:
+            continue
+        properties.append(
+            {"name": prop, "type": str(attr.get("type") or ""), "agent_visible": True}
+        )
+    return {
+        "id": name,
+        "description": str(raw.get("description") or ""),
+        "primary_key": _key_text(raw.get("key")),
+        "properties": properties,
+        "property_count": len(properties),
+        "sensitive_count": 0,
+        "metric_ids": [],
+    }
+
+
+def _link_row(raw: dict[str, Any]) -> dict[str, Any] | None:
+    ident = str(raw.get("name") or raw.get("id") or "").strip()
+    src = str(raw.get("from") or raw.get("from_object") or "").strip()
+    dst = str(raw.get("to") or raw.get("to_object") or "").strip()
+    if not ident or not src or not dst:
+        return None
+    cardinality = raw.get("cardinality")
+    return {
+        "id": ident,
+        "from_object": src,
+        "from_property": _first_text(raw.get("from_columns")),
+        "to_object": dst,
+        "to_property": _first_text(raw.get("to_columns")),
+        "cardinality": "" if cardinality is None else str(cardinality),
+    }
+
+
+def _metric_row(raw: dict[str, Any]) -> dict[str, Any] | None:
+    ident = str(raw.get("name") or raw.get("id") or "").strip()
+    if not ident:
+        return None
+    named = raw.get("object_types")
+    if named is None:
+        named = raw.get("objects") or []
+    if isinstance(named, str):
+        objects = [named]
+    elif isinstance(named, list):
+        objects = [str(item) for item in named if isinstance(item, str) and item]
+    else:
+        objects = []
+    synonyms = raw.get("synonyms") or []
+    return {
+        "id": ident,
+        "kind": "measure",
+        "synonyms": [str(item) for item in synonyms if isinstance(item, str)],
+        "result_columns": [],
+        "params": [],
+        "object_types": objects,
+        "sql": "",
+    }
+
+
+def _key_text(value: Any) -> str:
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value if str(item).strip())
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _first_text(value: Any) -> str:
+    if isinstance(value, list) and value:
+        return str(value[0])
+    return ""
+
+
+def _ontology_counts(payload: dict[str, Any]) -> dict[str, int]:
+    objects = payload["object_types"]
+    actions = payload["action_types"]
+    tools = sum(1 for row in actions if row.get("kind") == "tool")
+    return {
+        "object_types": len(objects),
+        "properties": sum(int(row["property_count"]) for row in objects),
+        "sensitive_properties": sum(int(row["sensitive_count"]) for row in objects),
+        "link_types": len(payload["link_types"]),
+        "action_types": len(actions),
+        "action_tools": tools,
+        "action_events": len(actions) - tools,
+        "functions": len(payload["functions"]),
+        "metrics": len(payload["metrics"]),
+    }
+
+
+def _graph(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    degree = {row["id"]: 0 for row in payload["object_types"]}
+    metric_count: dict[str, int] = {}
+    for metric in payload["metrics"]:
+        for obj in metric.get("object_types") or []:
+            metric_count[obj] = metric_count.get(obj, 0) + 1
+    edges: list[dict[str, Any]] = []
+    for link in payload["link_types"]:
+        edges.append(
+            {
+                "id": link["id"],
+                "source": link["from_object"],
+                "target": link["to_object"],
+                "source_property": link["from_property"],
+                "target_property": link["to_property"],
+                "cardinality": link["cardinality"],
+            }
+        )
+        for end in (link["from_object"], link["to_object"]):
+            if end in degree:
+                degree[end] += 1
+    nodes = [
+        {
+            "id": row["id"],
+            "label": row["id"],
+            "description": row["description"],
+            "primary_key": row["primary_key"],
+            "property_count": row["property_count"],
+            "sensitive_count": row["sensitive_count"],
+            "metric_count": metric_count.get(row["id"], 0),
+            "degree": degree.get(row["id"], 0),
+        }
+        for row in payload["object_types"]
+    ]
+    return nodes, edges
+
+
 def xlsx_orch_golden(
     *,
     pack_id: str = "",

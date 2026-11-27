@@ -33,7 +33,7 @@ Folders and files for Finance . Excel files stay as sources and are not written 
 exports[`product copy > 'Ontology' header is a plain sentence 1`] = `
 "Shared vocabulary
 Ontology
-The names, links, and measures every answer is allowed to use."
+The names, links, and measures every answer is allowed to use. An empty or unreadable store stays empty."
 `;
 
 exports[`product copy > 'Runs' header is a plain sentence 1`] = `

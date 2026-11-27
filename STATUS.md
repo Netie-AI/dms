@@ -19,7 +19,7 @@ STUB at `7392972`, `grade52 --main`. In-process replay, not a live model. Label,
 | flag off | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | flag on | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-Both: refusal_ok=3, refusal_wrong=0, gold_broken=1. Flag off wrong_ub95=6.7%, coverage 43/43. COMPILE-CHECK-01 remeasured the stub before (f286c4a) and after the checker: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Those compile answers pass the checker. Pack H and armed grade52 not measured. Not PASS.
+Both on this branch's stub: refusal_ok=4, refusal_wrong=0, gold_broken=0, clarify=0 (ops_spend_boundary is a certified refusal). Flag off wrong_ub95=6.7%, coverage 43/43. COMPILE-CHECK-01 remeasured the stub before (f286c4a) and after the checker: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Those compile answers pass the checker. Pack H and armed grade52 not measured. Not PASS.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
