@@ -340,6 +340,7 @@ class ManifestMinter:
             raise OpenVaultTokenError(
                 OV_TOKEN_MISSING, f"token file not writable: {type(exc).__name__}"
             ) from exc
+        path.touch(mode=0o600)  # MUTATION: the pre-fix defect, an empty token file before register
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 token = self._register()
