@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - WORD-RULES-OUT-01: rank measures instead of keyword locks
+
+- **Flag.** `DMS_NO_WORD_RULES` defaults to 0. Off, `semantic_retrieve` still calls the keyword locker in `keyword_routes.py`. Prompt, envelope, and served route stay the same. On, measure linking uses `rank_texts` (embedder, else BM25) over the ontology name, description, and synonyms stored on the measure. Floor 0.5, top 3. A unique top score links that measure. A tie or nothing above the floor reconfirms `measure_tie` or `measure_unranked` and is not served.
+- **Not a word rule.** The ranker does not test question text for a phrase. Synonyms are ontology data (`ontology_spine.yaml` for the demo, the measure payload for a Space). A renamed measure links from its own synonyms.
+- **Not in this change.** The keyword module stays until the armed A/B. `DMS_NO_WORD_RULES` is not added to `ARMED_ALL_FLAGS_ON`. No live grade52 score.
+
 ## 2026-11-26 - SCHEMA-RETRY-01: repair a database error before reconfirm
 
 - **Flag.** `DMS_SCHEMA_RETRY` defaults to 0. Off, an explain or execution failure still retries with the typed code only, and the prompt and envelope stay the same. On, the extract loop climbs three rungs inside the existing `AskCallBudget`: a parsed `repair_hint`, the granted schema slice (samples only when `DMS_SCHEMA_CONTEXT` is already on), then `route_hint=escalate`. The cap is not raised.

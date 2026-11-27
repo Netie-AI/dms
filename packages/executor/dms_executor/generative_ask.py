@@ -104,7 +104,9 @@ from dms_executor.ground_defs import (
     ground_defs_enabled,
     mismatch_envelope,
 )
+from dms_executor.keyword_routes import vague_question
 from dms_executor.manifest import OpenVaultTokenError
+from dms_executor.measure_link import no_word_rules_enabled, reconfirm_for_reason
 from dms_executor.ontology import (
     CompiledQuery,
     Coverage,
@@ -181,10 +183,6 @@ from dms_executor.verified_queries import (
 )
 
 _KNOWN = frozenset(DEMO_TABLES)
-_UNSURE_ASK = re.compile(
-    r"\b(worry about|is this good|just give me)\b",
-    re.I,
-)
 PLAN_SOURCE_ONTOLOGY = "ontology_plan"
 PLAN_SOURCE_BIND = "bind_plan"
 PLAN_SOURCE_OTHER = "other"
@@ -1295,6 +1293,7 @@ def _try_multi_grain_envelope(
     submit: Callable[[str], Any],
     ledger_append: Callable[[dict[str, Any]], Any],
     dialect: str | None = None,
+    embedder: Any = None,
 ) -> dict[str, Any] | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
@@ -1364,11 +1363,16 @@ def _try_multi_grain_envelope(
         )
     from dms_executor.ai_first import ai_first_enabled, compile_example, note_example
 
-    ungrounded = _ungrounded_measure(q, multi.measure, onto)
+    ungrounded = _ungrounded_measure(q, multi.measure, onto, embedder=embedder)
     if ungrounded:
         # Do not serve it, and do not hand it to the model as an example.
         if ai_first_enabled():
             return None
+        blocked = reconfirm_for_reason(
+            ungrounded, question=q, space_id=space_id, session_id=session_id
+        )
+        if blocked is not None:
+            return blocked
         return _abstain(
             q, ungrounded,
             space_id=space_id, session_id=session_id, plan_source=source,
@@ -1489,17 +1493,39 @@ def rank_window_ask(
     )
 
 
-def _ungrounded_measure(question: str, measure: str | None, onto: Ontology | None) -> str | None:
+def _ungrounded_measure(
+    question: str,
+    measure: str | None,
+    onto: Ontology | None,
+    *,
+    embedder: Any = None,
+) -> str | None:
     """Gap when a compile would serve a measure the question does not name.
 
     None when there is no measure to judge, or the question grounds it in
     the ontology or the columns the measure expression reads. The caller
     abstains. Reconfirm offers Yes. This is not a phrase list.
+
+    ``DMS_NO_WORD_RULES`` on: only the unique ranked measure is grounded.
+    A tie, a score under the floor, or a different measure reconfirms.
     """
     name = str(measure or "").strip()
     # A name the ontology does not declare is unknown_measure, owned by compile.
     if not name or onto is None or name not in onto.measures:
         return None
+    if no_word_rules_enabled():
+        from dms_executor.measure_link import (
+            REASON_MISMATCH,
+            rank_measure_link,
+        )
+
+        link = rank_measure_link(question, onto, embedder=embedder)
+        if link.reason_code:
+            return link.reason_code
+        if link.name and link.name != name:
+            return REASON_MISMATCH
+        if link.name == name:
+            return None
     if question_grounds_measure(question, name, onto):
         return None
     return f"ungrounded_measure:{name}"
@@ -2149,7 +2175,7 @@ def _maybe_generative_ask_impl(
             q, "uncertified paraphrase: not a generative certify boundary",
             space_id=space_id, session_id=session_id,
         )
-    if _UNSURE_ASK.search(q):
+    if vague_question(q):
         return _abstain(
             q, "question is too vague or time-unbounded to ground",
             space_id=space_id, session_id=session_id,
@@ -2230,7 +2256,11 @@ def _maybe_generative_ask_impl(
     # introspection, no sampling, no prompt, no value index.
     with span("retrieve_context"):
         ctx = retrieve_short_context(
-            q, warehouse=lake, grantable=allowed, ontology=onto
+            q,
+            warehouse=lake,
+            grantable=allowed,
+            ontology=onto,
+            embedder=embedder,
         )
     envelope_prompt = ""
     index_stamp = ""
@@ -2322,6 +2352,7 @@ def _maybe_generative_ask_impl(
             submit=submit,
             ledger_append=ledger_append,
             dialect=dialect,
+            embedder=embedder,
         )
         if preview is not None:
             held_preview = preview
@@ -2615,6 +2646,7 @@ def _maybe_generative_ask_impl(
         submit=submit,
         ledger_append=ledger_append,
         dialect=dialect,
+        embedder=embedder,
     )
     if multi_env is not None:
         # DMS's own multi-grain compile is served. Any model SQL in the
@@ -2855,11 +2887,19 @@ def _maybe_generative_ask_impl(
             return _stamp(None)
         if not bind_on_miss:
             return _stamp(None)
-        payload = bind_plan(q, ctx)
+        payload = bind_plan(q, ctx, ontology=onto, embedder=embedder)
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_BIND
         origin = ""
         if kind == "unsure":
+            code = ""
+            if isinstance(payload, dict):
+                code = str(payload.get("reason_code") or "")
+            blocked = reconfirm_for_reason(
+                code, question=q, space_id=space_id, session_id=session_id
+            )
+            if blocked is not None:
+                return _stamp(blocked)
             return _stamp(
                 _abstain(
                     q, "retrieve bind abstained (unsure)",
@@ -2959,8 +2999,13 @@ def _maybe_generative_ask_impl(
                 )
             )
 
-    ungrounded = _ungrounded_measure(q, plan.measure, onto)
+    ungrounded = _ungrounded_measure(q, plan.measure, onto, embedder=embedder)
     if ungrounded:
+        blocked = reconfirm_for_reason(
+            ungrounded, question=q, space_id=space_id, session_id=session_id
+        )
+        if blocked is not None:
+            return _stamp(blocked)
         return _stamp(
             _abstain(
                 q,

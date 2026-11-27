@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-26, LATENCY-01
+**Last updated:** 2026-11-27, WORD-RULES-OUT-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** Rebased onto f4fb2676 (ONTO-GAPS-01). `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` default off. Flag off, the envelope has no timings key. DEFER does not skip the second reading. Full suite not run. Not PASS.
+**Tip:** `DMS_NO_WORD_RULES` default 0. Off, keyword measure locks stay; prompt, envelope, and route are unchanged. On, linking ranks the ontology (embedder or BM25, floor 0.5, top 3). A tie or a score under the floor reconfirms. Offline 52 link count is not a grade52 score. Armed A/B not run. Not PASS.
 
 ## Direction
 

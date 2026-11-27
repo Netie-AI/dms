@@ -74,3 +74,25 @@ measure_aliases:
   supplier_ranking: supplier_rank_score
   cq_audit_overdue: audit_overdue
   audit_overdue: audit_overdue
+# Steward-edited phrases. DMS_NO_WORD_RULES ranks these with the measure
+# name and description. They are data, not a code branch.
+measure_synonyms:
+  outbound_kg:
+    - dispatched kilograms
+  sku_count:
+    - distinct catalogue codes
+  shipping_cost_myr:
+    - haulage invoice
+  utilisation_pct:
+    - closed circuit monitor
+    - chilled site fill
+  below_reorder_lots:
+    - replenishment threshold
+  supplier_rank_score:
+    - vendor league
+  audit_overdue:
+    - inspection lapsed
+  stock_value_myr:
+    - booked holding
+  outbound_value_myr:
+    - merchandise turnover
