@@ -1,6 +1,6 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, COMPILE-CHECK-01, ADJUST-SQL-VQ-01
+**Last updated:** 2026-11-27, DMS-AI-ABSTAIN-01, COMPILE-CHECK-01
 **Remote:** https://github.com/Netie-AI/dms
 **Tip:** `DMS_UNICODE_IDENT` defaults off. Off, identifiers and prompts stay the previous fold. On, a non-ASCII name lands as `<ascii stem or t>_<8 hex of sha256(source)>` and the original is `source_name`. `DMS_ASK_STREAM` default off. Off, the events route is not mounted and the envelope is unchanged. `DMS_BENCH_MATRIX` defaults off. Off, the matrix runner sends no ask. No live dataset score. `DMS_STUDIO_ADJUST` default off. Off, the adjust router is absent and the answer view has no button. On, a steward runs SQL through the model gates. Save writes `steward_adjusted` only when `DMS_VQ_RAG` is on, and lookup never replays that provenance. Full suite before the commit: 4625 passed, 119 skipped, 34 xfailed. The 8 failures and 4 errors were grade52 refusing a dirty tree. Those files on this commit: 46 passed. 52 not remeasured. Not PASS. `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` stay off. Armed grade52 not run.
 
@@ -8,7 +8,7 @@
 
 AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 
-Escalation: plan, self-correct, stronger model via OpenVault, then reconfirm with Yes. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not route provider keys.
+Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, richer context, plan, then an OpenVault escalate role. One insights call stays for reconfirm. Direct abstain only for ungranted tables, PII, and destructive SQL. No phrasing lanes. DMS does not name a model.
 
 ## 52 pack - number of record (STUB)
 

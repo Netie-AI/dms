@@ -83,8 +83,10 @@ _CODES = frozenset(
         "insights_timeout",
         "intent_spec_mismatch",
         "intent_spec_unverified",
+        "ladder_exhausted",
         "loop_exhausted",
         "multi_statement",
+        "no_plan",
         "no_sql",
         "not_in_ontology",
         "ontology",
@@ -112,8 +114,14 @@ _CODES = frozenset(
         "submit_failed",
         "ticket_missing",
         "ungranted",
+        "uncertified_paraphrase",
+        "vague_question",
         "value_exists_pending",
         "warehouse_missing",
+        "year_not_certified",
+        "predictive",
+        "compute_unsure",
+        "query_sql_empty",
     }
 )
 # ASK-RECONFIRM-01 reads this. Retry later, not a direct refusal.

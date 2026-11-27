@@ -976,10 +976,47 @@ def _abstain(
     retries: int = 0,
     stage: str = "generative",
     ticket_reason: str | None = None,
+    abstain_reason: str | None = None,
 ) -> dict[str, Any]:
+    from dms_executor.ask_ladder import ask_ladder_enabled, current_climb
+
+    session = current_climb()
+    if (
+        session is not None
+        and not session.climbing
+        and stage in {"generative", "ai_call"}
+    ):
+        served = session.on_abstain(reason, sql, stage)
+        if isinstance(served, dict) and served.get("abstained") is not True:
+            return served
+        code = session.exhausted_reason(reason)
+        session.finalizing = True
+        session.climbing = True
+        try:
+            return _abstain(
+                question,
+                code,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=(*notes, *session.notes()),
+                sql=sql,
+                retries=retries,
+                stage=stage,
+                ticket_reason=code,
+                abstain_reason=code,
+            )
+        finally:
+            session.climbing = False
+            session.finalizing = False
+    log_ticket = not (
+        session is not None and session.climbing and not session.finalizing
+    )
     env = build_abstain(
         reason=reason,
         ticket_reason=ticket_reason,
+        abstain_reason=abstain_reason,
+        log_ticket=log_ticket,
         question=question,
         sql=sql,
         retries=retries,
@@ -995,6 +1032,22 @@ def _abstain(
         ask_mode="live",
         route="generated",
     )
+    if abstain_reason and log_ticket and ask_ladder_enabled() and not cloop_b_enabled():
+        try:
+            from dms_executor.pipeline_failure import log_pipeline_failure_ticket
+
+            ticket_id = log_pipeline_failure_ticket(
+                reason=ticket_reason or abstain_reason,
+                question=question,
+                sql=sql,
+                retries=retries,
+                stage=stage,
+                ask_id=str(env.get("answer_id") or ""),
+            )
+            if isinstance(ticket_id, str) and ticket_id:
+                env["ticket_id"] = ticket_id
+        except Exception:
+            pass
     note_stage(stage, "done")
     if isinstance(env.get("reconfirm"), dict):
         note_stage("reconfirm", "done")
@@ -1199,6 +1252,20 @@ def _submit_validated(
             question, "submit_had_no_rows",
             space_id=space_id, session_id=session_id, plan_source=plan_source,
         )
+    if not rows_from_submit_result(result):
+        from dms_executor.ask_ladder import current_climb
+
+        # Empty is not a certified figure. The ladder feeds it back. Flag off
+        # (no session) still returns the zero-row envelope below.
+        if current_climb() is not None:
+            return _abstain(
+                question,
+                EMPTY_UNVERIFIED,
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+            )
     if keep_gt is not None:
         kept = _rows_gt(rows_from_submit_result(result), str(measure or ""), keep_gt)
         if not kept:
@@ -2386,22 +2453,28 @@ def _maybe_generative_ask_impl(
     dialect = resolved
     # Armed product asks pass demo_gate=False. The planted paraphrase list
     # stays in front of test fakes; it does not abstain a CortexClient ask.
-    if demo_gate and is_uncertified_paraphrase(q):
+    # DMS_ASK_LADDER calls the model anyway and abstains only if that fails.
+    phrase: str | None = None
+    from dms_executor.ask_ladder import ask_ladder_enabled, phrase_gate_reason
+
+    if ask_ladder_enabled():
+        phrase = phrase_gate_reason(q, demo_gate=demo_gate)
+    elif demo_gate and is_uncertified_paraphrase(q):
         return _abstain(
             q, "uncertified paraphrase: not a generative certify boundary",
             space_id=space_id, session_id=session_id,
         )
-    if _UNSURE_ASK.search(q):
+    elif _UNSURE_ASK.search(q):
         return _abstain(
             q, "question is too vague or time-unbounded to ground",
             space_id=space_id, session_id=session_id,
         )
-    if _is_predictive(q):
+    elif _is_predictive(q):
         return _abstain(
             q, "predictive: history is not a forecast",
             space_id=space_id, session_id=session_id,
         )
-    if "2099" in asked_calendar_years(q):
+    elif "2099" in asked_calendar_years(q):
         return _abstain(
             q, "year 2099 is not a certified period; all-time history is not that year",
             space_id=space_id, session_id=session_id,
@@ -2610,13 +2683,15 @@ def _maybe_generative_ask_impl(
 
     compute = _timed_compute
     vote_budget: AskCallBudget | None = None
-    if cloop_b_enabled() and not ontology_ranked_lane_enabled():
+    ladder_on = ask_ladder_enabled() and not ontology_ranked_lane_enabled()
+    if not ontology_ranked_lane_enabled() and (cloop_b_enabled() or ladder_on):
         # Direct SQL. Reading 2 is a different instruction under the same cap.
-        insights_ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
-        insights_ctx["sql_vote_kind"] = "direct"
+        if cloop_b_enabled():
+            insights_ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
+            insights_ctx["sql_vote_kind"] = "direct"
         vote_budget = AskCallBudget()
     try:
-        if held_preview is not None:
+        if held_preview is not None and phrase is None:
             payload = None
         elif vote_budget is not None and not vote_budget.take():
             payload = None
@@ -2650,6 +2725,41 @@ def _maybe_generative_ask_impl(
     validate_why: str | None = None
     loop_attempts: list[dict[str, Any]] = []
     gate_state: dict[str, Any] = {}
+    if ladder_on and vote_budget is not None and submit is not None and ledger_append is not None:
+        from dms_executor.ask_ladder import ClimbSession, bind_climb
+
+        bind_climb(
+            ClimbSession(
+                compute=compute,
+                budget=vote_budget,
+                ctx=insights_ctx,
+                question=q,
+                warehouse=lake,
+                dialect=dialect,
+                grantable=set(allowed),
+                space_id=space_id,
+                session_id=session_id,
+                ontology=onto,
+                attempts=loop_attempts,
+                check=lambda sql: validate_compiled_sql(
+                    sql, grantable=set(allowed), warehouse=lake, dialect=dialect
+                ),
+                submit=lambda sql, payload: _submit_validated(
+                    sql,
+                    question=q,
+                    space_id=space_id,
+                    session_id=session_id,
+                    submit=submit,
+                    ledger_append=ledger_append,
+                    notes=(),
+                    plan_source=PLAN_SOURCE_OTHER,
+                    coverage=coverage_from_sql_path(sql=sql),
+                    warehouse=lake,
+                    grantable=set(allowed),
+                    served_route=_sql_route(payload if isinstance(payload, dict) else None),
+                ),
+            )
+        )
 
     def _stamp(env: dict[str, Any] | None) -> dict[str, Any] | None:
         env = with_setup_fields(env, setup_src)
@@ -2688,9 +2798,76 @@ def _maybe_generative_ask_impl(
         prov = gate_state.get("provenance")
         if isinstance(prov, dict) and isinstance(stamped, dict):
             stamped["ontology_provenance"] = dict(prov)
+        if (
+            phrase
+            and isinstance(stamped, dict)
+            and stamped.get("abstained") is not True
+            and str(stamped.get("served_route") or "") != ROUTE_MODEL
+            and not gate_state.get("phrase_held")
+        ):
+            # A phrase the gate used to stop must not fall through to a
+            # compiled figure. Model SQL that passed the checker may serve.
+            gate_state["phrase_held"] = True
+            from dms_executor.ask_ladder import current_climb
+
+            session = current_climb()
+            code = session.exhausted_reason(phrase) if session is not None else phrase
+            replacement = _abstain(
+                q,
+                code,
+                space_id=space_id,
+                session_id=session_id,
+                abstain_reason=code,
+                ticket_reason=code,
+            )
+            if isinstance(replacement, dict) and replacement.get("abstained") is not True:
+                stamped = replacement
+            elif isinstance(replacement, dict):
+                stamped = with_setup_fields(replacement, setup_src) or replacement
         return freeze_route(stamped)
 
-    if held_preview is not None:
+    def _after_miss() -> dict[str, Any] | None:
+        from dms_executor.ask_ladder import current_climb
+
+        session = current_climb()
+        if session is not None:
+            if phrase and not session.last_reason:
+                session.last_reason = phrase
+            served = session.finish_miss()
+            if isinstance(served, dict) and served.get("abstained") is not True:
+                return _stamp(served)
+            if phrase:
+                code = session.exhausted_reason(phrase)
+                session.finalizing = True
+                session.climbing = True
+                try:
+                    return _stamp(
+                        _abstain(
+                            q,
+                            code,
+                            space_id=space_id,
+                            session_id=session_id,
+                            abstain_reason=code,
+                            ticket_reason=code,
+                        )
+                    )
+                finally:
+                    session.climbing = False
+                    session.finalizing = False
+        elif phrase:
+            return _stamp(
+                _abstain(
+                    q,
+                    phrase,
+                    space_id=space_id,
+                    session_id=session_id,
+                    abstain_reason=phrase,
+                    ticket_reason=phrase,
+                )
+            )
+        return _stamp(None)
+
+    if held_preview is not None and phrase is None:
         return _stamp(with_plan_origin(held_preview, PLAN_ORIGIN_ONTOLOGY_COMPILE))
 
     if verify_cache_missing:
@@ -3195,11 +3372,11 @@ def _maybe_generative_ask_impl(
                 )
             if held_refusal is not None:
                 return _stamp(_handoff(held_refusal))
-            return _stamp(None)
+            return _after_miss()
         if not bind_on_miss:
             if held_refusal is not None:
                 return _stamp(_handoff(held_refusal))
-            return _stamp(None)
+            return _after_miss()
         payload = bind_plan(q, ctx)
         kind = parse_compute_plan(payload)
         source = PLAN_SOURCE_BIND
@@ -3432,11 +3609,15 @@ def maybe_generative_ask(
     *args: Any, **kwargs: Any
 ) -> dict[str, Any] | None:
     """Bind the ask clock, then stamp ``timings`` on the envelope."""
+    from dms_executor.ask_ladder import bind_climb, reset_climb
+
     token = ensure_clock()
+    climb = bind_climb(None)
     try:
         env = _maybe_generative_ask_impl(*args, **kwargs)
         if isinstance(env, dict):
             attach_timings(env)
         return env
     finally:
+        reset_climb(climb)
         release_clock(token)
