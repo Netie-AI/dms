@@ -127,28 +127,86 @@ def test_flag_off_is_byte_identical(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert all(item.get("route_hint") != "reason" for item in clear_calls)
 
 
-def test_silent_model_keeps_the_phrase_gate(
+def test_flag_on_never_calls_phrase_checkers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """DMS_AI_CLARIFY on: wording checkers stay at zero, including a silent model."""
     _arm(monkeypatch, flag="1")
-    calls: list[dict] = []
+    monkeypatch.setenv("DMS_INSIGHTS_CALL_CAP", "4")
+    hits = {"unsure": 0, "predictive": 0}
 
-    def compute(ctx: dict) -> dict:
+    class _Search:
+        def search(self, *_args: object, **_kwargs: object) -> None:
+            hits["unsure"] += 1
+            return None
+
+    def _predictive(*_args: object, **_kwargs: object) -> bool:
+        hits["predictive"] += 1
+        return False
+
+    monkeypatch.setattr("dms_executor.generative_ask._UNSURE_ASK", _Search())
+    monkeypatch.setattr("dms_executor.generative_ask._is_predictive", _predictive)
+    monkeypatch.setattr("dms_executor.demo_ask._is_predictive", _predictive)
+
+    def _silent(ctx: dict[str, Any]) -> dict[str, Any]:
         calls.append(dict(ctx))
         return {"generative": {"query_sql": "SELECT 1"}}
 
+    calls: list[dict[str, Any]] = []
     submitted: list[str] = []
-    env = _ask(
-        tmp_path / "silent.duckdb",
-        compute,
-        submitted,
-        "What should I worry about?",
-    )
+    env = _ask(tmp_path / "silent.duckdb", _silent, submitted, "What should I worry about?")
+    assert hits == {"unsure": 0, "predictive": 0}
     assert env is not None
     assert env["badge"] == "ABSTAIN"
     assert env.get("clarify") is None
     assert submitted == []
     assert calls and calls[0].get("route_hint") == "reason"
+    kinds = [str(item.get("sql_vote_kind") or "") for item in calls]
+    assert kinds[0] == "understand"
+    assert "repair" in kinds and "context" in kinds and "escalate" in kinds
+    assert calls[-1].get("route_hint") == "escalate"
+    block = env.get("reconfirm")
+    assert isinstance(block, dict)
+    assert block.get("reason_code") == env.get("abstain_reason") == "ladder_exhausted:no_sql"
+    blob = json.dumps(env)
+    assert "too vague" not in blob
+    assert "predictive: history" not in blob
+
+    calls.clear()
+    submitted.clear()
+    predictive = _ask(
+        tmp_path / "predict.duckdb",
+        _silent,
+        submitted,
+        "What will revenue be next quarter?",
+    )
+    assert hits == {"unsure": 0, "predictive": 0}
+    assert predictive is not None
+    assert predictive.get("reconfirm", {}).get("reason_code") == "ladder_exhausted:no_sql"
+    assert submitted == []
+
+    def _answerable(ctx: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(ctx))
+        if ctx.get("route_hint") == "reason":
+            return {
+                "clarify_verdict": {
+                    "category": "answerable",
+                    "readings": [],
+                    "missing": [],
+                }
+            }
+        return _names(query_sql=_SKU)
+
+    calls.clear()
+    continued = _ask(
+        tmp_path / "clear.duckdb",
+        _answerable,
+        submitted,
+        "What will revenue be next quarter?",
+    )
+    assert hits == {"unsure": 0, "predictive": 0}
+    assert continued is None or continued.get("reconfirm", {}).get("reason_code") != "predictive"
+    assert "predictive: history" not in json.dumps(continued)
 
 
 def test_ambiguous_readings_are_checked_and_not_executed(
