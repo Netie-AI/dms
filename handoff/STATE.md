@@ -124,7 +124,7 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-27 22:11 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-27 22:13 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
@@ -136,7 +136,7 @@ open PRs: 39 (cap 60)
 |---|---|---|---|---|---|
 | #587 | y | `3e45d386` | - | 10 ok | STUDIO-FIX-C: reserve ask-back time when the serving deadline is in force |
 | #582 | y | `4b6f9d4a` | - | 11 ok | R2-CONNECT-CORE-01: Persisted connections, test, introspect, and auto-grant |
-| #581 | n | `ec453b81` | tier:fast | 10 ok | handoff: state refresh |
+| #581 | n | `39e9f0a8` | tier:fast | 5 ok, 4 running | handoff: state refresh |
 | #579 | y | `f086d6c8` | - | 10 ok | R1-RULES-OUT-01: gate question-word lanes behind DMS_RULES_OFF |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
