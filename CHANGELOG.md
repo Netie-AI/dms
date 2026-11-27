@@ -34,7 +34,7 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Flag.** `DMS_RUNTIME_SELFCHECK` defaults to off. Off, `/health` and answer envelopes gain no runtime key, and the served text, SQL, and route stay put. On, `/health` adds `runtime` (`insights_timeout_s`, `cortex_reachable`, `cortex_caller_kind`, `ov_reachable`). A loopback caller (the published demo viewer key) or an effective insights timeout under 30s stamps `runtime_degraded` and `banner_reason`. The UI copy ticket renders that reason.
 - **Timeout.** The process default stays 8s. Compose and the Windows uvicorn fallback pin `DMS_INSIGHTS_TIMEOUT_S` to 60 unless the shell already set it. Startup logs the effective timeout and, when the flag is on and the runtime is degraded, one warning. Neither log line contains the key.
-- **Not a word rule.** Caller class is the demo-viewer digest or the service-key prefix. Question text is not read. Not PASS. Armed grade52 and pack H were not run.
+- **Not a word rule.** Caller class is the demo-viewer digest or the service-key prefix. Question text is not read. Stub `grade52 --main`, flag off and on: correct=43 wrong=0 reconfirm=5 refusal_wrong=0 abstain=0 ai=0 rule=43. Armed grade52 and pack H were not run. Not PASS.
 
 ## 2026-11-27 - R1-UI-COPY-01: plain page headers, no developer notes
 
