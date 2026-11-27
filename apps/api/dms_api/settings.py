@@ -49,10 +49,13 @@ class Settings(BaseSettings):
     dms_demo_fallback: bool = False
     # EPIC-014 MCP-01. Swap: IDE MCP client on /v1/mcp/*. Off = no extra surface.
     dms_mcp: bool = False
-    # CONNECT-GRANT-01. On only for 1/true/yes/on. Grants are process memory:
-    # lost on restart and not shared across workers. Durable grants are
-    # CONNECT-GRANT-02, so the route stays off until that store exists.
+    # CONNECT-GRANT-01. On only for 1/true/yes/on. Grants are process memory
+    # unless DMS_CONNECT_V2 is also on.
     dms_connect_api: bool = False
+    # R2-CONNECT-CORE-01. Off unless 1/true/yes/on. On persists the connection
+    # in Postgres, probes it before save, and serves a read-only live SELECT.
+    # Off leaves the connect routes and the ask path byte-identical.
+    dms_connect_v2: bool = False
     # GEN-03 (dms#194). Swap: a measurement origin runs the isolated
     # ask_path=exact|generative lanes for A/B scoring; customer deploys never set
     # it, and POST /v1/chat/ask refuses those lanes with 400 (DR-0004 refuse, not
