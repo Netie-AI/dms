@@ -18,6 +18,7 @@ the body.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -102,6 +103,9 @@ INSIGHTS_CALL_CAP_CEILING = 4
 LANE_ONTOLOGY_RANKED_ENV = "DMS_LANE_ONTOLOGY_RANKED"
 #: Extract SQL loop (retry on a database error or a checker flag). Default off.
 CLOOP_B_ENV = "DMS_CLOOP_B"
+#: SCHEMA-RETRY-01. Off, a database error retries with the typed code only.
+SCHEMA_RETRY_ENV = "DMS_SCHEMA_RETRY"
+_REPAIR_LINE = "Fix only the identifier and kind named in repair_hint."
 _LANE_ON = frozenset({"1", "true", "yes", "on"})
 INSIGHTS_FAIL_UNARMED = "insights_unarmed"
 INSIGHTS_FAIL_REFUSED = "insights_refused"
@@ -193,6 +197,15 @@ def gen01_rules_enabled(env: Mapping[str, str] | None = None) -> bool:
     ladder covers the shapes it used to serve.
     """
     return _flag_on(env, GEN01_RULES_ENV)
+
+
+def schema_retry_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``DMS_SCHEMA_RETRY``: off unless set to a true token.
+
+    Off, explain and execution failures retry with the typed code only.
+    On, those failures climb repair hint, schema slice, then the escalate role.
+    """
+    return _flag_on(env, SCHEMA_RETRY_ENV)
 
 
 def cloop_b_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -1106,6 +1119,71 @@ def _masked_model_question(question: str, evidence: Mapping[str, Any] | None) ->
     return text
 
 
+def _repair_candidates(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("name")
+        typ = item.get("type")
+        if isinstance(name, str) and name and isinstance(typ, str):
+            out.append({"name": name, "type": typ})
+    return out
+
+
+def _slice_for_prompt(schema_slice: Mapping[str, Any]) -> dict[str, Any]:
+    """Types and joins only. Samples and cell values are not prompt fields."""
+    tables: list[dict[str, Any]] = []
+    for table in schema_slice.get("tables") or []:
+        if not isinstance(table, Mapping) or not isinstance(table.get("name"), str):
+            continue
+        columns: list[dict[str, Any]] = []
+        for column in table.get("columns") or []:
+            if not isinstance(column, Mapping):
+                continue
+            name = column.get("name")
+            typ = column.get("type")
+            if not isinstance(name, str) or not isinstance(typ, str):
+                continue
+            item: dict[str, Any] = {"name": name, "type": typ}
+            if isinstance(column.get("nullable"), bool):
+                item["nullable"] = column["nullable"]
+            columns.append(item)
+        tables.append({"name": table["name"], "columns": columns})
+    joins: list[dict[str, str]] = []
+    for link in schema_slice.get("joins") or []:
+        if not isinstance(link, Mapping):
+            continue
+        kept = {key: link.get(key) for key in ("from", "from_column", "to", "to_column")}
+        if all(isinstance(val, str) and val for val in kept.values()):
+            joins.append({key: str(val) for key, val in kept.items()})
+    return {"tables": tables, "joins": joins}
+
+
+def _repair_question_suffix(sql_feedback: Mapping[str, Any]) -> str:
+    """Prompt lines for a schema retry. Absent when the feedback has no hint."""
+    parts: list[str] = []
+    hint = sql_feedback.get("repair_hint")
+    if isinstance(hint, Mapping):
+        ident = hint.get("identifier")
+        safe = {
+            "kind": hint.get("kind"),
+            "identifier": ident if isinstance(ident, str) else None,
+            "candidates": _repair_candidates(hint.get("candidates")),
+        }
+        blob = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+        parts.append(f"repair_hint:\n{blob}\n{_REPAIR_LINE}")
+    schema_slice = sql_feedback.get("schema_slice")
+    if isinstance(schema_slice, Mapping):
+        blob = json.dumps(_slice_for_prompt(schema_slice), sort_keys=True, separators=(",", ":"))
+        parts.append(f"schema_slice:\n{blob}")
+    if not parts:
+        return ""
+    return "\n" + "\n".join(parts)
+
+
 def _insights_body(
     question: str,
     *,
@@ -1113,6 +1191,7 @@ def _insights_body(
     space_id: str | None,
     ontology: dict[str, Any] | None,
     sql_feedback: dict[str, Any] | None = None,
+    route_hint: str | None = None,
 ) -> dict[str, Any]:
     asked = question
     if isinstance(sql_feedback, dict):
@@ -1120,6 +1199,8 @@ def _insights_body(
         prev = str(sql_feedback.get("previous_sql") or "")
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
+            asked += _repair_question_suffix(sql_feedback)
+    preference = "escalate" if route_hint == "escalate" else FREEROUTE_PREFERENCE
     onto, schema_context = _split_schema_context(ontology)
     onto, examples = lift_verified_examples(onto)
     evidence = None
@@ -1138,7 +1219,7 @@ def _insights_body(
         "space_id": space_id,
         "consumer": "dms",
         "mode": ONTOLOGY_MODE,
-        "model_preference": FREEROUTE_PREFERENCE,
+        "model_preference": preference,
     }
     if onto is not None:
         body["ontology"] = onto
@@ -1319,6 +1400,7 @@ def compute_query(
     dms_query: bool = True,
     call_cap: int | None = None,
     sql_feedback: dict[str, Any] | None = None,
+    route_hint: str | None = None,
 ) -> dict[str, Any] | None:
     """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
 
@@ -1357,6 +1439,7 @@ def compute_query(
         space_id=space_id,
         ontology=ontology,
         sql_feedback=sql_feedback,
+        route_hint=route_hint,
     )
     from cortex_client.strict_pin import pin_config, refusal_payload
 
@@ -1519,6 +1602,7 @@ def compute_insights(
     api_key: str | None = None,
     timeout: float | None = None,
     sql_feedback: dict[str, Any] | None = None,
+    route_hint: str | None = None,
 ) -> dict[str, Any] | None:
     """Ask-lane Insights planner: generate + ranking + one retry. No /dms/query.
 
@@ -1538,6 +1622,7 @@ def compute_insights(
         timeout=insights_timeout_s() if timeout is None else timeout,
         dms_query=False,
         sql_feedback=sql_feedback,
+        route_hint=route_hint,
     )
 
 
@@ -1552,7 +1637,9 @@ __all__ = [
     "CLOOP_B_ENV",
     "LANE_ONTOLOGY_RANKED_ENV",
     "ai_call_error_payload",
+    "SCHEMA_RETRY_ENV",
     "cloop_b_enabled",
+    "schema_retry_enabled",
     "gen01_rules_enabled",
     "INSIGHTS_FAIL_AI_ERROR",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",

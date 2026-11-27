@@ -632,6 +632,88 @@ def _model_called(payload: dict[str, Any] | None, loop: list[dict[str, Any]] | N
     return False
 
 
+def _tag_rung(attempts: list[dict[str, Any]], schema_ladder: Any) -> None:
+    """Stamp the rung that produced the attempt just recorded. Flag off: no-op."""
+    if schema_ladder is None or not schema_ladder.pending_rung or not attempts:
+        return
+    item = attempts[-1]
+    if item.get("rung"):
+        return
+    item["rung"] = schema_ladder.pending_rung
+    model = item.get("model")
+    if isinstance(model, str) and model:
+        item["served_model"] = model
+    if item.get("outcome") == "served":
+        item["repair"] = f"repair_ok@{schema_ladder.pending_rung}"
+
+
+def _schema_dispatch(
+    *,
+    schema_ladder: Any,
+    outcome: str,
+    sql: str,
+    ctx: dict[str, Any],
+    question: str,
+    payload: dict[str, Any] | None,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    model_sql: Callable[[dict[str, Any] | None], str | None],
+    budget: AskCallBudget,
+    attempts: list[dict[str, Any]],
+    dialect: str,
+) -> tuple[str, Any] | None:
+    """None keeps today's retry. ``abstain`` / ``retry`` only when the flag is on."""
+    if schema_ladder is None:
+        return None
+    from dms_executor.schema_retry import (
+        feedback_payload,
+        route_refused,
+    )
+
+    plan = schema_ladder.plan(
+        outcome=outcome,
+        sql=sql,
+        attempts=attempts,
+        budget=budget,
+        question=question,
+    )
+    if plan is None:
+        return None
+    if plan.abstain:
+        return ("abstain", plan.abstain)
+    if not budget.take():
+        return ("abstain", f"schema_repair_exhausted:{plan.kind}")
+    nxt = dict(ctx)
+    if plan.schema_slice is not None:
+        nxt = schema_ladder.attach_schema(nxt, question, plan.schema_slice)
+    nxt["sql_loop_feedback"] = feedback_payload(plan, previous_sql=sql, reason=outcome)
+    nxt.pop("route_hint", None)
+    if plan.route_hint == "escalate":
+        nxt["route_hint"] = "escalate"
+    try:
+        got = compute(nxt)
+    except Exception:  # noqa: BLE001 - a missed repair rung reconfirms
+        got = None
+    refused = plan.route_hint == "escalate" and route_refused(
+        got if isinstance(got, dict) else None
+    )
+    produced = model_sql(got) if isinstance(got, dict) else None
+    if refused or not produced:
+        attempts.append(
+            loop_entry(
+                prompt=plan.prompt,
+                payload=got if isinstance(got, dict) else payload,
+                sql=None,
+                outcome="route_refused" if refused else f"schema_repair_exhausted:{plan.kind}",
+                dialect=dialect,
+            )
+        )
+        _tag_rung(attempts, schema_ladder)
+        if attempts:
+            attempts[-1]["error_kind"] = plan.kind
+        return ("abstain", f"schema_repair_exhausted:{plan.kind}")
+    return ("retry", got)
+
+
 def run_model_loop(
     *,
     question: str,
@@ -649,6 +731,7 @@ def run_model_loop(
     no_retry_reasons: frozenset[str] = frozenset(),
     recover_failures: bool = False,
     budget: AskCallBudget,
+    schema_ladder: Any = None,
 ) -> dict[str, Any]:
     """Checker, read-only run, feedback retry.
 
@@ -658,6 +741,8 @@ def run_model_loop(
 
     ``budget`` is the ask's one cap. The opening compute already took a
     call. Retries take from what is left. They do not start a new cap.
+    ``schema_ladder`` is set only when ``DMS_SCHEMA_RETRY`` is on. Off,
+    it stays None and this loop is the pre-ladder retry.
 
     ``recover_failures`` is the second reading only. It feeds back a reply
     with no SQL, a statement refused before execute, and an empty result.
@@ -668,9 +753,13 @@ def run_model_loop(
     reason: str | None = None
     prev_sql: str | None = None
     protected_sql: str | None = None
+    if schema_ladder is not None:
+        schema_ladder.begin()
 
     while True:
         prompt = feedback_prompt(question, previous_sql=prev_sql, reason=reason)
+        if schema_ladder is not None and schema_ladder.prompt_suffix:
+            prompt = prompt + "\n" + schema_ladder.prompt_suffix
         sql = model_sql(current)
         if not sql:
             attempts.append(
@@ -746,8 +835,30 @@ def run_model_loop(
                     dialect=dialect,
                 )
             )
+            _tag_rung(attempts, schema_ladder)
             if why in no_retry_reasons:
                 return abstain(why, attempts, sql=sql, retries=retries)
+            schema_step = _schema_dispatch(
+                schema_ladder=schema_ladder,
+                outcome=outcome,
+                sql=sql,
+                ctx=ctx,
+                question=question,
+                payload=current,
+                compute=compute,
+                model_sql=model_sql,
+                budget=budget,
+                attempts=attempts,
+                dialect=dialect,
+            )
+            if schema_step is not None:
+                if schema_step[0] == "abstain":
+                    return abstain(schema_step[1], attempts, sql=sql, retries=retries)
+                protected_sql = sql
+                prev_sql = sql
+                reason = outcome
+                current = schema_step[1]
+                continue
             blocked = _no_model_retry(why, no_retry_reasons)
             if recover_failures and _refusal_head(why) in _SECOND_RECOVER_HEADS:
                 blocked = False
@@ -802,7 +913,28 @@ def run_model_loop(
                     prompt=prompt, payload=current, sql=sql, outcome=outcome, dialect=dialect
                 )
             )
+            _tag_rung(attempts, schema_ladder)
             protected_sql = sql
+            schema_step = _schema_dispatch(
+                schema_ladder=schema_ladder,
+                outcome=outcome,
+                sql=sql,
+                ctx=ctx,
+                question=question,
+                payload=current,
+                compute=compute,
+                model_sql=model_sql,
+                budget=budget,
+                attempts=attempts,
+                dialect=dialect,
+            )
+            if schema_step is not None:
+                if schema_step[0] == "abstain":
+                    return abstain(schema_step[1], attempts, sql=sql, retries=retries)
+                prev_sql = sql
+                reason = outcome
+                current = schema_step[1]
+                continue
             if not _can_retry(retries=retries, budget=budget):
                 head = f"loop_exhausted:{outcome}"
                 return abstain(head, attempts, sql=sql, retries=retries)
@@ -834,7 +966,7 @@ def run_model_loop(
                     current = _call(compute, ctx, prompt, reason, sql)
                     continue
                 return abstain(decision, attempts, sql=sql, retries=retries)
-            return _finish_attempt(
+            env = _finish_attempt(
                 empty_answer(sql, attempts),
                 attempts=attempts,
                 prompt=prompt,
@@ -842,6 +974,8 @@ def run_model_loop(
                 sql=sql,
                 dialect=dialect,
             )
+            _tag_rung(attempts, schema_ladder)
+            return env
         env = _finish_attempt(
             submit_sql(sql, attempts),
             attempts=attempts,
@@ -850,6 +984,7 @@ def run_model_loop(
             sql=sql,
             dialect=dialect,
         )
+        _tag_rung(attempts, schema_ladder)
         return env
 
 

@@ -282,6 +282,7 @@ def _insights_compute_seam(
         return None
     onto: dict[str, Any] | None = ontology
     feedback = None
+    route_hint = None
     asked = question
     examples = ""
     defs = ""
@@ -297,6 +298,7 @@ def _insights_compute_seam(
         "sql_vote_kind",
         "vq_examples",
         "governed_definitions",
+        "route_hint",
     }
     if isinstance(ontology, dict) and (
         _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
@@ -307,6 +309,8 @@ def _insights_compute_seam(
         if isinstance(lifted, dict) and _hidden.intersection(lifted):
             raw = lifted.get("sql_loop_feedback")
             feedback = raw if isinstance(raw, dict) else None
+            if lifted.get("route_hint") == "escalate":
+                route_hint = "escalate"
             vote_prompt = lifted.get("sql_vote_prompt")
             if isinstance(vote_prompt, str) and vote_prompt.strip():
                 asked = vote_prompt
@@ -341,6 +345,8 @@ def _insights_compute_seam(
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
+        if route_hint == "escalate":
+            kwargs["route_hint"] = "escalate"
         try:
             return fn(asked, **kwargs)
         except TypeError:
