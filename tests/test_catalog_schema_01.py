@@ -428,6 +428,7 @@ def _ask(
     sql: str,
     space_id: str,
     monkeypatch: pytest.MonkeyPatch,
+    question: str = QUESTION,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from dms_api.settings import Settings, get_settings
     from fastapi.testclient import TestClient
@@ -446,7 +447,7 @@ def _ask(
     res = TestClient(app).post(
         "/v1/chat/ask",
         json={
-            "question": QUESTION,
+            "question": question,
             "session_id": "ses_catalog_schema",
             "space_id": space_id,
             "ask_path": "generative",
@@ -589,6 +590,59 @@ def test_schema_context_confirms_a_granted_join_and_files_the_link(
     assert any(item.get("kind") == "link" and item.get("status") == "proposed" for item in proposed)
     assert all(item.get("status") != "approved" for item in proposed)
     reset_ontology_data_store()
+
+
+def _confirm(app: Any, token: str) -> dict[str, Any]:
+    from dms_api.settings import Settings, get_settings
+    from fastapi.testclient import TestClient
+
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        dms_ask_mode="live",
+        dms_demo_fallback=False,
+        dms_harness_ask_paths=True,
+    )
+    res = TestClient(app).post(
+        "/v1/chat/ask/confirm",
+        json={"token": token, "yes": True},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert_envelope_valid(body)
+    return body
+
+
+def test_confirmed_join_gate_miss_asks_back(
+    file_space: tuple[Any, Path, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Yes runs the submit gates. A qualifier or currency miss is not a number."""
+    monkeypatch.setenv("DMS_SCHEMA_CONTEXT", "1")
+    monkeypatch.delenv("DMS_RECONFIRM_RUN_HELD", raising=False)
+    app, path, space_id = file_space
+    cases = (
+        ("What is the sum of amount by month?", "unhonored_qualifier"),
+        ("What is the sum of amount in USD and EUR?", "currency_mismatch"),
+    )
+    for question, needle in cases:
+        env, _posts = _ask(app, path, JOIN_SQL, space_id, monkeypatch, question)
+        assert_envelope_valid(env)
+        offer = env.get("reconfirm")
+        assert isinstance(offer, dict) and offer.get("token")
+        body = _confirm(app, str(offer["token"]))
+        assert body.get("abstained") is True
+        assert not body.get("rows")
+        assert not body.get("values")
+        assert "250" not in str(body.get("text") or "")
+        again = body.get("reconfirm")
+        assert isinstance(again, dict) and again.get("token")
+        blob = " ".join(
+            [
+                str(again.get("definition") or ""),
+                str(again.get("reason_code") or ""),
+                str(body.get("text") or ""),
+                " ".join(str(item) for item in body.get("assumptions") or []),
+            ]
+        )
+        assert needle in blob, blob
 
 
 def test_ungranted_name_stays_a_grant_refusal_under_schema_context(

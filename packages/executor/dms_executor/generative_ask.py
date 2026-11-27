@@ -1163,6 +1163,32 @@ def _l2_envelope(
     return env
 
 
+def validated_sql_reason(
+    sql: str,
+    *,
+    question: str,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+) -> str | None:
+    """Pre-execute gates shared with ``_submit_validated``.
+
+    Qualifier, a stated value, currency, reserved ``$as_of``, and an untyped
+    numeric. None means those gates passed. Coverage and the compile-only
+    hold stay with the caller.
+    """
+    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
+        question, sql, warehouse, grantable=grantable
+    )
+    if gap:
+        return gap
+    ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
+    if ccy_why:
+        return ccy_why
+    if sql_has_reserved_as_of(sql):
+        return RESERVED_PARAM_AS_OF
+    return untyped_numeric_reason(sql, warehouse)
+
+
 def _submit_validated(
     sql: str,
     *,
@@ -1192,43 +1218,24 @@ def _submit_validated(
             plan_source=plan_source,
             notes=notes,
         )
-    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
-        question, sql, warehouse, grantable=grantable
+    blocked = validated_sql_reason(
+        sql, question=question, warehouse=warehouse, grantable=grantable
     )
-    if gap:
-        return _abstain(
-            question,
-            gap,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-            notes=notes,
-        )
-    ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
-    if ccy_why:
-        return _abstain(
-            question,
-            ccy_why,
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=plan_source,
-        )
-    if sql_has_reserved_as_of(sql):
+    if blocked == RESERVED_PARAM_AS_OF:
         return reserved_as_of_abstain(
             space_id=space_id,
             session_id=session_id,
             route="generated",
             question=question,
         )
-    num_why = untyped_numeric_reason(sql, warehouse)
-    if num_why:
+    if blocked:
         return _abstain(
             question,
-            num_why,
+            blocked,
             space_id=space_id,
             session_id=session_id,
             plan_source=plan_source,
-            notes=notes,
+            notes=() if str(blocked).startswith("currency_mismatch") else notes,
         )
     from dms_executor.ai_first import (
         NO_MODEL_SQL,

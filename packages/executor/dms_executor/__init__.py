@@ -1777,6 +1777,9 @@ class Executor:
             from cortex_client.insights import schema_context_enabled
 
             if schema_context_enabled():
+                blocked = self._join_confirm_block(pending)
+                if blocked is not None:
+                    return blocked
                 env = self._run_held_sql(pending)
                 served = (
                     env.get("abstained") is not True
@@ -1894,6 +1897,66 @@ class Executor:
         )
         assert_envelope_valid(env)
         return env
+
+    def _join_confirm_block(self, pending: dict[str, Any]) -> dict[str, Any] | None:
+        """Ask back when the confirmed join fails the shared submit gates.
+
+        None means ``validated_sql_reason`` passed and the SQL may run.
+        A miss is not a served number.
+        """
+        from dms_executor.abstain import build_abstain
+        from dms_executor.generative_ask import validated_sql_reason
+
+        sql = str(pending.get("sql") or "").strip()
+        question = str(
+            pending.get("suggested_question") or pending.get("question") or ""
+        ).strip()
+        raw_grants = pending.get("grantable")
+        grantable = (
+            {str(name) for name in raw_grants if str(name).strip()}
+            if isinstance(raw_grants, list)
+            else set()
+        )
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        blocked = validated_sql_reason(
+            sql,
+            question=question,
+            warehouse=self._warehouse,
+            grantable=grantable,
+        )
+        if not blocked:
+            return None
+        held = build_abstain(
+            reason=blocked,
+            question=question,
+            stage="join_confirm",
+            answer_id="ans_join_confirm",
+            text=blocked,
+            rows=[],
+            sql_used=None,
+            values=[],
+            assumptions=[f"reconfirm: {blocked}"],
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="generated",
+            log_ticket=False,
+        )
+        held["reconfirm"] = {"definition": blocked, "why": blocked}
+        raw_tables = pending.get("tables")
+        raw_path = pending.get("ask_path")
+        return self.offer_reconfirm(
+            held,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            tables=list(raw_tables) if isinstance(raw_tables, list) else None,
+            ask_path=raw_path if isinstance(raw_path, str) else None,
+            cortex=self._cortex,
+        )
 
     def _run_held_sql(self, pending: dict[str, Any]) -> dict[str, Any]:
         """Execute SQL the user confirmed. Grant and read-only checks run again."""
