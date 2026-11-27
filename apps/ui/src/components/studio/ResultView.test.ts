@@ -59,6 +59,8 @@ describe("Studio result view", () => {
     expect(markup).toContain('data-testid="studio-chart"');
     expect(markup).toContain('data-chart-kind="bar"');
     expect(markup).toContain("<svg");
+    expect(markup).not.toContain('data-testid="studio-chart-adjust"');
+    expect(markup).not.toContain("data-chart-shape");
     expect(markup).toContain('data-testid="studio-rows"');
     expect(markup).toContain("Showing 1-10 of 12 rows");
     expect(markup).toContain(">Next<");
@@ -183,6 +185,38 @@ describe("Studio result view", () => {
     );
     expect(withEmpty).toBe(plain);
     expect(withEmpty).not.toContain("ask-stages");
+  });
+
+  it("a valid chart spec replaces the column-type chart", () => {
+    const markup = html(
+      answered({
+        chart_spec: { kind: "pie", x: "country", y: ["spend"], series: null },
+        chart_adjust: {
+          kinds: ["bar", "pie"],
+          x: ["country"],
+          y: ["spend"],
+          series: [],
+        },
+      }),
+    );
+    expect(markup).toContain('data-chart-kind="pie"');
+    expect(markup).toContain('data-chart-shape="pie"');
+    expect(markup).toContain('data-testid="studio-chart-adjust"');
+    expect(markup).toContain('data-testid="studio-chart-kind-pie"');
+    expect(markup).toContain('data-testid="studio-chart-x-country"');
+    expect(markup).toContain('data-testid="studio-chart-y-spend"');
+    expect(markup).not.toContain("<select");
+  });
+
+  it("a spec that names a missing column falls back to today's chart", () => {
+    const markup = html(
+      answered({
+        chart_spec: { kind: "pie", x: "missing", y: ["spend"] },
+      }),
+    );
+    expect(markup).toContain('data-chart-kind="bar"');
+    expect(markup).not.toContain('data-chart-shape="pie"');
+    expect(markup).not.toContain('data-testid="studio-chart-adjust"');
   });
 
   it("Chat answer card mounts ResultView", () => {

@@ -7,6 +7,13 @@ import { splitInsights } from "@/lib/splitInsights";
 import { isAbstain, namedAbstainReason, type AbstainFields } from "./abstainReason";
 import { AskStages, type AskStageEvent } from "./AskStages";
 import { chartFromRows } from "./chartShape";
+import {
+  chooseChart,
+  kindLabel,
+  readAdjust,
+  validateModelSpec,
+  type ModelChartSpec,
+} from "./chartSpec";
 import { StampsPanel } from "./StampsPanel";
 
 /** Fields this view reads. Stamp keys stay optional and are not defaulted. */
@@ -38,6 +45,9 @@ export type StudioAskEnvelope = AbstainFields & {
     definition?: string;
     token?: string;
   } | null;
+  /** CHART-SPEC-01. Absent when DMS_CHART_SPEC is off. */
+  chart_spec?: unknown;
+  chart_adjust?: unknown;
 };
 
 const PAGE_SIZE = 10;
@@ -59,9 +69,11 @@ export function ResultView({ envelope, stages, onCancel }: Props) {
   const [follow, setFollow] = useState<StudioAskEnvelope | null>(null);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [pick, setPick] = useState<ModelChartSpec | null>(null);
   useEffect(() => {
     setFollow(null);
     setConfirmError(null);
+    setPick(null);
   }, [envelope]);
   const stageList = stages ?? [];
   if (!envelope) {
@@ -98,7 +110,26 @@ export function ResultView({ envelope, stages, onCancel }: Props) {
     }
   }
   const rows = abstained || reconfirm ? [] : listRows(shown.rows);
-  const spec = abstained || reconfirm ? null : chartFromRows(rows);
+  const adjust = abstained || reconfirm ? null : readAdjust(shown.chart_adjust, rows);
+  const proposal = abstained || reconfirm ? null : validateModelSpec(shown.chart_spec, rows);
+  const spec = abstained || reconfirm ? null : pick ?? proposal ?? chartFromRows(rows);
+  const currentY = Array.isArray(spec?.y) ? spec.y : spec?.y ? [spec.y] : [];
+  const currentSeries = spec && "series" in spec ? (spec.series ?? null) : null;
+  const activeKind =
+    spec && adjust?.kinds.some((kind) => kind === spec.kind) ? spec.kind : (adjust?.kinds[0] ?? "");
+
+  function apply(choice: {
+    kind: string;
+    x?: string;
+    y?: string[];
+    series?: string | null;
+    repairX?: boolean;
+    repairY?: boolean;
+  }) {
+    if (!adjust) return;
+    const next = chooseChart(rows, adjust, choice);
+    if (next) setPick(next);
+  }
   const { prose, insights } = splitInsights(typeof shown.text === "string" ? shown.text : "");
   const sql = typeof shown.sql_used === "string" ? shown.sql_used : "";
   const offset = page * PAGE_SIZE;
@@ -234,6 +265,131 @@ export function ResultView({ envelope, stages, onCancel }: Props) {
         </p>
       ) : null}
 
+      {adjust && activeKind !== "" ? (
+        <div data-testid="studio-chart-adjust" className="mt-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+            Adjust
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {adjust.kinds.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                data-testid={`studio-chart-kind-${kind}`}
+                aria-pressed={spec?.kind === kind}
+                onClick={() =>
+                  apply({
+                    kind,
+                    x: spec?.x,
+                    y: currentY,
+                    series: currentSeries,
+                    repairX: true,
+                    repairY: true,
+                  })
+                }
+                className={chip(spec?.kind === kind)}
+              >
+                {kindLabel(kind)}
+              </button>
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {adjust.x.map((name) => (
+              <button
+                key={`x-${name}`}
+                type="button"
+                data-testid={`studio-chart-x-${name}`}
+                aria-pressed={spec?.x === name}
+                onClick={() =>
+                  apply({
+                    kind: activeKind,
+                    x: name,
+                    y: currentY,
+                    series: currentSeries,
+                    repairX: false,
+                    repairY: true,
+                  })
+                }
+                className={chip(spec?.x === name)}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {adjust.y.map((name) => {
+              const on = currentY.includes(name);
+              const multi = activeKind === "stacked" || activeKind === "multi_line";
+              return (
+                <button
+                  key={`y-${name}`}
+                  type="button"
+                  data-testid={`studio-chart-y-${name}`}
+                  aria-pressed={on}
+                  onClick={() => {
+                    const nextY = !multi ? [name] : on ? currentY.filter((item) => item !== name) : [...currentY, name];
+                    apply({
+                      kind: activeKind,
+                      x: spec?.x,
+                      y: nextY,
+                      series: currentSeries,
+                      repairX: true,
+                      repairY: false,
+                    });
+                  }}
+                  className={chip(on)}
+                >
+                  {name}
+                </button>
+              );
+            })}
+          </div>
+          {adjust.series.length > 0 ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                data-testid="studio-chart-series-none"
+                aria-pressed={currentSeries == null}
+                onClick={() =>
+                  apply({
+                    kind: activeKind,
+                    x: spec?.x,
+                    y: currentY,
+                    series: null,
+                    repairX: true,
+                    repairY: true,
+                  })
+                }
+                className={chip(currentSeries == null)}
+              >
+                none
+              </button>
+              {adjust.series.map((name) => (
+                <button
+                  key={`s-${name}`}
+                  type="button"
+                  data-testid={`studio-chart-series-${name}`}
+                  aria-pressed={currentSeries === name}
+                  onClick={() =>
+                    apply({
+                      kind: activeKind,
+                      x: spec?.x,
+                      y: currentY,
+                      series: name,
+                      repairX: true,
+                      repairY: true,
+                    })
+                  }
+                  className={chip(currentSeries === name)}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {!abstained && rows.length > 0 ? (
         <div data-testid="studio-rows">
           <AnswerRowsTable
@@ -249,6 +405,12 @@ export function ResultView({ envelope, stages, onCancel }: Props) {
       <StampsPanel envelope={shown} />
     </section>
   );
+}
+
+function chip(active: boolean): string {
+  return active
+    ? "border border-[var(--color-accent)] bg-[var(--color-panel)] px-2 py-1 text-xs text-[var(--color-ink)]"
+    : "border border-[var(--color-line)] bg-[var(--color-panel)] px-2 py-1 text-xs text-[var(--color-ink)] hover:border-[var(--color-accent)]";
 }
 
 function listRows(rows: StudioAskEnvelope["rows"]): Record<string, unknown>[] {
