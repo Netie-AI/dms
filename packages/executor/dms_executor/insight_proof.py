@@ -1945,7 +1945,11 @@ def _emit(
     candidate: str,
 ) -> ProvenInsight | None:
     """Envelope, gates and proof for one insight. None when it was refused."""
-    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+    from dms_executor.envelope import (
+        assert_envelope_valid,
+        build_answer_envelope,
+        declared_names_line,
+    )
     from dms_executor.route_stamp import ROUTE_COMPILE, stamp_route
 
     where = f"{candidate}:{kind}"
@@ -1958,6 +1962,9 @@ def _emit(
         assumptions.append(DEMO_ASSUMPTION)
     if any(stamp is None for stamp in proof_base["watermarks"].values()):
         assumptions.append(WATERMARK_UNKNOWN_ASSUMPTION)
+    named = declared_names_line([label])  # dms#590: a dimension such as zone_1
+    if named:
+        assumptions.append(named)
     env = build_answer_envelope(
         answer_id=insight_id,
         text=headline,

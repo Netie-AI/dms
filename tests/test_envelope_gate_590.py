@@ -417,3 +417,18 @@ def test_round2_a_zero_led_group_never_matches_a_declared_count() -> None:
     env["text"] = found_rows_text(ROWS) + "\nTotal 3 003 003."
     with pytest.raises(AssertionError, match="E17"):
         assert_envelope_valid(env)
+
+
+def test_final_a_dms_declared_name_line_declares_a_sheet_name() -> None:
+    """F32 and insight sentences name digit-bearing sheets or dimensions they declare."""
+    from dms_executor.envelope import declared_names_line
+
+    env = _abstain()
+    env["text"] = "Scope conflict: totals disagree across aa64458a_p50_03_Sales."
+    with pytest.raises(AssertionError, match="E16"):
+        assert_envelope_valid(env)
+    line = declared_names_line(["aa64458a_p50_03_Sales", "Sales"])
+    assert line == "declared names: aa64458a_p50_03_Sales"
+    env["assumptions"] = [line]
+    assert_envelope_valid(env)
+    assert declared_names_line(["Sales"]) is None

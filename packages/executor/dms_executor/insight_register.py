@@ -949,7 +949,11 @@ def check_replay_proof(proof: Mapping[str, Any]) -> None:
 
 def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
     """Definition check (no submit), then the pinned SQL twice through Cortex submit."""
-    from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+    from dms_executor.envelope import (
+        assert_envelope_valid,
+        build_answer_envelope,
+        declared_names_line,
+    )
     from dms_executor.generative_ask import cached_verify_violations, load_verified_ontology
     from dms_executor.ontology import table_is_granted
     from dms_executor.route_stamp import ROUTE_VERIFIED, stamp_route
@@ -1098,6 +1102,9 @@ def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
                        _drift_reason(approved_marks, current_marks))
     if any(stamp is None for stamp in current_marks.values()):
         assumptions.append(ip.WATERMARK_UNKNOWN_ASSUMPTION)
+    named = declared_names_line([str(pin["dimension"])])  # dms#590
+    if named:
+        assumptions.append(named)
     env = build_answer_envelope(
         answer_id=str(pin["insight_id"]),
         text=text,

@@ -1197,6 +1197,16 @@ _FIGURE = re.compile(
     r"(?![A-Za-z0-9_]|\.\d)"
 )
 _GAP_PREFIX = "GEN-01: "
+_SCOPE_PREFIX = "declared names: "
+
+
+def declared_names_line(names: list[str]) -> str | None:
+    """The assumption that declares schema names a DMS sentence states (dms#590).
+
+    None when no name carries a digit, so most envelopes are unchanged.
+    """
+    shown = [n for n in dict.fromkeys(str(x) for x in names) if any(c.isdigit() for c in n)]
+    return f"{_SCOPE_PREFIX}{', '.join(shown)}" if shown else None
 
 #: values[] labels that declare a figure the answer states but that is not a
 #: result figure: ``row_count`` (how many rows, or how many of them) and
@@ -1350,8 +1360,8 @@ def _declared_identifiers(*sources: Any) -> set[str]:
 
 
 def _gap_details(assumptions: list[Any]) -> list[str]:
-    """The ``GEN-01: <code>`` lines, the only assumptions that name schema objects."""
-    return [str(a) for a in assumptions if str(a).startswith(_GAP_PREFIX)]
+    """The DMS lines that name schema objects: ``GEN-01: <code>``, ``declared names: ...``."""
+    return [str(a) for a in assumptions if str(a).startswith((_GAP_PREFIX, _SCOPE_PREFIX))]
 
 
 def _relation_names(sql: Any, grounded: Any) -> list[str]:
@@ -2144,6 +2154,10 @@ def build_answer_envelope(
             assumptions_list.append(
                 "ambiguous multi-sheet ranking: scope conflict (E9-02/F32)"
             )
+            # dms#590: the sentence names these scopes; this line declares them.
+            line = declared_names_line([_bare_label(c) for c in conflict])
+            if line:
+                assumptions_list.append(line)
 
     # E10 (FF-01) — a grouped or ranked ask must not be settled with one
     # ungrouped scalar. Runs after the scope demote because scope is the more
@@ -2328,7 +2342,10 @@ def build_answer_envelope(
     # the ask path.
     if not abstained and _executed_query(sql_used):
         stray = uncited_figures(
-            text or "", values_out, rows_out, _relation_names(sql_used, grounded_tables)
+            text or "",
+            values_out,
+            rows_out,
+            _relation_names(sql_used, grounded_tables) + _gap_details(assumptions_list),
         )
         if stray:
             badge_out = "ABSTAIN"
@@ -2685,7 +2702,8 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             text,
             values if isinstance(values, list) else [],
             env_rows_e17 if isinstance(env_rows_e17, list) else [],
-            _relation_names(sql_used, envelope.get("grounded_tables")),
+            _relation_names(sql_used, envelope.get("grounded_tables"))
+            + _gap_details(envelope.get("assumptions") or []),
         )
         assert not stray, f"E17: figure(s) {stray} in text are not in values[] or rows"
 
