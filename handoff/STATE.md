@@ -124,24 +124,23 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-27 22:13 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-27 23:01 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `b7ee406f` R1-RUNTIME-01: pin the insights timeout and flag a loopback caller (#576)
+main: `5c173cef` STUDIO-FIX-C: reserve ask-back time when the serving deadline is in force (#587)
 
-open PRs: 39 (cap 60)
+open PRs: 38 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #587 | y | `3e45d386` | - | 10 ok | STUDIO-FIX-C: reserve ask-back time when the serving deadline is in force |
 | #582 | y | `4b6f9d4a` | - | 11 ok | R2-CONNECT-CORE-01: Persisted connections, test, introspect, and auto-grant |
-| #581 | n | `39e9f0a8` | tier:fast | 5 ok, 4 running | handoff: state refresh |
-| #579 | y | `f086d6c8` | - | 10 ok | R1-RULES-OUT-01: gate question-word lanes behind DMS_RULES_OFF |
+| #581 | n | `3c6eec6f` | tier:fast | 10 ok | handoff: state refresh |
+| #579 | y | `47ac11df` | - | 10 ok | R1-RULES-OUT-01: gate question-word lanes behind DMS_RULES_OFF |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
-| #542 | y | `e08f4664` | - | 3 ok, 1 FAIL | T5 install hardening: #387 TLS host guard (carried) + IPv4 serve; #388 and #377  |
+| #542 | y | `c434c86e` | - | 7 ok, 1 FAIL, 1 running | T5 install hardening: #387 TLS host guard (carried) + IPv4 serve; #388 and #377  |
 | #539 | y | `79b60ca6` | - | 4 ok | Answer fidelity: FIG-FIDELITY-01 (#508) E14, BIRD-ALLOWLIST-01 (#304) preflight, |
 | #538 | y | `3d972da8` | - | 5 ok, 2 FAIL | CONNECT-ASK-05: a join check that raises abstains check_unavailable (no 503, no  |
 | #536 | y | `befc5712` | - | 4 ok | ENV-EXAMPLE-SENTINEL: a placeholder left in a secret refuses boot, by name (Refs |
@@ -153,7 +152,7 @@ open PRs: 39 (cap 60)
 | #522 | y | `70fb535a` | - | 4 ok | CONNECT-ASK-03: a Space with no ontology answers one-table SQL only (unverified_ |
 | #521 | y | `a8b9c316` | - | 4 ok | ONTO-PROFILE-01: measure a file Space and propose keys and links (Refs #514) |
 | #519 | y | `77c3bbfc` | - | 4 ok | fix(deps): pin duckdb>=1.1,<2 to match the Cortex engine (F-TBD-28) |
-| #510 | y | `50185f3f` | - | 4 ok | IPHONE-PWA-01 to 05: installable iPhone app, one-handed use, one-row composer, p |
+| #510 | y | `0a9fc033` | - | 6 ok, 3 running | IPHONE-PWA-01 to 05: installable iPhone app, one-handed use, one-row composer, p |
 | #509 | y | `4891318e` | - | 3 ok, 1 FAIL | feat(executor): "how full is each warehouse" serves the certified capacity metri |
 | #505 | y | `c5089449` | - | 4 ok | fix(ao): AO-MASK-01 - AO compile prompts carry only masked or non-personal sampl |
 | #501 | y | `df17dcc4` | - | 3 ok | feat(bench): Lane 1 model-in-isolation bench on the curated 52, with the product |
@@ -176,7 +175,7 @@ open PRs: 39 (cap 60)
 
 ### Netie-AI/Cortex
 
-main: `7f48677b` Serve pack YAML on GET /dms/ontology for the Studio page. (#492)
+main: `83b08b26` Pin import-linter to >=2.16,<3 so contract 2 cannot go silent again. (#493)
 
 open PRs: 11 (cap 60)
 
@@ -185,8 +184,8 @@ open PRs: 11 (cap 60)
 | #488 | n | `4327dcc5` | - | 5 ok, 1 FAIL | chore(deps): bump duckdb from 1.5.5 to 2.0.1 |
 | #487 | n | `71a645bc` | - | 6 ok | chore(deps-dev): bump @babel/runtime from 8.0.8 to 8.1.3 in /demo/dms-ui |
 | #486 | n | `f365a522` | - | 6 ok | chore(deps-dev): bump @babel/core from 8.0.9 to 8.1.3 in /demo/dms-ui |
-| #481 | y | `0bc6974b` | - | 5 ok, 1 FAIL | Track T4: Cortex accuracy and gates (#408 + JOIN-GRANT-ZW, #465, #426 partial, # |
-| #480 | y | `22c6a95f` | - | 5 ok, 1 FAIL | T2 Cortex security: gate ungated routes (#263), workflow reads (#368), redact ro |
+| #481 | y | `8af1eac4` | - | 6 ok | Track T4: Cortex accuracy and gates (#408 + JOIN-GRANT-ZW, #465, #426 partial, # |
+| #480 | y | `e5929220` | - | 4 ok, 1 running | T2 Cortex security: gate ungated routes (#263), workflow reads (#368), redact ro |
 | #479 | y | `d4a62b63` | - | 5 ok, 1 FAIL | JOIN-GRANT-SUBQUERY-01: the join grant decides every table a statement reads (#4 |
 | #476 | n | `06a86599` | - | 5 ok, 1 FAIL | chore(deps-dev): bump @playwright/test from 1.64.1 to 1.65.1 in /demo/dms-ui |
 | #475 | n | `9e8e0475` | - | 5 ok, 1 FAIL | chore(deps): bump next from 16.4.3 to 16.4.6 in /demo/dms-ui |
