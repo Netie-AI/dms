@@ -6,7 +6,7 @@ Append-only. Never edited, only added to. Newest first.
 
 - **Flag.** `DMS_AI_CLARIFY` defaults off. Off, phrase gates and the ask path are unchanged. On, one OpenVault call with role `reason` returns answerable, ambiguous, or unanswerable. A verdict replaces the phrase gates. No verdict keeps them, so a silent model cannot serve a trap.
 - **Ask back.** Ambiguous, or a missing slot, returns `route=needs_clarification` with 1 to 3 readings. Each SQL preview passed the grant and read-only check and was not executed. `POST /v1/chat/clarify/pick` re-checks grants and asks the chosen reading on the normal path. The preview is not stored as the answer. One free-text question is allowed per card. Ungranted is a refusal, not a clarify. Unanswerable is reconfirm `not_in_data`.
-- **52.** Stub `grade52 --main` is the flag-off number. Armed grade52 and pack H were not run here.
+- **52.** Stub `grade52 --main`, flag off and `DMS_AI_CLARIFY=1`: correct=43 wrong=0 reconfirm=5 abstain=0 refusal_wrong=0, ai=0 rule=43 unattributed=0. The stub returns no verdict, so flag on keeps the phrase gates. grade52 has no clarify column and no p50. Armed grade52 and pack H were not run. Not PASS.
 
 ## 2026-11-27 - COMPILE-CHECK-01: compile SQL must pass the AI-lane checker
 
