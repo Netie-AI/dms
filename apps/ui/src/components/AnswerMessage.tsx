@@ -783,12 +783,7 @@ export function AnswerMessage({
         </div>
       ) : null}
       <AnswerDetails envelope={envelope}>
-        <ResultView
-          envelope={envelope}
-          question={question}
-          spaceId={activeSpaceId}
-          role={role}
-        />
+        <ResultView envelope={envelope} question={question} spaceId={activeSpaceId} role={role} />
       </AnswerDetails>
     </article>
   );
