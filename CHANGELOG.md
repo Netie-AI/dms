@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - R1-UI-COPY-01: plain page headers, no developer notes
+
+- **Copy.** Page headers say what the page does in one sentence. Eyebrow codes, buyer-walk notes, script names, and the refuse demo are gone. The five starter questions stay.
+- **Flag.** `DMS_RUNTIME_SELFCHECK` defaults off. Off, the offline banner is the previous sentence. On, it states the runtime problem in plain language. The ask path does not read the flag.
+- **52.** Unmeasured (stub). No serving change. Not PASS.
+
 ## 2026-11-27 - COMPILE-CHECK-01: compile SQL must pass the AI-lane checker
 
 - **Gate.** Rank-window, multi-grain, and one-grain compile call `ai_lane_sql_check` before submit. That is the extract loop's checker: the Space join rule, `def_validate` when its flag is on, grants, one SELECT, EXPLAIN, cited violations, and definition mismatch when grounded defs are on. No new flag. No new word or phrase rule.

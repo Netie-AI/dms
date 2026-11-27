@@ -41,18 +41,14 @@ type Receipt = {
   files?: FileRow[] | null;
 };
 
-/** AGI-BUYER-WALK-01 (#236). Keep in lockstep with tests/fixtures/buyer_walk/questions.yaml. */
-const BUYER_WALK_ASKS = [
+/** Starter questions. Retrieved suggestions replace this list when that data exists. */
+const STARTER_QUESTIONS = [
   "What is our total spend by supplier country?",
   "What is total stock value by category?",
   "Which SKUs are below reorder level in warehouse A?",
   "Show warehouse capacity utilisation",
   "Which locations are cold storage?",
 ] as const;
-
-const BUYER_WALK_REFUSE = "Just give me last month's number";
-const BUYER_WALK_REFUSE_WHY =
-  "No certified as-of month on this lake. A green last-month figure would invent a period. Honest ABSTAIN is the product.";
 
 /** Flatten the tree to the leaves that can actually be previewed and asked about. */
 function askableLeaves(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
@@ -320,16 +316,13 @@ export function StudioPage() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
-            U3 · T13
+            Your files
           </p>
           <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
             Studio
           </h1>
           <p className="mt-3 max-w-xl text-[var(--color-ink-muted)]">
-            Your files, and what the warehouse made of them. Point at SQL Server, MySQL, or
-            PostgreSQL without a config file: rows land in bronze, truncated pulls are named, and a
-            declared join that the data violates is refused on the receipt. Tick files to
-            ground your next question in just those.
+            Bring files and databases in, see what was made of them, and start a question from here.
           </p>
         </div>
 
@@ -368,24 +361,17 @@ export function StudioPage() {
       </button>
 
       <section
-        data-testid="buyer-walk"
+        data-testid="starter-questions"
         className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4"
       >
         <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
-          Buyer walk · 5-day AGI-for-DB
+          Questions to start from
         </p>
         <p className="mt-2 max-w-3xl text-sm text-[var(--color-ink-muted)]">
-          Ask five supply-chain questions in Chat. Each answer is a real envelope (badge,
-          rows, audit_id) plus the Studio ingest receipt. Download Excel copies those rows
-          from the envelope. We do not invent charts, buyer logos, or ARR. Not COMPLETE.
-        </p>
-        <p className="mt-2 max-w-3xl text-sm text-[var(--color-ink-muted)]">
-          Steward proof is <code className="font-mono text-xs">python scripts/walk_buyer_studio.py</code>{" "}
-          on the ontology path (or honest ABSTAIN). Clicking a question here opens Chat with
-          it prefilled. Operate mode in the top bar. No ARR. No buyer logos.
+          Click a question to open it in Chat. The answer uses only the data this space can see.
         </p>
         <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-          {BUYER_WALK_ASKS.map((q) => (
+          {STARTER_QUESTIONS.map((q) => (
             <li key={q}>
               <button
                 type="button"
@@ -397,22 +383,6 @@ export function StudioPage() {
             </li>
           ))}
         </ul>
-        <div
-          data-testid="buyer-walk-refuse"
-          className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-sm"
-        >
-          <p className="font-medium text-[var(--color-ink)]">
-            Refuse / ABSTAIN demo: {BUYER_WALK_REFUSE}
-          </p>
-          <p className="mt-1 text-[var(--color-ink-muted)]">{BUYER_WALK_REFUSE_WHY}</p>
-          <button
-            type="button"
-            onClick={() => navigate("/", { state: { draftQuestion: BUYER_WALK_REFUSE } })}
-            className="mt-2 text-xs text-[var(--color-accent)] hover:underline"
-          >
-            Prefill the refuse in Chat
-          </button>
-        </div>
       </section>
 
       <ChatTurn spaceId={activeSpaceId} />

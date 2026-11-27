@@ -51,16 +51,25 @@ CONFIDENT = frozenset(
 )
 RESOLVED = frozenset({"ONTOLOGY", "ABSTAIN"})
 ARTIFACTS = ("receipt", "ask", "export")
-REQUIRED_COPY = (
+# Developer notes that must not be on the Studio page. The five starter
+# questions stay. The refuse case stays in the walk pack, not on the page.
+BANNED_UI_COPY = (
     "Buyer walk",
     "5-day AGI-for-DB",
     "honest ABSTAIN",
-    "receipt",
-    "Download Excel",
     "Not COMPLETE",
     "No buyer logos",
     "No ARR",
-    "invent charts",
+    "python scripts/walk_buyer_studio.py",
+    "Refuse / ABSTAIN",
+    'data-testid="buyer-walk-refuse"',
+)
+STARTER_QUESTIONS = (
+    "What is our total spend by supplier country?",
+    "What is total stock value by category?",
+    "Which SKUs are below reorder level in warehouse A?",
+    "Show warehouse capacity utilisation",
+    "Which locations are cold storage?",
 )
 
 
@@ -268,18 +277,30 @@ def check_copy(report: Report) -> None:
     studio = STUDIO_PAGE.read_text(encoding="utf-8")
     chat = CHAT_PAGE.read_text(encoding="utf-8")
     pack = load_pack()
-    missing = [phrase for phrase in REQUIRED_COPY if phrase not in studio]
-    if missing:
+    present = [phrase for phrase in BANNED_UI_COPY if phrase in studio]
+    if present:
         report.add(
             Check(
                 "Studio copy phrases",
                 "FAIL",
-                "missing " + ", ".join(missing),
+                "still showing " + ", ".join(present),
                 error_type="studio_copy",
             )
         )
     else:
-        report.add(Check("Studio copy phrases", "PASS", "buyer-walk honesty + artifacts"))
+        report.add(Check("Studio copy phrases", "PASS", "developer notes removed"))
+    missing_q = [phrase for phrase in STARTER_QUESTIONS if phrase not in studio]
+    if missing_q:
+        report.add(
+            Check(
+                "Studio starter questions",
+                "FAIL",
+                "missing " + ", ".join(missing_q),
+                error_type="studio_copy",
+            )
+        )
+    else:
+        report.add(Check("Studio starter questions", "PASS", f"n={len(STARTER_QUESTIONS)}"))
     hits = invented_claim_hits(studio) + invented_claim_hits(json.dumps(pack))
     if hits:
         report.add(
@@ -305,17 +326,17 @@ def check_copy(report: Report) -> None:
         )
     else:
         report.add(Check("Chat prefill from Studio", "PASS", "draftQuestion"))
-    if "data-testid=\"buyer-walk\"" not in studio:
+    if 'data-testid="starter-questions"' not in studio:
         report.add(
             Check(
-                "Studio buyer-walk panel",
+                "Studio starter panel",
                 "FAIL",
-                "missing data-testid=buyer-walk",
+                "missing data-testid=starter-questions",
                 error_type="studio_panel",
             )
         )
     else:
-        report.add(Check("Studio buyer-walk panel", "PASS", "data-testid=buyer-walk"))
+        report.add(Check("Studio starter panel", "PASS", "data-testid=starter-questions"))
 
 
 def check_pack(report: Report) -> None:
@@ -341,27 +362,32 @@ def check_pack(report: Report) -> None:
         )
     )
     studio = STUDIO_PAGE.read_text(encoding="utf-8")
-    missing_q = [str(row["question"]) for row in rows if str(row["question"]) not in studio]
+    missing_q = [str(row["question"]) for row in asks if str(row["question"]) not in studio]
     report.add(
         Check(
             "Studio lists pack questions",
             "PASS" if not missing_q else "FAIL",
-            "all pack questions in StudioPage" if not missing_q else "missing " + "; ".join(missing_q[:3]),
+            "ask questions in StudioPage"
+            if not missing_q
+            else f"missing {len(missing_q)} ask question(s)",
             error_type=None if not missing_q else "studio_questions",
         )
     )
-    why = str(refuses[0].get("why") or "") if refuses else ""
-    if why and why not in studio:
-        report.add(
-            Check(
-                "Studio shows refuse why",
-                "FAIL",
-                "refuse why must appear in Studio copy",
-                error_type="refuse_why",
-            )
+    refuse_on_page = any(
+        str(row.get("question") or "") in studio or str(row.get("why") or "") in studio
+        for row in refuses
+        if str(row.get("question") or "") or str(row.get("why") or "")
+    )
+    report.add(
+        Check(
+            "Studio hides refuse demo",
+            "FAIL" if refuse_on_page else "PASS",
+            "refuse copy is still on the page"
+            if refuse_on_page
+            else "refuse stays in the pack, not on the page",
+            error_type="refuse_why" if refuse_on_page else None,
         )
-    else:
-        report.add(Check("Studio shows refuse why", "PASS", "honest ABSTAIN why"))
+    )
 
 
 def check_judges(report: Report) -> None:

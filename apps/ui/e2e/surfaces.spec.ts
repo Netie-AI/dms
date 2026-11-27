@@ -3,7 +3,9 @@ import { expect, test } from "@playwright/test";
 test.describe("Data and govern surfaces", () => {
   test("Spaces admits in-memory catalog and refuses an ungated create", async ({ page }) => {
     await page.goto("/spaces");
-    await expect(page.getByText("Spaces are not persisted — they die on restart")).toBeVisible();
+    await expect(
+      page.getByText("Spaces are not saved. They disappear when the server restarts."),
+    ).toBeVisible();
     const name = `Playwright Ops ${Date.now()}`;
     await page.getByPlaceholder("e.g. Q4 close, Supplier audit, Procurement").fill(name);
     await expect(page.getByRole("button", { name: "Create Space" })).toBeEnabled();

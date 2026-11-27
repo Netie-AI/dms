@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # it, and POST /v1/chat/ask refuses those lanes with 400 (DR-0004 refuse, not
     # ignore). Server config only - never a request header.
     dms_harness_ask_paths: bool = False
+    # R1-UI-COPY-01. Default off. The ask path does not read this.
+    # The UI reads DMS_RUNTIME_SELFCHECK and, when it is on, replaces the
+    # offline banner with a plain runtime sentence. Off, that banner is unchanged.
+    dms_runtime_selfcheck: bool = False
     # T5 lite — default tenant/user for seed until OIDC
     dms_tenant_id: str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     dms_actor_user_id: str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"

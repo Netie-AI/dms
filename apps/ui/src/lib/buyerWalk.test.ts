@@ -5,25 +5,22 @@ import { describe, expect, it } from "vitest";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-describe("AGI-BUYER-WALK-01 Studio copy", () => {
-  it("shows five supply-chain asks, one honest refuse, and artifact copy", () => {
+describe("Studio starter questions", () => {
+  it("keeps five supply-chain asks and drops the refuse demo", () => {
     const studio = readFileSync(join(here, "../pages/StudioPage.tsx"), "utf8");
-    expect(studio).toMatch(/data-testid="buyer-walk"/);
-    expect(studio).toMatch(/data-testid="buyer-walk-refuse"/);
-    expect(studio).toMatch(/Buyer walk · 5-day AGI-for-DB/);
+    expect(studio).toMatch(/data-testid="starter-questions"/);
+    expect(studio).not.toMatch(/data-testid="buyer-walk"/);
+    expect(studio).not.toMatch(/data-testid="buyer-walk-refuse"/);
+    expect(studio).not.toContain("Buyer walk");
+    expect(studio).not.toContain("Not COMPLETE");
+    expect(studio).not.toContain("No ARR");
+    expect(studio).not.toContain("No buyer logos");
     expect(studio).toContain("What is our total spend by supplier country?");
     expect(studio).toContain("What is total stock value by category?");
     expect(studio).toContain("Which SKUs are below reorder level in warehouse A?");
     expect(studio).toContain("Show warehouse capacity utilisation");
     expect(studio).toContain("Which locations are cold storage?");
-    expect(studio).toContain("Just give me last month's number");
-    expect(studio).toContain("Honest ABSTAIN is the product.");
-    expect(studio).toContain("Download Excel");
-    expect(studio).toContain("Not COMPLETE");
-    expect(studio).toContain("No buyer logos");
-    expect(studio).toContain("No ARR");
-    expect(studio).not.toMatch(/ARR:\s*\$/);
-    expect(studio).not.toMatch(/logo\.png|dashboard\.png/);
+    expect(studio).not.toContain("Just give me last month's number");
     const chat = readFileSync(join(here, "../pages/ChatPage.tsx"), "utf8");
     expect(chat).toMatch(/draftQuestion/);
   });

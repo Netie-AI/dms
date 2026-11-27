@@ -7,6 +7,10 @@ import tailwindcss from "@tailwindcss/vite";
 const root = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  // Swap: the banner reads the same DMS_RUNTIME_SELFCHECK name as the API
+  // setting. The prefix is the full name, so other DMS_* values stay out of
+  // the bundle. Unset is off.
+  envPrefix: ["VITE_", "DMS_RUNTIME_SELFCHECK"],
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
