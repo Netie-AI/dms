@@ -1782,7 +1782,10 @@ def build_answer_envelope(
             stage="envelope",
             demote=masked,
         )
-    return masked
+    # CHART-SPEC-01. Off, this returns the same dict and sends no prompt.
+    from dms_executor.chart_spec import attach_chart_spec
+
+    return attach_chart_spec(masked)
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:
