@@ -1337,7 +1337,10 @@ _SNAKE_IDENT = re.compile(
 
 
 def _declared_identifiers(*sources: Any) -> set[str]:
-    """Snake-case identifiers the envelope itself names (assumptions, SQL, grants)."""
+    """Snake-case identifiers the envelope names: its GEN-01 codes, grants, row labels.
+
+    Never the SQL text (an alias can be anything) and never free assumptions.
+    """
     found: set[str] = set()
     for source in sources:
         items = source if isinstance(source, (list, tuple, set)) else [source]
@@ -1346,23 +1349,15 @@ def _declared_identifiers(*sources: Any) -> set[str]:
     return found
 
 
+def _gap_details(assumptions: list[Any]) -> list[str]:
+    """The ``GEN-01: <code>`` lines, the only assumptions that name schema objects."""
+    return [str(a) for a in assumptions if str(a).startswith(_GAP_PREFIX)]
+
+
 def _without_identifiers(text: str, idents: set[str]) -> str:
     if not idents:
         return text
     return _SNAKE_IDENT.sub(lambda m: " " if m.group(0) in idents else m.group(0), text)
-
-
-def sql_literal_figures(sql: str | None) -> list[float]:
-    """The numeric literals the executed query states (WHERE yr = 2025, LIMIT 10)."""
-    if not _executed_query(sql):
-        return []
-    body = _SQL_COMMENT.sub(" ", str(sql))
-    out: list[float] = []
-    for hit in _FIGURE.finditer(body):
-        value = _literal_figure(hit.group(0))
-        if value is not None:
-            out.append(value)
-    return out
 
 
 def declared_codes(envelope: dict[str, Any]) -> list[str]:
@@ -1424,7 +1419,6 @@ def uncited_figures(
     text: str,
     values: list[dict[str, Any]] | None,
     rows: list[dict[str, Any]] | None,
-    sql: str | None = None,
 ) -> list[str]:
     """E17: figures in a served SQL answer the envelope does not declare.
 
@@ -1449,9 +1443,10 @@ def uncited_figures(
     cut = _SHOWING.search(text or "")
     if cut:
         allowed.append(float(cut.group(1)))
-    allowed.extend(sql_literal_figures(sql))
+    # Only the rows, values[] and the count declare a figure. A literal in the
+    # SQL does not (a WHERE threshold or a LIMIT is not a result; verifier r3).
     stripped = _without_labels(_without_list_markers(_readable(text)), labels)
-    stripped = _without_identifiers(stripped, _declared_identifiers(sql, list(labels)))
+    stripped = _without_identifiers(stripped, _declared_identifiers(list(labels)))
     out: list[str] = []
     for hit in _FIGURE.finditer(stripped):
         token = hit.group(0)
@@ -2314,7 +2309,7 @@ def build_answer_envelope(
     # A figure no query returned is withheld here, so the gate never raises on
     # the ask path.
     if not abstained and _executed_query(sql_used):
-        stray = uncited_figures(text or "", values_out, rows_out, sql_used)
+        stray = uncited_figures(text or "", values_out, rows_out)
         if stray:
             badge_out = "ABSTAIN"
             abstained = True
@@ -2326,7 +2321,7 @@ def build_answer_envelope(
     # E16 - an abstention states no figure outside the reason code it declares.
     if abstained:
         codes = declared_codes({"assumptions": assumptions_list})
-        idents = _declared_identifiers(assumptions_list, grounded_tables or [], sql_used)
+        idents = _declared_identifiers(_gap_details(assumptions_list), grounded_tables or [])
         if abstained_figures(text or "", codes, idents):
             text = _TEXT_E16_WITHHELD
             assumptions_list.append("abstention stated a figure: withheld (E16)")
@@ -2655,9 +2650,8 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             text,
             declared_codes(envelope),
             _declared_identifiers(
-                envelope.get("assumptions") or [],
+                _gap_details(envelope.get("assumptions") or []),
                 envelope.get("grounded_tables") or [],
-                envelope.get("sql_used"),
             ),
         )
         assert not stated, f"E16: abstention states figure(s) {stated}"
@@ -2669,7 +2663,6 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             text,
             values if isinstance(values, list) else [],
             env_rows_e17 if isinstance(env_rows_e17, list) else [],
-            sql_used if isinstance(sql_used, str) else None,
         )
         assert not stray, f"E17: figure(s) {stray} in text are not in values[] or rows"
 

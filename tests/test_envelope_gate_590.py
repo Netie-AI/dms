@@ -362,21 +362,45 @@ def test_round2_a_snake_name_the_envelope_does_not_declare_is_still_a_figure() -
         assert_envelope_valid(env)
 
 
-def test_round2_a_figure_the_executed_query_states_is_declared() -> None:
-    sql = SQL.replace("GROUP BY 1", "WHERE yr = 2025 GROUP BY 1 LIMIT 10")
+@pytest.mark.parametrize(
+    ("where", "tail"),
+    [
+        ("WHERE amount > 1610511", "Total 1610511."),
+        ("WHERE sku <> 'X-1610511'", "Total 1610511."),
+        ("/* 1610511 */ WHERE 1 = 1", "Total 1610511."),
+        ("WHERE 1 = 1 LIMIT 500", "500 customers in total."),
+    ],
+)
+def test_round3_a_literal_in_the_sql_declares_no_figure(where: str, tail: str) -> None:
+    """Verifier r3: a threshold, a string, a comment or a LIMIT is not a result."""
+    sql = SQL.replace("GROUP BY 1", f"{where} GROUP BY 1")
     rows = copy.deepcopy(ROWS)
     env = build_answer_envelope(
         answer_id="ans_gate_sql_lit",
-        text="Top 10 destinations in 2025:\n" + found_rows_text(rows),
+        text=found_rows_text(rows) + "\n" + tail,
         badge="L1_GOVERNED_METRIC",
         abstained=False,
         rows=rows,
         sql_used=sql,
     )
-    assert env["abstained"] is False, env["text"]
+    assert env["abstained"] is True, env["text"]
+    assert "1610511" not in env["text"] and "500 customers" not in env["text"]
     assert_envelope_valid(env)
-    env["text"] += "\nThat is 42 more than last month."
+
+
+def test_round3_a_sql_alias_declares_no_identifier() -> None:
+    env = _served()
+    env["sql_used"] = SQL.replace("AS total_cost_myr", "AS total_cost_myr, 1 AS rev_1610511")
+    env["text"] = found_rows_text(ROWS) + "\nrev_1610511 is the total."
     with pytest.raises(AssertionError, match="E17"):
+        assert_envelope_valid(env)
+
+
+def test_round3_a_free_assumption_declares_no_identifier() -> None:
+    env = _abstain()
+    env["assumptions"] = ["metric revenue_1610511"]
+    env["text"] = "Revenue was revenue_1610511."
+    with pytest.raises(AssertionError, match="E16"):
         assert_envelope_valid(env)
 
 
