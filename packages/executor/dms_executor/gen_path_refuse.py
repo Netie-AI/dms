@@ -24,6 +24,7 @@ from dms_executor.semantic_retrieve import intent_slots, load_measure_aliases
 GAP_REASONS = frozenset(
     {
         "unknown_measure",
+        "measure_proposed",
         "no_path",
         "unknown_object",
         "unknown_column",

@@ -260,6 +260,46 @@ def _approval_provenance(ref: str, actor: str) -> dict[str, str]:
     return {"approval_ref": ref, "approved_by": actor}
 
 
+_PROVENANCE_SKIP = frozenset({"question", "text", "rows", "samples", "sql"})
+
+
+def _json_safe(value: Any) -> bool:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_json_safe(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _json_safe(item) for key, item in value.items())
+    return False
+
+
+def proposal_source(body: Mapping[str, Any]) -> str:
+    """``ao-vendor`` unless the body names another source. Existing compiles omit it."""
+    raw = body.get("source")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return "ao-vendor"
+
+
+def proposal_provenance(body: Mapping[str, Any], *, version: bool) -> dict[str, Any]:
+    """Vendor sha, plus any JSON-safe ``provenance`` object on the body.
+
+    Question text, row values, and samples are not copied. A version row
+    always records ``served`` false.
+    """
+    out: dict[str, Any] = {"vendor_sha": str(body.get("vendor_sha") or "")}
+    extra = body.get("provenance")
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if not isinstance(key, str) or key in _PROVENANCE_SKIP or key == "served":
+                continue
+            if _json_safe(value):
+                out[key] = value
+    if version:
+        out["served"] = False
+    return out
+
+
 def ensure_tenant_row(conn: psycopg.Connection, tenant_id: str) -> str:
     """Insert ``dms.tenants`` when this uuid is missing. Return the uuid.
 
@@ -317,11 +357,8 @@ class OntologyDataStore:
             id=str(uuid4()),
             tenant_id=tenant_id,
             space_id=space_id,
-            source="ao-vendor",
-            provenance={
-                "vendor_sha": str(body.get("vendor_sha") or ""),
-                "served": False,
-            },
+            source=proposal_source(body),
+            provenance=proposal_provenance(body, version=True),
             created_by=created_by,
             ts=_now(),
         )
@@ -337,8 +374,8 @@ class OntologyDataStore:
                 kind=kind,
                 payload=dict(payload),
                 status="proposed",
-                source="ao-vendor",
-                provenance={"vendor_sha": str(body.get("vendor_sha") or "")},
+                source=proposal_source(body),
+                provenance=proposal_provenance(body, version=False),
                 created_by=created_by,
                 approved_by=None,
                 ts=_now(),
@@ -470,11 +507,8 @@ class PostgresOntologyDataStore:
             id=str(uuid4()),
             tenant_id=tenant,
             space_id=space,
-            source="ao-vendor",
-            provenance={
-                "vendor_sha": str(body.get("vendor_sha") or ""),
-                "served": False,
-            },
+            source=proposal_source(body),
+            provenance=proposal_provenance(body, version=True),
             created_by=created_by,
             ts=ts,
         )
@@ -490,8 +524,8 @@ class PostgresOntologyDataStore:
                     kind=kind,
                     payload=dict(payload),
                     status="proposed",
-                    source="ao-vendor",
-                    provenance={"vendor_sha": str(body.get("vendor_sha") or "")},
+                    source=proposal_source(body),
+                    provenance=proposal_provenance(body, version=False),
                     created_by=created_by,
                     approved_by=None,
                     ts=ts,

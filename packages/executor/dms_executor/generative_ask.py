@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -1575,6 +1576,15 @@ def _run_extract_loop(
         return query_sql_from_payload(body) or insights_query_sql(body)
 
     def check(sql: str) -> str | None:
+        if (
+            os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
+            and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+        ):
+            from dms_executor.onto_gap import ask_ontology, undeclared_aggregate_reason
+
+            undeclared = undeclared_aggregate_reason(sql, ask_ontology())
+            if undeclared:
+                return undeclared
         from dms_executor.def_validate import validate_generated_sql
 
         gated = validate_generated_sql(
@@ -2153,6 +2163,20 @@ def maybe_generative_ask(
                 declared = onto
                 onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
+    if (
+        os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
+        and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+    ):
+        from dms_executor.onto_gap import bind_gap_context
+
+        bind_gap_context(
+            question=q,
+            warehouse=str(lake) if lake is not None else "",
+            grantable=allowed,
+            ontology=onto,
+            space_id=space_id,
+            session_id=session_id,
+        )
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
         session_id=session_id, submit=submit, ledger_append=ledger_append,
@@ -2693,6 +2717,24 @@ def maybe_generative_ask(
                 f"{NOTE_FALLBACK_VALIDATE_PREFIX}{why}",
             ]
         else:
+            if (
+                os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
+                and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
+            ):
+                from dms_executor.onto_gap import undeclared_aggregate_reason
+
+                undeclared = undeclared_aggregate_reason(sql, onto)
+                if undeclared:
+                    return _stamp(
+                        _abstain(
+                            q,
+                            undeclared,
+                            space_id=space_id,
+                            session_id=session_id,
+                            plan_source=source,
+                            sql=sql,
+                        )
+                    )
             if grounded:
                 blocked = mismatch_envelope(
                     sql,

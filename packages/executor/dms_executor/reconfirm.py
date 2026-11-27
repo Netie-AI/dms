@@ -452,13 +452,31 @@ def apply_reconfirm(
     complete: Complete,
 ) -> dict[str, Any]:
     """Attach ``reconfirm`` when the ladder did not check an answer."""
+
+    def _finish(out: dict[str, Any]) -> dict[str, Any]:
+        # Flag off does not import the gap module and does not touch ``out``.
+        if (
+            os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() != "1"
+            or os.environ.get("DMS_ONTO_PG", "0").strip() != "1"
+        ):
+            return out
+        from dms_executor.onto_gap import note_reconfirm
+
+        note_reconfirm(
+            out,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        return out
+
     if not isinstance(env, dict):
         return env
     direct = direct_abstain_reason(env, question)
     if direct is not None:
-        return _direct_envelope(env, question, direct)
+        return _finish(_direct_envelope(env, question, direct))
     if not _unchecked(env):
-        return env
+        return _finish(env)
     from dms_executor.abstain import _envelope_reason
 
     reason = _envelope_reason(env)
@@ -531,7 +549,7 @@ def apply_reconfirm(
     from cortex_client.compute import recorded_model_calls
 
     out["model_calls"] = recorded_model_calls()
-    return out
+    return _finish(out)
 
 
 def record_decline(
