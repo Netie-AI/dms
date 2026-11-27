@@ -11,7 +11,8 @@ import ast
 import hashlib
 import json
 import sys
-import types
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -77,14 +78,39 @@ def _set(sql: str, rows: list[dict[str, Any]], *, envelope: dict[str, Any] | Non
     )
 
 
-def _install(fn: Any) -> None:
-    mod = types.ModuleType("dms_executor.shape_check")
-    mod.check_answer_shape = fn  # type: ignore[attr-defined]
-    sys.modules["dms_executor.shape_check"] = mod
+@contextmanager
+def _patched_shape(fn: Any) -> Iterator[None]:
+    """Swap ``check_answer_shape`` on the module the process already imported.
+
+    Replacing ``sys.modules["dms_executor.shape_check"]`` loads a second copy.
+    ``bind_shape_transport`` and the extract loop then use different context
+    vars, so the loop's mock never runs and the call fails closed.
+    """
+    import dms_executor.shape_check as mod
+
+    previous = mod.check_answer_shape
+    mod.check_answer_shape = fn
+    try:
+        yield
+    finally:
+        mod.check_answer_shape = previous
 
 
-def _drop_shape() -> None:
-    sys.modules.pop("dms_executor.shape_check", None)
+@contextmanager
+def _shape_module_missing() -> Iterator[None]:
+    """ImportError for one call. The same module object is put back."""
+    import dms_executor.shape_check as mod
+
+    saved = sys.modules.get("dms_executor.shape_check")
+    sys.modules["dms_executor.shape_check"] = None  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        if saved is None:
+            sys.modules.pop("dms_executor.shape_check", None)
+        else:
+            sys.modules["dms_executor.shape_check"] = saved
+        assert sys.modules.get("dms_executor.shape_check") is mod or saved is None
 
 
 def _grain_check(
@@ -274,9 +300,8 @@ def test_runtime_paths_set_a_closed_route() -> None:
 
 
 def test_wrong_grain_model_wins_and_question_text_does_not(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install(_grain_check)
     monkeypatch.delenv("DMS_AI_ARBITER", raising=False)
-    try:
+    with _patched_shape(_grain_check):
         compile_rows = [{"total_qty": 15}]
         model_rows = [{"location": "A", "qty": 10}, {"location": "B", "qty": 5}]
         ai = _set(MODEL_SQL, model_rows, envelope=_ai_env(MODEL_SQL, model_rows))
@@ -293,8 +318,6 @@ def test_wrong_grain_model_wins_and_question_text_does_not(monkeypatch: pytest.M
             compile=compiled,
             ontology_slice=GRAIN,
         )
-    finally:
-        _drop_shape()
     assert first["served_route"] == ROUTE_AI
     assert first["route_reason"] == "shape_fits"
     assert first["sql_used"] == MODEL_SQL
@@ -305,8 +328,7 @@ def test_wrong_grain_model_wins_and_question_text_does_not(monkeypatch: pytest.M
 
 
 def test_both_misfit_reconfirms_with_no_rows() -> None:
-    _install(_fixed("misfit"))
-    try:
+    with _patched_shape(_fixed("misfit")):
         one = [{"location": "A", "qty": 1}]
         env = serve(
             question="stock",
@@ -314,8 +336,6 @@ def test_both_misfit_reconfirms_with_no_rows() -> None:
             compile=_set(COMPILE_SQL, [{"total_qty": 9}], envelope=None),
             ontology_slice=GRAIN,
         )
-    finally:
-        _drop_shape()
     assert env["abstained"] is True
     assert env["rows"] == []
     assert env["values"] == []
@@ -329,8 +349,7 @@ def test_both_misfit_reconfirms_with_no_rows() -> None:
 
 
 def test_both_fit_reconfirms() -> None:
-    _install(_fixed("fits"))
-    try:
+    with _patched_shape(_fixed("fits")):
         env = serve(
             question="stock",
             ai=_set(
@@ -341,24 +360,22 @@ def test_both_fit_reconfirms() -> None:
             compile=_set(COMPILE_SQL, [{"total_qty": 9}], envelope=None),
             ontology_slice=GRAIN,
         )
-    finally:
-        _drop_shape()
     assert env["rows"] == []
     assert env["reconfirm"]["reason_code"] == "arbiter_disagree"
 
 
 def test_shape_check_missing_reconfirms_and_does_not_crash() -> None:
-    _drop_shape()
-    env = serve(
-        question="stock",
-        ai=_set(
-            MODEL_SQL,
-            [{"location": "A", "qty": 1}],
-            envelope=_ai_env(MODEL_SQL, [{"location": "A", "qty": 1}]),
-        ),
-        compile=_set(COMPILE_SQL, [{"total_qty": 9}], envelope=None),
-        ontology_slice=GRAIN,
-    )
+    with _shape_module_missing():
+        env = serve(
+            question="stock",
+            ai=_set(
+                MODEL_SQL,
+                [{"location": "A", "qty": 1}],
+                envelope=_ai_env(MODEL_SQL, [{"location": "A", "qty": 1}]),
+            ),
+            compile=_set(COMPILE_SQL, [{"total_qty": 9}], envelope=None),
+            ontology_slice=GRAIN,
+        )
     assert env["abstained"] is True
     assert env["rows"] == []
     assert env["values"] == []
@@ -370,16 +387,13 @@ def test_agree_does_not_need_the_checker() -> None:
     def _boom(*_a: Any, **_k: Any) -> None:
         raise RuntimeError("checker must not run")
 
-    _install(_boom)
-    try:
+    with _patched_shape(_boom):
         rows = [{"location": "A", "qty": 10}]
         env = serve(
             question="stock",
             ai=_set(MODEL_SQL, rows, envelope=_ai_env(MODEL_SQL, rows)),
             compile=_set(COMPILE_SQL, rows, envelope=None),
         )
-    finally:
-        _drop_shape()
     assert env["served_route"] == ROUTE_AI
     assert env["agreed_with"] == "compile"
     assert env["rows"] == rows
@@ -388,8 +402,7 @@ def test_agree_does_not_need_the_checker() -> None:
 def test_apply_generative_serves_model_sql_not_compile() -> None:
     from dms_executor.arbiter import apply_generative
 
-    _install(_grain_check)
-    try:
+    with _patched_shape(_grain_check):
         env = apply_generative(
             _ai_env(MODEL_SQL, [{"location": "A", "qty": 10}, {"location": "B", "qty": 5}]),
             question="stock value by location",
@@ -397,8 +410,6 @@ def test_apply_generative_serves_model_sql_not_compile() -> None:
             ontology_slice=GRAIN,
             examples=[{"source": "compile", "sql": COMPILE_SQL}],
         )
-    finally:
-        _drop_shape()
     assert env is not None
     assert env["served_route"] == ROUTE_AI
     assert env["sql_used"] == MODEL_SQL
