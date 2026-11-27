@@ -157,8 +157,15 @@ function reconfirmCard(envelope: AnswerEnvelope): {
   };
 }
 
-export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
-  const { selectValue, setSourcePanelOpen, ask, suggestions, productMode } = useApp();
+export function AnswerMessage({
+  envelope,
+  question,
+}: {
+  envelope: AnswerEnvelope;
+  question?: string;
+}) {
+  const { selectValue, setSourcePanelOpen, ask, suggestions, productMode, role, activeSpaceId } =
+    useApp();
   const [follow, setFollow] = useState<AnswerEnvelope | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -356,7 +363,7 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
   }
 
   if (follow) {
-    return <AnswerMessage envelope={follow} />;
+    return <AnswerMessage envelope={follow} question={question} />;
   }
 
   return (
@@ -776,7 +783,12 @@ export function AnswerMessage({ envelope }: { envelope: AnswerEnvelope }) {
         </div>
       ) : null}
       <AnswerDetails envelope={envelope}>
-        <ResultView envelope={envelope} />
+        <ResultView
+          envelope={envelope}
+          question={question}
+          spaceId={activeSpaceId}
+          role={role}
+        />
       </AnswerDetails>
     </article>
   );

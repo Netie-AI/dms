@@ -204,7 +204,9 @@ from dms_executor.verified_queries import (
     maybe_save_checked_sql,
     maybe_verified_ask,
     openvault_embedder,
+    preview_adjusted_sql,
     register_verified_query,
+    save_steward_adjusted,
 )
 from dms_executor.warehouse_browse import (
     list_promote_targets,
@@ -2217,7 +2219,9 @@ __all__ = [
     "match_service_bearer",
     "preview_bronze_table",
     "preview_warehouse_table",
+    "preview_adjusted_sql",
     "register_verified_query",
+    "save_steward_adjusted",
     "allowlisted_roots",
     "is_filesystem_uri",
     "resolve_allowlisted_file",

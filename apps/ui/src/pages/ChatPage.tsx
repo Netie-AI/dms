@@ -3,7 +3,15 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
 import { ResultView } from "@/components/studio/ResultView";
 import { ScopeChip } from "@/components/ScopeChip";
-import { useApp } from "@/context/AppContext";
+import { useApp, type ChatMessage } from "@/context/AppContext";
+
+function askedBefore(messages: ChatMessage[], index: number): string {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const item = messages[i];
+    if (item.role === "user") return item.text;
+  }
+  return "";
+}
 
 export function ChatPage() {
   const {
@@ -185,7 +193,7 @@ export function ChatPage() {
                 Demo mode — L2 badges only. Numbers come from DuckDB, not a certified Cortex path.
               </p>
             )}
-            {messages.map((m) =>
+            {messages.map((m, index) =>
               m.role === "user" ? (
                 <div
                   key={m.id}
@@ -194,7 +202,7 @@ export function ChatPage() {
                   {m.text}
                 </div>
               ) : (
-                <AnswerMessage key={m.id} envelope={m.envelope} />
+                <AnswerMessage key={m.id} envelope={m.envelope} question={askedBefore(messages, index)} />
               ),
             )}
             {askError && (

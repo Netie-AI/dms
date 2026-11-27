@@ -14,6 +14,7 @@ import {
   validateModelSpec,
   type ModelChartSpec,
 } from "./chartSpec";
+import { AdjustSqlPanel } from "./AdjustSqlPanel";
 import { StampsPanel } from "./StampsPanel";
 
 /** Fields this view reads. Stamp keys stay optional and are not defaulted. */
@@ -56,6 +57,11 @@ type Props = {
   envelope: StudioAskEnvelope | null;
   stages?: AskStageEvent[];
   onCancel?: () => void;
+  /** The ask this answer belongs to. Save uses it. Absent hides nothing by itself. */
+  question?: string;
+  spaceId?: string | null;
+  /** Only a steward mounts Adjust SQL. Anyone else gets the same markup as before. */
+  role?: string | null;
 };
 
 /**
@@ -63,7 +69,7 @@ type Props = {
  * Chart is SimpleChart (apps/ui/src/components/SimpleChart.tsx), the SVG
  * chart already in the UI. No chart package is added.
  */
-export function ResultView({ envelope, stages, onCancel }: Props) {
+export function ResultView({ envelope, stages, onCancel, question, spaceId, role }: Props) {
   const [page, setPage] = useState(0);
   const [copied, setCopied] = useState(false);
   const [follow, setFollow] = useState<StudioAskEnvelope | null>(null);
@@ -252,6 +258,9 @@ export function ResultView({ envelope, stages, onCancel }: Props) {
             no SQL
           </p>
         )}
+        {role === "steward" && sql ? (
+          <AdjustSqlPanel sql={sql} question={question ?? ""} spaceId={spaceId ?? null} />
+        ) : null}
       </div>
 
       {!abstained && spec ? (
