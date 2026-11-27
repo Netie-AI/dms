@@ -325,9 +325,9 @@ export function OntologyPage() {
   return (
     <Page>
       <PageHeader
-        phase="Ontology · Cortex registry"
+        phase="Shared vocabulary"
         title="Ontology"
-        blurb="The shared vocabulary underneath every answer: what objects exist, how they join, which properties an agent may see, what may be written back, and the governed ways to ask. Authored as YAML in the engine pack — this page reads it, never edits it."
+        blurb="The names, links, and measures every answer is allowed to use."
         actions={
           <button
             type="button"

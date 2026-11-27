@@ -176,7 +176,7 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
         Studio ask
       </p>
       <p className="mt-2 max-w-3xl text-sm text-[var(--color-ink-muted)]">
-        Plan first. SQL runs only after confirm. An edit re-plans. Not COMPLETE.
+        Plan first. SQL runs only after you confirm. An edit makes a new plan.
       </p>
       <label className="mt-3 block text-sm text-[var(--color-ink)]" htmlFor="studio-chat-question">
         Question

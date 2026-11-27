@@ -72,9 +72,9 @@ export function InsightsPageView({
   return (
     <div className="mx-auto max-w-4xl p-6">
       <PageHeader
-        phase="Insights"
+        phase="Checked figures"
         title="Proven insights"
-        blurb="Every figure is a cell of a query that ran twice through Cortex and added back to its total. A steward approves a pin; nothing is pinned or replayed on its own."
+        blurb="Each figure comes from a query that was run twice and checked against its total."
       />
       {view.kind === "error" ? (
         <p className="mt-6 text-sm" data-testid="insights-error">
