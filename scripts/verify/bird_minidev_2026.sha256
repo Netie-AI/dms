@@ -1,0 +1,4 @@
+# BIRD mini-dev 2026 corpus checksum. The JSON stays outside this repo.
+# Replace UNPINNED with the 64-hex sha256 of the downloaded file after the
+# first reviewed fetch. Until then an armed BIRD score is refused.
+UNPINNED

@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - R1-EVAL-01: one eval report for the 52, pack H, BIRD, and an ambiguity pack
+
+- **Harness.** `scripts/verify/eval_all.py --stub` writes `report.md` and `report.json`. It grades the 52 with `grade52 --main` and `--main --ai-first`. Pack H, BIRD execution accuracy, and OpenVault hop-stamp pin splits are `unmeasured (stub)`. `--armed` is the box run and refuses when Cortex settings are missing. No new serving flag.
+- **CLARIFY.** grade52 records a CLARIFY bucket from the product route `needs_clarification` or a clarify block. It is a pass only when `founder_f2.yaml` says `expect: clarify_or_answer`. Question text is not read.
+- **Gold.** `ops_spend_boundary` is a declared refusal in the pack data. A served row is `REFUSAL_WRONG`. It is no longer gold-broken.
+- **Ambiguity pack.** 42 synthetic cases on the demo schema (ambiguous, answerable, unanswerable). Not copied from pack H.
+- **BIRD.** Download stays outside the repo and is refused while `scripts/verify/bird_minidev_2026.sha256` says `UNPINNED`. No estimated EX.
+- **Stub 52.** flag off: correct=43 WRONG=0 refusal_wrong=0 reconfirm=5 clarify=0 abstain=0 AI=0 rule=43 unattributed=0. flag on (existing AI-first stub): correct=0 WRONG=0 reconfirm=48 clarify=0 AI=0 rule=0. p50 unmeasured (stub). Not PASS.
+
 ## 2026-11-27 - R1-UI-COPY-01: plain page headers, no developer notes
 
 - **Copy.** Page headers say what the page does in one sentence. Eyebrow codes, buyer-walk notes, script names, and the refuse demo are gone. The five starter questions stay.

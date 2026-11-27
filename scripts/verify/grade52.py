@@ -182,8 +182,16 @@ BUCKET_EMPTY = "EMPTY_GOLD"
 BUCKET_REFUSAL_OK = "REFUSAL_OK"
 BUCKET_REFUSAL_WRONG = "REFUSAL_WRONG"
 BUCKET_GOLD_BROKEN = "GOLD_BROKEN"
+# A clarify is its own outcome. It is a pass only when founder_f2.yaml says so.
+BUCKET_CLARIFY = "CLARIFY"
 # AI-first profile only: correct after the user's Yes, never first-pass correct.
 BUCKET_CORRECT_AFTER_YES = "CORRECT_AFTER_YES"
+# Data file beside the pack. Not a code table of phrasings.
+FOUNDER_F2_NAME = "founder_f2.yaml"
+EXPECT_CLARIFY_OR_ANSWER = "clarify_or_answer"
+_RULING_EXPECTS = frozenset({EXPECT_CLARIFY_OR_ANSWER})
+# OpenVault hop stamp. A body ``served_model`` without this header is not a hop.
+_HOP_MODEL_HEADER = "x-openvault-served-model"
 PROFILE_AI_FIRST = "ai-first"
 PROFILES = (PROFILE_AI_FIRST,)
 AI_FIRST_FLAGS: dict[str, str] = {
@@ -201,6 +209,7 @@ _BUCKET_KEYS = (
     "correct",
     "wrong",
     "reconfirm",
+    "clarify",
     "abstain",
     "refusal_ok",
     "refusal_wrong",
@@ -210,7 +219,8 @@ _BUCKET_KEYS = (
 # Bump when a bucket rule or the row comparison changes. A baseline graded by
 # another version is not comparable and is refused.
 # 4: printed wrong includes refusal_wrong. not_scored lists pin_mismatch ids.
-GRADER_VERSION = 4
+# 5: CLARIFY is its own bucket. clarify_or_answer is read from founder_f2.yaml.
+GRADER_VERSION = 5
 CONFIDENCE = 0.95
 # Higher is worse. A case's worst-of-runs bucket is the one ranked highest.
 _SEVERITY = {
@@ -220,6 +230,7 @@ _SEVERITY = {
     BUCKET_RECONFIRM: 2,
     BUCKET_GOLD_BROKEN: 2,
     BUCKET_EMPTY: 1,
+    BUCKET_CLARIFY: 1,
     BUCKET_CORRECT_AFTER_YES: 1,
     BUCKET_CORRECT: 0,
     BUCKET_REFUSAL_OK: 0,
@@ -271,12 +282,21 @@ _OV_REQ_PER_MIN = 20
 _OV_TOK_PER_MIN = 40_000
 _ABSTAIN_PART_BUCKETS = {
     BUCKET_RECONFIRM: "reconfirm",
+    BUCKET_CLARIFY: "clarify",
     BUCKET_REFUSAL_OK: "refusal_ok",
     BUCKET_GOLD_BROKEN: "gold_broken",
     BUCKET_ABSTAIN: "abstain",
     BUCKET_EMPTY: "empty_gold",
 }
-_ABSTAIN_PARTS = ("reconfirm", "refusal_ok", "gold_broken", "abstain", "empty_gold", "other")
+_ABSTAIN_PARTS = (
+    "reconfirm",
+    "clarify",
+    "refusal_ok",
+    "gold_broken",
+    "abstain",
+    "empty_gold",
+    "other",
+)
 _PATH_DETAIL = ("L0", "L1", "compile", "ladder", "oracle")
 # Ontology compile is a rule path. A model name on the same envelope does not
 # overturn it. ``ontology_compile:*`` notes use the same prefix.
@@ -959,6 +979,91 @@ def _block_requested(block: Mapping[str, Any]) -> str | None:
     return _stamp_text(block, "model_requested") or None
 
 
+def _is_clarify(env: Mapping[str, Any]) -> bool:
+    """A product clarify. The route or the clarify block, never the question text."""
+    if str(env.get("route") or "").lower() == "needs_clarification":
+        return True
+    block = env.get("clarify")
+    return isinstance(block, Mapping) and block.get("blocks") is True
+
+
+def _header_model(headers: Mapping[str, Any]) -> str | None:
+    for key, value in headers.items():
+        if str(key).lower() != _HOP_MODEL_HEADER:
+            continue
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def hop_model_from(*nodes: Mapping[str, Any] | None) -> str | None:
+    """Model named by an OpenVault hop stamp. A bare ``served_model`` is not one.
+
+    Accepted stamps: header ``x-openvault-served-model``, ``ov_hop.served_model``,
+    or ``hop_model`` / ``hop_served_model`` copied off that stamp. Nothing else.
+    """
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        headers = node.get("headers")
+        if isinstance(headers, Mapping):
+            found = _header_model(headers)
+            if found:
+                return found
+        found = _header_model(node)
+        if found:
+            return found
+        hop = node.get("ov_hop")
+        if isinstance(hop, Mapping):
+            for key in ("served_model", "hop_served_model", "hop_model"):
+                raw = hop.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+        for key in ("hop_model", "hop_served_model"):
+            raw = node.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+    return None
+
+
+def load_founder_rulings(path: Path | None = None) -> dict[str, str]:
+    """``id -> expect`` from the founder file. Missing file means no rulings.
+
+    The only expect is ``clarify_or_answer``. A phrasing never decides it.
+    """
+    file = path if path is not None else PACK_DIR / FOUNDER_F2_NAME
+    if not file.is_file():
+        return {}
+    data = _load_yaml(file)
+    rows = data.get("rulings")
+    if not isinstance(rows, list):
+        raise SystemExit("grade52: founder_f2.yaml rulings must be a list")
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise SystemExit("grade52: founder ruling is not a mapping")
+        qid = str(row.get("id") or "").strip()
+        expect = str(row.get("expect") or "").strip()
+        if not qid or expect not in _RULING_EXPECTS:
+            raise SystemExit(
+                "grade52: founder ruling needs an id and expect clarify_or_answer"
+            )
+        out[qid] = expect
+    return out
+
+
+def _with_ruling(row: dict[str, Any], expect: str | None) -> dict[str, Any]:
+    """A clarify or a gold match meets ``clarify_or_answer``. Anything else does not."""
+    if expect == EXPECT_CLARIFY_OR_ANSWER:
+        row["expect_met"] = row["bucket"] in {
+            BUCKET_CLARIFY,
+            BUCKET_CORRECT,
+            BUCKET_CORRECT_AFTER_YES,
+        }
+    return row
+
+
 def grade_case(
     *,
     gold: list[dict[str, Any]] | None,
@@ -969,12 +1074,15 @@ def grade_case(
     trap: bool = False,
     gold_broken: bool = False,
     model_sql: str | None = None,
+    expect: str | None = None,
 ) -> dict[str, Any]:
     """One case. Traps are refusals. Gold-broken is an abstain with no oracle.
 
     A served answer on a gold-broken case is wrong. ``gold is None`` without
     ``gold_broken`` is empty gold (no certified rows). ``model_sql`` is what
     Cortex's generate returned for this case; only an armed capture has it.
+    ``expect`` comes from the founder file. A clarify is CLARIFY, and it meets
+    the ruling only when that expect is ``clarify_or_answer``.
     """
     badge = env.get("badge")
     route = env.get("route")
@@ -992,36 +1100,55 @@ def grade_case(
         "served_n": served_n,
         "model_calls": _model_call_count(env),
     }
+
+    def finish(row: dict[str, Any]) -> dict[str, Any]:
+        return _with_ruling(row, expect)
+
     if _reconfirm_offer(env):
-        return {**base, "bucket": BUCKET_RECONFIRM, "reason": "reconfirm", "answered": False}
+        return finish(
+            {**base, "bucket": BUCKET_RECONFIRM, "reason": "reconfirm", "answered": False}
+        )
     if env.get("reconfirm_accepted") is True and different_measure(
         gold_sql, str(env.get("sql_used") or "")
     ):
-        return {**base, "bucket": BUCKET_WRONG, "reason": "wrong measure"}
+        return finish({**base, "bucket": BUCKET_WRONG, "reason": "wrong measure"})
+    if _is_clarify(env):
+        return finish(
+            {
+                **base,
+                "bucket": BUCKET_CLARIFY,
+                "reason": "clarify",
+                "answered": False,
+            }
+        )
     if trap:
         if _is_abstain(env):
-            return {**base, "bucket": BUCKET_REFUSAL_OK, "reason": "correct refusal"}
+            return finish({**base, "bucket": BUCKET_REFUSAL_OK, "reason": "correct refusal"})
         unit = "row" if served_n == 1 else "rows"
-        return {
-            **base,
-            "bucket": BUCKET_REFUSAL_WRONG,
-            "reason": f"served with {served_n} {unit}",
-        }
+        return finish(
+            {
+                **base,
+                "bucket": BUCKET_REFUSAL_WRONG,
+                "reason": f"served with {served_n} {unit}",
+            }
+        )
     if gold_broken:
         if _is_abstain(env):
-            return {**base, "bucket": BUCKET_GOLD_BROKEN, "reason": "no certified gold"}
-        return {**base, "bucket": BUCKET_WRONG, "reason": "served on gold-broken"}
+            return finish({**base, "bucket": BUCKET_GOLD_BROKEN, "reason": "no certified gold"})
+        return finish({**base, "bucket": BUCKET_WRONG, "reason": "served on gold-broken"})
     if gold is None or gold == []:
         if _is_abstain(env):
-            return {**base, "bucket": BUCKET_EMPTY, "reason": "abstain"}
+            return finish({**base, "bucket": BUCKET_EMPTY, "reason": "abstain"})
         unit = "row" if served_n == 1 else "rows"
-        return {
-            **base,
-            "bucket": BUCKET_EMPTY,
-            "reason": f"served with {served_n} {unit}",
-        }
+        return finish(
+            {
+                **base,
+                "bucket": BUCKET_EMPTY,
+                "reason": f"served with {served_n} {unit}",
+            }
+        )
     if _is_abstain(env):
-        return {**base, "bucket": BUCKET_ABSTAIN, "reason": "abstain"}
+        return finish({**base, "bucket": BUCKET_ABSTAIN, "reason": "abstain"})
     keys = order_keys(str(gold_sql)) if gold_sql else None
     bucket, reason = compare_rows(
         gold,
@@ -1035,8 +1162,10 @@ def grade_case(
         # served badge, no audit_id, no sql_used, orphan figures) is WRONG.
         invalid = envelope_violation(env)
         if invalid:
-            return {**base, "bucket": BUCKET_WRONG, "reason": f"envelope invalid: {invalid}"}
-    return {**base, "bucket": bucket, "reason": reason}
+            return finish(
+                {**base, "bucket": BUCKET_WRONG, "reason": f"envelope invalid: {invalid}"}
+            )
+    return finish({**base, "bucket": bucket, "reason": reason})
 
 
 def yes_offer(env: Mapping[str, Any]) -> str | None:
@@ -1187,6 +1316,7 @@ def grade_case_ai_first(
     trap: bool = False,
     gold_broken: bool = False,
     model_sql: str | None = None,
+    expect: str | None = None,
     yes: Mapping[str, Any] | None = None,
     example_hashes: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
@@ -1213,6 +1343,7 @@ def grade_case_ai_first(
             trap=trap,
             gold_broken=gold_broken,
             model_sql=model_sql,
+            expect=expect,
         )
         if has_block:
             case["offer"] = "trap" if offered else "empty_suggestion"
@@ -1225,6 +1356,7 @@ def grade_case_ai_first(
         as_of=as_of,
         gold_broken=gold_broken,
         model_sql=model_sql,
+        expect=expect,
     )
     first["offer"] = "suggestion"
     yes_env = yes.get("env") if isinstance(yes, Mapping) else None
@@ -1239,6 +1371,7 @@ def grade_case_ai_first(
         as_of=as_of,
         gold_broken=gold_broken,
         model_sql=_record_model_sql(yes) if isinstance(yes, Mapping) else None,
+        expect=expect,
     )
     if not follow["answered"]:
         reoffer = _is_abstain(yes_env) and yes_offer(yes_env) is not None
@@ -1261,7 +1394,7 @@ def grade_case_ai_first(
         "first_pass": {key: first.get(key) for key in view},
     }
     yes_hashes = _block_hashes(yes.get("served")) if isinstance(yes, Mapping) else frozenset()
-    return _mark_copy(case, yes_env, example_hashes | yes_hashes)
+    return _mark_copy(_with_ruling(case, expect), yes_env, example_hashes | yes_hashes)
 
 
 def envelope_violation(env: Mapping[str, Any]) -> str:
@@ -1547,6 +1680,7 @@ def tally(cases: Sequence[Mapping[str, Any]], *, yes_pass: bool = False) -> dict
         BUCKET_CORRECT: "correct",
         BUCKET_WRONG: "wrong",
         BUCKET_RECONFIRM: "reconfirm",
+        BUCKET_CLARIFY: "clarify",
         BUCKET_ABSTAIN: "abstain",
         BUCKET_REFUSAL_OK: "refusal_ok",
         BUCKET_REFUSAL_WRONG: "refusal_wrong",
@@ -1573,6 +1707,7 @@ def tally(cases: Sequence[Mapping[str, Any]], *, yes_pass: bool = False) -> dict
         "graded": counts["correct"]
         + counts["wrong"]
         + counts["abstain"]
+        + counts["clarify"]
         + counts.get("correct_after_yes", 0),
     }
 
@@ -1613,6 +1748,7 @@ def grade_envelopes(
     questions = list(pack["questions"])
     _check_pack_size(len(questions))
     flagged = set(pack_gold_served_ids(questions, oracles))
+    rulings = load_founder_rulings(PACK_DIR / FOUNDER_F2_NAME)
     by_id: dict[str, Any] = {}
     model_sql_by_id: dict[str, str | None] = {}
     served_by_id: dict[str, Mapping[str, Any]] = {}
@@ -1640,6 +1776,7 @@ def grade_envelopes(
                 raise SystemExit(f"missing envelope for {qid}")
             oracle = oracles.get(qid)
             trap = _is_trap(question, oracle if isinstance(oracle, Mapping) else None)
+            expect = rulings.get(qid)
             sql = None if trap else _certified_sql(oracle if isinstance(oracle, Mapping) else None)
             broken = sql is None and not trap
             if sql is None:
@@ -1657,6 +1794,7 @@ def grade_envelopes(
                     trap=trap,
                     gold_broken=broken,
                     model_sql=model_sql_by_id.get(qid),
+                    expect=expect,
                     yes=yes_by_id.get(qid),
                     example_hashes=_block_hashes(served_by_id.get(qid)),
                 )
@@ -1670,8 +1808,11 @@ def grade_envelopes(
                     trap=trap,
                     gold_broken=broken,
                     model_sql=model_sql_by_id.get(qid),
+                    expect=expect,
                 )
             row["id"] = qid
+            if expect:
+                row["founder_expect"] = expect
             row["pack_gold_served"] = qid in flagged
             block = served_by_id.get(qid) or {}
             if row.get("after_yes"):
@@ -1684,6 +1825,10 @@ def grade_envelopes(
                 env, "served_model"
             )
             row["pin_mismatch"] = _pin_mismatch(row["model_requested"] or "", row["served_model"])
+            row["hop_model"] = hop_model_from(block, env if isinstance(env, Mapping) else None)
+            requested = str(row.get("model_requested") or "")
+            hop = str(row.get("hop_model") or "")
+            row["hop_mismatch"] = bool(hop and requested and hop != requested)
             cases.append(row)
     finally:
         con.close()
@@ -1730,6 +1875,9 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
                 "pack_gold_served": bool(item.get("pack_gold_served")),
                 "served_n": item.get("served_n"),
                 "not_scored": reason or None,
+                "hop_model": item.get("hop_model") or None,
+                **({"founder_expect": item["founder_expect"]} if item.get("founder_expect") else {}),
+                **({"expect_met": bool(item["expect_met"])} if "expect_met" in item else {}),
                 **({"runs": item["runs"]} if "runs" in item else {}),
                 **{key: item[key] for key in _AI_FIRST_CASE_KEYS if key in item},
             }
@@ -1750,6 +1898,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "correct": report["correct"],
         "wrong": headline_wrong(report),
         "reconfirm": report["reconfirm"],
+        "clarify": int(report.get("clarify") or 0),
         "abstain": report["abstain"],
         "refusal_ok": report["refusal_ok"],
         "refusal_wrong": report["refusal_wrong"],
@@ -1765,6 +1914,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "grader_version": GRADER_VERSION,
         "tries": tries_line(report["cases"]),
         "not_scored": not_scored_entries(report["cases"]),
+        "pin": pin_split(report["cases"]),
         "risk": risk_bounds(report["cases"]),
         "runs": int(report.get("runs") or 1),
         "unstable": int(report.get("unstable") or 0),
@@ -1813,7 +1963,7 @@ def _require_label(report: Mapping[str, Any]) -> None:
 
 def _bucket_count(report: Mapping[str, Any], key: str) -> int:
     if key not in report:
-        if key == "reconfirm":
+        if key in {"reconfirm", "clarify"}:
             return 0
         raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
     return int(report[key])
@@ -2053,6 +2203,39 @@ def not_scored_line(cases: Sequence[Mapping[str, Any]]) -> str:
     return f"{head} {shown}"
 
 
+def pin_split(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Served answers, and how many of them carry a matching OpenVault hop stamp.
+
+    A served answer with no hop stamp is not scored on the pin. That is the
+    gap a run must show beside the all-served count. A bare ``served_model``
+    does not count as a hop.
+    """
+    served = 0
+    on_pin = 0
+    for item in cases:
+        if item.get("answered") is not True:
+            continue
+        served += 1
+        hop = str(item.get("hop_model") or "").strip()
+        requested = str(item.get("model_requested") or "").strip()
+        if hop and (not requested or hop == requested) and not item.get("hop_mismatch"):
+            on_pin += 1
+    return {
+        "all_served": served,
+        "scored_on_pin": on_pin,
+        "not_scored_on_pin": served - on_pin,
+    }
+
+
+def pin_split_line(cases: Sequence[Mapping[str, Any]]) -> str:
+    counts = pin_split(cases)
+    hops = sum(1 for item in cases if str(item.get("hop_model") or "").strip())
+    return (
+        f"pin all_served={counts['all_served']} scored_on_pin={counts['scored_on_pin']} "
+        f"not_scored_on_pin={counts['not_scored_on_pin']} hop_stamps={hops}"
+    )
+
+
 def headline_wrong(report: Mapping[str, Any]) -> int:
     """Wrong served answers. A trap that was served counts. The WRONG=0 bar reads this."""
     return _bucket_count(report, "wrong") + _bucket_count(report, "refusal_wrong")
@@ -2081,7 +2264,8 @@ def summary_line(report: Mapping[str, Any]) -> str:
     return (
         f"{head} pack_gold_served={report['pack_gold_served']} "
         f"{report['n']}: correct={counts['correct']}{after_yes} wrong={shown_wrong} "
-        f"reconfirm={counts['reconfirm']} abstain={counts['abstain']} "
+        f"reconfirm={counts['reconfirm']} clarify={counts['clarify']} "
+        f"abstain={counts['abstain']} "
         f"refusal_ok={counts['refusal_ok']} "
         f"refusal_wrong={counts['refusal_wrong']} empty_gold={counts['empty_gold']} "
         f"gold_broken={counts['gold_broken']} mode={report['mode']}"
@@ -2822,6 +3006,7 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
     model_sql: str | None = None
     requested: str | None = None
     fail: str | None = None
+    hop: str | None = None
     calls = 0
     reported = False
     for payload in payloads:
@@ -2829,6 +3014,9 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
             continue
         calls += 1
         reported = reported or _model_reported(payload)
+        stamped = hop_model_from(payload)
+        if stamped:
+            hop = stamped
         asked = cortex_requested(payload)
         sql = str(payload.get("query_sql") or "").strip() or insights_query_sql(payload)
         if sql:
@@ -2849,6 +3037,7 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
         "row_count": len(rows) if isinstance(rows, list) else None,
         "text": env.get("text"),
         "served_model": env.get("served_model"),
+        "hop_model": hop,
         "model_requested": requested,
         "model_requested_source": REQUESTED_FROM_CORTEX_STAMP if requested else None,
         "insights_calls": calls,
@@ -3587,6 +3776,7 @@ def _finish(
     print(prefix + split_line(report))
     print(prefix + tries_line(report["cases"]))
     print(prefix + not_scored_line(report["cases"]))
+    print(prefix + pin_split_line(report["cases"]))
     if _yes_pass(report):
         print(prefix + yes_line(report["cases"]))
         print(prefix + copy_line(report))
@@ -4247,7 +4437,7 @@ def self_test() -> dict[str, str]:
         }
     )
     if not check_line.endswith(
-        "52: correct=23 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+        "52: correct=23 wrong=0 reconfirm=0 clarify=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=served"
     ):
         raise SystemExit("self-test: summary shape drifted")
@@ -4453,6 +4643,88 @@ def self_test() -> dict[str, str]:
         "cq_pin=pin_mismatch:openai/gpt-oss-120b/openai/gpt-oss-20b"
     ):
         raise SystemExit(f"self-test: pin mismatch was scored ({not_scored_line(sample)})")
+    clarify_ruled = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT 1 AS n",
+        env={
+            "badge": "ABSTAIN",
+            "route": "needs_clarification",
+            "abstained": True,
+            "rows": [],
+            "question": "clarify please",
+        },
+        served_rows=[],
+        as_of="2026-10-09",
+        expect=EXPECT_CLARIFY_OR_ANSWER,
+    )
+    clarify_plain = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT 1 AS n",
+        env={"badge": "ABSTAIN", "route": "needs_clarification", "abstained": True},
+        served_rows=[],
+        as_of="2026-10-09",
+    )
+    not_clarify = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT 1 AS n",
+        env={
+            "badge": "ABSTAIN",
+            "route": "abstain",
+            "abstained": True,
+            "text": "please clarify the measure",
+        },
+        served_rows=[],
+        as_of="2026-10-09",
+        expect=EXPECT_CLARIFY_OR_ANSWER,
+    )
+    blocks = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "ABSTAIN", "route": "abstain", "abstained": True, "clarify": {"blocks": True}},
+        served_rows=[],
+        as_of="2026-10-09",
+        expect=EXPECT_CLARIFY_OR_ANSWER,
+    )
+    if clarify_ruled["bucket"] != BUCKET_CLARIFY or clarify_ruled.get("expect_met") is not True:
+        raise SystemExit(f"self-test: ruled clarify was not a pass ({clarify_ruled})")
+    if clarify_plain["bucket"] != BUCKET_CLARIFY or clarify_plain.get("expect_met") is True:
+        raise SystemExit("self-test: an unmarked clarify counted as a ruled pass")
+    if not_clarify["bucket"] != BUCKET_ABSTAIN:
+        raise SystemExit("self-test: question text was read as a clarify")
+    if blocks["bucket"] != BUCKET_CLARIFY or blocks.get("expect_met") is not True:
+        raise SystemExit("self-test: clarify.blocks was ignored")
+    hop_only = hop_model_from({"headers": {"X-OpenVault-Served-Model": "openai/gpt-oss-120b"}})
+    not_hop = hop_model_from({"served_model": "openai/gpt-oss-120b"})
+    if hop_only != "openai/gpt-oss-120b" or not_hop is not None:
+        raise SystemExit("self-test: hop stamp was not the OpenVault header")
+    pin_cases = [
+        {"answered": True, "hop_model": "openai/gpt-oss-120b", "model_requested": "openai/gpt-oss-120b"},
+        {"answered": True, "hop_model": "", "model_requested": "openai/gpt-oss-120b", "served_model": "openai/gpt-oss-120b"},
+        {"answered": False, "hop_model": "openai/gpt-oss-120b"},
+    ]
+    split_pin = pin_split(pin_cases)
+    if split_pin != {"all_served": 2, "scored_on_pin": 1, "not_scored_on_pin": 1}:
+        raise SystemExit(f"self-test: pin split drifted ({split_pin})")
+    ruling_dir = Path(tempfile.mkdtemp(prefix="grade52-f2-"))
+    good_ruling = ruling_dir / "founder_f2.yaml"
+    good_ruling.write_text(
+        "rulings:\n  - id: plant_q\n    expect: clarify_or_answer\n",
+        encoding="utf-8",
+    )
+    if load_founder_rulings(good_ruling) != {"plant_q": EXPECT_CLARIFY_OR_ANSWER}:
+        raise SystemExit("self-test: founder ruling file was not read as data")
+    bad_ruling = ruling_dir / "bad.yaml"
+    bad_ruling.write_text(
+        "rulings:\n  - id: plant_q\n    expect: always_pass\n",
+        encoding="utf-8",
+    )
+    try:
+        load_founder_rulings(bad_ruling)
+    except SystemExit as exc:
+        if "clarify_or_answer" not in str(exc):
+            raise
+    else:
+        raise SystemExit("self-test: an unknown founder expect was accepted")
     shown = summary_line(
         {
             "mode": MODE_SERVED,
