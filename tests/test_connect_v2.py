@@ -822,13 +822,14 @@ def test_connection_survives_a_new_app(
     canary = pg["password"]
     secrets = {"pg-kid": _secret(pg["user"], pg["password"])}
     seen: list[tuple[str, tuple[str, ...]]] = []
-    set_auto_onto_hook(lambda source_id, tables: seen.append((source_id, tables)))
     client, _cortex = _client(
         monkeypatch,
         v2="1",
         secrets=secrets,
         database_url=os.environ["DATABASE_URL"],
     )
+    # _client clears connectors, which drops a hook set before the app exists.
+    set_auto_onto_hook(lambda source_id, tables: seen.append((source_id, tables)))
     try:
         saved = client.post(
             "/v1/connect/sources",
