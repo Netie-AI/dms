@@ -346,48 +346,37 @@ JOIN_HOLE_STILL: dict[str, str] = {
     ),
     "scalar_constant": f"SELECT COUNT(*) AS n, (SELECT 1) AS k FROM {SCHOOLS}",
 }
-#: Answered on the parent. Not one read, so the same gate now abstains.
-#: Named so the stop is not silent. #525 may allow a proven shape back.
-JOIN_HOLE_STOPPED: dict[str, dict[str, Any]] = {
-    "cte_filtered_against_its_own_average": {
-        "sql": (
-            f"WITH c AS (SELECT district_id, COUNT(*) AS n FROM {SCHOOLS} GROUP BY district_id) "
-            "SELECT SUM(n) AS total FROM c WHERE n > (SELECT AVG(n) FROM c)"
-        ),
-        "reason": "unverified_join:cte_over_join",
-    },
-    "cte_divided_by_its_own_total": {
-        "sql": (
-            f"WITH c AS (SELECT district_id, COUNT(*) AS n FROM {SCHOOLS} GROUP BY district_id) "
-            "SELECT SUM(n) * 100 / (SELECT SUM(n) FROM c) AS total FROM c"
-        ),
-        "reason": "unverified_join:cte_over_join",
-    },
-    "constant_union_branch": {
-        "sql": f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} UNION ALL SELECT 0",
-        "reason": "unverified_join:set_operation",
-    },
-    "one_row_constant_cross_join": {
-        "sql": (
-            f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} o "
-            "CROSS JOIN (SELECT 1 AS n) v"
-        ),
-        "reason": "unverified_join:derived_table_over_join",
-    },
-    "recursive_keyword_without_recursion": {
-        "sql": (
-            f"WITH RECURSIVE c AS (SELECT * FROM {ENROLL}) "
-            "SELECT SUM(CAST(students AS INTEGER)) AS total FROM c"
-        ),
-        "reason": "unverified_join:cte_over_join",
-    },
-    "cte_scalar_count_reread": {
-        "sql": (
-            f"WITH c AS (SELECT * FROM {SCHOOLS}) "
-            "SELECT (SELECT COUNT(*) FROM c) AS total FROM c"
-        ),
-        "reason": "unverified_join:cte_over_join",
-    },
+#: One base table and no join. Same outcome as the parent: the gate allows it.
+#: A scalar reread, a one-row constant, and WITH RECURSIVE that never names
+#: itself are not joins.
+JOIN_HOLE_KEEP: dict[str, str] = {
+    "cte_filtered_against_its_own_average": (
+        f"WITH c AS (SELECT district_id, COUNT(*) AS n FROM {SCHOOLS} GROUP BY district_id) "
+        "SELECT SUM(n) AS total FROM c WHERE n > (SELECT AVG(n) FROM c)"
+    ),
+    "cte_divided_by_its_own_total": (
+        f"WITH c AS (SELECT district_id, COUNT(*) AS n FROM {SCHOOLS} GROUP BY district_id) "
+        "SELECT SUM(n) * 100 / (SELECT SUM(n) FROM c) AS total FROM c"
+    ),
+    "one_row_constant_cross_join": (
+        f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} o "
+        "CROSS JOIN (SELECT 1 AS n) v"
+    ),
+    "recursive_keyword_without_recursion": (
+        f"WITH RECURSIVE c AS (SELECT * FROM {ENROLL}) "
+        "SELECT SUM(CAST(students AS INTEGER)) AS total FROM c"
+    ),
+    "cte_scalar_count_reread": (
+        f"WITH c AS (SELECT * FROM {SCHOOLS}) "
+        "SELECT (SELECT COUNT(*) FROM c) AS total FROM c"
+    ),
+}
+#: UNION ALL SELECT 0 adds a 0 row. The old total can be wrong. Not a join
+#: and not an abstain: the envelope shows this SQL and asks back.
+JOIN_HOLE_RECONFIRM: dict[str, str] = {
+    "constant_union_branch": (
+        f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} UNION ALL SELECT 0"
+    ),
 }
 
 
@@ -880,10 +869,10 @@ def test_join_rule_units(
     # JOIN-HOLE-01. Must-fail on the parent early return (it returned None).
     for name, shape in JOIN_HOLE_SHAPES.items():
         assert why(shape["sql"]) == shape["reason"], (name, why(shape["sql"]))
-    for name, shape in JOIN_HOLE_STOPPED.items():
-        assert why(shape["sql"]) == shape["reason"], (name, why(shape["sql"]))
-    for name, sql in JOIN_HOLE_STILL.items():
+    for name, sql in {**JOIN_HOLE_STILL, **JOIN_HOLE_KEEP}.items():
         assert why(sql) is None, (name, why(sql))
+    for name, sql in JOIN_HOLE_RECONFIRM.items():
+        assert why(sql) == "unverified_join:rowset_reconfirm", (name, why(sql))
     # A base-table self-join already reached the gate. It still does.
     assert (why(
         f"SELECT SUM(CAST(a.school_id AS INTEGER)) AS total FROM {SCHOOLS} a "

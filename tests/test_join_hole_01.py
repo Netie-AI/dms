@@ -5,6 +5,9 @@ Must-fail on the parent early return. Each shape in ``JOIN_HOLE_SHAPES`` names
 one base table and reads it twice. The parent served ``wrong`` (L2_VALIDATED,
 the figure in rows, values and text). The true one-table figure is ``true``.
 After the fix every door abstains ``unverified_join`` with no row and no figure.
+``JOIN_HOLE_KEEP`` is one base table and no join, so it still answers.
+``JOIN_HOLE_RECONFIRM`` can change the row set: the SQL is shown and nothing
+is served.
 
 Doors: generate (default flags), extract loop (``DMS_CLOOP_B=1``), contract
 ``sql_used``. No live model: the generate leg returns the fixed SQL.
@@ -56,6 +59,24 @@ def _assert_no_figure(env: dict[str, Any], shape: dict[str, Any], gap: str) -> N
     assert shape["sql"] not in (env.get("sql_used") or "")
 
 
+def _assert_reconfirm(env: dict[str, Any], sql: str) -> None:
+    """The SQL is on the card. No row and no figure is served."""
+    assert_envelope_valid(env)
+    assert env["badge"] == "ABSTAIN", (env["badge"], env.get("text"))
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["values"] == []
+    offer = env.get("reconfirm")
+    assert isinstance(offer, dict), env.get("text")
+    assert offer.get("definition") == sql
+    assert str(offer.get("suggested_question") or "").strip()
+    blob = " ".join(
+        str(offer.get(key) or "") for key in ("reason_code", "why", "reason_text")
+    )
+    assert "rowset_reconfirm" in blob or "rowset_reconfirm" in str(env.get("text") or "")
+    assert sql not in (env.get("sql_used") or "")
+
+
 def _assert_serves(env: dict[str, Any], rig: od._Space, sql: str) -> None:
     assert_envelope_valid(env)
     oracle = od._oracle(rig.lake, sql)
@@ -77,11 +98,10 @@ def test_cte_self_join_abstains_on_generate(
             env = rig.ask(_Q, {"query_sql": shape["sql"], "plan_source": "ontology_plan"})
             _assert_no_figure(env, shape, "unverified_join")
             assert shape["sql"] not in rig.cortex.executed, name
-        for name, shape in od.JOIN_HOLE_STOPPED.items():
-            env = rig.ask(_Q, {"query_sql": shape["sql"], "plan_source": "ontology_plan"})
-            text = od._assert_abstain(env, "unverified_join")
-            assert "total=" not in text, (name, text)
-            assert shape["sql"] not in rig.cortex.executed, name
+        for name, sql in od.JOIN_HOLE_RECONFIRM.items():
+            env = rig.ask(_Q, {"query_sql": sql, "plan_source": "ontology_plan"})
+            _assert_reconfirm(env, sql)
+            assert sql not in rig.cortex.executed, name
     finally:
         set_ontology_store(prev)
 
@@ -93,7 +113,7 @@ def test_cte_self_join_abstains_on_the_extract_loop(
     monkeypatch.setenv("DMS_LANE_ONTOLOGY_RANKED", "0")
     rig, prev = _open(tmp_path, monkeypatch)
     try:
-        for name, shape in {**od.JOIN_HOLE_SHAPES, **od.JOIN_HOLE_STOPPED}.items():
+        for name, shape in od.JOIN_HOLE_SHAPES.items():
             env = rig.ask(_Q, {"query_sql": shape["sql"], "plan_source": "ontology_plan"})
             text = od._assert_abstain(env, "loop_exhausted:checker:unverified_join")
             wrong = shape.get("wrong")
@@ -101,6 +121,10 @@ def test_cte_self_join_abstains_on_the_extract_loop(
                 assert str(wrong) not in text, (name, text)
             assert "total=" not in text, (name, text)
             assert shape["sql"] not in rig.cortex.executed, name
+        for name, sql in od.JOIN_HOLE_RECONFIRM.items():
+            env = rig.ask(_Q, {"query_sql": sql, "plan_source": "ontology_plan"})
+            _assert_reconfirm(env, sql)
+            assert sql not in rig.cortex.executed, name
     finally:
         set_ontology_store(prev)
 
@@ -133,13 +157,13 @@ def test_cte_self_join_abstains_on_contract_sql_used(
             assert rig.cortex.asks, name
             _assert_no_figure(env, shape, "unverified_join")
             assert "The total is" not in str(env.get("text") or ""), name
-        for name, shape in od.JOIN_HOLE_STOPPED.items():
-            held["sql"] = shape["sql"]
+        for name, sql in od.JOIN_HOLE_RECONFIRM.items():
+            held["sql"] = sql
             held["wrong"] = 999999
             env = rig.ask(_Q, {})
-            text = od._assert_abstain(env, "unverified_join")
-            assert "999999" not in text, (name, text)
-            assert "The total is" not in text, name
+            _assert_reconfirm(env, sql)
+            assert "999999" not in str(env.get("text") or ""), name
+            assert "The total is" not in str(env.get("text") or ""), name
     finally:
         set_ontology_store(prev)
 
@@ -150,7 +174,7 @@ def test_one_read_of_one_table_still_answers(
     """Same outcome as the parent, on each door."""
     rig, prev = _open(tmp_path, monkeypatch)
     try:
-        for name, sql in od.JOIN_HOLE_STILL.items():
+        for name, sql in {**od.JOIN_HOLE_STILL, **od.JOIN_HOLE_KEEP}.items():
             env = rig.ask(_Q, {"query_sql": sql, "plan_source": "ontology_plan"})
             _assert_serves(env, rig, sql)
             assert sql in rig.cortex.executed, name
@@ -177,7 +201,7 @@ def test_one_read_of_one_table_still_answers(
             )
 
         monkeypatch.setattr(rig.cortex, "ask", _ask)
-        for name, sql in od.JOIN_HOLE_STILL.items():
+        for name, sql in {**od.JOIN_HOLE_STILL, **od.JOIN_HOLE_KEEP}.items():
             held["sql"] = sql
             env = rig.ask(_Q, {})
             _assert_serves(env, rig, sql)
@@ -191,7 +215,7 @@ def test_one_read_of_one_table_still_answers(
     loop.mkdir()
     rig, prev = _open(loop, monkeypatch)
     try:
-        for name, sql in od.JOIN_HOLE_STILL.items():
+        for name, sql in {**od.JOIN_HOLE_STILL, **od.JOIN_HOLE_KEEP}.items():
             env = rig.ask(_Q, {"query_sql": sql, "plan_source": "ontology_plan"})
             _assert_serves(env, rig, sql)
             assert sql in rig.cortex.executed, name

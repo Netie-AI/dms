@@ -1608,7 +1608,11 @@ class Executor:
             )
             if join_why:
                 env = path_miss_envelope(
-                    question, join_why, space_id=space_id, session_id=session_id
+                    question,
+                    join_why,
+                    space_id=space_id,
+                    session_id=session_id,
+                    sql=sql_used,
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
