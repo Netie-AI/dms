@@ -18,6 +18,7 @@ from cortex_contract.execution import PoolSpec, SubmitRequest
 from dms_core.ask import AskServiceError, ExecutedTrace, GroundingRefused
 from dms_core.ports import ServingEnginePort
 
+from dms_executor import action_keys as action_keys
 from dms_executor import executed_trace
 from dms_executor.abstain import (
     backstop_missing_ticket,
@@ -46,6 +47,7 @@ from dms_executor.bronze_sheet_ask import (
     bronze_sheet_lane_enabled,
     maybe_bronze_sheet_ask,
 )
+from dms_executor.connectors import connector_tables
 from dms_executor.contract_infer import infer_contract
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
@@ -95,6 +97,7 @@ from dms_executor.envelope import (
     normalize_contributing_sources,
     reserved_as_of_abstain,
 )
+from dms_executor.gen_path_refuse import GRANT_UNREADABLE
 from dms_executor.generative_ask import (
     maybe_generative_ask,
     path_miss_envelope,
@@ -106,6 +109,17 @@ from dms_executor.grant_struct import (
     relation_gap,
     serve_gap,
     sql_refusal_envelope,
+)
+from dms_executor.insight_proof import demote_insight, insight_proof_enabled, prove_for_space
+from dms_executor.insight_register import (
+    confirm_pin,
+    demote_replay,
+    list_pinned,
+    pin_space,
+    preview_pin,
+    replay_pin,
+    revoke_pin,
+    token_space,
 )
 from dms_executor.lake_registry import (
     SERVING_DEADLINE_EXCEEDED_REASON,
@@ -138,6 +152,7 @@ from dms_executor.manifest import (
     SessionAcl,
     SubmitError,
     classify_submit_error,
+    match_service_bearer,
     should_rement,
 )
 from dms_executor.name_echo import (
@@ -189,7 +204,9 @@ from dms_executor.verified_queries import (
     maybe_save_checked_sql,
     maybe_verified_ask,
     openvault_embedder,
+    preview_adjusted_sql,
     register_verified_query,
+    save_steward_adjusted,
 )
 from dms_executor.warehouse_browse import (
     list_promote_targets,
@@ -267,15 +284,24 @@ def _insights_compute_seam(
         return None
     onto: dict[str, Any] | None = ontology
     feedback = None
+    route_hint = None
     asked = question
     examples = ""
+    defs = ""
     ai_rows: list[dict[str, Any]] = []
     # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
     # stays quiet because the key is removed before the POST.
     # verified_examples is the same kind of lift: question text, not a body field.
     from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
 
-    _hidden = {"sql_loop_feedback", "sql_vote_prompt", "sql_vote_kind", "vq_examples"}
+    _hidden = {
+        "sql_loop_feedback",
+        "sql_vote_prompt",
+        "sql_vote_kind",
+        "vq_examples",
+        "governed_definitions",
+        "route_hint",
+    }
     if isinstance(ontology, dict) and (
         _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
     ):
@@ -285,17 +311,31 @@ def _insights_compute_seam(
         if isinstance(lifted, dict) and _hidden.intersection(lifted):
             raw = lifted.get("sql_loop_feedback")
             feedback = raw if isinstance(raw, dict) else None
+            hint = lifted.get("route_hint")
+            if hint in {"escalate", "reason"}:
+                route_hint = hint
             vote_prompt = lifted.get("sql_vote_prompt")
             if isinstance(vote_prompt, str) and vote_prompt.strip():
                 asked = vote_prompt
             raw_examples = lifted.get("vq_examples")
             if isinstance(raw_examples, str) and raw_examples.strip():
                 examples = raw_examples.strip()
+            raw_defs = lifted.get("governed_definitions")
+            if isinstance(raw_defs, str) and raw_defs.strip():
+                defs = raw_defs.strip()
             onto = {k: v for k, v in lifted.items() if k not in _hidden}
         else:
             onto = lifted
+    from cortex_client.ask_clock import ask_lean_trim
+
+    if ask_lean_trim():
+        from dms_executor.ask_lean import apply_prompt_trim
+
+        defs, examples, onto = apply_prompt_trim(question, defs, examples, onto)
     if examples:
         asked = f"{asked.rstrip()}\nExamples:\n{examples}"
+    if defs:
+        asked = f"{asked.rstrip()}\n{defs}"
     if ai_rows:
         from dms_executor.ai_first import understand_question
 
@@ -308,6 +348,17 @@ def _insights_compute_seam(
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
+        if route_hint in {"escalate", "reason"}:
+            kwargs["route_hint"] = route_hint
+        from cortex_client.ask_clock import generate_budget_left_s
+
+        left = generate_budget_left_s()
+        if left is not None and left <= 0:
+            # Do not spend the ask-back reserve on another generate. The
+            # existing unsure abstain is what offer_reconfirm turns into a card.
+            return {"unsure": True}
+        if left is not None:
+            kwargs["timeout"] = left
         try:
             return fn(asked, **kwargs)
         except TypeError:
@@ -529,12 +580,19 @@ class Executor:
             # The demo set plus anything uploaded. An upload has no data_sources
             # row, so it is grantable only through the store — without this,
             # grounding on your own file outside a Space had nothing to grant.
+            # A table granted to a connected Space is not part of that personal
+            # context: no Space must not inherit another Space's grant.
+            from dms_core.control_plane.connect_grants import connected_table_names
+
+            connected = connected_table_names()
             uploaded = {
                 g.table_name
                 for g in self._session_store.list_user_source_grants(
                     DEMO_TENANT_ID, DEMO_USER_ID
                 )
-                if g.table_name and g.table_name not in DEMO_TABLES
+                if g.table_name
+                and g.table_name not in DEMO_TABLES
+                and g.table_name not in connected
             }
             granted = sorted({*DEMO_TABLES, *uploaded})
             # NAME-ECHO-01: the scrub reads this set; it never derives its own.
@@ -690,7 +748,10 @@ class Executor:
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
-        return self.submit_sql(sql, acl)
+        from cortex_client.ask_clock import span
+
+        with span("submit_execute"):
+            return self.submit_sql(sql, acl)
 
     def _ledger_verified_query(
         self,
@@ -748,6 +809,14 @@ class Executor:
         )
 
         begin_answer_model_calls()
+        from cortex_client.ask_clock import (
+            attach_timings,
+            ensure_clock,
+            note_deadline,
+            release_clock,
+        )
+
+        clock_token = ensure_clock()
         # BANK-02: what actually runs for this ask is recorded as it runs, apart
         # from the envelope (see executed_trace). The caller reads it with
         # take_executed() right after this returns or raises.
@@ -756,6 +825,7 @@ class Executor:
         # Whole-ask clock. Each Insights leg keeps its own 8s HTTP timeout.
         ask_budget_s = serving_deadline_s()
         deadline = time.monotonic() + ask_budget_s
+        note_deadline(deadline)
         deadline_tokens = bind_ask_deadline(deadline)
         own_control = current_ask_control() is None
         control_token: Any = None
@@ -774,8 +844,9 @@ class Executor:
 
         try:
             from dms_executor.ai_first import ai_first_enabled, begin_example_turn
+            from dms_executor.arbiter import arbiter_enabled
 
-            if ai_first_enabled():
+            if ai_first_enabled() or arbiter_enabled():
                 example_token = begin_example_turn()
             try:
                 try:
@@ -913,6 +984,7 @@ class Executor:
             # the one this turn resolved; none resolved grants nothing.
             if isinstance(masked, dict):
                 hide_echo(masked, "", grants=turn_grants())
+                attach_timings(masked)
             return masked
         finally:
             if example_token is not None:
@@ -923,6 +995,7 @@ class Executor:
             if own_control and control_token is not None:
                 reset_ask_control(control_token)
             reset_ask_deadline(deadline_tokens)
+            release_clock(clock_token)
 
     def _live_ask(
         self,
@@ -1017,6 +1090,39 @@ class Executor:
             if isinstance(found, Exception):
                 raise found
             return list(found)
+
+        # GRANT-READ-02 (dms#307): read the grant once, before any Cortex or
+        # model call. An unread grant is a named ABSTAIN, never an empty-schema
+        # generate call. An empty grant is the same ABSTAIN on a lane with no
+        # Cortex ask; on the product lane it skips Insights only, so a
+        # document-only Space still reaches the manifest-bound Cortex ask. A
+        # ticked table outside the grant is refused by name (R-0005), never
+        # dropped while another lane answers. All of it only narrows.
+        try:
+            granted = space_grants()
+            grant_read = True
+        except (
+            ServingLeaseCap,
+            ServingLeaseQueueFull,
+            ServingWaitCancelled,
+            ServingDeadlineExceeded,
+            ServingDeadlineReserve,
+        ):
+            raise
+        except Exception:  # noqa: BLE001 -- named refusal, never the whole space
+            granted, grant_read = [], False
+        if not grant_read or (not granted and not allow_cortex):
+            env = path_miss_envelope(
+                question, GRANT_UNREADABLE, space_id=space_id, session_id=session_id
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
+        if not granted:
+            allow_gen = False
+        selection = [t for t in (tables or []) if t]
+        ungrantable = [t for t in selection if t not in set(granted)]
+        if ungrantable:
+            raise GroundingRefused(ungrantable=ungrantable, grantable=granted)
 
         key = turn_key(session_id, space_id)
         if allow_follow:
@@ -1118,6 +1224,12 @@ class Executor:
                 if pack_env is not None and not (
                     armed_product and pack_env.get("abstained") is True
                 ):
+                    # No model SQL has run on this return. A certified measure
+                    # may still serve. Disagreement is serve() when both exist.
+                    from dms_executor.arbiter import arbiter_enabled, serve_certified
+
+                    if arbiter_enabled() and pack_env.get("abstained") is not True:
+                        pack_env = serve_certified(pack_env, question=question)
                     self._store_turn(session_id, space_id, pack_env)
                     return pack_env
 
@@ -1151,21 +1263,8 @@ class Executor:
         # This path used ``requested or grantable_tables(...)``, so with
         # nothing ticked the cascade and retrieve opened every bronze upload
         # tagged to the Space and sent DISTINCT samples in the Insights body.
-        # Intersection with granted still narrows a selection; an unread grant
-        # never falls back to the whole space.
-        try:
-            granted = space_grants()
-        except (
-            ServingLeaseCap,
-            ServingLeaseQueueFull,
-            ServingWaitCancelled,
-            ServingDeadlineExceeded,
-            ServingDeadlineReserve,
-        ):
-            raise
-        except Exception:  # noqa: BLE001 -- empty context, never the whole space
-            granted = []
-        selection = [t for t in (tables or []) if t]
+        # ``granted`` and ``selection`` come from the GRANT-READ-02 check above:
+        # an unread grant and an ungranted tick have already been refused.
         requested = [t for t in selection if t in set(granted)]
         default_readable = default_readable_tables(granted, space_id=space_id)
         readable = requested or default_readable
@@ -1274,41 +1373,53 @@ class Executor:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
             raise_if_ask_stopped()
-            gen_env = maybe_generative_ask(
-                question,
+            from dms_executor.arbiter import arbitrate_generative, compile_context
+
+            with compile_context():
+                gen_env = maybe_generative_ask(
+                    question,
+                    space_id=space_id,
+                    session_id=session_id,
+                    warehouse=self._warehouse,
+                    grantable=set(readable),
+                    tables=tables,
+                    compute=lambda catalog: _seen(
+                        seen,
+                        _insights_compute_seam(
+                            self._cortex,
+                            question,
+                            session_id=session_id,
+                            space_id=space_id,
+                            ontology=catalog,
+                        ),
+                    ),
+                    submit=lambda sql: self._submit_verified_sql(
+                        sql, space_id=space_id, session_id=session_id, tables=tables
+                    ),
+                    ledger_append=lambda payload: self._ledger_verified_query(
+                        asset_sql=str(payload.get("sql") or ""),
+                        run_id=str(payload.get("run_id") or ""),
+                        space_id=space_id,
+                        session_id=session_id,
+                        event_type="ask.generated_ontology",
+                    ),
+                    bind_on_miss=False,
+                    ontology=data_onto if data_onto is not None else space_onto,
+                    demo_ontology_allowed=data_onto is None and space_onto is None,
+                    # Extract and EXPLAIN run on the DuckDB serving copy
+                    # (connect_serving), not on the source connector in self.dialect.
+                    dialect=SERVING_DIALECT,
+                    embedder=openvault_embedder(self._cortex),
+                    demo_gate=not armed_product,
+                )
+            gen_env = arbitrate_generative(
+                gen_env,
+                question=question,
                 space_id=space_id,
                 session_id=session_id,
-                warehouse=self._warehouse,
-                grantable=set(readable),
-                tables=tables,
-                compute=lambda catalog: _seen(
-                    seen,
-                    _insights_compute_seam(
-                        self._cortex,
-                        question,
-                        session_id=session_id,
-                        space_id=space_id,
-                        ontology=catalog,
-                    ),
-                ),
                 submit=lambda sql: self._submit_verified_sql(
                     sql, space_id=space_id, session_id=session_id, tables=tables
                 ),
-                ledger_append=lambda payload: self._ledger_verified_query(
-                    asset_sql=str(payload.get("sql") or ""),
-                    run_id=str(payload.get("run_id") or ""),
-                    space_id=space_id,
-                    session_id=session_id,
-                    event_type="ask.generated_ontology",
-                ),
-                bind_on_miss=False,
-                ontology=data_onto if data_onto is not None else space_onto,
-                demo_ontology_allowed=data_onto is None and space_onto is None,
-                # Extract and EXPLAIN run on the DuckDB serving copy
-                # (connect_serving), not on the source connector in self.dialect.
-                dialect=SERVING_DIALECT,
-                embedder=openvault_embedder(self._cortex),
-                demo_gate=not armed_product,
             )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
@@ -1535,6 +1646,65 @@ class Executor:
         from dms_executor.reconfirm import peek_pending
 
         return peek_pending(token)
+
+    def clarify_pick(
+        self,
+        clarify_id: str,
+        *,
+        reading_id: str | None = None,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """Re-check grants, then ask the chosen reading on the normal path.
+
+        The stored preview is not executed. Free text is one new question.
+        """
+        from dms_executor.clarify import peek_clarify, run_pick
+        from dms_executor.demo_warehouse import SERVING_DIALECT
+
+        pending = peek_clarify(clarify_id)
+        if pending is None:
+            raise KeyError(clarify_id)
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        grants = set(self.grantable_tables(space_id=space_id))
+
+        def _ask(
+            question: str,
+            *,
+            space_id: str | None,
+            session_id: str | None,
+            tables: list[str] | None,
+        ) -> dict[str, Any]:
+            env = self.live_ask(
+                question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+            )
+            clarify = env.get("clarify") if isinstance(env, dict) else None
+            if isinstance(clarify, dict) and clarify.get("blocks") is True:
+                return env
+            return self.offer_reconfirm(
+                env,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables,
+                cortex=self._cortex,
+            )
+
+        picked = run_pick(
+            clarify_id,
+            reading_id=reading_id,
+            text=text,
+            grantable=grants,
+            dialect=self.dialect or SERVING_DIALECT,
+            ask=_ask,
+        )
+        if picked.ran is not None:
+            return picked.ran
+        if picked.envelope is not None:
+            return picked.envelope
+        raise ValueError("empty clarify pick")
 
     def confirm_reconfirm(self, token: str, yes: bool) -> dict[str, Any]:
         """Yes re-runs the suggested question on the normal ladder. No logs a ticket.
@@ -1993,6 +2163,15 @@ def map_ask_response_to_envelope(
             sql_out = "-- document retrieval (no SQL)"
         else:
             sql_out = "-- live ask (SQL not returned)"
+    # Absent, not null, when Cortex sends no provenance.
+    served_prov = {
+        key: val
+        for key, val in (
+            ("served_provenance_layer", resp.provenance_layer),
+            ("served_metric_id", resp.metric_id),
+        )
+        if val
+    }
     # VQ-04: Cortex L1 on an uncertified planted paraphrase (vocabulary
     # "how full" / delayed+per-warehouse regex) must not keep a green badge.
     # E9: do not render the engine figures under ABSTAIN.
@@ -2001,7 +2180,7 @@ def map_ask_response_to_envelope(
             question or "", space_id=space_id, session_id=session_id
         )
         if refused_env is not None:
-            return refused_env
+            return {**refused_env, **served_prov}
     fields: dict[str, Any] = {
         "answer_id": resp.receipt_id or f"ans_live_{session_id or 'x'}",
         "text": text,
@@ -2043,6 +2222,7 @@ def map_ask_response_to_envelope(
             }
     else:
         env = build_answer_envelope(badge=badge, abstained=False, question=question, **fields)
+    env.update(served_prov)
     assert_envelope_valid(env)
     from dms_executor.route_stamp import ROUTE_L1, ROUTE_VERIFIED, stamp_route
 
@@ -2085,6 +2265,7 @@ __all__ = [
     "build_library_tree",
     "classify_bytes",
     "classify_grid",
+    "connector_tables",
     "ingest_batch",
     "DEFAULT_MAX_ROWS",
     "SourceConfig",
@@ -2123,9 +2304,12 @@ __all__ = [
     "load_pipeline_by_name",
     "load_pipeline_yaml",
     "map_ask_response_to_envelope",
+    "match_service_bearer",
     "preview_bronze_table",
     "preview_warehouse_table",
+    "preview_adjusted_sql",
     "register_verified_query",
+    "save_steward_adjusted",
     "allowlisted_roots",
     "is_filesystem_uri",
     "resolve_allowlisted_file",
@@ -2144,4 +2328,15 @@ __all__ = [
     "sync_bronze_to_serving",
     "tables_read_by_sql",
     "tables_read_checked_by_sql",
+    "demote_insight",
+    "insight_proof_enabled",
+    "prove_for_space",
+    "confirm_pin",
+    "demote_replay",
+    "list_pinned",
+    "pin_space",
+    "preview_pin",
+    "replay_pin",
+    "revoke_pin",
+    "token_space",
 ]

@@ -85,9 +85,9 @@ export function RunsPage() {
   return (
     <Page>
       <PageHeader
-        phase="U3 · durable state"
+        phase="What ran"
         title="Runs"
-        blurb="What the system actually did: ingest receipts and query executions, with the file and the fix named on anything that needs attention. Usability rule 7 — never a stack trace, never an apology."
+        blurb="Ingest receipts and questions that ran, with the file and the fix named when something needs attention."
         actions={
           <button
             type="button"
@@ -143,7 +143,7 @@ export function RunsPage() {
           empty={runs.length === 0}
           emptyMessage={
             data?.configured === false
-              ? "Run history needs Postgres — nothing is recorded in this deployment."
+              ? "Run history is not being saved in this deployment."
               : "No runs recorded yet. Ingest a file in Studio and it will appear here with its receipt."
           }
         >

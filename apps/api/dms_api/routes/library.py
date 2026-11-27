@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 import psycopg
@@ -34,7 +34,21 @@ def _hide_offline_fixtures(settings: SettingsDep) -> bool:
     return settings.dms_ask_mode == "live" and not settings.database_url
 
 
+def _bound_space_id(space_id: object) -> str | None:
+    """A Space id is a string, or absent.
+
+    ``Query(None)`` is the FastAPI default object. It is truthy, and ``UUID()``
+    then raises AttributeError only when DATABASE_URL is set.
+    """
+    if space_id is None:
+        return None
+    if isinstance(space_id, str):
+        return space_id
+    raise TypeError("space_id")
+
+
 def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list[dict[str, Any]]:
+    space_id = _bound_space_id(space_id)
     if not settings.database_url:
         # Offline fixture tree so Library is usable without Postgres.
         sources: list[dict[str, Any]] = [
@@ -110,7 +124,7 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
 @router.get("/sources")
 def list_sources(
     settings: SettingsDep,
-    space_id: str | None = Query(None),
+    space_id: Annotated[str | None, Query()] = None,
 ) -> list[dict[str, Any]]:
     return _list_sources(settings, space_id=space_id)
 

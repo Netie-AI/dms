@@ -5,18 +5,22 @@ No model pick. This route does not generate and does not post an insights ask.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 from cortex_client import compliance_gate
 from cortex_client.insights import InsightsError, honest_envelope, redact_secrets
+from dms_core.ask_stream import stream_enabled, valid_ask_id, wait_events
 from dms_core.studio_chat_turn import (
     confirm_allowed,
     project_studio_turn,
     question_to_execute,
 )
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep
@@ -95,3 +99,67 @@ def studio_chat_confirm(body: ConfirmBody, cortex: CortexDep) -> dict[str, Any]:
             body.question, body.clarify_reply, blocks=blocks
         ),
     }
+
+
+def _frame(event: dict[str, Any]) -> bytes:
+    """One SSE data line. Only the three public fields."""
+    body = json.dumps(
+        {
+            "stage": event.get("stage"),
+            "t_ms": event.get("t_ms"),
+            "status": event.get("status"),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return f"data: {body}\n\n".encode()
+
+
+async def _event_frames(ask_id: str) -> AsyncIterator[bytes]:
+    # Do not call Request.is_disconnected here. It waits on the receive
+    # channel and holds the first events until the client goes away.
+    yield b"retry: 86400000\n\n"
+    index = 0
+    while True:
+        batch, done = await asyncio.to_thread(wait_events, ask_id, index, 0.5)
+        for event in batch:
+            index += 1
+            if not isinstance(event, dict):
+                continue
+            stage = event.get("stage")
+            status = event.get("status")
+            t_ms = event.get("t_ms")
+            if (
+                not isinstance(stage, str)
+                or not isinstance(status, str)
+                or not isinstance(t_ms, int)
+            ):
+                continue
+            yield _frame({"stage": stage, "t_ms": t_ms, "status": status})
+        if done:
+            return
+
+
+def events_router() -> APIRouter | None:
+    """Mount only when ``DMS_ASK_STREAM`` is on. Off, the route does not exist."""
+    if not stream_enabled():
+        return None
+    out = APIRouter(prefix="/v1/studio", tags=["studio"])
+
+    @out.get("/ask/{ask_id}/events")
+    async def studio_ask_events(ask_id: str, cortex: CortexDep) -> StreamingResponse:
+        if not valid_ask_id(ask_id):
+            raise HTTPException(status_code=404, detail="ask_not_found")
+        decision = compliance_gate(
+            action="studio.ask_events",
+            metadata={"task_id": "studio.ask_events"},
+            client=cortex,
+        )
+        enforce(decision, mutation=False)
+        return StreamingResponse(
+            _event_frames(ask_id),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    return out

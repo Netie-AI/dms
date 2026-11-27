@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from cortex_client import CortexClient
+from cortex_client.compute import log_effective_insights_timeout
+from cortex_client.runtime_check import log_runtime_selfcheck
 from dms_core.control_plane.ask_audit import (
     AskAuditStorePort,
     InMemoryAskAuditStore,
@@ -22,8 +24,10 @@ from dms_api.routes import (
     amend,
     audit,
     chat,
+    connect,
     freeroute,
     health,
+    insight_proof,
     insights,
     library,
     mcp,
@@ -33,6 +37,7 @@ from dms_api.routes import (
     runs,
     spaces,
     studio,
+    studio_adjust,
     studio_chat,
     trust,
 )
@@ -92,6 +97,10 @@ def _build_ask_audit_store(settings, binding: StoreBinding) -> AskAuditStorePort
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    # R1-RUNTIME-01. Always log the effective insights timeout. The self-check
+    # warning runs only when DMS_RUNTIME_SELFCHECK is on. Neither prints a key.
+    log_effective_insights_timeout()
+    log_runtime_selfcheck(settings.cortex_api_key)
     migrate_error: str | None = None
     if settings.database_url:
         try:
@@ -114,6 +123,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
     app.state.space_store = store
     app.state.space_store_binding = binding
+    if settings.dms_ask_mode == "live" and not settings.cortex_api_key:
+        # KEY-01 (dms#273): there is no default key. Say so once at start, by name,
+        # and never print a key. Calls refuse individually; startup is not blocked
+        # because offline demo mode and the unkeyed routes still work.
+        logger.warning(
+            "DMS_ASK_MODE=live and CORTEX_API_KEY is not set: keyed Cortex calls refuse "
+            "(cortex_key_missing on reads and /v1/insights, insights_bearer_missing on ask)"
+        )
     if binding.persistent and settings.database_url:
         # ONTO-DERIVE-01: a Space that survives a restart keeps its ontology.
         from dms_api.wiring import bind_ontology_store
@@ -169,8 +186,12 @@ def create_app() -> FastAPI:
     app.include_router(ping.router, tags=["skeleton"])
     app.include_router(spaces.router)
     app.include_router(chat.router)
+    app.include_router(connect.router)
     app.include_router(studio.router)
     app.include_router(studio_chat.router)
+    events = studio_chat.events_router()
+    if events is not None:
+        app.include_router(events)
     app.include_router(pipelines.router)
     app.include_router(amend.router)
     app.include_router(audit.router)
@@ -183,6 +204,10 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     if settings.dms_mcp:
         app.include_router(mcp.router)
+    if insight_proof.enabled():
+        app.include_router(insight_proof.router)
+    if studio_adjust.enabled():
+        app.include_router(studio_adjust.router)
     return app
 
 

@@ -901,7 +901,14 @@ def test_the_payload_on_the_wire_carries_no_person_column_and_the_answer_is_serv
     (raw,) = seen
     body = json.loads(raw)
     sent = body["dms_payload"]
-    assert sent == payload
+    # PAYLOAD-MASK-FLAG-01: the wire adds a bool ``masked`` per column; a column
+    # with no mask state goes as masked. Everything else is the payload as built.
+    expected = json.loads(json.dumps(payload))
+    for table in expected["tables"]:
+        for column in table["columns"]:
+            if not isinstance(column.get("masked"), bool):
+                column["masked"] = True
+    assert sent == expected
     _accepts(sent)
     assert len(json.dumps(sent).encode()) <= MAX_PAYLOAD_BYTES
     text = raw.decode()

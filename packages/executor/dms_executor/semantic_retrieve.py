@@ -575,7 +575,11 @@ def retrieve_short_context(
 
 
 def _locked_measure(question: str) -> str | None:
-    """One measure the question names, or None. Not a certified-pack lookup."""
+    """One measure the question names, or None. Not a certified-pack lookup.
+
+    WORD-RULES-OUT-01: these token locks stay until DMS_GROUND_DEFS is
+    measured equal or better. Do not add another phrase here.
+    """
     qn = (question or "").lower()
     if "quantity sold" in qn or "qty sold" in qn:
         return "outbound_kg"

@@ -10,7 +10,9 @@ from typing import Any, Literal
 
 import anyio
 from cortex_client import CortexClient, compliance_gate
+from cortex_client.ask_clock import attach_timings, ensure_clock, release_clock, span
 from dms_core.ask import AskServiceError, AskServicePort, GroundingRefused
+from dms_core.ask_stream import bind_ask, finish_ask, mark_cancelled, note_stage
 from dms_core.bi_export import export_envelope_bi
 from dms_core.control_plane.spaces import SpaceStorePort
 from dms_core.xlsx_export import EnvelopeExportError, export_envelope_xlsx
@@ -144,6 +146,14 @@ class ConfirmBody(BaseModel):
 
     token: str = Field(min_length=1)
     yes: bool | Literal["yes", "no"]
+
+
+class ClarifyPickBody(BaseModel):
+    """Pick one stored reading, or send one free-text question."""
+
+    clarify_id: str = Field(min_length=1)
+    reading_id: str | None = None
+    text: str | None = None
 
 
 class DrillthroughBody(BaseModel):
@@ -318,48 +328,68 @@ def chat_ask(
     if body.space_id and store.get(body.space_id) is None:
         raise HTTPException(status_code=404, detail="space_not_found")
 
-    asked_at = datetime.now(UTC)
-    decision = compliance_gate(
-        action="chat.ask",
-        metadata={"question": body.question, "space_id": body.space_id, "task_id": "chat.ask"},
-        client=cortex,
-    )
-
-    # BANK-02 (dms#269): one audit row per ask, written once the outcome is known.
-    # Asks that never reach the gate (the lane refusal, an unknown Space) are
-    # rejected requests, not asks, and are not recorded.
+    # The clock covers the gate and the answer. A refused lane or an unknown
+    # Space never reaches here, so those are not asks.
+    clock_token = ensure_clock()
+    stream_token = bind_ask(request.headers.get("x-dms-ask-id"))
     try:
-        env = _answer_ask(
-            body,
-            decision,
-            settings=settings,
-            store=store,
-            cortex=cortex,
-            ask=ask,
-            request=request,
-        )
-        env = _offer_reconfirm(ask, env, body, cortex)
-    except Exception as exc:
+        asked_at = datetime.now(UTC)
+        with span("tasks_choose"):
+            decision = compliance_gate(
+                action="chat.ask",
+                metadata={
+                    "question": body.question,
+                    "space_id": body.space_id,
+                    "task_id": "chat.ask",
+                },
+                client=cortex,
+            )
+
+        # BANK-02 (dms#269): one audit row per ask, written once the outcome is known.
+        # Asks that never reach the gate (the lane refusal, an unknown Space) are
+        # rejected requests, not asks, and are not recorded.
+        try:
+            env = _answer_ask(
+                body,
+                decision,
+                settings=settings,
+                store=store,
+                cortex=cortex,
+                ask=ask,
+                request=request,
+            )
+            with span("reconfirm_build"):
+                note_stage("reconfirm_build", "started")
+                try:
+                    env = _offer_reconfirm(ask, env, body, cortex)
+                finally:
+                    note_stage("reconfirm_build", "done")
+        except Exception as exc:
+            record_ask(
+                audit,
+                settings,
+                question=body.question,
+                space_id=body.space_id,
+                asked_at=asked_at,
+                error=exc,
+                executed=take_executed(ask),
+            )
+            raise
+        if isinstance(env, dict):
+            attach_timings(env)
         record_ask(
             audit,
             settings,
             question=body.question,
             space_id=body.space_id,
             asked_at=asked_at,
-            error=exc,
+            envelope=env,
             executed=take_executed(ask),
         )
-        raise
-    record_ask(
-        audit,
-        settings,
-        question=body.question,
-        space_id=body.space_id,
-        asked_at=asked_at,
-        envelope=env,
-        executed=take_executed(ask),
-    )
-    return env
+        return env
+    finally:
+        finish_ask(stream_token)
+        release_clock(clock_token)
 
 
 def _choice_yes(value: bool | str) -> bool:
@@ -371,6 +401,12 @@ def _choice_yes(value: bool | str) -> bool:
 def _offer_reconfirm(
     ask: AskServicePort, env: dict[str, Any], body: AskBody, cortex: Any
 ) -> dict[str, Any]:
+    clarify = env.get("clarify") if isinstance(env, dict) else None
+    if isinstance(clarify, dict) and clarify.get("blocks") is True:
+        return env
+    block = env.get("reconfirm") if isinstance(env, dict) else None
+    if isinstance(block, dict) and block.get("reason_code") == "not_in_data":
+        return env
     offer = getattr(ask, "offer_reconfirm", None)
     if not callable(offer):
         return env
@@ -535,11 +571,53 @@ def _answer_ask(
                 )
             )
     finally:
+        if watch is not None and watch[1].disconnected.is_set():
+            mark_cancelled()
         _stop_client_disconnect(task)
         if watch is not None:
             end = getattr(ask, "end_client_watch", None)
             if callable(end):
                 end(watch[0])
+
+
+@router.post("/clarify/pick")
+def chat_clarify_pick(
+    body: ClarifyPickBody,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+) -> dict[str, Any]:
+    """Run the chosen reading. The preview SQL is not the answer."""
+    decision = compliance_gate(
+        action="chat.ask",
+        metadata={"clarify_id": body.clarify_id[:12], "task_id": "chat.ask"},
+        client=cortex,
+    )
+    if not decision.allowed and decision.reason not in _SOFT_GATE:
+        raise HTTPException(status_code=403, detail=decision.reason)
+    pick = getattr(ask, "clarify_pick", None)
+    if not callable(pick):
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "clarify_unsupported", "message": "this ask service has no clarify"},
+        )
+    try:
+        env = pick(body.clarify_id, reading_id=body.reading_id, text=body.text)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "clarify_unknown", "message": "that clarify id is unknown"},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "clarify_pick", "message": str(exc)},
+        ) from exc
+    if not isinstance(env, dict):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "clarify_pick", "message": "empty clarify pick"},
+        )
+    return env
 
 
 @router.post("/ask/confirm")
@@ -586,59 +664,68 @@ def chat_ask_confirm(
             },
         )
     asked_at = datetime.now(UTC)
+    stream_token = bind_ask(request.headers.get("x-dms-ask-id"))
     try:
         try:
-            env = confirm(body.token, _choice_yes(body.yes))
-        except KeyError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail={"code": "reconfirm_unknown", "message": "that confirm token is unknown"},
-            ) from exc
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "reconfirm_empty", "message": str(exc)},
-            ) from exc
-        except Exception as exc:  # noqa: BLE001
-            # Same map as /ask. Yes re-enters live_ask, so a grounding refusal
-            # or an engine error must not become an unmapped 500.
-            env = _release(
-                _map_live_exception(
-                    exc,
-                    settings=settings,
-                    store=store,
-                    ask=ask,
-                    question=str(pending.get("question") or ""),
-                    space_id=pending.get("space_id")
-                    if isinstance(pending.get("space_id"), str)
-                    else None,
-                    session_id=pending.get("session_id")
-                    if isinstance(pending.get("session_id"), str)
-                    else None,
-                    grounded_tables=grounded_tables,
+            try:
+                env = confirm(body.token, _choice_yes(body.yes))
+            except KeyError as exc:
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "code": "reconfirm_unknown",
+                        "message": "that confirm token is unknown",
+                    },
+                ) from exc
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={"code": "reconfirm_empty", "message": str(exc)},
+                ) from exc
+            except Exception as exc:  # noqa: BLE001
+                # Same map as /ask. Yes re-enters live_ask, so a grounding refusal
+                # or an engine error must not become an unmapped 500.
+                env = _release(
+                    _map_live_exception(
+                        exc,
+                        settings=settings,
+                        store=store,
+                        ask=ask,
+                        question=str(pending.get("question") or ""),
+                        space_id=pending.get("space_id")
+                        if isinstance(pending.get("space_id"), str)
+                        else None,
+                        session_id=pending.get("session_id")
+                        if isinstance(pending.get("session_id"), str)
+                        else None,
+                        grounded_tables=grounded_tables,
+                    )
                 )
+        except Exception as exc:
+            record_ask(
+                audit,
+                settings,
+                question=str(pending.get("question") or ""),
+                space_id=pending.get("space_id")
+                if isinstance(pending.get("space_id"), str)
+                else None,
+                asked_at=asked_at,
+                error=exc,
+                executed=take_executed(ask),
             )
-    except Exception as exc:
+            raise
         record_ask(
             audit,
             settings,
-            question=str(pending.get("question") or ""),
-            space_id=pending.get("space_id") if isinstance(pending.get("space_id"), str) else None,
+            question=str(env.get("question") or ""),
+            space_id=env.get("space_id"),
             asked_at=asked_at,
-            error=exc,
+            envelope=env,
             executed=take_executed(ask),
         )
-        raise
-    record_ask(
-        audit,
-        settings,
-        question=str(env.get("question") or ""),
-        space_id=env.get("space_id"),
-        asked_at=asked_at,
-        envelope=env,
-        executed=take_executed(ask),
-    )
-    return env
+        return env
+    finally:
+        finish_ask(stream_token)
 
 
 @router.post("/drillthrough")

@@ -312,25 +312,23 @@ export function LibraryPage() {
   };
 
   const dbOk = databaseConfigured;
-  const scopeLabel = activeSpace?.name ?? tree?.space_name ?? "Company (default ACL)";
+  const scopeLabel = activeSpace?.name ?? tree?.space_name ?? "Company";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="shrink-0 border-b border-[var(--color-line)] px-8 py-5">
         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
-          U2 · Space repository
+          Files
         </p>
         <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
           Library
         </h1>
         <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)]">
-          Folders and files for <strong className="text-[var(--color-ink)]">{scopeLabel}</strong> —
-          expand Sources / Bronze / Warehouse / Silver / Gold like DbGate. Excel stays source-only.
+          Folders and files for <strong className="text-[var(--color-ink)]">{scopeLabel}</strong>. Excel files stay as sources and are not written back.
         </p>
         {dbOk === false && (
           <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
-            Postgres sources need <code className="font-mono">DATABASE_URL</code>. Warehouse + bronze
-            still browse the local DuckDB lake.
+            Saved database sources need a database connection. Warehouse and imported files still open from the local store.
           </p>
         )}
         {err && <p className="mt-3 text-sm text-[var(--color-danger)]">{err}</p>}
@@ -389,7 +387,7 @@ export function LibraryPage() {
             <div className="max-w-xl border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
               <h2 className="text-lg font-semibold">{active.label}</h2>
               <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
-                Source file — Excel/CSV stay source-only. Preview lands after bronze promote.
+                This is a source file. Excel and CSV stay as sources. A preview appears after the file is imported.
               </p>
               <dl className="mt-4 space-y-1 text-xs text-[var(--color-ink-muted)]">
                 <div>

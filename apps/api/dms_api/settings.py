@@ -6,6 +6,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import unquote
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AskMode = Literal["demo", "live"]
@@ -57,10 +58,15 @@ class Settings(BaseSettings):
     #: bounded: a hung engine must still fail rather than hold a worker forever.
     #: Raise it for a slower provider, do not remove it.
     cortex_timeout_seconds: float = 120.0
-    # Viewer key for Cortex's read-only ontology/eval surfaces (off-contract, see
-    # cortex_read.py). Matches Cortex's built-in demo key so local bring-up works;
-    # set CORTEX_API_KEY wherever DMS_API_KEYS is set.
-    cortex_api_key: str = "dms-demo-viewer-key"
+    # Key for Cortex's keyed, off-contract surfaces (ontology/eval reads, Insights,
+    # the ask lane's generate call). KEY-01 (dms#273): NO default and no fallback.
+    # It comes only from explicit config (CORTEX_API_KEY, supplied from OpenVault
+    # by the operator). Unset, empty or blank all normalise to None, and every keyed
+    # Cortex call then refuses with a named error (cortex_key_missing on the reads
+    # and the Insights routes, insights_bearer_missing on the ask lane) instead of
+    # going out under a published demo key. Offline demo mode (dms_demo_fallback)
+    # never calls Cortex, so it needs no key.
+    cortex_api_key: str | None = None
     openvault_url: str = "http://127.0.0.1:5000"
     database_url: str | None = None
     # Product default = live (Cortex bind→ask). demo = offline fallback only.
@@ -70,11 +76,19 @@ class Settings(BaseSettings):
     dms_demo_fallback: bool = False
     # EPIC-014 MCP-01. Swap: IDE MCP client on /v1/mcp/*. Off = no extra surface.
     dms_mcp: bool = False
+    # CONNECT-GRANT-01. On only for 1/true/yes/on. Grants are process memory:
+    # lost on restart and not shared across workers. Durable grants are
+    # CONNECT-GRANT-02, so the route stays off until that store exists.
+    dms_connect_api: bool = False
     # GEN-03 (dms#194). Swap: a measurement origin runs the isolated
     # ask_path=exact|generative lanes for A/B scoring; customer deploys never set
     # it, and POST /v1/chat/ask refuses those lanes with 400 (DR-0004 refuse, not
     # ignore). Server config only - never a request header.
     dms_harness_ask_paths: bool = False
+    # R1-UI-COPY-01. Default off. The ask path does not read this.
+    # The UI reads DMS_RUNTIME_SELFCHECK and, when it is on, replaces the
+    # offline banner with a plain runtime sentence. Off, that banner is unchanged.
+    dms_runtime_selfcheck: bool = False
     # T5 lite — default tenant/user for seed until OIDC
     dms_tenant_id: str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     dms_actor_user_id: str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -82,6 +96,15 @@ class Settings(BaseSettings):
     cortex_contract_major: int = 1
     cortex_contract_version: str = "1.9.0"
     cortex_engine_image: str = "ghcr.io/netie/cortex:2.5.0-core"
+
+    @field_validator("cortex_api_key", mode="before")
+    @classmethod
+    def _blank_key_is_missing(cls, value: object) -> object:
+        """``CORTEX_API_KEY=`` (empty or whitespace) is a missing key, not a key."""
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 def refuse_placeholder_secrets(settings: Settings) -> None:

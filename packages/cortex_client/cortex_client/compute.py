@@ -18,10 +18,12 @@ the body.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
 import re
+import time
 from collections.abc import Mapping
 from contextvars import ContextVar
 from typing import Any
@@ -29,6 +31,17 @@ from typing import Any
 import httpx
 from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload
 
+from cortex_client.ask_clock import (
+    deadline_already_passed,
+    generate_budget_left_s,
+    give_up,
+    http_timeout,
+    model_slot,
+    note_generate_leg,
+    note_prompt_body,
+    register_inflight,
+    unregister_inflight,
+)
 from cortex_client.insights import (
     INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT,
     INSIGHTS_FAIL_BEARER_MISSING,
@@ -91,6 +104,9 @@ INSIGHTS_CALL_CAP_CEILING = 4
 LANE_ONTOLOGY_RANKED_ENV = "DMS_LANE_ONTOLOGY_RANKED"
 #: Extract SQL loop (retry on a database error or a checker flag). Default off.
 CLOOP_B_ENV = "DMS_CLOOP_B"
+#: SCHEMA-RETRY-01. Off, a database error retries with the typed code only.
+SCHEMA_RETRY_ENV = "DMS_SCHEMA_RETRY"
+_REPAIR_LINE = "Fix only the identifier and kind named in repair_hint."
 _LANE_ON = frozenset({"1", "true", "yes", "on"})
 INSIGHTS_FAIL_UNARMED = "insights_unarmed"
 INSIGHTS_FAIL_REFUSED = "insights_refused"
@@ -158,6 +174,13 @@ def insights_timeout_s(env: Mapping[str, str] | None = None) -> float:
     )
 
 
+def log_effective_insights_timeout(env: Mapping[str, str] | None = None) -> float:
+    """Log the timeout the process will use. Does not change the 8s default."""
+    seconds = insights_timeout_s(env)
+    _log.info("%s effective %s", INSIGHTS_TIMEOUT_ENV, seconds)
+    return seconds
+
+
 def _flag_on(env: Mapping[str, str] | None, name: str) -> bool:
     src = os.environ if env is None else env
     raw = str(src.get(name) or "").strip().lower()
@@ -182,6 +205,15 @@ def gen01_rules_enabled(env: Mapping[str, str] | None = None) -> bool:
     ladder covers the shapes it used to serve.
     """
     return _flag_on(env, GEN01_RULES_ENV)
+
+
+def schema_retry_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """``DMS_SCHEMA_RETRY``: off unless set to a true token.
+
+    Off, explain and execution failures retry with the typed code only.
+    On, those failures climb repair hint, schema slice, then the escalate role.
+    """
+    return _flag_on(env, SCHEMA_RETRY_ENV)
 
 
 def cloop_b_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -882,11 +914,14 @@ def _insights_ontology_get(
     if not callable(get):
         return None
     try:
-        res = get(
-            f"{root}{INSIGHTS_PATH}/ontology",
-            params={"q": question},
-            headers=headers,
-        )
+        get_kwargs: dict[str, Any] = {
+            "params": {"q": question},
+            "headers": headers,
+        }
+        left = generate_budget_left_s()
+        if left is not None:
+            get_kwargs["timeout"] = left
+        res = get(f"{root}{INSIGHTS_PATH}/ontology", **get_kwargs)
     except httpx.HTTPError as exc:
         if isinstance(exc, httpx.TimeoutException):
             raise
@@ -922,16 +957,22 @@ def _insights_generate_post(
         return refusal_payload(refusal)
     hdr = stamp_generate_headers(headers)
     note_model_call()
+    note_prompt_body("insights_generate", body)
+    started = time.perf_counter()
     try:
-        res = http.post(
-            f"{root}{INSIGHTS_PATH}",
-            json=body,
-            headers=hdr,
-        )
+        with model_slot(voting=cloop_b_enabled()):
+            post_kwargs: dict[str, Any] = {"json": body, "headers": hdr}
+            left = generate_budget_left_s()
+            if left is not None:
+                post_kwargs["timeout"] = left
+            res = http.post(f"{root}{INSIGHTS_PATH}", **post_kwargs)
     except httpx.HTTPError as exc:
         if isinstance(exc, httpx.TimeoutException):
+            give_up("timeout")
             raise
         return None
+    finally:
+        note_generate_leg((time.perf_counter() - started) * 1000.0)
     try:
         payload = res.json()
     except ValueError:
@@ -1089,6 +1130,71 @@ def _masked_model_question(question: str, evidence: Mapping[str, Any] | None) ->
     return text
 
 
+def _repair_candidates(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        name = item.get("name")
+        typ = item.get("type")
+        if isinstance(name, str) and name and isinstance(typ, str):
+            out.append({"name": name, "type": typ})
+    return out
+
+
+def _slice_for_prompt(schema_slice: Mapping[str, Any]) -> dict[str, Any]:
+    """Types and joins only. Samples and cell values are not prompt fields."""
+    tables: list[dict[str, Any]] = []
+    for table in schema_slice.get("tables") or []:
+        if not isinstance(table, Mapping) or not isinstance(table.get("name"), str):
+            continue
+        columns: list[dict[str, Any]] = []
+        for column in table.get("columns") or []:
+            if not isinstance(column, Mapping):
+                continue
+            name = column.get("name")
+            typ = column.get("type")
+            if not isinstance(name, str) or not isinstance(typ, str):
+                continue
+            item: dict[str, Any] = {"name": name, "type": typ}
+            if isinstance(column.get("nullable"), bool):
+                item["nullable"] = column["nullable"]
+            columns.append(item)
+        tables.append({"name": table["name"], "columns": columns})
+    joins: list[dict[str, str]] = []
+    for link in schema_slice.get("joins") or []:
+        if not isinstance(link, Mapping):
+            continue
+        kept = {key: link.get(key) for key in ("from", "from_column", "to", "to_column")}
+        if all(isinstance(val, str) and val for val in kept.values()):
+            joins.append({key: str(val) for key, val in kept.items()})
+    return {"tables": tables, "joins": joins}
+
+
+def _repair_question_suffix(sql_feedback: Mapping[str, Any]) -> str:
+    """Prompt lines for a schema retry. Absent when the feedback has no hint."""
+    parts: list[str] = []
+    hint = sql_feedback.get("repair_hint")
+    if isinstance(hint, Mapping):
+        ident = hint.get("identifier")
+        safe = {
+            "kind": hint.get("kind"),
+            "identifier": ident if isinstance(ident, str) else None,
+            "candidates": _repair_candidates(hint.get("candidates")),
+        }
+        blob = json.dumps(safe, sort_keys=True, separators=(",", ":"))
+        parts.append(f"repair_hint:\n{blob}\n{_REPAIR_LINE}")
+    schema_slice = sql_feedback.get("schema_slice")
+    if isinstance(schema_slice, Mapping):
+        blob = json.dumps(_slice_for_prompt(schema_slice), sort_keys=True, separators=(",", ":"))
+        parts.append(f"schema_slice:\n{blob}")
+    if not parts:
+        return ""
+    return "\n" + "\n".join(parts)
+
+
 def _insights_body(
     question: str,
     *,
@@ -1096,6 +1202,7 @@ def _insights_body(
     space_id: str | None,
     ontology: dict[str, Any] | None,
     sql_feedback: dict[str, Any] | None = None,
+    route_hint: str | None = None,
 ) -> dict[str, Any]:
     asked = question
     if isinstance(sql_feedback, dict):
@@ -1103,6 +1210,10 @@ def _insights_body(
         prev = str(sql_feedback.get("previous_sql") or "")
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
+            asked += _repair_question_suffix(sql_feedback)
+    preference = (
+        route_hint if route_hint in {"escalate", "reason"} else FREEROUTE_PREFERENCE
+    )
     onto, schema_context = _split_schema_context(ontology)
     onto, examples = lift_verified_examples(onto)
     evidence = None
@@ -1121,7 +1232,7 @@ def _insights_body(
         "space_id": space_id,
         "consumer": "dms",
         "mode": ONTOLOGY_MODE,
-        "model_preference": FREEROUTE_PREFERENCE,
+        "model_preference": preference,
     }
     if onto is not None:
         body["ontology"] = onto
@@ -1234,6 +1345,11 @@ def _run_insights_legs(
     def _generate(body: dict[str, Any], leg: str) -> dict[str, Any] | None:
         if recorded_model_calls() - calls_before >= cap:
             raise _BudgetStop(f"{INSIGHTS_FAIL_CALL_CAP}:{cap}", legs)
+        left = generate_budget_left_s()
+        if left is not None and left <= 0:
+            # The reserve is for the ask-back. Do not start another leg.
+            legs.append({"returned": "timeout"})
+            raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:{leg}", legs)
         try:
             got = _insights_generate_post(http, root, body, headers)
         except httpx.TimeoutException as exc:
@@ -1248,9 +1364,14 @@ def _run_insights_legs(
         out["generate_legs"] = {"count": len(legs), "legs": legs}
         return out
     if not _has_ranked_metrics(insights_payload):
+        onto_left = generate_budget_left_s()
+        if onto_left is not None and onto_left <= 0:
+            legs.append({"returned": "timeout"})
+            raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:ontology", legs)
         try:
             ranking = _insights_ontology_get(http, root, question, headers)
         except httpx.TimeoutException as exc:
+            give_up("timeout:ontology")
             raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:ontology", legs) from exc
         if ranking is not None:
             insights_payload = _merge_ontology_ranking(insights_payload, ranking)
@@ -1301,6 +1422,7 @@ def compute_query(
     dms_query: bool = True,
     call_cap: int | None = None,
     sql_feedback: dict[str, Any] | None = None,
+    route_hint: str | None = None,
 ) -> dict[str, Any] | None:
     """POST Cortex Insights generate, then leftover ``/dms/query``. None on miss.
 
@@ -1322,12 +1444,13 @@ def compute_query(
     never claimed here.
     """
     # ponytail: Ask-lane only (dms_query=False / compute_insights). Leftover
-    # compute_query still posts generate so frozen GEN-PATH-PROVE 401 +
-    # GEN-RESTORE client tests stay green. Product live_ask uses
-    # compute_insights; hosted generate uses insights_post. Empty/demo/insecure
-    # still refuse there. missing_none=False: api_key=None is the unconfigured
-    # Python default those frozen tests use.
-    refuse = generate_bearer_refuse(api_key, base_url, missing_none=False)
+    # compute_query (dms_query=True) still posts generate so frozen GEN-PATH-PROVE
+    # 401 client tests stay green; it has no product caller and
+    # tests/test_key_01_fail_closed.py locks that. Product live_ask uses
+    # compute_insights; hosted generate uses insights_post. Missing (None),
+    # empty, demo and insecure-transport all refuse on the ask lane with zero
+    # outbound calls. KEY-01 (dms#273) removed the missing_none=False exception.
+    refuse = generate_bearer_refuse(api_key, base_url)
     if refuse and not dms_query:
         return insights_fail_payload(refuse)
     headers = _auth_headers(api_key)
@@ -1338,6 +1461,7 @@ def compute_query(
         space_id=space_id,
         ontology=ontology,
         sql_feedback=sql_feedback,
+        route_hint=route_hint,
     )
     from cortex_client.strict_pin import pin_config, refusal_payload
 
@@ -1358,99 +1482,115 @@ def compute_query(
     cap = insights_call_cap() if call_cap is None else call_cap
     if not dms_query:
         timeout = min(float(timeout), INSIGHTS_ASK_TIMEOUT_CEILING_SECONDS)
+    if deadline_already_passed():
+        give_up("deadline")
+        return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
+    timeout = http_timeout(float(timeout))
+    left = generate_budget_left_s()
+    if left is not None:
+        if left <= 0:
+            give_up("deadline")
+            return insights_fail_payload(f"{INSIGHTS_FAIL_TIMEOUT}:generate", None)
+        timeout = min(timeout, left)
     try:
         with httpx.Client(timeout=timeout) as http:
+            register_inflight(http, root, headers)
             try:
-                insights_payload = _run_insights_legs(
-                    http, root, question, insights_body, headers, ontology,
-                    call_cap=cap,
-                )
-            except _BudgetStop as stop:
-                timed_out = stop.reason.startswith(INSIGHTS_FAIL_TIMEOUT)
-                if dms_query and timed_out:
+                try:
+                    insights_payload = _run_insights_legs(
+                        http, root, question, insights_body, headers, ontology,
+                        call_cap=cap,
+                    )
+                except _BudgetStop as stop:
+                    timed_out = stop.reason.startswith(INSIGHTS_FAIL_TIMEOUT)
+                    if dms_query and timed_out:
+                        return None
+                    if timed_out and not insights_timeout_env_set():
+                        # Unset env: the bare pre-budget payload, byte for byte.
+                        return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
+                    # Legs only: a partial ranking/SQL must not reach the ask path.
+                    legs = {"count": len(stop.legs), "legs": stop.legs}
+                    return insights_fail_payload(stop.reason, {"generate_legs": legs})
+                except httpx.TimeoutException:
+                    give_up("timeout")
+                    timed_out = True
+                    if not dms_query:
+                        return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
                     return None
-                if timed_out and not insights_timeout_env_set():
-                    # Unset env: the bare pre-budget payload, byte for byte.
-                    return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
-                # Legs only: a partial ranking/SQL must not reach the ask path.
-                legs = {"count": len(stop.legs), "legs": stop.legs}
-                return insights_fail_payload(stop.reason, {"generate_legs": legs})
-            except httpx.TimeoutException:
-                timed_out = True
-                if not dms_query:
-                    return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
-                return None
-            if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
-                return insights_payload
-            if (
-                not dms_query
-                and isinstance(insights_payload, dict)
-                and not gen01_rules_enabled()
-                and (
-                    insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
-                    or int(insights_payload.get(_HTTP_STATUS_KEY) or 0) in {401, 403}
+                if isinstance(insights_payload, dict) and insights_payload.get("pin_stop"):
+                    return insights_payload
+                if (
+                    not dms_query
+                    and isinstance(insights_payload, dict)
+                    and not gen01_rules_enabled()
+                    and (
+                        insights_fail_reason(insights_payload) == INSIGHTS_FAIL_AI_ERROR
+                        or int(insights_payload.get(_HTTP_STATUS_KEY) or 0) in {401, 403}
+                    )
+                ):
+                    # Ask lane: drop any ontology ranking merged after the error.
+                    # That ranking is the GEN-01 rule builder. Legacy compute_query
+                    # still posts /dms/query. 401/403 keep insights_unauthorized.
+                    out = {
+                        k: v for k, v in insights_payload.items() if k != "ontology"
+                    }
+                    if int(out.get(_HTTP_STATUS_KEY) or 0) in {401, 403}:
+                        return insights_fail_payload(INSIGHTS_FAIL_UNAUTHORIZED, out)
+                    out["insights_fail"] = INSIGHTS_FAIL_AI_ERROR
+                    return out
+                ranked_plan = typed_ranked_retry_plan(
+                    insights_payload, ontology=ontology, question=question
                 )
-            ):
-                # Ask lane: drop any ontology ranking merged after the error.
-                # That ranking is the GEN-01 rule builder. Legacy compute_query
-                # still posts /dms/query. 401/403 keep insights_unauthorized.
-                out = {
-                    k: v for k, v in insights_payload.items() if k != "ontology"
-                }
-                if int(out.get(_HTTP_STATUS_KEY) or 0) in {401, 403}:
-                    return insights_fail_payload(INSIGHTS_FAIL_UNAUTHORIZED, out)
-                out["insights_fail"] = INSIGHTS_FAIL_AI_ERROR
-                return out
-            ranked_plan = typed_ranked_retry_plan(
-                insights_payload, ontology=ontology, question=question
-            )
-            if isinstance(insights_payload, dict):
-                if ranked_plan:
-                    dms_body.setdefault(
-                        "query_plan",
-                        {k: v for k, v in ranked_plan.items() if k != "ranked_id"},
-                    )
-                    dms_body["ranked_metric"] = (
-                        ranked_plan.get("ranked_id") or ranked_plan["measure"]
-                    )
-                else:
-                    rid = first_ranked_metric_id(insights_payload)
-                    if rid:
+                if isinstance(insights_payload, dict):
+                    if ranked_plan:
                         dms_body.setdefault(
                             "query_plan",
-                            {"measure": rid, "group_by": [], "filters": []},
+                            {k: v for k, v in ranked_plan.items() if k != "ranked_id"},
                         )
-                        dms_body["ranked_metric"] = rid
-                normalized = normalize_insights_compute(insights_payload)
-                if normalized is not None:
-                    return normalized
-                if not dms_query:
-                    fail = classify_insights_fail(
-                        insights_payload, timed_out=timed_out
-                    )
+                        dms_body["ranked_metric"] = (
+                            ranked_plan.get("ranked_id") or ranked_plan["measure"]
+                        )
+                    else:
+                        rid = first_ranked_metric_id(insights_payload)
+                        if rid:
+                            dms_body.setdefault(
+                                "query_plan",
+                                {"measure": rid, "group_by": [], "filters": []},
+                            )
+                            dms_body["ranked_metric"] = rid
+                    normalized = normalize_insights_compute(insights_payload)
+                    if normalized is not None:
+                        return normalized
+                    if not dms_query:
+                        fail = classify_insights_fail(
+                            insights_payload, timed_out=timed_out
+                        )
+                        if fail:
+                            return insights_fail_payload(fail, insights_payload)
+                        return insights_miss_payload(insights_payload)
+                elif not dms_query:
+                    fail = classify_insights_fail(insights_payload, timed_out=timed_out)
                     if fail:
                         return insights_fail_payload(fail, insights_payload)
-                    return insights_miss_payload(insights_payload)
-            elif not dms_query:
-                fail = classify_insights_fail(insights_payload, timed_out=timed_out)
-                if fail:
-                    return insights_fail_payload(fail, insights_payload)
-                return None
-            try:
-                dms_res = http.post(
-                    f"{root}{COMPUTE_PATH}",
-                    json=dms_body,
-                    headers=headers,
-                )
-            except httpx.TimeoutException:
-                if insights_payload is not None:
-                    return insights_miss_payload(insights_payload)
-                return None
-            except httpx.HTTPError:
-                if insights_payload is not None:
-                    return insights_miss_payload(insights_payload)
-                return None
+                    return None
+                try:
+                    dms_res = http.post(
+                        f"{root}{COMPUTE_PATH}",
+                        json=dms_body,
+                        headers=headers,
+                    )
+                except httpx.TimeoutException:
+                    if insights_payload is not None:
+                        return insights_miss_payload(insights_payload)
+                    return None
+                except httpx.HTTPError:
+                    if insights_payload is not None:
+                        return insights_miss_payload(insights_payload)
+                    return None
+            finally:
+                unregister_inflight(http)
     except httpx.TimeoutException:
+        give_up("timeout")
         if not dms_query:
             return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, insights_payload)
         return None
@@ -1490,6 +1630,7 @@ def compute_insights(
     api_key: str | None = None,
     timeout: float | None = None,
     sql_feedback: dict[str, Any] | None = None,
+    route_hint: str | None = None,
 ) -> dict[str, Any] | None:
     """Ask-lane Insights planner: generate + ranking + one retry. No /dms/query.
 
@@ -1509,6 +1650,7 @@ def compute_insights(
         timeout=insights_timeout_s() if timeout is None else timeout,
         dms_query=False,
         sql_feedback=sql_feedback,
+        route_hint=route_hint,
     )
 
 
@@ -1523,7 +1665,9 @@ __all__ = [
     "CLOOP_B_ENV",
     "LANE_ONTOLOGY_RANKED_ENV",
     "ai_call_error_payload",
+    "SCHEMA_RETRY_ENV",
     "cloop_b_enabled",
+    "schema_retry_enabled",
     "gen01_rules_enabled",
     "INSIGHTS_FAIL_AI_ERROR",
     "INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT",
@@ -1556,6 +1700,7 @@ __all__ = [
     "insights_query_sql",
     "insights_timeout_env_set",
     "insights_timeout_s",
+    "log_effective_insights_timeout",
     "insights_was_reached",
     "ontology_ranked_lane_enabled",
     "normalize_insights_compute",

@@ -7,6 +7,9 @@
 Replaces ``auto_ontology.utils.llm_invoke``. DMS does not name a model.
 The request body carries the role alias ``ontology`` plus the messages and
 the structured-output schema name. Provider keys stay in OpenVault.
+``DMS_AO_RESPONSE_FORMAT=1`` also sends ``response_format`` built from the
+pydantic class, and allows one fenced-JSON parse retry. Any other value,
+including unset, leaves the body and the ``json.loads`` path unchanged.
 
 Credential: an OpenVault API key (``ov_...``) from ``OPENVAULT_API_KEY``, else
 ``CORTEX_API_KEY``. This is the same relay ``cortex_client.strict_pin`` uses.
@@ -46,6 +49,9 @@ REFUSE_UNAUTHORIZED = "ao_ov_unauthorized"
 REFUSE_UNREACHABLE = "ao_ov_unreachable"
 REFUSE_OUTPUT_INVALID = "ao_model_output_invalid"
 REFUSE_NO_CALLS = "ao_no_model_calls"
+#: ``1`` adds ``response_format`` and one fenced-JSON retry. Anything else is off.
+RESPONSE_FORMAT_FLAG = "DMS_AO_RESPONSE_FORMAT"
+_FENCE = "```"
 #: A failure that no later call can cure. The client stops sending after one.
 _FATAL = frozenset(
     {
@@ -127,7 +133,7 @@ class OpenVaultOntologyClient:
             transport = self._transport or default_transport
             payload = transport(url, headers, body)
             if isinstance(payload, str):
-                payload = json.loads(payload)
+                payload = _loads_model_json(payload)
             parsed = schema.model_validate(payload)
         except AoLlmError as exc:
             self._record(exc.code)
@@ -210,16 +216,33 @@ def endpoint_url() -> str:
     return base + CHAT_PATH
 
 
+def response_format_enabled() -> bool:
+    """True only when the flag is the digit 1. Unset and every other value are off."""
+    return os.environ.get(RESPONSE_FORMAT_FLAG, "0").strip() == "1"
+
+
 def build_request_body(
     messages: list[SystemMessage | HumanMessage],
     schema: type[BaseModel],
 ) -> dict[str, Any]:
-    """JSON body. Role alias ``ontology``. No model id, no provider, no strict."""
+    """JSON body. Role alias ``ontology``. No model id, no provider, no strict.
+
+    Flag off: ``role``, ``messages``, and the schema class name. Flag on: the
+    same object plus ``response_format`` from ``schema.model_json_schema()``.
+    """
     body: dict[str, Any] = {
         "role": ROLE_ALIAS,
         "messages": [{"role": message.role, "content": message.content} for message in messages],
         "schema": schema.__name__,
     }
+    if response_format_enabled():
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema.__name__,
+                "schema": schema.model_json_schema(),
+            },
+        }
     _reject_model_keys(body)
     return body
 
@@ -254,7 +277,42 @@ def default_transport(url: str, headers: dict[str, str], body: dict[str, Any]) -
         message = data["choices"][0].get("message") or {}
         content = message.get("content")
         if isinstance(content, str):
-            return json.loads(content)
+            return _loads_model_json(content)
         if isinstance(content, dict):
             return content
     return data
+
+
+def _loads_model_json(content: str) -> Any:
+    """Parse a model string. Flag on: one retry after a single ``` fence.
+
+    Flag off re-raises the first ``json.loads`` error, so the refusal is the
+    one this client has always raised. The retry uses string splits only.
+    """
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        if not response_format_enabled():
+            raise
+        stripped = _strip_one_fence(content)
+        if stripped == content:
+            raise
+        return json.loads(stripped)
+
+
+def _strip_one_fence(text: str) -> str:
+    """Drop one opening ``` line and one trailing ``` fence. No regex.
+
+    Returns ``text`` unchanged when there is no leading fence line, so the
+    caller can tell the retry would repeat the same parse.
+    """
+    body = text.strip()
+    if not body.startswith(_FENCE):
+        return text
+    newline = body.find("\n")
+    if newline < 0:
+        return text
+    rest = body[newline + 1 :].rstrip()
+    if rest.endswith(_FENCE):
+        rest = rest[: -len(_FENCE)].rstrip()
+    return rest

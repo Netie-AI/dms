@@ -70,6 +70,38 @@ an abstain. ``--gate`` exits 1 on any wrong served answer in that worst case.
 ``--baseline`` diffs against an earlier artifact of the same grader version;
 the log gets move counts, the artifact gets the ids.
 
+``--armed --ai-first`` is the AI-first profile (AIF-GRADE-01). It sets
+``AI_FIRST_FLAGS`` (``DMS_AI_FIRST``, ``DMS_CLOOP_B``,
+``DMS_RECONFIRM_RUN_HELD``, ``DMS_ASK_LADDER`` on, ``DMS_INSIGHTS_CALL_CAP=4``,
+``DMS_DEMO_FALLBACK=0``) for the run and
+restores the process env after it. ``DMS_GRAIN_AI`` and ``DMS_AO_COMPILE``
+stay off unless named with ``--ai-first-also``: they 422 on OpenVault main
+until OpenVault #172 lands. The capture header and the artifact record every
+``DMS_*`` flag (a value that is not flag-shaped, or a credential name, is
+recorded as ``set``), the Cortex flags ``/health/features`` shows, and
+whether OpenVault reports a stronger route (``unknown`` when it cannot tell;
+that never fails the run). Its grading differs from the other modes only on
+an AI-first capture:
+
+- Traps and refusals are judged before the reconfirm branch. A trap that
+  offers a reconfirm is a refusal, and no Yes is pressed for it.
+- A reconfirm whose ``suggested_question`` is empty is not an offer. That
+  envelope is graded as the abstain it is.
+- Every other offer is answered Yes through ``POST /v1/chat/ask/confirm``.
+  The follow-up envelope is graded against the original question's gold. A
+  wrong figure is ``WRONG``; a correct one is ``CORRECT_AFTER_YES``, counted
+  apart from first-pass ``correct``. A Yes that serves nothing leaves the
+  case a reconfirm. A Yes envelope that serves rows is graded on them, even
+  if it also carries a reconfirm block.
+- The example SQL the ask path showed the model is recorded as sha256 of its
+  sqlglot normal form. An AI answer whose served ``sql_used`` hashes to one
+  of them is ``ai_example_copy``: it is not AI, so it is out of ``ai_share``
+  (decision D7, taken as proposed). The legacy lines count it unattributed.
+- ``--gate`` is the worst case of ``--runs`` (at least 2) armed runs, through
+  the same ``worst_case`` as ``--envelopes``, and prints ``wrong_ub95``.
+  When runs tie on a case's worst bucket, a copy in any of them makes it a
+  copy, and a correct case counts as AI only if every tied run served AI.
+
 Usage:
     python scripts/verify/grade52.py --self-test
     python scripts/verify/grade52.py --main
@@ -78,11 +110,14 @@ Usage:
     python scripts/verify/grade52.py --envelopes PATH --baseline OLD/grade52.json
     python scripts/verify/grade52.py --armed --layout copy-only
     python scripts/verify/grade52.py --armed --layout copy-only --all-flags
+    python scripts/verify/grade52.py --armed --ai-first --layout copy-only
+    python scripts/verify/grade52.py --armed --ai-first --gate --runs 3
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -105,6 +140,12 @@ ROOT = Path(__file__).resolve().parents[2]
 PACK_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "questions.yaml"
 ORACLE_PATH = ROOT / "tests" / "fixtures" / "curated_ceo" / "oracles.yaml"
 PACK_DIR = PACK_PATH.parent
+# The curated pack is the only one copy-only hides: the API image never holds tests/.
+CURATED_PACK_DIR = PACK_DIR
+CURATED_N = 52
+# ``--pack DIR`` (armed and envelopes only) grades an external pack, for
+# example a held-out split frozen outside this tree. None is the curated 52.
+EXTERNAL_PACK: Path | None = None
 # What the recorded stub Cortex serves. Armed mode refuses any answer that
 # carries one of its values, read from this file and never typed here.
 STUB_RESPONSES_PATH = ROOT / "tests" / "fixtures" / "ask_guide" / "cortex_responses_52.json"
@@ -142,10 +183,36 @@ BUCKET_EMPTY = "EMPTY_GOLD"
 BUCKET_REFUSAL_OK = "REFUSAL_OK"
 BUCKET_REFUSAL_WRONG = "REFUSAL_WRONG"
 BUCKET_GOLD_BROKEN = "GOLD_BROKEN"
+# A clarify is its own outcome. It is a pass only when founder_f2.yaml says so.
+BUCKET_CLARIFY = "CLARIFY"
+# AI-first profile only: correct after the user's Yes, never first-pass correct.
+BUCKET_CORRECT_AFTER_YES = "CORRECT_AFTER_YES"
+# Data file beside the pack. Not a code table of phrasings.
+FOUNDER_F2_NAME = "founder_f2.yaml"
+EXPECT_CLARIFY_OR_ANSWER = "clarify_or_answer"
+_RULING_EXPECTS = frozenset({EXPECT_CLARIFY_OR_ANSWER})
+# OpenVault hop stamp. A body ``served_model`` without this header is not a hop.
+_HOP_MODEL_HEADER = "x-openvault-served-model"
+PROFILE_AI_FIRST = "ai-first"
+PROFILES = (PROFILE_AI_FIRST,)
+AI_FIRST_FLAGS: dict[str, str] = {
+    "DMS_AI_FIRST": "1",
+    "DMS_CLOOP_B": "1",
+    "DMS_RECONFIRM_RUN_HELD": "1",
+    "DMS_DEMO_FALLBACK": "0",
+    "DMS_ASK_LADDER": "1",
+    "DMS_INSIGHTS_CALL_CAP": "4",
+}
+# 422 on OpenVault main until OpenVault #172 lands. Off unless named.
+AI_FIRST_HELD_FLAGS = ("DMS_GRAIN_AI", "DMS_AO_COMPILE")
+# A served AI answer whose SQL is an example the model was shown (D7).
+PATH_EXAMPLE_COPY = "ai_example_copy"
+CONFIRM_PATH = "/v1/chat/ask/confirm"
 _BUCKET_KEYS = (
     "correct",
     "wrong",
     "reconfirm",
+    "clarify",
     "abstain",
     "refusal_ok",
     "refusal_wrong",
@@ -155,7 +222,8 @@ _BUCKET_KEYS = (
 # Bump when a bucket rule or the row comparison changes. A baseline graded by
 # another version is not comparable and is refused.
 # 4: printed wrong includes refusal_wrong. not_scored lists pin_mismatch ids.
-GRADER_VERSION = 4
+# 5: CLARIFY is its own bucket. clarify_or_answer is read from founder_f2.yaml.
+GRADER_VERSION = 5
 CONFIDENCE = 0.95
 # Higher is worse. A case's worst-of-runs bucket is the one ranked highest.
 _SEVERITY = {
@@ -165,11 +233,16 @@ _SEVERITY = {
     BUCKET_RECONFIRM: 2,
     BUCKET_GOLD_BROKEN: 2,
     BUCKET_EMPTY: 1,
+    BUCKET_CLARIFY: 1,
+    BUCKET_CORRECT_AFTER_YES: 1,
     BUCKET_CORRECT: 0,
     BUCKET_REFUSAL_OK: 0,
 }
 # Served answers that have gold to be judged against. n of the wrong-rate bound.
-_SERVED_GRADED = frozenset({BUCKET_CORRECT, BUCKET_WRONG, BUCKET_REFUSAL_WRONG})
+# Only an AI-first grade produces CORRECT_AFTER_YES.
+_SERVED_GRADED = frozenset(
+    {BUCKET_CORRECT, BUCKET_WRONG, BUCKET_REFUSAL_WRONG, BUCKET_CORRECT_AFTER_YES}
+)
 _RISK_GROUPS = ("all", "ai", "rule", "unattributed")
 _REFUSAL_ROUTES = frozenset({"abstain", "blocked", "needs_clarification", "refused"})
 _CREDENTIAL_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET", "_PASSWORD")
@@ -212,12 +285,21 @@ _OV_REQ_PER_MIN = 20
 _OV_TOK_PER_MIN = 40_000
 _ABSTAIN_PART_BUCKETS = {
     BUCKET_RECONFIRM: "reconfirm",
+    BUCKET_CLARIFY: "clarify",
     BUCKET_REFUSAL_OK: "refusal_ok",
     BUCKET_GOLD_BROKEN: "gold_broken",
     BUCKET_ABSTAIN: "abstain",
     BUCKET_EMPTY: "empty_gold",
 }
-_ABSTAIN_PARTS = ("reconfirm", "refusal_ok", "gold_broken", "abstain", "empty_gold", "other")
+_ABSTAIN_PARTS = (
+    "reconfirm",
+    "clarify",
+    "refusal_ok",
+    "gold_broken",
+    "abstain",
+    "empty_gold",
+    "other",
+)
 _PATH_DETAIL = ("L0", "L1", "compile", "ladder", "oracle")
 # Ontology compile is a rule path. A model name on the same envelope does not
 # overturn it. ``ontology_compile:*`` notes use the same prefix.
@@ -900,6 +982,91 @@ def _block_requested(block: Mapping[str, Any]) -> str | None:
     return _stamp_text(block, "model_requested") or None
 
 
+def _is_clarify(env: Mapping[str, Any]) -> bool:
+    """A product clarify. The route or the clarify block, never the question text."""
+    if str(env.get("route") or "").lower() == "needs_clarification":
+        return True
+    block = env.get("clarify")
+    return isinstance(block, Mapping) and block.get("blocks") is True
+
+
+def _header_model(headers: Mapping[str, Any]) -> str | None:
+    for key, value in headers.items():
+        if str(key).lower() != _HOP_MODEL_HEADER:
+            continue
+        text = str(value or "").strip()
+        if text:
+            return text
+    return None
+
+
+def hop_model_from(*nodes: Mapping[str, Any] | None) -> str | None:
+    """Model named by an OpenVault hop stamp. A bare ``served_model`` is not one.
+
+    Accepted stamps: header ``x-openvault-served-model``, ``ov_hop.served_model``,
+    or ``hop_model`` / ``hop_served_model`` copied off that stamp. Nothing else.
+    """
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            continue
+        headers = node.get("headers")
+        if isinstance(headers, Mapping):
+            found = _header_model(headers)
+            if found:
+                return found
+        found = _header_model(node)
+        if found:
+            return found
+        hop = node.get("ov_hop")
+        if isinstance(hop, Mapping):
+            for key in ("served_model", "hop_served_model", "hop_model"):
+                raw = hop.get(key)
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+        for key in ("hop_model", "hop_served_model"):
+            raw = node.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+    return None
+
+
+def load_founder_rulings(path: Path | None = None) -> dict[str, str]:
+    """``id -> expect`` from the founder file. Missing file means no rulings.
+
+    The only expect is ``clarify_or_answer``. A phrasing never decides it.
+    """
+    file = path if path is not None else PACK_DIR / FOUNDER_F2_NAME
+    if not file.is_file():
+        return {}
+    data = _load_yaml(file)
+    rows = data.get("rulings")
+    if not isinstance(rows, list):
+        raise SystemExit("grade52: founder_f2.yaml rulings must be a list")
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise SystemExit("grade52: founder ruling is not a mapping")
+        qid = str(row.get("id") or "").strip()
+        expect = str(row.get("expect") or "").strip()
+        if not qid or expect not in _RULING_EXPECTS:
+            raise SystemExit(
+                "grade52: founder ruling needs an id and expect clarify_or_answer"
+            )
+        out[qid] = expect
+    return out
+
+
+def _with_ruling(row: dict[str, Any], expect: str | None) -> dict[str, Any]:
+    """A clarify or a gold match meets ``clarify_or_answer``. Anything else does not."""
+    if expect == EXPECT_CLARIFY_OR_ANSWER:
+        row["expect_met"] = row["bucket"] in {
+            BUCKET_CLARIFY,
+            BUCKET_CORRECT,
+            BUCKET_CORRECT_AFTER_YES,
+        }
+    return row
+
+
 def grade_case(
     *,
     gold: list[dict[str, Any]] | None,
@@ -910,12 +1077,15 @@ def grade_case(
     trap: bool = False,
     gold_broken: bool = False,
     model_sql: str | None = None,
+    expect: str | None = None,
 ) -> dict[str, Any]:
     """One case. Traps are refusals. Gold-broken is an abstain with no oracle.
 
     A served answer on a gold-broken case is wrong. ``gold is None`` without
     ``gold_broken`` is empty gold (no certified rows). ``model_sql`` is what
     Cortex's generate returned for this case; only an armed capture has it.
+    ``expect`` comes from the founder file. A clarify is CLARIFY, and it meets
+    the ruling only when that expect is ``clarify_or_answer``.
     """
     badge = env.get("badge")
     route = env.get("route")
@@ -933,36 +1103,55 @@ def grade_case(
         "served_n": served_n,
         "model_calls": _model_call_count(env),
     }
+
+    def finish(row: dict[str, Any]) -> dict[str, Any]:
+        return _with_ruling(row, expect)
+
     if _reconfirm_offer(env):
-        return {**base, "bucket": BUCKET_RECONFIRM, "reason": "reconfirm", "answered": False}
+        return finish(
+            {**base, "bucket": BUCKET_RECONFIRM, "reason": "reconfirm", "answered": False}
+        )
     if env.get("reconfirm_accepted") is True and different_measure(
         gold_sql, str(env.get("sql_used") or "")
     ):
-        return {**base, "bucket": BUCKET_WRONG, "reason": "wrong measure"}
+        return finish({**base, "bucket": BUCKET_WRONG, "reason": "wrong measure"})
+    if _is_clarify(env):
+        return finish(
+            {
+                **base,
+                "bucket": BUCKET_CLARIFY,
+                "reason": "clarify",
+                "answered": False,
+            }
+        )
     if trap:
         if _is_abstain(env):
-            return {**base, "bucket": BUCKET_REFUSAL_OK, "reason": "correct refusal"}
+            return finish({**base, "bucket": BUCKET_REFUSAL_OK, "reason": "correct refusal"})
         unit = "row" if served_n == 1 else "rows"
-        return {
-            **base,
-            "bucket": BUCKET_REFUSAL_WRONG,
-            "reason": f"served with {served_n} {unit}",
-        }
+        return finish(
+            {
+                **base,
+                "bucket": BUCKET_REFUSAL_WRONG,
+                "reason": f"served with {served_n} {unit}",
+            }
+        )
     if gold_broken:
         if _is_abstain(env):
-            return {**base, "bucket": BUCKET_GOLD_BROKEN, "reason": "no certified gold"}
-        return {**base, "bucket": BUCKET_WRONG, "reason": "served on gold-broken"}
+            return finish({**base, "bucket": BUCKET_GOLD_BROKEN, "reason": "no certified gold"})
+        return finish({**base, "bucket": BUCKET_WRONG, "reason": "served on gold-broken"})
     if gold is None or gold == []:
         if _is_abstain(env):
-            return {**base, "bucket": BUCKET_EMPTY, "reason": "abstain"}
+            return finish({**base, "bucket": BUCKET_EMPTY, "reason": "abstain"})
         unit = "row" if served_n == 1 else "rows"
-        return {
-            **base,
-            "bucket": BUCKET_EMPTY,
-            "reason": f"served with {served_n} {unit}",
-        }
+        return finish(
+            {
+                **base,
+                "bucket": BUCKET_EMPTY,
+                "reason": f"served with {served_n} {unit}",
+            }
+        )
     if _is_abstain(env):
-        return {**base, "bucket": BUCKET_ABSTAIN, "reason": "abstain"}
+        return finish({**base, "bucket": BUCKET_ABSTAIN, "reason": "abstain"})
     keys = order_keys(str(gold_sql)) if gold_sql else None
     bucket, reason = compare_rows(
         gold,
@@ -976,8 +1165,239 @@ def grade_case(
         # served badge, no audit_id, no sql_used, orphan figures) is WRONG.
         invalid = envelope_violation(env)
         if invalid:
-            return {**base, "bucket": BUCKET_WRONG, "reason": f"envelope invalid: {invalid}"}
-    return {**base, "bucket": bucket, "reason": reason}
+            return finish(
+                {**base, "bucket": BUCKET_WRONG, "reason": f"envelope invalid: {invalid}"}
+            )
+    return finish({**base, "bucket": bucket, "reason": reason})
+
+
+def yes_offer(env: Mapping[str, Any]) -> str | None:
+    """The confirm token of a reconfirm the grader says Yes to, or None.
+
+    An offer needs a non-empty ``suggested_question`` and a token: the
+    ticket's rule, so an empty suggestion is not an offer. The product is
+    wider in one case. Under ``DMS_RECONFIRM_RUN_HELD=1`` (this profile)
+    ``confirm_reconfirm`` runs a pending entry's held SQL (``held_ready``)
+    before it refuses an empty suggestion, and the UI's reconfirm card shows
+    Yes when the offer carries a ``definition``. A definition-only held offer
+    is a real customer offer that this grader does not press. Today
+    ``def_validate`` always sets ``closest_question`` to the question, so the
+    case does not arise.
+    """
+    raw = env.get("reconfirm") if isinstance(env, Mapping) else None
+    if not isinstance(raw, Mapping):
+        return None
+    suggested = raw.get("suggested_question")
+    token = raw.get("token")
+    if not isinstance(suggested, str) or not suggested.strip():
+        return None
+    if not isinstance(token, str) or not token.strip():
+        return None
+    return token.strip()
+
+
+def _without_offer(env: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in env.items() if key != "reconfirm"}
+
+
+def _yes_view(env: Mapping[str, Any]) -> dict[str, Any]:
+    """The Yes envelope as it is graded. Only an abstain with a real offer re-offers.
+
+    An empty suggestion is not an offer here either, and a Yes envelope that
+    serves rows is graded on those rows whatever block it carries: a wrong
+    figure after Yes is WRONG, never a reconfirm.
+    """
+    if not isinstance(env.get("reconfirm"), Mapping):
+        return dict(env)
+    if _is_abstain(env) and yes_offer(env) is not None:
+        return dict(env)
+    return _without_offer(env)
+
+
+def sql_hash(sql: Any) -> str | None:
+    """sha256 of the statement's sqlglot normal form. None for no SQL.
+
+    Whitespace and keyword case do not hide a copy. The SQL is never stored.
+    """
+    canon = _canon_sql(sql)
+    if not canon:
+        return None
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+# What the ask path appends to the question the model reads.
+# ``cortex_client.compute.question_with_examples`` (DMS_AI_FIRST rows):
+#   "\n\nverified_examples:\nexample_question: <q>\nexample_sql:\n<sql>" blocks.
+# ``dms_executor.verified_queries.examples_text`` (DMS_VQ_RAG rows):
+#   "\nExamples:\nQuestion: <q>\nSQL: <sql>" lines.
+_AI_EXAMPLES_HEAD = "\n\nverified_examples:\n"
+_AI_EXAMPLE_SQL = re.compile(
+    r"example_sql:\n(.*?)(?=\n\nexample_question: |\n\nprevious_sql:|\n*\Z)", re.S
+)
+_VQ_EXAMPLES_HEAD = "\nExamples:\n"
+_VQ_EXAMPLE_SQL = re.compile(r"^SQL: (.+)$", re.M)
+
+
+def example_sql_texts(question: str, ontology: Any = None) -> list[str]:
+    """Example SQL in one Insights call: the question text, and catalog rows if any."""
+    from cortex_client.insights import VERIFIED_EXAMPLES_FIELD
+
+    text = question if isinstance(question, str) else ""
+    found: list[str] = []
+    if _AI_EXAMPLES_HEAD in text:
+        tail = text.split(_AI_EXAMPLES_HEAD, 1)[1]
+        found.extend(match.group(1) for match in _AI_EXAMPLE_SQL.finditer(tail))
+    if _VQ_EXAMPLES_HEAD in text:
+        block = text.split(_VQ_EXAMPLES_HEAD, 1)[1].split(_AI_EXAMPLES_HEAD, 1)[0]
+        found.extend(match.group(1) for match in _VQ_EXAMPLE_SQL.finditer(block))
+    if isinstance(ontology, Mapping):
+        rows = ontology.get(VERIFIED_EXAMPLES_FIELD)
+        if isinstance(rows, list):
+            found.extend(
+                str(row.get("sql") or "")
+                for row in rows
+                if isinstance(row, Mapping) and row.get("revoked") is not True
+            )
+        vq = ontology.get("vq_examples")
+        if isinstance(vq, str):
+            found.extend(match.group(1) for match in _VQ_EXAMPLE_SQL.finditer(vq))
+    return [sql.strip() for sql in found if sql.strip()]
+
+
+def example_sql_hashes(question: str, ontology: Any = None) -> list[str]:
+    """Hashes of the example SQL one Insights call showed the model."""
+    hashes = {sql_hash(sql) for sql in example_sql_texts(question, ontology)}
+    hashes.discard(None)
+    return sorted(str(item) for item in hashes)
+
+
+def _examples_shown(env: Mapping[str, Any]) -> int:
+    """The envelope's own ``ai_first.examples`` count. It carries no SQL."""
+    block = env.get("ai_first") if isinstance(env, Mapping) else None
+    raw = block.get("examples") if isinstance(block, Mapping) else None
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+
+def _block_hashes(block: Any) -> frozenset[str]:
+    raw = block.get("example_sql_sha256") if isinstance(block, Mapping) else None
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(str(item) for item in raw if isinstance(item, str) and item)
+
+
+def _mark_copy(
+    case: dict[str, Any], env: Mapping[str, Any], hashes: frozenset[str]
+) -> dict[str, Any]:
+    """An AI answer that serves an example it was shown is ``ai_example_copy`` (D7).
+
+    ``copy_check`` says whether the check could see: ``checked`` when the ask
+    path exposed example SQL, ``blind`` when the envelope says examples were
+    shown and none were captured, ``none`` when no example was shown.
+    """
+    if case.get("serve_path") != "ai":
+        return case
+    if hashes:
+        case["copy_check"] = "checked"
+    elif _examples_shown(env) > 0:
+        case["copy_check"] = "blind"
+    else:
+        case["copy_check"] = "none"
+    if hashes and sql_hash(env.get("sql_used")) in hashes:
+        case["serve_path"] = PATH_EXAMPLE_COPY
+        case["served_route"] = path_group(PATH_EXAMPLE_COPY)
+        case["ai_example_copy"] = True
+    return case
+
+
+def grade_case_ai_first(
+    *,
+    gold: list[dict[str, Any]] | None,
+    gold_sql: str | None,
+    env: Mapping[str, Any],
+    served_rows: list[dict[str, Any]],
+    as_of: str,
+    trap: bool = False,
+    gold_broken: bool = False,
+    model_sql: str | None = None,
+    expect: str | None = None,
+    yes: Mapping[str, Any] | None = None,
+    example_hashes: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """One case of an AI-first capture. ``grade_case`` does every comparison.
+
+    Traps and refusals are judged before the reconfirm branch: a trap is
+    graded on its envelope without the offer, and nobody says Yes to it. An
+    empty suggestion is not an offer, so that envelope is graded without it.
+    An offer's Yes envelope (``yes``) is graded against this question's gold,
+    under the same offer rule (``_yes_view``). Served wrong is ``WRONG``;
+    served correct is ``CORRECT_AFTER_YES``. A Yes that serves nothing keeps
+    the first-pass reconfirm.
+    """
+    offered = yes_offer(env) is not None
+    has_block = isinstance(env.get("reconfirm"), Mapping)
+    if trap or not offered:
+        plain = _without_offer(env) if has_block else dict(env)
+        case = grade_case(
+            gold=gold,
+            gold_sql=gold_sql,
+            env=plain,
+            served_rows=served_rows,
+            as_of=as_of,
+            trap=trap,
+            gold_broken=gold_broken,
+            model_sql=model_sql,
+            expect=expect,
+        )
+        if has_block:
+            case["offer"] = "trap" if offered else "empty_suggestion"
+        return _mark_copy(case, plain, example_hashes)
+    first = grade_case(
+        gold=gold,
+        gold_sql=gold_sql,
+        env=env,
+        served_rows=served_rows,
+        as_of=as_of,
+        gold_broken=gold_broken,
+        model_sql=model_sql,
+        expect=expect,
+    )
+    first["offer"] = "suggestion"
+    yes_env = yes.get("env") if isinstance(yes, Mapping) else None
+    if not isinstance(yes_env, Mapping):
+        first["yes_outcome"] = "not_pressed"
+        return _mark_copy(first, env, example_hashes)
+    follow = grade_case(
+        gold=gold,
+        gold_sql=gold_sql,
+        env=_yes_view(yes_env),
+        served_rows=_rows_of(yes_env.get("rows")),
+        as_of=as_of,
+        gold_broken=gold_broken,
+        model_sql=_record_model_sql(yes) if isinstance(yes, Mapping) else None,
+        expect=expect,
+    )
+    if not follow["answered"]:
+        reoffer = _is_abstain(yes_env) and yes_offer(yes_env) is not None
+        first["yes_outcome"] = "reoffer" if reoffer else "abstain"
+        return _mark_copy(first, env, example_hashes)
+    if follow["bucket"] == BUCKET_CORRECT:
+        bucket, reason, outcome = BUCKET_CORRECT_AFTER_YES, "correct after yes", "correct"
+    elif follow["bucket"] == BUCKET_WRONG:
+        bucket, reason, outcome = BUCKET_WRONG, f"after yes: {follow['reason']}", "wrong"
+    else:
+        bucket, reason, outcome = follow["bucket"], follow["reason"], "served_no_gold"
+    view = ("bucket", "reason", "route", "badge", "serve_path", "served_route", "abstain_code")
+    case = {
+        **follow,
+        "bucket": bucket,
+        "reason": reason,
+        "offer": "suggestion",
+        "yes_outcome": outcome,
+        "after_yes": True,
+        "first_pass": {key: first.get(key) for key in view},
+    }
+    yes_hashes = _block_hashes(yes.get("served")) if isinstance(yes, Mapping) else frozenset()
+    return _mark_copy(_with_ruling(case, expect), yes_env, example_hashes | yes_hashes)
 
 
 def envelope_violation(env: Mapping[str, Any]) -> str:
@@ -1122,6 +1542,9 @@ def _record(data: Any, default_id: str | None = None) -> dict[str, Any]:
         if isinstance(data.get("served"), dict):
             # An armed capture's per-question record (route, model SQL, Insights reason).
             record["served"] = data["served"]
+        if isinstance(data.get("yes"), dict):
+            # AI-first capture: the envelope the confirm route served after Yes.
+            record["yes"] = data["yes"]
         return record
     if "rows" in data or "badge" in data:
         if "rows" not in data:
@@ -1245,24 +1668,32 @@ def pack_gold_served_ids(
     return sorted(found)
 
 
-def tally(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Every case lands in one bucket. The seven buckets add up to the case count."""
+def tally(cases: Sequence[Mapping[str, Any]], *, yes_pass: bool = False) -> dict[str, Any]:
+    """Every case lands in one bucket. The seven buckets add up to the case count.
+
+    ``yes_pass`` (AI-first grades only) adds ``correct_after_yes`` as its own
+    bucket and counts it as graded. Without it that bucket is unknown.
+    """
     counts = {key: 0 for key in _BUCKET_KEYS}
+    if yes_pass:
+        counts["correct_after_yes"] = 0
     abstained = 0
     served: dict[str, int] = {}
     bucket_of = {
         BUCKET_CORRECT: "correct",
         BUCKET_WRONG: "wrong",
         BUCKET_RECONFIRM: "reconfirm",
+        BUCKET_CLARIFY: "clarify",
         BUCKET_ABSTAIN: "abstain",
         BUCKET_REFUSAL_OK: "refusal_ok",
         BUCKET_REFUSAL_WRONG: "refusal_wrong",
         BUCKET_EMPTY: "empty_gold",
         BUCKET_GOLD_BROKEN: "gold_broken",
+        BUCKET_CORRECT_AFTER_YES: "correct_after_yes",
     }
     for item in cases:
         key = bucket_of.get(str(item["bucket"]))
-        if key is None:
+        if key is None or key not in counts:
             raise SystemExit(f"unknown bucket {item['bucket']}")
         counts[key] += 1
         if key != "empty_gold":
@@ -1276,8 +1707,25 @@ def tally(cases: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         **counts,
         "empty_gold_abstained": abstained,
         "empty_gold_served": served,
-        "graded": counts["correct"] + counts["wrong"] + counts["abstain"],
+        "graded": counts["correct"]
+        + counts["wrong"]
+        + counts["abstain"]
+        + counts["clarify"]
+        + counts.get("correct_after_yes", 0),
     }
+
+
+def _profile_text(raw: Any) -> str | None:
+    """A capture's grading profile. Absent is the legacy grade; anything unknown is refused."""
+    if raw is None:
+        return None
+    if raw not in PROFILES:
+        raise SystemExit("grade52: unknown capture profile; known: " + ", ".join(PROFILES))
+    return str(raw)
+
+
+def _yes_pass(report: Mapping[str, Any]) -> bool:
+    return report.get("profile") == PROFILE_AI_FIRST
 
 
 def grade_envelopes(
@@ -1285,21 +1733,29 @@ def grade_envelopes(
     *,
     mode: str,
     warehouse_dir: Path | None = None,
+    profile: str | None = None,
 ) -> dict[str, Any]:
-    """Grade pack order against certified oracles. ``envelopes`` are ``{id, env}``."""
+    """Grade pack order against certified oracles. ``envelopes`` are ``{id, env}``.
+
+    ``profile`` ``ai-first`` grades each case with ``grade_case_ai_first``
+    (the record's ``yes`` envelope and example hashes). None is the legacy
+    grade, unchanged.
+    """
     if mode not in MODES:
         raise SystemExit("grade52: --mode is required: " + ", ".join(MODES))
+    profile = _profile_text(profile)
     _bootstrap()
     pack = _load_yaml(PACK_PATH)
     oracle_doc = _load_yaml(ORACLE_PATH).get("oracles") or {}
     oracles = oracle_doc if isinstance(oracle_doc, dict) else {}
     questions = list(pack["questions"])
-    if len(questions) != 52:
-        raise SystemExit(f"pack size {len(questions)} != 52")
+    _check_pack_size(len(questions))
     flagged = set(pack_gold_served_ids(questions, oracles))
+    rulings = load_founder_rulings(PACK_DIR / FOUNDER_F2_NAME)
     by_id: dict[str, Any] = {}
     model_sql_by_id: dict[str, str | None] = {}
     served_by_id: dict[str, Mapping[str, Any]] = {}
+    yes_by_id: dict[str, Mapping[str, Any]] = {}
     for item in envelopes:
         key = str(item.get("id"))
         if key in by_id:
@@ -1309,6 +1765,9 @@ def grade_envelopes(
         block = item.get("served")
         if isinstance(block, Mapping):
             served_by_id[key] = block
+        yes = item.get("yes")
+        if isinstance(yes, Mapping):
+            yes_by_id[key] = yes
     folder = warehouse_dir or Path(tempfile.mkdtemp(prefix="grade52-"))
     con, as_of, _path = _open_warehouse(folder)
     cases: list[dict[str, Any]] = []
@@ -1320,6 +1779,7 @@ def grade_envelopes(
                 raise SystemExit(f"missing envelope for {qid}")
             oracle = oracles.get(qid)
             trap = _is_trap(question, oracle if isinstance(oracle, Mapping) else None)
+            expect = rulings.get(qid)
             sql = None if trap else _certified_sql(oracle if isinstance(oracle, Mapping) else None)
             broken = sql is None and not trap
             if sql is None:
@@ -1327,31 +1787,59 @@ def grade_envelopes(
             else:
                 gold = _execute(con, sql, as_of)
             served = _rows_of(env.get("rows"))
-            row = grade_case(
-                gold=gold,
-                gold_sql=sql,
-                env=env,
-                served_rows=served,
-                as_of=as_of,
-                trap=trap,
-                gold_broken=broken,
-                model_sql=model_sql_by_id.get(qid),
-            )
+            if profile == PROFILE_AI_FIRST:
+                row = grade_case_ai_first(
+                    gold=gold,
+                    gold_sql=sql,
+                    env=env,
+                    served_rows=served,
+                    as_of=as_of,
+                    trap=trap,
+                    gold_broken=broken,
+                    model_sql=model_sql_by_id.get(qid),
+                    expect=expect,
+                    yes=yes_by_id.get(qid),
+                    example_hashes=_block_hashes(served_by_id.get(qid)),
+                )
+            else:
+                row = grade_case(
+                    gold=gold,
+                    gold_sql=sql,
+                    env=env,
+                    served_rows=served,
+                    as_of=as_of,
+                    trap=trap,
+                    gold_broken=broken,
+                    model_sql=model_sql_by_id.get(qid),
+                    expect=expect,
+                )
             row["id"] = qid
+            if expect:
+                row["founder_expect"] = expect
             row["pack_gold_served"] = qid in flagged
             block = served_by_id.get(qid) or {}
+            if row.get("after_yes"):
+                # The answer graded is the Yes envelope; its served block names its model.
+                yes_block = (yes_by_id.get(qid) or {}).get("served")
+                block = yes_block if isinstance(yes_block, Mapping) else {}
+                env = (yes_by_id.get(qid) or {}).get("env") or env
             row["model_requested"] = _block_requested(block)
             row["served_model"] = _stamp_text(block, "served_model") or _stamp_text(
                 env, "served_model"
             )
             row["pin_mismatch"] = _pin_mismatch(row["model_requested"] or "", row["served_model"])
+            row["hop_model"] = hop_model_from(block, env if isinstance(env, Mapping) else None)
+            requested = str(row.get("model_requested") or "")
+            hop = str(row.get("hop_model") or "")
+            row["hop_mismatch"] = bool(hop and requested and hop != requested)
             cases.append(row)
     finally:
         con.close()
-    counts = tally(cases)
+    counts = tally(cases, yes_pass=profile == PROFILE_AI_FIRST)
     if _accounted(counts) != len(cases):
         raise SystemExit("grade52: buckets do not add up to n")
     return {
+        **({"profile": profile} if profile else {}),
         "as_of": as_of,
         "n": len(cases),
         "pack_gold_served_ids": sorted(flagged),
@@ -1390,7 +1878,11 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
                 "pack_gold_served": bool(item.get("pack_gold_served")),
                 "served_n": item.get("served_n"),
                 "not_scored": reason or None,
+                "hop_model": item.get("hop_model") or None,
+                **({"founder_expect": item["founder_expect"]} if item.get("founder_expect") else {}),
+                **({"expect_met": bool(item["expect_met"])} if "expect_met" in item else {}),
                 **({"runs": item["runs"]} if "runs" in item else {}),
+                **{key: item[key] for key in _AI_FIRST_CASE_KEYS if key in item},
             }
         )
     without = dict(report["without_pack_gold_served"])
@@ -1409,6 +1901,7 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "correct": report["correct"],
         "wrong": headline_wrong(report),
         "reconfirm": report["reconfirm"],
+        "clarify": int(report.get("clarify") or 0),
         "abstain": report["abstain"],
         "refusal_ok": report["refusal_ok"],
         "refusal_wrong": report["refusal_wrong"],
@@ -1417,12 +1910,14 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
         "paths_correct": report.get("paths_correct"),
         "paths_served": report.get("paths_served"),
         "layout": report.get("layout"),
+        "pack": pack_label(),
         "empty_gold_abstained": report["empty_gold_abstained"],
         "empty_gold_served": report["empty_gold_served"],
         "score": True,
         "grader_version": GRADER_VERSION,
         "tries": tries_line(report["cases"]),
         "not_scored": not_scored_entries(report["cases"]),
+        "pin": pin_split(report["cases"]),
         "risk": risk_bounds(report["cases"]),
         "runs": int(report.get("runs") or 1),
         "unstable": int(report.get("unstable") or 0),
@@ -1438,6 +1933,15 @@ def write_report(report: dict[str, Any], name: str = "grade52.json") -> Path:
     ):
         if report.get(key) is not None:
             body[key] = report[key]
+    if _yes_pass(report):
+        body["profile"] = report["profile"]
+        body["correct_after_yes"] = report["correct_after_yes"]
+        body["yes"] = yes_counts(report["cases"])
+        body["copies"] = copy_counts(report["cases"])
+        body["ai_share"] = ai_share(report)
+        for key in _PROFILE_META_KEYS:
+            if key in report:
+                body[key] = report[key]
     dest.write_text(json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return dest
 
@@ -1462,14 +1966,16 @@ def _require_label(report: Mapping[str, Any]) -> None:
 
 def _bucket_count(report: Mapping[str, Any], key: str) -> int:
     if key not in report:
-        if key == "reconfirm":
+        if key in {"reconfirm", "clarify"}:
             return 0
         raise SystemExit("grade52: output requires mode, sha, and pack_gold_served")
     return int(report[key])
 
 
 def _accounted(report: Mapping[str, Any]) -> int:
-    return sum(_bucket_count(report, key) for key in _BUCKET_KEYS)
+    """Cases in a bucket. ``correct_after_yes`` exists only on an AI-first grade."""
+    total = sum(_bucket_count(report, key) for key in _BUCKET_KEYS)
+    return total + int(report.get("correct_after_yes") or 0)
 
 
 def run_label(report: Mapping[str, Any]) -> str:
@@ -1522,6 +2028,116 @@ def metric_line(report: Mapping[str, Any]) -> str:
     correct = int(report["correct"])
     wrong = int(report["wrong"])
     return f"metric ai_share={ai}/{correct} wrong={wrong}"
+
+
+# Per-case fields only an AI-first grade sets. The artifact copies them when present.
+_AI_FIRST_CASE_KEYS = (
+    "offer",
+    "yes_outcome",
+    "after_yes",
+    "first_pass",
+    "ai_example_copy",
+    "copy_check",
+    "run_paths",
+)
+# Run header fields of an AI-first capture, copied onto its report and artifact.
+_PROFILE_META_KEYS = (
+    "dms_flags",
+    "cortex_flags",
+    "cortex_flags_reason",
+    "openvault_stronger_route",
+    "openvault_stronger_route_reason",
+)
+_YES_KEYS = (
+    "offers",
+    "pressed",
+    "correct_after_yes",
+    "wrong_after_yes",
+    "no_answer_after_yes",
+    "served_no_gold",
+    "not_pressed",
+    "empty_suggestion",
+    "trap_offer",
+)
+_YES_OUTCOME = {
+    "correct": "correct_after_yes",
+    "wrong": "wrong_after_yes",
+    "served_no_gold": "served_no_gold",
+}
+
+
+def yes_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Reconfirm offers and what Yes did. An empty suggestion and a trap are not offers."""
+    out = {key: 0 for key in _YES_KEYS}
+    for item in cases:
+        offer = item.get("offer")
+        if offer == "empty_suggestion":
+            out["empty_suggestion"] += 1
+            continue
+        if offer == "trap":
+            out["trap_offer"] += 1
+            continue
+        if offer != "suggestion":
+            continue
+        out["offers"] += 1
+        outcome = str(item.get("yes_outcome") or "")
+        if outcome == "not_pressed":
+            out["not_pressed"] += 1
+            continue
+        out["pressed"] += 1
+        out[_YES_OUTCOME.get(outcome, "no_answer_after_yes")] += 1
+    return out
+
+
+def yes_line(cases: Sequence[Mapping[str, Any]]) -> str:
+    counts = yes_counts(cases)
+    return "yes " + " ".join(f"{key}={counts[key]}" for key in _YES_KEYS)
+
+
+def copy_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """AI answers that served an example they were shown, and how many could be checked."""
+    out = {"ai_example_copy": 0, "correct": 0, "checked": 0, "blind": 0}
+    for item in cases:
+        check = item.get("copy_check")
+        if check in ("checked", "blind"):
+            out[str(check)] += 1
+        if item.get("ai_example_copy"):
+            out["ai_example_copy"] += 1
+            if item.get("bucket") in (BUCKET_CORRECT, BUCKET_CORRECT_AFTER_YES):
+                out["correct"] += 1
+    return out
+
+
+def ai_share(report: Mapping[str, Any]) -> dict[str, int]:
+    """First-pass correct AI answers over first-pass correct. Copies are not AI (D7)."""
+    rolls = path_counts(report["cases"])
+    return {"ai": int(rolls["correct"]["ai"]), "correct": int(report["correct"])}
+
+
+def copy_line(report: Mapping[str, Any]) -> str:
+    counts = copy_counts(report["cases"])
+    share = ai_share(report)
+    return (
+        f"copies ai_example_copy={counts['ai_example_copy']} correct={counts['correct']} "
+        f"checked={counts['checked']} blind={counts['blind']} "
+        f"ai_share={share['ai']}/{share['correct']} excluded=ai_example_copy"
+    )
+
+
+def _flag_text(raw: Any) -> str:
+    if isinstance(raw, Mapping):
+        return ",".join(f"{key}={raw[key]}" for key in sorted(raw)) or "none"
+    return str(raw or "unknown")
+
+
+def profile_line(report: Mapping[str, Any]) -> str:
+    """Second header line of an AI-first grade: every DMS flag, Cortex flags, OV route."""
+    return (
+        f"profile {report.get('profile')} "
+        f"dms_flags={_flag_text(report.get('dms_flags'))} "
+        f"cortex_flags={_flag_text(report.get('cortex_flags'))} "
+        f"openvault_stronger_route={report.get('openvault_stronger_route') or 'unknown'}"
+    )
 
 
 def split_line(report: Mapping[str, Any]) -> str:
@@ -1590,6 +2206,39 @@ def not_scored_line(cases: Sequence[Mapping[str, Any]]) -> str:
     return f"{head} {shown}"
 
 
+def pin_split(cases: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Served answers, and how many of them carry a matching OpenVault hop stamp.
+
+    A served answer with no hop stamp is not scored on the pin. That is the
+    gap a run must show beside the all-served count. A bare ``served_model``
+    does not count as a hop.
+    """
+    served = 0
+    on_pin = 0
+    for item in cases:
+        if item.get("answered") is not True:
+            continue
+        served += 1
+        hop = str(item.get("hop_model") or "").strip()
+        requested = str(item.get("model_requested") or "").strip()
+        if hop and (not requested or hop == requested) and not item.get("hop_mismatch"):
+            on_pin += 1
+    return {
+        "all_served": served,
+        "scored_on_pin": on_pin,
+        "not_scored_on_pin": served - on_pin,
+    }
+
+
+def pin_split_line(cases: Sequence[Mapping[str, Any]]) -> str:
+    counts = pin_split(cases)
+    hops = sum(1 for item in cases if str(item.get("hop_model") or "").strip())
+    return (
+        f"pin all_served={counts['all_served']} scored_on_pin={counts['scored_on_pin']} "
+        f"not_scored_on_pin={counts['not_scored_on_pin']} hop_stamps={hops}"
+    )
+
+
 def headline_wrong(report: Mapping[str, Any]) -> int:
     """Wrong served answers. A trap that was served counts. The WRONG=0 bar reads this."""
     return _bucket_count(report, "wrong") + _bucket_count(report, "refusal_wrong")
@@ -1603,17 +2252,23 @@ def summary_line(report: Mapping[str, Any]) -> str:
     """
     _require_label(report)
     counts = {key: _bucket_count(report, key) for key in _BUCKET_KEYS}
-    if sum(counts.values()) != int(report["n"]):
+    if _accounted(report) != int(report["n"]):
         raise SystemExit("grade52: buckets do not add up to n")
     layout = report.get("layout")
     head = f"sha={report['dms_sha']}"
+    if EXTERNAL_PACK is not None:
+        head += f" pack={pack_label()}"
     if isinstance(layout, str) and layout:
         head += f" layout={layout}"
     shown_wrong = counts["wrong"] + counts["refusal_wrong"]
+    after_yes = ""
+    if "correct_after_yes" in report:
+        after_yes = f" correct_after_yes={int(report['correct_after_yes'])}"
     return (
         f"{head} pack_gold_served={report['pack_gold_served']} "
-        f"{report['n']}: correct={counts['correct']} wrong={shown_wrong} "
-        f"reconfirm={counts['reconfirm']} abstain={counts['abstain']} "
+        f"{report['n']}: correct={counts['correct']}{after_yes} wrong={shown_wrong} "
+        f"reconfirm={counts['reconfirm']} clarify={counts['clarify']} "
+        f"abstain={counts['abstain']} "
         f"refusal_ok={counts['refusal_ok']} "
         f"refusal_wrong={counts['refusal_wrong']} empty_gold={counts['empty_gold']} "
         f"gold_broken={counts['gold_broken']} mode={report['mode']}"
@@ -1705,7 +2360,7 @@ def risk_counts(cases: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]
         group = path_group(str(item.get("serve_path") or "unattributed"))
         for key in ("all", group):
             out[key]["served"] += 1
-            if bucket != BUCKET_CORRECT:
+            if bucket not in (BUCKET_CORRECT, BUCKET_CORRECT_AFTER_YES):
                 out[key]["wrong"] += 1
     return out
 
@@ -1729,7 +2384,9 @@ def risk_line(report: Mapping[str, Any]) -> str:
     Coverage is served over graded (correct, wrong and abstain on gold cases).
     """
     bounds = risk_bounds(report["cases"])
-    answered = int(report["correct"]) + int(report["wrong"])
+    answered = (
+        int(report["correct"]) + int(report["wrong"]) + int(report.get("correct_after_yes") or 0)
+    )
     parts = [f"risk {_risk_side(bounds['all'])} coverage={answered}/{int(report['graded'])}"]
     parts += [f"{group} {_risk_side(bounds[group])}" for group in _RISK_GROUPS[1:]]
     return " | ".join(parts)
@@ -2121,6 +2778,42 @@ def _env_value(name: str, value: str) -> Iterator[None]:
             os.environ[name] = before
 
 
+def use_pack(pack_dir: Path) -> None:
+    """Grade ``pack_dir`` (``questions.yaml`` + ``oracles.yaml``) instead of the 52.
+
+    The pack must live outside this tree, so a held-out split cannot be read by
+    the product it scores. Its size is its own; the 52 check stays for the
+    curated pack.
+    """
+    global PACK_PATH, ORACLE_PATH, PACK_DIR, EXTERNAL_PACK
+    root = Path(pack_dir).resolve()
+    try:
+        root.relative_to(ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("grade52: --pack must live outside the dms tree")
+    questions, oracles = root / "questions.yaml", root / "oracles.yaml"
+    if not questions.is_file() or not oracles.is_file():
+        raise SystemExit("grade52: --pack needs questions.yaml and oracles.yaml")
+    PACK_PATH, ORACLE_PATH, PACK_DIR, EXTERNAL_PACK = questions, oracles, root, root
+
+
+def expected_pack_n(found: int) -> int:
+    """52 for the curated pack. An external pack is the size it declares."""
+    return CURATED_N if EXTERNAL_PACK is None else found
+
+
+def _check_pack_size(found: int) -> None:
+    if found < 1 or found != expected_pack_n(found):
+        raise SystemExit(f"pack size {found} != {expected_pack_n(found)}")
+
+
+def pack_label() -> str:
+    """``curated_ceo`` or the external pack's directory name, printed on every score."""
+    return "curated_ceo" if EXTERNAL_PACK is None else EXTERNAL_PACK.name
+
+
 @contextmanager
 def pack_layout(layout: str) -> Iterator[None]:
     """copy-only hides the curated pack, which is what the API image holds.
@@ -2132,15 +2825,15 @@ def pack_layout(layout: str) -> Iterator[None]:
     if layout != "copy-only":
         yield
         return
-    hidden = PACK_DIR.with_name("curated_ceo.hide_capture")
+    hidden = CURATED_PACK_DIR.with_name("curated_ceo.hide_capture")
     if hidden.exists():
         raise SystemExit("grade52: capture hide path is already present")
-    PACK_DIR.rename(hidden)
+    CURATED_PACK_DIR.rename(hidden)
     try:
         yield
     finally:
-        if hidden.exists() and not PACK_DIR.exists():
-            hidden.rename(PACK_DIR)
+        if hidden.exists() and not CURATED_PACK_DIR.exists():
+            hidden.rename(CURATED_PACK_DIR)
 
 
 @dataclass(frozen=True)
@@ -2260,6 +2953,11 @@ def armed_check(records: Sequence[Mapping[str, Any]]) -> None:
         why = armed_violation(record, stub)
         if why:
             raise _fail(str(record.get("id")), why)
+        yes = record.get("yes")
+        if isinstance(yes, Mapping):
+            why = armed_violation(yes, stub)
+            if why:
+                raise _fail(str(record.get("id")), f"after yes: {why}")
         ai += served_route(record["env"], _record_model_sql(record)) == "ai"
     if ai == 0:
         raise SystemExit(
@@ -2311,6 +3009,7 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
     model_sql: str | None = None
     requested: str | None = None
     fail: str | None = None
+    hop: str | None = None
     calls = 0
     reported = False
     for payload in payloads:
@@ -2318,6 +3017,9 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
             continue
         calls += 1
         reported = reported or _model_reported(payload)
+        stamped = hop_model_from(payload)
+        if stamped:
+            hop = stamped
         asked = cortex_requested(payload)
         sql = str(payload.get("query_sql") or "").strip() or insights_query_sql(payload)
         if sql:
@@ -2338,6 +3040,7 @@ def _served_block(env: Mapping[str, Any], payloads: Sequence[Any]) -> dict[str, 
         "row_count": len(rows) if isinstance(rows, list) else None,
         "text": env.get("text"),
         "served_model": env.get("served_model"),
+        "hop_model": hop,
         "model_requested": requested,
         "model_requested_source": REQUESTED_FROM_CORTEX_STAMP if requested else None,
         "insights_calls": calls,
@@ -2450,11 +3153,17 @@ def _armed_ask(
     minter: Any,
     questions: Sequence[Mapping[str, Any]],
     spaces: Mapping[str, str],
+    *,
+    profile: str | None = None,
+    traps: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Same app and loop as the stub, with the product CortexClient and minter.
 
     Each answer is checked as it arrives, so a broken Cortex stops the run at
-    the first question that shows it.
+    the first question that shows it. On the AI-first profile each record
+    also carries the example SQL hashes its Insights calls showed the model,
+    and every non-trap offer with a suggestion is answered Yes through the
+    product's confirm route (``yes``: that envelope and its served block).
     """
     stub = stub_signatures()
     from cortex_client import CortexClient
@@ -2470,8 +3179,12 @@ def _armed_ask(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
             self.payloads: list[Any] = []
+            self.examples: set[str] = set()
 
         def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any] | None:
+            if profile == PROFILE_AI_FIRST:
+                # What DMS hands Cortex, before Cortex's own masking of the text.
+                self.examples.update(example_sql_hashes(question, kwargs.get("ontology")))
             got = super().compute_insights(question, **kwargs)
             self.payloads.append(got)
             return got
@@ -2497,10 +3210,12 @@ def _armed_ask(
     records: list[dict[str, Any]] = []
     pacer = _ArmedPacer()
     original_request = _install_pacer(pacer)
+    pending: dict[str, Any] | None = None
     try:
         for question in questions:
             qid = str(question["id"])
             cortex.payloads = []
+            cortex.examples = set()
             try:
                 res = client.post(
                     "/v1/chat/ask",
@@ -2522,18 +3237,67 @@ def _armed_ask(
                 "env": env,
                 "served": _served_block(env, cortex.payloads),
             }
+            from cortex_client.ask_clock import take_published_timings
+
+            published = take_published_timings()
+            timings = env.get("timings") if isinstance(env.get("timings"), dict) else published
+            if isinstance(timings, dict):
+                record["timings"] = timings
+            pending = record
+            if profile == PROFILE_AI_FIRST:
+                record["served"]["example_sql_sha256"] = sorted(cortex.examples)
+                cortex.examples = set()
             why = armed_violation(record, stub)
             if why:
                 raise _fail(qid, why)
+            token = yes_offer(env) if profile == PROFILE_AI_FIRST else None
+            if token and qid not in traps:
+                record["yes"] = _press_yes(client, cortex, cfg, qid, token, stub)
             records.append(record)
+            pending = None
+    except SystemExit as exc:
+        kept = keep_failed_capture(
+            [*records, *([pending] if pending is not None else [])],
+            str(exc),
+            cortex_sha=cfg.cortex_sha,
+        )
+        print(f"armed failed capture (not a score): {kept}")
+        raise
     finally:
         import httpx
 
         httpx.Client.request = original_request  # type: ignore[method-assign]
         cortex.close()
-    if len(records) != 52:
-        raise SystemExit(f"grade52 armed: FAIL capture size {len(records)} != 52")
+    if len(records) != expected_pack_n(len(records)):
+        raise SystemExit(
+            f"grade52 armed: FAIL capture size {len(records)} != {expected_pack_n(len(records))}"
+        )
     return records
+
+
+def _press_yes(
+    client: Any, cortex: Any, cfg: ArmedConfig, qid: str, token: str, stub: StubSignatures
+) -> dict[str, Any]:
+    """Yes on one offer, through ``POST /v1/chat/ask/confirm``. A failure stops the run."""
+    cortex.payloads = []
+    cortex.examples = set()
+    try:
+        res = client.post(CONFIRM_PATH, json={"token": token, "yes": True})
+    except Exception as exc:  # noqa: BLE001 - a crash is a named failure, not a score
+        raise _fail(qid, f"confirm raised {type(exc).__name__}") from None
+    if res.status_code != 200:
+        raise _fail(qid, f"confirm HTTP {res.status_code} {_detail_code(res, cfg.api_key)}")
+    env = res.json()
+    if not isinstance(env, dict) or not isinstance(env.get("rows"), list):
+        raise _fail(qid, "confirm envelope has no rows")
+    served = _served_block(env, cortex.payloads)
+    served["example_sql_sha256"] = sorted(cortex.examples)
+    cortex.examples = set()
+    yes = {"env": env, "served": served}
+    why = armed_violation(yes, stub)
+    if why:
+        raise _fail(qid, f"after yes: {why}")
+    return yes
 
 
 _CALLER_ROLES = ("cortex", "grain", "ontology")
@@ -2647,6 +3411,162 @@ def read_ov_calls(openvault_url: str, since: float) -> dict[str, Any]:
     return ov_calls_by_caller_role(rows)
 
 
+# A recorded flag value: short, no path, no URL. Anything else is recorded as ``set``.
+_FLAG_VALUE = re.compile(r"[A-Za-z0-9_.:+-]{0,64}")
+_SECRET_NAME_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "DSN")
+
+
+def dms_flags_snapshot(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Every ``DMS_*`` name in the env, plus the profile's own flags when unset.
+
+    A credential-shaped name, or a value that is not flag-shaped (a path, a
+    URL, a long string), is recorded as ``set``. No value of those is written.
+    """
+    source = os.environ if env is None else env
+    names = {name for name in source if name.upper().startswith("DMS_")}
+    names.update(AI_FIRST_FLAGS)
+    names.update(AI_FIRST_HELD_FLAGS)
+    out: dict[str, str] = {}
+    for name in sorted(names):
+        raw = source.get(name)
+        if raw is None:
+            out[name] = "unset"
+            continue
+        text = str(raw).strip()
+        secret = any(part in name.upper() for part in _SECRET_NAME_PARTS)
+        out[name] = "set" if secret or not _FLAG_VALUE.fullmatch(text) else text
+    return out
+
+
+def _flat_flags(raw: Any, prefix: str = "", depth: int = 0) -> dict[str, str]:
+    """Scalars of a JSON object as ``a.b=value``. Two levels, short values."""
+    out: dict[str, str] = {}
+    if not isinstance(raw, Mapping) or depth > 1:
+        return out
+    for key in sorted(raw, key=str):
+        value = raw[key]
+        name = f"{prefix}{key}"
+        if isinstance(value, Mapping):
+            out.update(_flat_flags(value, f"{name}.", depth + 1))
+        elif isinstance(value, bool):
+            out[name] = "true" if value else "false"
+        elif isinstance(value, (int, float, str)) or value is None:
+            text = "null" if value is None else str(value).strip()
+            out[name] = text if _FLAG_VALUE.fullmatch(text) else "set"
+    return out
+
+
+CORTEX_FLAGS_PATH = "/health/features"
+
+
+def cortex_flags(cfg: ArmedConfig) -> tuple[dict[str, str] | str, str | None]:
+    """What Cortex shows of its own flags (``/health/features``), or ``unknown``.
+
+    Never raises: a Cortex that does not publish them is recorded, not refused.
+    """
+    import httpx
+
+    try:
+        with httpx.Client(timeout=ARMED_PREFLIGHT_TIMEOUT_S) as http:
+            res = http.get(f"{cfg.cortex_url}{CORTEX_FLAGS_PATH}")
+    except Exception as exc:  # noqa: BLE001 - recorded, never a refusal
+        return "unknown", f"unreachable:{type(exc).__name__}"
+    if res.status_code != 200:
+        return "unknown", f"http_{res.status_code}"
+    try:
+        body = res.json()
+    except ValueError:
+        return "unknown", "not_json"
+    flat = _flat_flags(body)
+    if not flat:
+        return "unknown", "no_flags"
+    return flat, None
+
+
+OPENVAULT_STATUS_PATH = "/api/freeroute/status"
+
+
+def openvault_stronger_route(openvault_url: str) -> tuple[str, str]:
+    """``yes``, ``no`` or ``unknown``, and why. Never raises, never fails the run.
+
+    Reads a boolean ``stronger_route`` off OpenVault's FreeRoute status. No
+    OpenVault build on main reports that field yet, so a live run says
+    ``unknown`` with ``not_reported`` until one does.
+    """
+    import httpx
+
+    try:
+        res = httpx.get(openvault_url.rstrip("/") + OPENVAULT_STATUS_PATH, timeout=5.0)
+    except Exception as exc:  # noqa: BLE001 - recorded, never a refusal
+        return "unknown", f"unreachable:{type(exc).__name__}"
+    if res.status_code != 200:
+        return "unknown", f"http_{res.status_code}"
+    try:
+        body = res.json()
+    except ValueError:
+        return "unknown", "not_json"
+    flag = body.get("stronger_route") if isinstance(body, dict) else None
+    if isinstance(flag, bool):
+        return ("yes" if flag else "no"), "freeroute_status.stronger_route"
+    return "unknown", "not_reported"
+
+
+def ai_first_meta(cfg: ArmedConfig) -> dict[str, Any]:
+    """Run header fields of the AI-first profile. Read while its flags are set."""
+    flags, flags_reason = cortex_flags(cfg)
+    route, route_reason = openvault_stronger_route(cfg.openvault_url)
+    meta: dict[str, Any] = {
+        "profile": PROFILE_AI_FIRST,
+        "dms_flags": dms_flags_snapshot(),
+        "cortex_flags": flags,
+        "openvault_stronger_route": route,
+        "openvault_stronger_route_reason": route_reason,
+    }
+    if flags_reason:
+        meta["cortex_flags_reason"] = flags_reason
+    return meta
+
+
+def apply_ai_first_flags(also: Sequence[str] = ()) -> None:
+    """``AI_FIRST_FLAGS`` on. ``DMS_GRAIN_AI`` and ``DMS_AO_COMPILE`` off unless named."""
+    for name in also:
+        if name not in AI_FIRST_HELD_FLAGS:
+            raise SystemExit(f"grade52: --ai-first-also takes {', '.join(AI_FIRST_HELD_FLAGS)}")
+    for name, value in AI_FIRST_FLAGS.items():
+        os.environ[name] = value
+    for name in AI_FIRST_HELD_FLAGS:
+        if name in also:
+            os.environ[name] = "1"
+        else:
+            os.environ.pop(name, None)
+
+
+@contextmanager
+def _restored_env(names: Sequence[str]) -> Iterator[None]:
+    """Put these env names back as they were. The profile's flags are for its run only."""
+    before = {name: os.environ.get(name) for name in names}
+    try:
+        yield
+    finally:
+        for name, value in before.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def trap_ids(questions: Sequence[Mapping[str, Any]]) -> frozenset[str]:
+    """Declared traps. Read before a copy-only capture hides the pack."""
+    oracle_doc = _load_yaml(ORACLE_PATH).get("oracles") or {}
+    oracles = oracle_doc if isinstance(oracle_doc, dict) else {}
+    out = set()
+    for question in questions:
+        oracle = oracles.get(str(question["id"]))
+        if _is_trap(question, oracle if isinstance(oracle, Mapping) else None):
+            out.add(str(question["id"]))
+    return frozenset(out)
+
+
 # Armed landing with every current product flag on. Each still defaults off
 # in the product. Plain ``--armed`` and ``--main`` do not apply this set.
 # ``DMS_DEMO_FALLBACK`` stays 0. ``DMS_ASK_CLARIFY`` and ``DMS_CLOOP_B`` stay unset.
@@ -2684,6 +3604,8 @@ def armed_replay(
     cfg: ArmedConfig | None = None,
     *,
     all_flags: bool = False,
+    profile: str | None = None,
+    also: Sequence[str] = (),
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every pack question through the real ask path against a live Cortex.
 
@@ -2692,17 +3614,42 @@ def armed_replay(
     scrub), then the armed checks. ``all_flags`` applies ``ARMED_ALL_FLAGS_ON``
     after that scrub, so ``DMS_RECONFIRM_RUN_HELD`` is 1 for the landing run.
     Returns ``{id, env, served}`` records and the capture header fields.
+
+    ``profile`` ``ai-first`` applies ``AI_FIRST_FLAGS`` (plus ``also``) for
+    this capture only, presses Yes on non-trap offers, and adds the profile's
+    header fields. It cannot be combined with ``all_flags``.
     """
     if layout not in LAYOUTS:
         raise SystemExit("grade52: layout must be one of " + ", ".join(LAYOUTS))
+    profile = _profile_text(profile)
+    if profile is None:
+        return _armed_replay(layout, cfg, all_flags=all_flags)
+    if all_flags:
+        raise SystemExit("grade52: --ai-first is its own flag set; it does not take --all-flags")
+    touched = (*AI_FIRST_FLAGS, *AI_FIRST_HELD_FLAGS, "DMS_ASK_CLARIFY")
+    with _restored_env(touched):
+        return _armed_replay(layout, cfg, profile=profile, also=also)
+
+
+def _armed_replay(
+    layout: str,
+    cfg: ArmedConfig | None,
+    *,
+    all_flags: bool = False,
+    profile: str | None = None,
+    also: Sequence[str] = (),
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     cfg = cfg or armed_config()
     pack = _load_yaml(PACK_PATH)
     questions = list(pack["questions"])
     spaces = dict(pack["spaces"])
-    if len(questions) != 52:
-        raise SystemExit(f"pack size {len(questions)} != 52")
+    _check_pack_size(len(questions))
+    traps = trap_ids(questions) if profile else frozenset()
     posture = armed_preflight(cfg)
     _prepare_armed_flags(all_flags=all_flags)
+    if profile == PROFILE_AI_FIRST:
+        apply_ai_first_flags(also)
+    profile_meta = ai_first_meta(cfg) if profile == PROFILE_AI_FIRST else {}
     onto_fields: dict[str, Any] | None = None
     if _onto_from_data_on():
         onto_fields = approved_ontology_precheck()
@@ -2712,10 +3659,15 @@ def armed_replay(
         minter = _armed_minter(cfg)
         try:
             with pack_layout(layout):
-                records = _armed_ask(cfg, minter, questions, spaces)
+                records = _armed_ask(cfg, minter, questions, spaces, profile=profile, traps=traps)
         finally:
             minter.close()
-    armed_check(records)
+    try:
+        armed_check(records)
+    except SystemExit as exc:
+        kept = keep_failed_capture(records, str(exc), cortex_sha=cfg.cortex_sha)
+        print(f"armed failed capture (not a score): {kept}")
+        raise
     meta = {
         "mode": RUN_ARMED,
         "cortex_sha": cfg.cortex_sha,
@@ -2723,6 +3675,7 @@ def armed_replay(
         "cortex": public_url(cfg.cortex_url),
         "ov_calls_by_caller_role": read_ov_calls(cfg.openvault_url, started),
         **posture,
+        **profile_meta,
     }
     if onto_fields:
         meta.update(onto_fields)
@@ -2738,6 +3691,29 @@ def write_capture(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+FAILED_CAPTURE_NAME = "grade52.armed.failed.jsonl"
+
+
+def keep_failed_capture(
+    records: Sequence[Mapping[str, Any]], reason: str, *, cortex_sha: str | None = None
+) -> Path:
+    """Write what an armed run captured before it refused. Never a score.
+
+    The header says ``mode=failed`` and ``not_a_score=true``, so ``--envelopes``
+    refuses it (only armed or stub headers grade). It exists so a refused run
+    still shows why: the Insights fail codes, reconfirm codes and model stamps
+    per question, for ``failure_cases.py`` and a human.
+    """
+    header = {
+        "mode": "failed",
+        "not_a_score": True,
+        "reason": str(reason)[:300],
+        "cortex_sha": cortex_sha,
+        "n_captured": len(records),
+    }
+    return write_capture(records, header, _artifact_dir() / FAILED_CAPTURE_NAME)
 
 
 def _labelled(
@@ -2771,7 +3747,7 @@ def _finish(
     if layout:
         report["layout"] = layout
     rest = [item for item in report["cases"] if not item.get("pack_gold_served")]
-    without = tally(rest)
+    without = tally(rest, yes_pass=_yes_pass(report))
     without.update(
         {
             "n": len(rest),
@@ -2793,6 +3769,8 @@ def _finish(
     path = write_report(report, name)
     report["artifact"] = str(path)
     print(prefix + header_line(report))
+    if _yes_pass(report):
+        print(prefix + profile_line(report))
     print(prefix + summary_line(report))
     print(prefix + summary_line(without))
     print(prefix + paths_line(rolls))
@@ -2801,6 +3779,10 @@ def _finish(
     print(prefix + split_line(report))
     print(prefix + tries_line(report["cases"]))
     print(prefix + not_scored_line(report["cases"]))
+    print(prefix + pin_split_line(report["cases"]))
+    if _yes_pass(report):
+        print(prefix + yes_line(report["cases"]))
+        print(prefix + copy_line(report))
     if report.get("baseline"):
         print(prefix + baseline_line(report["baseline"]))
     print(f"{prefix}artifact: {path}")
@@ -2815,12 +3797,14 @@ def grade_loaded(
     layout: str | None = None,
     cortex_sha: str | None = None,
     extra: Mapping[str, Any] | None = None,
+    profile: str | None = None,
     **finish: Any,
 ) -> dict[str, Any]:
     """Grade served rows. A submit-stub pack is labelled stub and is not a score.
 
     An armed grade first refuses any record that is not a live answer.
-    ``extra`` is copied onto the artifact (ontology version, OV role counts).
+    ``extra`` is copied onto the artifact (ontology version, OV role counts,
+    the AI-first run header). ``profile`` picks the AI-first grade.
     """
     if mode == MODE_ARMED:
         armed_check(envelopes)
@@ -2830,7 +3814,7 @@ def grade_loaded(
         raise SystemExit("grade52: stub not a score")
     if not isinstance(dms_sha, str):
         raise SystemExit("grade52: envelopes commit missing")
-    report = grade_envelopes(envelopes, mode=mode)
+    report = grade_envelopes(envelopes, mode=mode, profile=profile)
     if extra:
         report.update(dict(extra))
     return _finish(report, mode, _commit_sha(dms_sha), layout, cortex_sha=cortex_sha, **finish)
@@ -2849,57 +3833,211 @@ def grade_main(mode: str | None = None, *, ai_first: bool = False) -> dict[str, 
     )
 
 
+_STAGE_ORDER = (
+    "retrieve_context",
+    "schema_context",
+    "ground_defs",
+    "tasks_choose",
+    "insights_generate",
+    "validate_explain",
+    "submit_execute",
+    "second_reading",
+    "reconfirm_build",
+    "total",
+)
+
+
+def _timing_block(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    raw = record.get("timings")
+    if isinstance(raw, Mapping):
+        return raw
+    env = record.get("env")
+    if isinstance(env, Mapping) and isinstance(env.get("timings"), Mapping):
+        return env["timings"]
+    return {}
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(0, math.ceil(pct / 100.0 * len(ordered)) - 1)
+    return ordered[min(rank, len(ordered) - 1)]
+
+
+def format_stage_table(records: Sequence[Mapping[str, Any]]) -> str:
+    """p50/p90/max per stage, calls per ask, abandoned calls. No question text."""
+    blocks = [_timing_block(record) for record in records]
+    spans: dict[str, list[float]] = {name: [] for name in _STAGE_ORDER}
+    calls: list[float] = []
+    abandoned = 0
+    for block in blocks:
+        raw_spans = block.get("spans_ms")
+        if isinstance(raw_spans, Mapping):
+            for name in _STAGE_ORDER:
+                value = raw_spans.get(name)
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    spans[name].append(0.0)
+                else:
+                    spans[name].append(float(value))
+            for name, value in raw_spans.items():
+                if name in spans or isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                spans.setdefault(str(name), []).append(float(value))
+        else:
+            for name in _STAGE_ORDER:
+                spans[name].append(0.0)
+        raw_calls = block.get("model_calls")
+        if isinstance(raw_calls, bool) or not isinstance(raw_calls, (int, float)):
+            calls.append(0.0)
+        else:
+            calls.append(float(raw_calls))
+        raw_abandoned = block.get("abandoned")
+        if isinstance(raw_abandoned, list):
+            abandoned += len(raw_abandoned)
+    lines = [f"stage table n={len(records)}"]
+    lines.append(f"{'stage':<22} {'p50':>10} {'p90':>10} {'max':>10}")
+    for name, values in spans.items():
+        lines.append(
+            f"{name:<22} {_percentile(values, 50):10.1f} "
+            f"{_percentile(values, 90):10.1f} {_percentile(values, 100):10.1f}"
+        )
+    lines.append(
+        "calls_per_ask "
+        f"p50={_percentile(calls, 50):.0f} "
+        f"p90={_percentile(calls, 90):.0f} "
+        f"max={_percentile(calls, 100):.0f}"
+    )
+    lines.append(f"abandoned={abandoned}")
+    return "\n".join(lines)
+
+
 def grade_armed(
-    layout: str = "copy-only", *, all_flags: bool = False, **finish: Any
+    layout: str = "copy-only",
+    *,
+    all_flags: bool = False,
+    profile: str | None = None,
+    also: Sequence[str] = (),
+    runs: int = 1,
+    **finish: Any,
 ) -> dict[str, Any]:
     """Armed capture of this checkout against a live Cortex, then the grade.
 
     Settings are refused before the product sha is read, so a missing key
     never reaches the network. The capture (env, model SQL, rows, answer text
     per question) is written beside the artifact. ``all_flags`` applies
-    ``ARMED_ALL_FLAGS_ON`` before the first question.
+    ``ARMED_ALL_FLAGS_ON`` before the first question. ``profile`` ``ai-first``
+    runs the AI-first profile; with ``runs`` above 1 each run is captured and
+    graded, then the worst case of all of them is the score (``worst_case``).
     """
+    if runs < 1 or (runs > 1 and profile is None):
+        raise SystemExit("grade52: --runs is a count of --armed --ai-first runs (>= 1)")
     cfg = armed_config()
     sha = product_sha()
-    records, meta = armed_replay(layout, cfg=cfg, all_flags=all_flags)
-    dest = _artifact_dir() / "grade52.armed.jsonl"
-    capture = write_capture(records, {"dms_sha": sha, **meta}, dest)
-    print(f"armed capture: {capture}")
-    extra = {
-        key: meta[key]
-        for key in (
-            "ontology_version_id",
-            "approved_counts",
-            "approver_actor_id",
-            "ov_calls_by_caller_role",
+    reports: list[dict[str, Any]] = []
+    for i in range(1, runs + 1):
+        records, meta = armed_replay(
+            layout, cfg=cfg, all_flags=all_flags, profile=profile, also=also
         )
-        if key in meta
-    }
-    return grade_loaded(
-        records,
-        mode=MODE_ARMED,
-        dms_sha=sha,
-        layout=layout,
-        cortex_sha=str(meta["cortex_sha"]),
-        extra=extra,
+        name = "grade52.armed.jsonl" if runs == 1 else f"grade52.armed.run{i}.jsonl"
+        capture = write_capture(records, {"dms_sha": sha, **meta}, _artifact_dir() / name)
+        print(f"armed capture: {capture}")
+        print(format_stage_table(records))
+        extra = {
+            key: meta[key]
+            for key in (
+                "ontology_version_id",
+                "approved_counts",
+                "approver_actor_id",
+                "ov_calls_by_caller_role",
+                *_PROFILE_META_KEYS,
+            )
+            if key in meta
+        }
+        graded = {"layout": layout, "cortex_sha": str(meta["cortex_sha"]), "extra": extra}
+        if runs == 1:
+            return grade_loaded(
+                records, mode=MODE_ARMED, dms_sha=sha, profile=profile, **graded, **finish
+            )
+        reports.append(
+            grade_loaded(
+                records,
+                mode=MODE_ARMED,
+                dms_sha=sha,
+                profile=profile,
+                name=f"grade52.run{i}.json",
+                prefix=f"run {i}/{runs} ",
+                **graded,
+            )
+        )
+    report = worst_case(reports)
+    return _finish(
+        report,
+        MODE_ARMED,
+        sha,
+        layout,
+        prefix=f"worst of {runs} unstable={report['unstable']} ",
+        cortex_sha=reports[0].get("cortex_sha"),
         **finish,
     )
 
 
+def capture_header(path: Path) -> dict[str, Any]:
+    """The raw JSONL header of a capture, or ``{}``. A directory or array has none."""
+    if not path.is_file():
+        return {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            return {}
+        return data if _header_meta(data) is not None else {}
+    return {}
+
+
 def grade_envelopes_path(path: Path, **finish: Any) -> dict[str, Any]:
-    """A capture whose header says armed is graded armed, with every armed check."""
+    """A capture whose header says armed is graded armed, with every armed check.
+
+    A header that names ``profile: ai-first`` is graded on that profile, and
+    its run header fields go onto the artifact.
+    """
     rows, meta = load_envelopes_meta(path)
     armed = meta["mode"] == RUN_ARMED
     if armed and meta["cortex_sha"] is None:
         raise SystemExit("grade52 armed: capture says armed but names no cortex sha")
+    header = capture_header(path)
+    profile = _profile_text(header.get("profile"))
+    extra = {key: header[key] for key in _PROFILE_META_KEYS if profile and key in header}
     return grade_loaded(
         rows,
         mode=MODE_ARMED if armed else MODE_SERVED,
         dms_sha=meta["dms_sha"],
         layout=meta["layout"],
         cortex_sha=meta["cortex_sha"] if armed else None,
+        profile=profile,
+        extra=extra or None,
         **finish,
     )
+
+
+_CORRECT_BUCKETS = frozenset({BUCKET_CORRECT, BUCKET_CORRECT_AFTER_YES})
+
+
+def _ai_credit_rank(case: Mapping[str, Any]) -> int:
+    """AI-first tie-break among runs with the same worst bucket. Higher wins.
+
+    A served example copy outranks every other path, in any bucket: a copy in
+    any tied run makes the case a copy (D7), as that run's own grade did. On a
+    correct bucket any other path outranks AI, so a correct question counts
+    toward ``ai_share`` only when every run with that bucket served AI.
+    """
+    if case.get("ai_example_copy"):
+        return 2
+    if str(case.get("bucket")) in _CORRECT_BUCKETS and case.get("serve_path") != "ai":
+        return 1
+    return 0
 
 
 def worst_case(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -2908,25 +4046,40 @@ def worst_case(reports: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     A case correct in one run and wrong in another is wrong; correct in one and
     abstained in another is an abstain. Runs must grade one commit, layout and
     as-of date, or the worst case mixes two products.
+
+    Runs with the same worst bucket tie. The legacy grade keeps the first of
+    them (EVAL-01, unchanged). The AI-first profile breaks the tie with
+    ``_ai_credit_rank``, so ``ai_share`` and the copy count do not depend on
+    the order the runs are given in, and ``run_paths`` lists each run's path.
     """
     first = reports[0]
-    for key in ("dms_sha", "cortex_sha", "layout", "as_of", "mode", "n"):
+    for key in ("dms_sha", "cortex_sha", "layout", "as_of", "mode", "n", "profile"):
         if any(other.get(key) != first.get(key) for other in reports[1:]):
             raise SystemExit(f"grade52: runs differ on {key}; worst case needs one product")
     per_run = [{str(item["id"]): item for item in run["cases"]} for run in reports]
     cases: list[dict[str, Any]] = []
     unstable = 0
+    ai_first = _yes_pass(first)
+
+    def rank(case: Mapping[str, Any]) -> tuple[int, int]:
+        return (_SEVERITY[str(case["bucket"])], _ai_credit_rank(case) if ai_first else 0)
+
     for item in first["cases"]:
         seen = [run[str(item["id"])] for run in per_run]
-        worst = max(seen, key=lambda case: _SEVERITY[str(case["bucket"])])
+        worst = max(seen, key=rank)
         buckets = [str(case["bucket"]) for case in seen]
         unstable += len(set(buckets)) > 1
-        cases.append({**worst, "runs": buckets})
+        row = {**worst, "runs": buckets}
+        if ai_first:
+            row["run_paths"] = [str(case.get("serve_path") or "unattributed") for case in seen]
+        cases.append(row)
+    profile = {key: first[key] for key in ("profile", *_PROFILE_META_KEYS) if key in first}
     return {
+        **profile,
         "as_of": first["as_of"],
         "n": len(cases),
         "pack_gold_served_ids": first["pack_gold_served_ids"],
-        **tally(cases),
+        **tally(cases, yes_pass=_yes_pass(first)),
         "cases": cases,
         "runs": len(reports),
         "unstable": unstable,
@@ -2963,6 +4116,11 @@ def baseline_diff(report: Mapping[str, Any], baseline: Mapping[str, Any]) -> dic
         raise SystemExit(
             f"grade52: baseline graded by grader {baseline.get('grader_version')}, "
             f"this is grader {GRADER_VERSION}; not comparable"
+        )
+    if baseline.get("profile") != report.get("profile"):
+        raise SystemExit(
+            f"grade52: baseline profile {baseline.get('profile') or 'none'}, "
+            f"this is {report.get('profile') or 'none'}; not comparable"
         )
     before = {str(item["id"]): str(item["bucket"]) for item in baseline.get("cases") or []}
     now = {str(item["id"]): str(item["bucket"]) for item in report["cases"]}
@@ -3282,7 +4440,7 @@ def self_test() -> dict[str, str]:
         }
     )
     if not check_line.endswith(
-        "52: correct=23 wrong=0 reconfirm=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
+        "52: correct=23 wrong=0 reconfirm=0 clarify=0 abstain=20 refusal_ok=8 refusal_wrong=0 "
         "empty_gold=0 gold_broken=1 mode=served"
     ):
         raise SystemExit("self-test: summary shape drifted")
@@ -3488,6 +4646,88 @@ def self_test() -> dict[str, str]:
         "cq_pin=pin_mismatch:openai/gpt-oss-120b/openai/gpt-oss-20b"
     ):
         raise SystemExit(f"self-test: pin mismatch was scored ({not_scored_line(sample)})")
+    clarify_ruled = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT 1 AS n",
+        env={
+            "badge": "ABSTAIN",
+            "route": "needs_clarification",
+            "abstained": True,
+            "rows": [],
+            "question": "clarify please",
+        },
+        served_rows=[],
+        as_of="2026-10-09",
+        expect=EXPECT_CLARIFY_OR_ANSWER,
+    )
+    clarify_plain = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT 1 AS n",
+        env={"badge": "ABSTAIN", "route": "needs_clarification", "abstained": True},
+        served_rows=[],
+        as_of="2026-10-09",
+    )
+    not_clarify = grade_case(
+        gold=[{"n": 1}],
+        gold_sql="SELECT 1 AS n",
+        env={
+            "badge": "ABSTAIN",
+            "route": "abstain",
+            "abstained": True,
+            "text": "please clarify the measure",
+        },
+        served_rows=[],
+        as_of="2026-10-09",
+        expect=EXPECT_CLARIFY_OR_ANSWER,
+    )
+    blocks = grade_case(
+        gold=None,
+        gold_sql=None,
+        env={"badge": "ABSTAIN", "route": "abstain", "abstained": True, "clarify": {"blocks": True}},
+        served_rows=[],
+        as_of="2026-10-09",
+        expect=EXPECT_CLARIFY_OR_ANSWER,
+    )
+    if clarify_ruled["bucket"] != BUCKET_CLARIFY or clarify_ruled.get("expect_met") is not True:
+        raise SystemExit(f"self-test: ruled clarify was not a pass ({clarify_ruled})")
+    if clarify_plain["bucket"] != BUCKET_CLARIFY or clarify_plain.get("expect_met") is True:
+        raise SystemExit("self-test: an unmarked clarify counted as a ruled pass")
+    if not_clarify["bucket"] != BUCKET_ABSTAIN:
+        raise SystemExit("self-test: question text was read as a clarify")
+    if blocks["bucket"] != BUCKET_CLARIFY or blocks.get("expect_met") is not True:
+        raise SystemExit("self-test: clarify.blocks was ignored")
+    hop_only = hop_model_from({"headers": {"X-OpenVault-Served-Model": "openai/gpt-oss-120b"}})
+    not_hop = hop_model_from({"served_model": "openai/gpt-oss-120b"})
+    if hop_only != "openai/gpt-oss-120b" or not_hop is not None:
+        raise SystemExit("self-test: hop stamp was not the OpenVault header")
+    pin_cases = [
+        {"answered": True, "hop_model": "openai/gpt-oss-120b", "model_requested": "openai/gpt-oss-120b"},
+        {"answered": True, "hop_model": "", "model_requested": "openai/gpt-oss-120b", "served_model": "openai/gpt-oss-120b"},
+        {"answered": False, "hop_model": "openai/gpt-oss-120b"},
+    ]
+    split_pin = pin_split(pin_cases)
+    if split_pin != {"all_served": 2, "scored_on_pin": 1, "not_scored_on_pin": 1}:
+        raise SystemExit(f"self-test: pin split drifted ({split_pin})")
+    ruling_dir = Path(tempfile.mkdtemp(prefix="grade52-f2-"))
+    good_ruling = ruling_dir / "founder_f2.yaml"
+    good_ruling.write_text(
+        "rulings:\n  - id: plant_q\n    expect: clarify_or_answer\n",
+        encoding="utf-8",
+    )
+    if load_founder_rulings(good_ruling) != {"plant_q": EXPECT_CLARIFY_OR_ANSWER}:
+        raise SystemExit("self-test: founder ruling file was not read as data")
+    bad_ruling = ruling_dir / "bad.yaml"
+    bad_ruling.write_text(
+        "rulings:\n  - id: plant_q\n    expect: always_pass\n",
+        encoding="utf-8",
+    )
+    try:
+        load_founder_rulings(bad_ruling)
+    except SystemExit as exc:
+        if "clarify_or_answer" not in str(exc):
+            raise
+    else:
+        raise SystemExit("self-test: an unknown founder expect was accepted")
     shown = summary_line(
         {
             "mode": MODE_SERVED,
@@ -3558,6 +4798,29 @@ def self_test() -> dict[str, str]:
     return plants
 
 
+def ai_first_gate(report: Mapping[str, Any]) -> int:
+    """The AI-first gate: the worst case of >= 2 runs, with its wrong-rate bound.
+
+    Exit 1 on any wrong served answer (a wrong figure after Yes included).
+    The bound is ``risk_bounds`` on the worst-case cases: the EVAL-01 number.
+    """
+    runs = int(report.get("runs") or 1)
+    if runs < 2:
+        raise SystemExit(
+            "grade52: --gate on the ai-first profile is the worst case of >= 2 runs; "
+            f"this grade has {runs}"
+        )
+    bound = risk_bounds(report["cases"])["all"]["wrong_ub95"]
+    shown = "none" if bound is None else f"{bound * 100:.1f}%"
+    wrong = headline_wrong(report)
+    verdict = "FAIL" if wrong > 0 else "PASS"
+    print(
+        f"gate {verdict} wrong={wrong} refusal_wrong={report['refusal_wrong']} "
+        f"wrong_ub95={shown} runs={runs} profile={report.get('profile')}"
+    )
+    return 1 if wrong > 0 else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--self-test", action="store_true")
@@ -3565,7 +4828,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ai-first",
         action="store_true",
-        help="with --main, set DMS_AI_FIRST=1 for the stub replay",
+        help=(
+            "with --main, set DMS_AI_FIRST=1 for the stub replay; with --armed, run the "
+            "AI-first profile (AI_FIRST_FLAGS, Yes pass, copy detection)"
+        ),
+    )
+    parser.add_argument(
+        "--ai-first-also",
+        action="append",
+        choices=AI_FIRST_HELD_FLAGS,
+        help="--armed --ai-first only: also turn this held flag on (422s until OpenVault #172)",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        help="--armed --ai-first only: armed runs graded on their worst case (2 with --gate)",
     )
     parser.add_argument(
         "--envelopes",
@@ -3590,7 +4867,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="--armed only: apply ARMED_ALL_FLAGS_ON (includes DMS_RECONFIRM_RUN_HELD=1)",
     )
+    parser.add_argument(
+        "--pack",
+        type=Path,
+        help="--armed or --envelopes: grade this external pack dir (held-out), not the 52",
+    )
     args = parser.parse_args(argv)
+    if args.pack is not None:
+        if not (args.armed or args.envelopes is not None):
+            raise SystemExit("grade52: --pack is for --armed or --envelopes")
+        use_pack(args.pack)
     sources = int(args.main) + int(args.envelopes is not None) + int(args.armed)
     if sources > 1:
         raise SystemExit("grade52: pass one of --envelopes, --main, --armed")
@@ -3600,8 +4886,22 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("grade52: --layout is for --armed; a capture carries its own layout")
     if args.all_flags and not args.armed:
         raise SystemExit("grade52: --all-flags is for --armed")
-    if args.ai_first and not args.main:
-        raise SystemExit("grade52: --ai-first is the stub switch for --main")
+    if args.ai_first and not (args.main or args.armed):
+        raise SystemExit(
+            "grade52: --ai-first is the stub switch for --main or the profile for --armed; "
+            "a capture names its own profile"
+        )
+    profile = PROFILE_AI_FIRST if args.ai_first and args.armed else None
+    if (args.ai_first_also or args.runs is not None) and profile is None:
+        raise SystemExit("grade52: --ai-first-also and --runs are for --armed --ai-first")
+    if profile and args.all_flags:
+        raise SystemExit("grade52: --ai-first is its own flag set; it does not take --all-flags")
+    runs = args.runs if args.runs is not None else (2 if profile and args.gate else 1)
+    if profile and args.gate and runs < 2:
+        raise SystemExit(
+            "grade52: --gate on the ai-first profile is the worst case of >= 2 runs; "
+            "pass --runs 2 or more"
+        )
     if args.self_test or sources == 0:
         self_test()
     baseline = None
@@ -3610,12 +4910,22 @@ def main(argv: list[str] | None = None) -> int:
     report: dict[str, Any] | None = None
     if args.envelopes is not None:
         report = grade_runs(args.envelopes, baseline=baseline)
+    elif args.armed and profile:
+        report = grade_armed(
+            args.layout or "copy-only",
+            profile=profile,
+            also=tuple(args.ai_first_also or ()),
+            runs=runs,
+            baseline=baseline,
+        )
     elif args.armed:
         report = grade_armed(
             args.layout or "copy-only", all_flags=bool(args.all_flags), baseline=baseline
         )
     elif args.main:
         grade_main(ai_first=bool(args.ai_first))
+    if args.gate and report is not None and _yes_pass(report):
+        return ai_first_gate(report)
     if args.gate and report is not None:
         if headline_wrong(report) > 0:
             print(

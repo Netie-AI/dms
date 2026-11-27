@@ -1,0 +1,106 @@
+# R1-EVAL-01. Stub runs on every pull request and on main.
+# Armed is a manual dispatch for the founder box. This runner has no Cortex,
+# no OpenVault, and no BIRD corpus, so dispatch mode=armed refuses by name
+# instead of writing a score.
+name: eval
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: stub, or armed (the box; this runner refuses a live score)
+        type: choice
+        options:
+          - stub
+          - armed
+        default: stub
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval-stub:
+    if: github.event_name != 'workflow_dispatch' || inputs.mode == 'stub'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev]"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Eval stub (report.md and report.json, under 10 min of grading)
+        shell: bash
+        env:
+          DMS_SKIP_CONTROL_PLANE_TESTS: "1"
+          DMS_DEMO_FALLBACK: "0"
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          python scripts/verify/eval_all.py --stub --out "$RUNNER_TEMP/eval_all"
+          test -s "$RUNNER_TEMP/eval_all/report.md"
+          test -s "$RUNNER_TEMP/eval_all/report.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          body = json.loads(Path(os.environ["RUNNER_TEMP"], "eval_all", "report.json").read_text())
+          assert body["mode"] == "stub"
+          assert body["serving_flag"] is None
+          assert body["pack_h"]["status"] == "unmeasured (stub)"
+          assert body["bird"]["ex_overall"] == "unmeasured (stub)"
+          assert body["ambig"]["n"] >= 40
+          assert body["elapsed_s"] < 600
+          print("eval stub ok", body["dms_sha"], "elapsed", body["elapsed_s"])
+          PY
+
+      - name: Upload stub report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-stub-report
+          path: |
+            ${{ runner.temp }}/eval_all/report.md
+            ${{ runner.temp }}/eval_all/report.json
+
+  eval-armed:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'armed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Armed refuses on this runner
+        run: |
+          set -uo pipefail
+          python3 scripts/verify/eval_all.py --armed --out "$RUNNER_TEMP/eval_armed"
+          code=$?
+          echo "armed exit $code (2 means the box settings are absent, which is this runner)"
+          test "$code" -eq 2

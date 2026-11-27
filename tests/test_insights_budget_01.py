@@ -90,10 +90,17 @@ class _Scripted:
         return self._leg("ontology", _RANK)
 
 
+# KEY-01 (dms#273): an Insights call with no key refuses before it is sent, so
+# these timeout tests carry a seeded fake token. Not a credential.
+_FAKE = "seeded-test-token-insights-budget01"
+
 def _compute(fake: _Scripted) -> dict[str, Any] | None:
     with patch("cortex_client.compute.httpx.Client", fake):
         return compute_insights(
-            _ROOT, question=_Q, ontology={"intent_slots": {"measure": "sku_count"}}
+            _ROOT,
+            question=_Q,
+            ontology={"intent_slots": {"measure": "sku_count"}},
+            api_key=_FAKE,
         )
 
 
@@ -198,7 +205,7 @@ def test_timeout_env_clamps_to_60_and_logs(
 ) -> None:
     monkeypatch.setenv(_TIMEOUT_ENV, raw)
     fake = _Scripted()
-    client = CortexClient(_ROOT, timeout=120.0)
+    client = CortexClient(_ROOT, timeout=120.0, api_key=_FAKE)
     with caplog.at_level(logging.WARNING, logger="cortex_client.compute"):
         with patch("cortex_client.compute.httpx.Client", fake):
             client.compute_insights(_Q, ontology={"intent_slots": {"measure": "sku_count"}})
@@ -228,9 +235,9 @@ def test_both_use_sites_read_one_resolved_value(monkeypatch: pytest.MonkeyPatch)
     assert resolved == 60.0
     fake = _Scripted()
     with patch("cortex_client.compute.httpx.Client", fake):
-        compute_insights(_ROOT, question=_Q)
-        compute_query(_ROOT, question=_Q, timeout=75.0, dms_query=False)
-        CortexClient(_ROOT, timeout=120.0).compute_insights(_Q)
+        compute_insights(_ROOT, question=_Q, api_key=_FAKE)
+        compute_query(_ROOT, question=_Q, timeout=75.0, dms_query=False, api_key=_FAKE)
+        CortexClient(_ROOT, timeout=120.0, api_key=_FAKE).compute_insights(_Q)
     assert fake.timeouts == [resolved, resolved, resolved]
 
 
@@ -242,7 +249,7 @@ def test_live_client_path_honours_timeout_env(
     monkeypatch.setenv(_TIMEOUT_ENV, raw)
     fake = _Scripted()
     with patch("cortex_client.compute.httpx.Client", fake):
-        CortexClient(_ROOT, timeout=120.0).compute_insights(_Q)
+        CortexClient(_ROOT, timeout=120.0, api_key=_FAKE).compute_insights(_Q)
     assert fake.timeouts == [effective]
     assert compute.insights_timeout_s() == effective
 
@@ -259,7 +266,7 @@ def test_only_insights_legs_read_env_law_keys_identity_stay_8(
         return {}
 
     monkeypatch.setattr("cortex_client.client.insights_get", _get)
-    client = CortexClient(_ROOT, timeout=120.0)
+    client = CortexClient(_ROOT, timeout=120.0, api_key=_FAKE)
     client.insights_law()
     client.insights_keys()
     client.insights_identity()
