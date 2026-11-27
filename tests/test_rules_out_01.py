@@ -104,6 +104,71 @@ def test_flag_on_rule_lanes_do_not_decide(monkeypatch: pytest.MonkeyPatch) -> No
     assert no_word_rules_enabled() is True
 
 
+def _grade52():
+    import importlib
+    import sys
+
+    path = str(Path(__file__).resolve().parents[1] / "scripts" / "verify")
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    return importlib.import_module("grade52")
+
+
+def test_flag_on_ranking_compile_does_not_stamp_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generate miss must not serve the question-word compiler.
+
+    The stub never receives model SQL (model_calls stays 0). With the flag
+    on, a ranking plan is a reconfirm, and grade52 does not call it rule.
+    """
+    from types import SimpleNamespace
+
+    from dms_executor.generative_ask import maybe_generative_ask
+
+    monkeypatch.setenv("DMS_RULES_OFF", "1")
+    monkeypatch.delenv("DMS_NO_WORD_RULES", raising=False)
+    monkeypatch.setattr(
+        "dms_executor.generative_ask.ontology_plan_from_ranking",
+        lambda *_args, **_kwargs: {
+            "query_plan": {
+                "measure": "outbound_value_myr",
+                "group_by": [],
+                "filters": [],
+            }
+        },
+    )
+    submitted: list[str] = []
+
+    def submit(sql: str) -> Any:
+        submitted.append(sql)
+        return SimpleNamespace(ok=True, status="ok", run_id="run_rules", output={"rows": []})
+
+    env = maybe_generative_ask(
+        "total revenue by category",
+        warehouse=None,
+        grantable=set(),
+        compute=lambda _ctx: {"phase": "generate"},
+        submit=submit,
+        ledger_append=lambda _payload: SimpleNamespace(entry_id="led", hash="hash_rules"),
+        ontology=demo_ontology(Path("/no/such/dms-rules-off-lake")),
+        bind_on_miss=False,
+        demo_gate=False,
+        dialect="duckdb",
+    )
+    assert submitted == []
+    assert env is not None
+    assert env["abstained"] is True
+    assert env["rows"] == []
+    assert env["badge"] == "ABSTAIN"
+    assert env.get("plan_origin") not in {"ontology_ranking", "ontology_compile"}
+    assert not str(env.get("ladder_rung") or "").startswith("compile")
+    assert env["reconfirm"]["reason_code"] == "rules_off"
+    grader = _grade52()
+    assert grader.served_route(env) == "abstain"
+    assert grader.path_group(grader.serve_path(env)) != "rule"
+
+
 def test_rules_off_links_by_rank_not_by_the_locker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

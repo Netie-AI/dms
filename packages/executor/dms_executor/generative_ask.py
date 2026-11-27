@@ -1371,6 +1371,37 @@ def path_miss_envelope(
     )
 
 
+def _rules_off() -> bool:
+    """Digit 1 only. The ontology compiler stays when the flag is off."""
+    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
+def _rules_off_hold(
+    question: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """No model SQL, and the question-word compiler must not serve.
+
+    The stub has nothing to execute for the model. Reconfirm, do not submit.
+    """
+    env = _abstain(
+        question,
+        "rules_off",
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_ONTOLOGY,
+    )
+    env["reconfirm"] = {
+        "why": "rules_off",
+        "reason_code": "rules_off",
+        "suggested_question": question,
+        "closest_question": question,
+    }
+    return env
+
+
 def _try_multi_grain_envelope(
     q: str,
     *,
@@ -1393,7 +1424,10 @@ def _try_multi_grain_envelope(
 
     Runs before one-grain GEN-01 plan/SQL. bind_plan is not this path.
     None means this ask is not a multi-grain compile (caller continues).
+    ``DMS_RULES_OFF`` does not compile this lane.
     """
+    if _rules_off():
+        return None
     lock = _multi_grain_measure(q, onto, payload)
     multi = try_compile_multi_grain(
         onto,
@@ -3020,6 +3054,10 @@ def _maybe_generative_ask_impl(
     ranked_slots: dict[str, Any] | None = None
     if kind in {"miss", "sql"}:
         ranked_slots = ontology_plan_from_ranking(q, payload, onto=onto, ctx=ctx)
+    if kind == "miss" and _rules_off() and ranked_slots is not None:
+        # Insights returned no SQL. Ranking would compile from the question.
+        # That compiler does not serve while DMS_RULES_OFF is on.
+        return _stamp(_rules_off_hold(q, space_id=space_id, session_id=session_id))
     if kind == "miss" and ranked_slots is not None:
         payload = {**(payload if isinstance(payload, dict) else {}), **ranked_slots}
         kind = parse_compute_plan(payload)
