@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - SCALE-MISS-01: rename the SQL check, use the serving dialect
+
+- **Boundary.** The nested helper is `_sql_checks`. The names gate, policy, authorize, and check_compliance stay reserved for cortex_client. The invariant file is unchanged.
+- **Dialect.** Repair context uses `turn.dialect or SERVING_DIALECT`. The scale-miss module has no `duckdb` literal.
+- **Base.** Rebased onto `d4e414c` (`duckdb>=1.0,<2`).
+- **Stub 52.** `grade52 --main` at `363b1aa`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Armed grade52 and pack H were not run. Not PASS.
+
 ## 2026-11-27 - SCALE-MISS-01: budget ask-back, re-gate replacement SQL
 
 - **Budget.** With `DMS_SCALE_MISS` on, an insights budget stop returns a stored partial or an ask-back. The card names what was understood, the SQL so far, and continue or narrow it. It does not abstain as a timeout. Flag off still abstains.
