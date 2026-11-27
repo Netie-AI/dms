@@ -1823,6 +1823,44 @@ def _checker_is_direct(reason: str) -> bool:
     return head in _DIRECT_CHECK_HEADS or str(reason or "").startswith("hostile_sql")
 
 
+def _no_ontology_file_join(sql: str, dialect: str | None = None) -> str | None:
+    """``unverified_join:no_ontology`` when a join names a schema other than main.
+
+    A file Space with no stored ontology has no link to approve. Demo SQL
+    names main tables, with or without the ``main`` schema, and does not
+    hit this. One table, including a table inside a CTE, does not hit this.
+    """
+    read = dialect or SERVING_DIALECT
+    try:
+        trees = [tree for tree in sqlglot.parse(sql or "", read=read) if tree is not None]
+    except Exception:  # noqa: BLE001 - the parser refusal is the other checker
+        return None
+    if len(trees) != 1:
+        return None
+    root = trees[0]
+    cte_names = {
+        str(cte.alias_or_name).lower()
+        for cte in root.find_all(exp.CTE)
+        if getattr(cte, "alias_or_name", None)
+    }
+    reads = 0
+    outside_main = False
+    for table in root.find_all(exp.Table):
+        name = str(table.name or "")
+        db = table.args.get("db")
+        schema = str(getattr(db, "name", "") or "") if db is not None else ""
+        if not schema and name.lower() in cte_names:
+            continue
+        if not name:
+            continue
+        reads += 1
+        if schema and schema.lower() != "main":
+            outside_main = True
+    if reads >= 2 and outside_main:
+        return f"{REASON_UNVERIFIED_JOIN}:no_ontology"
+    return None
+
+
 def ai_lane_sql_check(
     sql: str,
     *,
@@ -1897,6 +1935,12 @@ def ai_lane_sql_check(
             why = f"explain:{code}"
     if why:
         return why
+    # A granted join with no stored ontology has no link to approve. An
+    # ungranted name keeps the grant refusal above.
+    if space_onto is None:
+        missing = _no_ontology_file_join(sql, dialect)
+        if missing:
+            return missing
     if declared is not None:
         broken = violations_cited_by_sql(sql, declared, declared_violations)
         if broken:
@@ -3324,6 +3368,9 @@ def _maybe_generative_ask_impl(
                 join_why = unverified_join_reason(
                     sql, space_onto, declared_violations, columns_of=cols
                 )
+        elif not why:
+            # Granted file joins only. An ungranted name keeps the grant refusal.
+            join_why = _no_ontology_file_join(sql, dialect)
         if join_why:
             # No guessed joins: on a Space with a derived ontology, generated
             # SQL may join two relations only over a link the source declared

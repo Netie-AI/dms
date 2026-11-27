@@ -1924,7 +1924,7 @@ def build_schema_context(
     for ref, value, fuzzy, span_id, got in hint_rows:
         if not _cleared(value, got):
             continue
-        hint_table, hint_column = ref.split(".", 1)
+        hint_table, hint_column = ref.rsplit(".", 1)
         hint_out.append(HintFact(hint_table, hint_column, value, fuzzy, span_id))
 
     _remember_index(space_id, index)
@@ -2131,6 +2131,19 @@ def _fingerprint(
     return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:20]
 
 
+def _quote_relation(name: str) -> str:
+    """Quote ``schema.table`` as two identifiers. A bare name stays one.
+
+    ``_ident`` is unchanged. A dotted grant is two identifiers, not one
+    identifier that contains a dot, so ``"bronze.orders"`` is never the
+    table name.
+    """
+    parts = name.split(".")
+    if len(parts) == 2 and _ident(parts[0]) and _ident(parts[1]):
+        return f"{_quote(parts[0])}.{_quote(parts[1])}"
+    return _quote(name)
+
+
 def _bounded_read(
     con: Any, table: str, column: str, limit: int, *, distinct: bool = False
 ) -> list[str]:
@@ -2151,7 +2164,7 @@ def _bounded_read(
     tail = " ORDER BY 1" if distinct else ""
     try:
         rows = con.execute(
-            f"{head} {cell} FROM {_quote(table)} "
+            f"{head} {cell} FROM {_quote_relation(table)} "
             f"WHERE {_quote(column)} IS NOT NULL{tail} LIMIT {int(limit)}"
         ).fetchall()
     except Exception:  # noqa: BLE001
@@ -2172,7 +2185,7 @@ def _count_distinct(con: Any, table: str, column: str) -> int | None:
     try:
         row = con.execute(
             f"SELECT COUNT(DISTINCT CAST({_quote(column)} AS VARCHAR)) "
-            f"FROM {_quote(table)} WHERE {_quote(column)} IS NOT NULL"
+            f"FROM {_quote_relation(table)} WHERE {_quote(column)} IS NOT NULL"
         ).fetchone()
     except Exception:  # noqa: BLE001
         return None
@@ -2257,6 +2270,62 @@ def _stored_values(values: Sequence[str], *, table: str, column: str) -> list[st
     return out
 
 
+_MAIN_SCHEMA = "main"
+# Writer lineage on a non-main table. Not a column the file declared.
+_LINEAGE_COLUMNS = frozenset({"_src", "_ingest_id"})
+
+
+def _ascii_key(name: str) -> str:
+    return "".join(ch.lower() if "A" <= ch <= "Z" else ch for ch in name)
+
+
+def _grant_labels(grantable: set[str] | None) -> dict[str, dict[str, str]] | None:
+    """Schema key to table key to the name the grant uses.
+
+    None means this caller is not filtering: read ``main`` only, bare names,
+    the same fingerprint as before. A bare identifier is ``main``. A grant
+    ``schema.table`` names that schema. No schema list is written here.
+    """
+    if grantable is None:
+        return None
+    out: dict[str, dict[str, str]] = {}
+    for raw in sorted(str(item).strip() for item in grantable):
+        if not raw:
+            continue
+        if _ident(raw):
+            schema, table, label = _MAIN_SCHEMA, raw, raw
+        else:
+            parts = raw.split(".")
+            if len(parts) != 2 or not (_ident(parts[0]) and _ident(parts[1])):
+                continue
+            schema, table = parts
+            label = table if _ascii_key(schema) == _MAIN_SCHEMA else raw
+        out.setdefault(_ascii_key(schema), {}).setdefault(_ascii_key(table), label)
+    return out
+
+
+def _catalog_label(
+    schema: str, table: str, labels: dict[str, dict[str, str]] | None
+) -> str | None:
+    """Bare stored name for ``main``. The grant text for every other schema.
+
+    A row is judged only against the grants of its own schema, so
+    ``bronze.orders`` does not list ``main.orders``.
+    """
+    schema_key = _ascii_key(schema)
+    table_key = _ascii_key(table)
+    if labels is None:
+        if schema_key != _MAIN_SCHEMA:
+            return None
+        return table
+    bucket = labels.get(schema_key)
+    if not bucket or table_key not in bucket:
+        return None
+    if schema_key == _MAIN_SCHEMA:
+        return table
+    return bucket[table_key]
+
+
 def read_catalog(
     serving: Path | None,
     grantable: set[str] | None,
@@ -2269,55 +2338,74 @@ def read_catalog(
         body["dialect"] = named
     if serving is None or not Path(serving).is_file():
         return "", body
+    labels = _grant_labels(grantable)
+    schemas = [_MAIN_SCHEMA] if labels is None else sorted(labels)
+    if not schemas:
+        return "", body
     try:
         con = _open_serving(Path(serving))
     except Exception:  # noqa: BLE001
         return "", body
     try:
+        marks = ", ".join("?" for _ in schemas)
         rows = con.execute(
-            "SELECT table_name, column_name, data_type "
-            "FROM information_schema.columns WHERE table_schema = 'main' "
-            "ORDER BY table_name, ordinal_position"
+            "SELECT table_schema, table_name, column_name, data_type "
+            "FROM information_schema.columns "
+            f"WHERE table_schema IN ({marks}) "
+            "ORDER BY table_schema, table_name, ordinal_position",
+            schemas,
         ).fetchall()
         sizes: dict[str, int] = {}
         try:
-            for table_name, estimate in con.execute(
-                "SELECT table_name, estimated_size FROM duckdb_tables() "
-                "WHERE schema_name = 'main'"
+            for schema_name, table_name, estimate in con.execute(
+                "SELECT schema_name, table_name, estimated_size FROM duckdb_tables() "
+                f"WHERE schema_name IN ({marks})",
+                schemas,
             ).fetchall():
-                sizes[str(table_name)] = int(estimate or 0)
+                label = _catalog_label(str(schema_name), str(table_name), labels)
+                if label is None:
+                    continue
+                sizes[label] = int(estimate or 0)
         except Exception:  # noqa: BLE001
             sizes = {}
         keys: dict[str, set[str]] = {}
         try:
             constraints = con.execute(
-                "SELECT table_name, constraint_type, constraint_column_names "
-                "FROM duckdb_constraints() WHERE schema_name = 'main'"
+                "SELECT schema_name, table_name, constraint_type, constraint_column_names "
+                "FROM duckdb_constraints() "
+                f"WHERE schema_name IN ({marks})",
+                schemas,
             ).fetchall()
         except Exception:  # noqa: BLE001
             constraints = []
-        for table_name, kind, cols in constraints:
+        for schema_name, table_name, kind, cols in constraints:
             if _text(kind).upper() != "PRIMARY KEY":
                 continue
-            table = str(table_name)
-            keys.setdefault(table, set()).update(_constraint_names(cols))
+            label = _catalog_label(str(schema_name), str(table_name), labels)
+            if label is None:
+                continue
+            keys.setdefault(label, set()).update(_constraint_names(cols))
         grouped: dict[str, list[dict[str, Any]]] = {}
         fp_rows: list[tuple[str, str, str]] = []
         source_index = column_source_maps(con) if unicode_ident_enabled() else {}
-        for table_name, column_name, data_type in rows:
+        for schema_name, table_name, column_name, data_type in rows:
+            schema = str(schema_name)
             table = str(table_name)
             column_name_text = str(column_name)
-            if not _ident(table) or not _ident(column_name_text):
+            if not _ident(schema) or not _ident(table) or not _ident(column_name_text):
                 continue
-            if _granted(table, grantable, dialect=named) is not None:
+            if _ascii_key(schema) != _MAIN_SCHEMA and column_name_text in _LINEAGE_COLUMNS:
+                continue
+            label = _catalog_label(schema, table, labels)
+            if label is None:
                 continue
             data = str(data_type or "")
-            fp_rows.append((table, column_name_text, data))
+            fp_rows.append((label, column_name_text, data))
             entry: dict[str, Any] = {
                 "name": column_name_text,
                 "type": data,
                 "description": "",
-                "primary_key": column_name_text in keys.get(table, set()),
+                "primary_key": column_name_text in keys.get(label, set()),
                 "distinct": None,
                 "values": [],
                 "samples": [],
@@ -2325,7 +2413,7 @@ def read_catalog(
             src = (source_index.get(table) or {}).get(column_name_text)
             if src:
                 entry["source_name"] = src
-            grouped.setdefault(table, []).append(entry)
+            grouped.setdefault(label, []).append(entry)
         body["datasets"] = [
             {"name": table, "description": "", "columns": cols}
             for table, cols in sorted(grouped.items())
