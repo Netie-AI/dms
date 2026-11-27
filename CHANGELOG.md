@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - OV-MINT-TOKEN-ATOMIC-01 (#377) fix 2: a close error after issue stays a named failure
+
+- **Finding.** A second Opus verifier reproduced, with `RLIMIT_FSIZE=0`, that the write wrapper added in fix 1 was not enough: the buffered text handle re-flushed at `close()` and its raw `OSError` replaced the named `ov_mint_failed`, which callers (they catch only `OpenVaultTokenError`) would turn into an unnamed failure. The fix-1 test used a fake that never reached a real `close()`.
+- **Fix.** The token goes through a raw unbuffered `wb` handle. A short write, a write error or a close error after the token was issued is `OpenVaultTokenError(ov_mint_failed, "register succeeded but the token was not stored: write ...")`, the descriptor is closed on every path, and the temp file is removed. `fsync` stays best effort. The test now wraps the real handle and fails write, flush and close (two cases).
+- **Proof, CI as the runner.** Test alone `eb7201e`: 2 failed, 2186 passed, exactly the two new cases ([run 46026068051](https://github.com/Netie-AI/dms/actions/runs/46026068051)). Fix `799e4f8`. Final Opus check: PASS-WITH-FINDINGS, no HIGH or MEDIUM; with a real file-size limit (0, 5 and 30 bytes), a full tmpfs, `/dev/full` and bind mounts, the first mint raised the named error and left no partial file.
+- **Left open, LOW.** If the in-place fallback fails after the temp file was fully written, the temp file is deleted although it holds the only intact copy of the token (recovery is an OpenVault admin rotate, the same as a lost response); keeping it 0600 and naming it in the error would allow manual recovery. A suppressed `fsync` error could, on a filesystem with delayed allocation and a crash after the rename, leave an empty token file; the next boot gets a named `ov_service_token_missing`. Not PASS.
+
 ## 2026-11-27 - OV-MINT-TOKEN-ATOMIC-01 (#377): a failed first mint leaves no token file
 
 - **Fix.** `_first_mint` makes a 0600 temp file beside `DMS_OV_SERVICE_TOKEN_FILE` (`mkstemp`, exclusive, before the register call), calls `POST /keys/services`, and only then writes, flushes and renames it into place. A failed register, a lost response or a refused rename leaves no file and no empty file, and an existing file keeps its bytes, mode and inode. A symlink at the path is replaced, not written through. The token must be one printable word and never appears in an error. A rename that is refused (a bind-mounted single file) falls back to an in-place write of an existing regular file, after success only, with a warning that names no value. Root-cause class: a file a later boot trusts was written before the step that makes it valid had succeeded.
