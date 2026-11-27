@@ -7,7 +7,13 @@ import { AnswerMessage } from "@/components/AnswerMessage";
 import { AppProvider } from "@/context/AppContext";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { ClarifyCard } from "@/components/studio/ClarifyCard";
-import { namedAbstainReason, readAccess, readClarify } from "@/components/studio/abstainReason";
+import {
+  namedAbstainReason,
+  readAccess,
+  readClarify,
+  serverSpaceIds,
+  switchableSpaces,
+} from "@/components/studio/abstainReason";
 import type { AnswerEnvelope, ClarifyBlock } from "@/lib/types";
 
 const BLOCK: ClarifyBlock = {
@@ -86,7 +92,11 @@ describe("AccessCard", () => {
 
   it("names the space and both buttons when the route exists", () => {
     const html = renderToStaticMarkup(
-      createElement(AccessCard, { access, onSwitch: () => undefined }),
+      createElement(AccessCard, {
+        access,
+        serverSpaceIds: ["sp_ops"],
+        onSwitch: () => undefined,
+      }),
     );
     expect(html).toContain('data-testid="access-card"');
     expect(html).toContain("orders");
@@ -100,6 +110,7 @@ describe("AccessCard", () => {
     const off = renderToStaticMarkup(
       createElement(AccessCard, {
         access: { ...access, can_request: false },
+        serverSpaceIds: ["sp_ops"],
         onSwitch: () => undefined,
       }),
     );
@@ -110,6 +121,34 @@ describe("AccessCard", () => {
     );
     expect(missing).not.toContain("Ask the steward for access");
     expect(readAccess({ access_needed: { ...access, can_request: "yes" } })?.can_request).toBe(false);
+  });
+
+  it("does not offer Switch for a Space the server list does not include", () => {
+    const granted = [
+      { id: "sp_ops", name: "Warehouse Ops" },
+      { id: "sp_secret", name: "Other Ledger" },
+    ];
+    const clientOnly = [{ id: "sp_secret", name: "Other Ledger" }];
+    expect(serverSpaceIds(clientOnly, false)).toEqual([]);
+    expect(switchableSpaces(granted, serverSpaceIds(clientOnly, false))).toEqual([]);
+    expect(switchableSpaces(granted, ["sp_ops"]).map((s) => s.id)).toEqual(["sp_ops"]);
+    const html = renderToStaticMarkup(
+      createElement(AccessCard, {
+        access: { ...access, granted_in_spaces: granted },
+        serverSpaceIds: ["sp_ops"],
+        onSwitch: () => undefined,
+      }),
+    );
+    expect(html).toContain('data-testid="access-switch-sp_ops"');
+    expect(html).not.toContain("access-switch-sp_secret");
+    expect(html).not.toContain("Switch to that Space, Other Ledger");
+    const noServer = renderToStaticMarkup(
+      createElement(AccessCard, {
+        access: { ...access, granted_in_spaces: granted },
+        onSwitch: () => undefined,
+      }),
+    );
+    expect(noServer).not.toContain("access-switch-");
   });
 });
 

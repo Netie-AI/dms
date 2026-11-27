@@ -55,6 +55,10 @@ async function install(
   page: Page,
   asks: AskHandler[],
   accessStatus = 200,
+  spaces: { id: string; name: string; source_count: number; member_count: number }[] = [
+    FINANCE,
+    OPS,
+  ],
 ): Promise<Record<string, unknown>[]> {
   const seen: Record<string, unknown>[] = [];
   let n = 0;
@@ -103,7 +107,7 @@ async function install(
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ spaces: [FINANCE, OPS], persisted: false }),
+        body: JSON.stringify({ spaces, persisted: false }),
       });
       return;
     }
@@ -198,6 +202,38 @@ test.describe("R1-UI-CLARIFY-01", () => {
     await expect(page.getByText("Reading served").first()).toBeVisible();
     expect(seen[1]).toMatchObject({ question: "How are sales", space_id: OPS.id });
     expect(seen[1]).not.toHaveProperty("clarify_id");
+  });
+
+  test("does not offer Switch to a Space the server did not return", async ({ page }) => {
+    await install(
+      page,
+      [
+        () =>
+          envelope({
+            answer_id: "ans_access",
+            text: "That table is not in this Space.",
+            access_needed: {
+              table: "orders",
+              granted_in_spaces: [
+                { id: OPS.id, name: OPS.name },
+                { id: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", name: "Restricted" },
+              ],
+              can_request: false,
+            },
+          }),
+      ],
+      200,
+      [FINANCE],
+    );
+    await page.goto("/");
+    await expect(page.locator("#space-switcher option", { hasText: "Warehouse Ops" })).toHaveCount(0);
+    await page.getByPlaceholder(/Ask about your data/i).fill("How are sales");
+    await page.getByRole("button", { name: "Ask", exact: true }).click();
+    await expect(page.getByTestId("access-card")).toBeVisible();
+    await expect(page.getByTestId(`access-switch-${OPS.id}`)).toHaveCount(0);
+    await expect(page.getByTestId("access-switch-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Switch to that Space" })).toHaveCount(0);
+    await expect(page.locator("#space-switcher")).not.toHaveValue(OPS.id);
   });
 
   test("Ask the steward is hidden until the route exists", async ({ page }) => {

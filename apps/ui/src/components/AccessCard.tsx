@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { nextAccessRequestState, postAccessRequest } from "@/lib/api";
 import type { AccessNeeded, GrantedSpace } from "@/lib/types";
-import { accessRequestVisible } from "@/components/studio/abstainReason";
+import { accessRequestVisible, switchableSpaces } from "@/components/studio/abstainReason";
 
 const BUTTON =
   "min-h-[44px] w-full border px-3 py-2 text-left text-sm font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)] disabled:opacity-50 sm:w-auto";
@@ -14,11 +14,14 @@ export function AccessCard({
   access,
   busy,
   onSwitch,
+  serverSpaceIds = [],
   initialRouteMissing = false,
 }: {
   access: AccessNeeded;
   busy?: boolean;
   onSwitch: (space: GrantedSpace) => void;
+  /** Space ids from the server list for this user. Empty offers no Switch. */
+  serverSpaceIds?: readonly string[];
   initialRouteMissing?: boolean;
 }) {
   const titleId = useId();
@@ -26,6 +29,7 @@ export function AccessCard({
   const [note, setNote] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const showRequest = accessRequestVisible(access.can_request, routeMissing);
+  const canSwitch = new Set(switchableSpaces(access.granted_in_spaces, serverSpaceIds).map((s) => s.id));
 
   async function request(space: GrantedSpace) {
     if (!showRequest || pending) return;
@@ -64,16 +68,18 @@ export function AccessCard({
           <li key={space.id} data-testid={`access-space-${space.id}`} className="max-w-full">
             <p className="text-sm font-medium text-[var(--color-ink)]">{space.name}</p>
             <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-              <button
-                type="button"
-                data-testid={`access-switch-${space.id}`}
-                disabled={busy || pending}
-                aria-label={`Switch to that Space, ${space.name}`}
-                onClick={() => onSwitch(space)}
-                className={`${BUTTON} border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-ink)]`}
-              >
-                Switch to that Space
-              </button>
+              {canSwitch.has(space.id) ? (
+                <button
+                  type="button"
+                  data-testid={`access-switch-${space.id}`}
+                  disabled={busy || pending}
+                  aria-label={`Switch to that Space, ${space.name}`}
+                  onClick={() => onSwitch(space)}
+                  className={`${BUTTON} border-[var(--color-accent)] bg-[var(--color-accent-soft)] text-[var(--color-ink)]`}
+                >
+                  Switch to that Space
+                </button>
+              ) : null}
               {showRequest ? (
                 <button
                   type="button"

@@ -104,6 +104,31 @@ export function accessRequestVisible(canRequest: boolean, routeMissing: boolean)
   return canRequest && !routeMissing;
 }
 
+/** Ids from GET /v1/spaces. A client fixture list is not a membership list. */
+export function serverSpaceIds(
+  spaces: readonly { id: string }[],
+  fromServer: boolean,
+): string[] {
+  if (!fromServer) return [];
+  return spaces.map((space) => space.id);
+}
+
+/** Switch targets: granted spaces that this user's server Space list also contains. */
+export function switchableSpaces(
+  granted: readonly GrantedSpace[],
+  serverIds: readonly string[],
+): GrantedSpace[] {
+  const allowed = new Set(serverIds);
+  const seen = new Set<string>();
+  const out: GrantedSpace[] = [];
+  for (const space of granted) {
+    if (!allowed.has(space.id) || seen.has(space.id)) continue;
+    seen.add(space.id);
+    out.push(space);
+  }
+  return out;
+}
+
 export function isAbstain(env: AbstainFields): boolean {
   return env.abstained === true || env.badge === "ABSTAIN";
 }

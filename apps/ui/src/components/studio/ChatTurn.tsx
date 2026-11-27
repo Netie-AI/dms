@@ -5,7 +5,7 @@ import { describeApiError, postAsk, postClarifyPick } from "@/lib/api";
 import type { AnswerEnvelope, ClarifyReading, GrantedSpace } from "@/lib/types";
 import { AskStages, useAskStages } from "./AskStages";
 import { ClarifyCard, clarifyPickBody } from "./ClarifyCard";
-import { readAccess, readClarify } from "./abstainReason";
+import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "./abstainReason";
 
 /** Same sentence as ``dms_core.studio_chat_turn.NOT_PROVIDED``. */
 export const NOT_PROVIDED = "not provided by Cortex";
@@ -75,7 +75,7 @@ function joinLabel(row: JoinItem): string {
 }
 
 export function ChatTurn({ spaceId }: { spaceId: string | null }) {
-  const { setActiveSpaceId } = useApp();
+  const { setActiveSpaceId, spaces, spacesFromApi } = useApp();
   const [draft, setDraft] = useState("");
   const [edit, setEdit] = useState("");
   const [reply, setReply] = useState("");
@@ -227,7 +227,10 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
     }
   }
 
+  const memberIds = serverSpaceIds(spaces, spacesFromApi);
+
   function switchSpace(space: GrantedSpace) {
+    if (!switchableSpaces([space], memberIds).length) return;
     const asked = (plannedQuestion || edit || draft).trim();
     if (!asked) return;
     if (space.id === spaceId) {
@@ -390,7 +393,14 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
           {clarify ? (
             <ClarifyCard block={clarify} busy={busy} error={cardError} onPick={pickReading} />
           ) : null}
-          {access ? <AccessCard access={access} busy={busy} onSwitch={switchSpace} /> : null}
+          {access ? (
+            <AccessCard
+              access={access}
+              busy={busy}
+              serverSpaceIds={memberIds}
+              onSwitch={switchSpace}
+            />
+          ) : null}
           <div className="mt-2" data-testid="studio-chat-suggestions">
             <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
               Follow-up questions

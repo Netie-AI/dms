@@ -6,7 +6,7 @@ import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answer
 import { SimpleChart } from "@/components/SimpleChart";
 import { AccessCard } from "@/components/AccessCard";
 import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
-import { readAccess, readClarify } from "@/components/studio/abstainReason";
+import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "@/components/studio/abstainReason";
 import { ResultView } from "@/components/studio/ResultView";
 import { useApp } from "@/context/AppContext";
 import {
@@ -177,6 +177,8 @@ export function AnswerMessage({
     activeSpaceId,
     setActiveSpaceId,
     sessionId,
+    spaces,
+    spacesFromApi,
   } = useApp();
   const [follow, setFollow] = useState<AnswerEnvelope | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -386,7 +388,10 @@ export function AnswerMessage({
     }
   }
 
+  const memberIds = serverSpaceIds(spaces, spacesFromApi);
+
   function switchSpace(space: GrantedSpace) {
+    if (!switchableSpaces([space], memberIds).length) return;
     setActiveSpaceId(space.id);
     const asked = (question ?? "").trim();
     if (asked) void ask(asked);
@@ -540,7 +545,14 @@ export function AnswerMessage({
       {clarify ? (
         <ClarifyCard block={clarify} busy={cardBusy} error={cardError} onPick={pickReading} />
       ) : null}
-      {access ? <AccessCard access={access} busy={cardBusy} onSwitch={switchSpace} /> : null}
+      {access ? (
+        <AccessCard
+          access={access}
+          busy={cardBusy}
+          serverSpaceIds={memberIds}
+          onSwitch={switchSpace}
+        />
+      ) : null}
       {showLayer && (
         <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">
           <p className="text-sm font-medium text-[var(--color-ink)]">
