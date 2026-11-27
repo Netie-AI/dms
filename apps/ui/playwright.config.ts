@@ -14,6 +14,11 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
     video: "retain-on-failure",
+    // A container that ships its own Chromium (a different build from the one this
+    // Playwright version downloads) points at it here; unset, Playwright uses its own.
+    ...(process.env.PW_CHROMIUM
+      ? { launchOptions: { executablePath: process.env.PW_CHROMIUM } }
+      : {}),
   },
   ...(ci
     ? {

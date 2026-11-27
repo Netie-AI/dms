@@ -8,7 +8,7 @@ export function DemoFallbackBanner() {
   return (
     <div
       role="status"
-      className="shrink-0 border-b-2 border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-2 text-center text-xs font-semibold tracking-wide text-[var(--color-warn)]"
+      className="shrink-0 border-b-2 border-[var(--color-warn)] bg-[var(--color-warn-soft)] px-4 py-2 max-lg:short:py-1 text-center text-xs font-semibold tracking-wide text-[var(--color-warn)]"
     >
       {askMode === "demo"
         ? "DEMO ASK MODE — numbers come from the local DuckDB warehouse, not a certified Cortex path."

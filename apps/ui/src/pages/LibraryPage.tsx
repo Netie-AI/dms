@@ -101,12 +101,16 @@ function TreeRows({
               }`}
               style={{ paddingLeft: pad }}
             >
-              <span className="w-3 shrink-0 font-mono text-[10px] text-[var(--color-ink-muted)]">
+              <span
+                className={`w-3 shrink-0 font-mono text-[10px] text-[var(--color-ink-muted)] ${selected ? "max-lg:text-[var(--color-ink)]" : ""}`}
+              >
                 {isFolder ? (open ? "▾" : "▸") : "·"}
               </span>
               <span className="min-w-0 flex-1 truncate font-medium">{n.label}</span>
               {typeof n.meta?.row_count === "number" && (
-                <span className="tabular-nums text-[10px] text-[var(--color-ink-muted)]">
+                <span
+                  className={`tabular-nums text-[10px] text-[var(--color-ink-muted)] ${selected ? "max-lg:text-[var(--color-ink)]" : ""}`}
+                >
                   {n.meta.row_count}
                 </span>
               )}
@@ -316,27 +320,30 @@ export function LibraryPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 border-b border-[var(--color-line)] px-8 py-5">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
+      <div className="shrink-0 border-b border-[var(--color-line)] px-8 py-5 max-lg:px-4 max-lg:py-3 max-lg:short:flex max-lg:short:items-center max-lg:short:gap-3 max-lg:short:py-1">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)] max-lg:hidden">
           Files
         </p>
-        <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+        <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight max-lg:mt-0 max-lg:text-2xl max-lg:short:text-xl">
           Library
         </h1>
-        <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)]">
+        <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)] max-lg:hidden">
           Folders and files for <strong className="text-[var(--color-ink)]">{scopeLabel}</strong>. Excel files stay as sources and are not written back.
         </p>
         {dbOk === false && (
-          <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)]">
+          <p className="mt-3 border border-[var(--color-warn)]/40 bg-[var(--color-warn-soft)] px-3 py-2 text-xs text-[var(--color-warn)] max-lg:short:mt-0 max-lg:short:flex-1 max-lg:short:py-1">
             Saved database sources need a database connection. Warehouse and imported files still open from the local store.
           </p>
         )}
-        {err && <p className="mt-3 text-sm text-[var(--color-danger)]">{err}</p>}
+        {err && <p className="mt-3 text-sm text-[var(--color-danger)] max-lg:short:mt-0">{err}</p>}
       </div>
 
-      <div className="flex min-h-0 flex-1">
-        <aside className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)]">
-          <div className="border-b border-[var(--color-line)] px-2 py-2">
+      <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:short:flex-row">
+        <aside
+          data-testid="library-tree"
+          className="flex w-64 shrink-0 flex-col border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:max-h-[40%] max-lg:min-h-[10.5rem] max-lg:short:min-h-0 max-lg:w-full max-lg:border-r-0 max-lg:border-b max-lg:short:max-h-none max-lg:short:w-56 max-lg:short:border-r max-lg:short:border-b-0"
+        >
+          <div className="border-b border-[var(--color-line)] px-2 py-2 max-lg:short:py-1">
             <input
               type="search"
               value={filter}
@@ -377,7 +384,10 @@ export function LibraryPage() {
           </div>
         </aside>
 
-        <main className="min-w-0 flex-1 overflow-y-auto px-6 py-4">
+        <main
+          data-testid="library-detail"
+          className="min-w-0 flex-1 overflow-y-auto px-6 py-4 max-lg:px-4"
+        >
           {!active && (
             <p className="text-sm text-[var(--color-ink-muted)]">
               Select a file or table in the tree.

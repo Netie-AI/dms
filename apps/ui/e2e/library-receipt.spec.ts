@@ -15,9 +15,10 @@ async function openCompanyLibrary(page: Page): Promise<void> {
   await page.goto("/library");
   await spaces;
   await expect(page.getByRole("heading", { name: "Library", level: 1 })).toBeVisible();
-  await page.getByLabel("Space").selectOption({ label: "Company (default ACL)" });
-  await expect(page.getByLabel("Space")).toHaveValue("");
-  await expect(page.locator("strong").filter({ hasText: "Company (default ACL)" })).toBeVisible();
+  await page.getByLabel("Space", { exact: true }).selectOption({ label: "Company (default ACL)" });
+  await expect(page.getByLabel("Space", { exact: true })).toHaveValue("");
+  // The header names the scope "Company" (main's Library copy); the Space select still says "Company (default ACL)".
+  await expect(page.locator("strong").filter({ hasText: /^Company/ }).first()).toBeVisible();
 }
 
 type Receipt = {

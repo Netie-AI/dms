@@ -169,7 +169,7 @@ export function AdjustSqlEditorView({
           data-testid="studio-adjust-save"
           disabled={!canSave}
           onClick={onSave}
-          className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1 text-sm text-white disabled:opacity-50"
+          className="border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1 text-sm text-white max-lg:text-[var(--color-on-accent)] disabled:opacity-50"
         >
           Save as verified for this question
         </button>

@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -15,12 +16,14 @@ import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
 import { storedProductMode, type ProductMode } from "@/lib/productMode";
 import {
   LG_MIN_WIDTH_PX,
-  isLgViewport,
   navStartsCollapsed,
   shouldExpandSourcesDock,
-  sourcesStartOpen,
+  isLgNow,
+  useIsLg,
 } from "@/lib/viewport";
 import type { AnswerEnvelope, AppRole, ContributingSource, SpaceSummary } from "@/lib/types";
+
+const DESKTOP_MEDIA = () => ({ matches: true });
 
 export type ChatMessage =
   | { id: string; role: "user"; text: string }
@@ -84,9 +87,14 @@ type AppState = {
   focusedSourceId: string | null;
   setFocusedSourceId: (id: string | null) => void;
   contributingSources: ContributingSource[];
-  sourcePanelOpen: boolean;
+  /** The lg dock and the phone sheet. Read the one that applies through useSourcePanelOpen(). */
+  dockOpen: boolean;
+  sheetOpen: boolean;
+  /** Opens or closes the dock at lg and the sheet below it, by the width right now. */
   setSourcePanelOpen: (open: boolean) => void;
-  navCollapsed: boolean;
+  /** The lg rail/dock and the phone drawer. Read the one that applies through useNavCollapsed(). */
+  navLgCollapsed: boolean;
+  navDrawerOpen: boolean;
   toggleNav: () => void;
   closeNavDrawer: () => void;
   productMode: ProductMode;
@@ -122,7 +130,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [cortexTrustHint, setCortexTrustHint] = useState<string | null>(null);
   const [spaces, setSpaces] = useState<SpaceSummary[]>(FIXTURE_SPACES);
   const [spacesFromApi, setSpacesFromApi] = useState(false);
-  const [scopedSourceCount, setScopedSourceCount] = useState<number | null>(null);
+  // Keyed by Space, so a count read for one Space is never shown under another.
+  const [scoped, setScoped] = useState<{ id: string | null; n: number | null }>({ id: null, n: null });
   const [activeSpaceId, setActiveSpaceIdState] = useState<string | null>(FIXTURE_SPACES[0].id);
   const [role, setRole] = useState<AppRole>("steward");
   const [selectedValueId, setSelectedValueId] = useState<string | null>(null);
@@ -140,22 +149,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [composerPauseReason, setComposerPauseReason] = useState<string | null>(null);
   const [activity, setActivity] = useState<ActivityState>(null);
   const [focusedSourceId, setFocusedSourceId] = useState<string | null>(null);
-  const [sourcePanelOpen, setSourcePanelOpen] = useState(() =>
-    sourcesStartOpen(
-      typeof window !== "undefined" && typeof window.matchMedia === "function"
-        ? (q) => window.matchMedia(q)
-        : undefined,
-    ),
-  );
+  // Sources is two independent pieces of state, never one value reseeded on a width change:
+  // the lg dock (open until the user collapses it) and the phone sheet (closed until the user opens
+  // it). What is "open" is derived by each reader from the width it renders at (useSourcePanelOpen),
+  // so no commit can pair the phone layout with the desktop dock state. Crossing lg therefore never
+  // opens the sheet, and coming back restores the dock exactly as the user left it.
+  const [dockOpen, setDockOpen] = useState(true);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const isLg = useIsLg();
+  // The sheet is closed whenever the page is at lg, so a sheet left open and then widened past lg
+  // does not come back open on the next narrowing.
+  useLayoutEffect(() => {
+    if (isLg) setSheetOpen(false);
+  }, [isLg]);
+  const setSourcePanelOpen = useCallback((open: boolean) => {
+    (isLgNow() ? setDockOpen : setSheetOpen)(open);
+  }, []);
   const [productMode, setProductModeState] = useState<ProductMode>(storedProductMode);
-  const [navCollapsed, setNavCollapsed] = useState(() =>
-    navStartsCollapsed(
-      typeof window !== "undefined" && typeof window.matchMedia === "function"
-        ? (q) => window.matchMedia(q)
-        : undefined,
-      storedProductMode(),
-    ),
+  // The nav follows the same rule as Sources: the lg rail/dock and the phone drawer are separate
+  // states, and each reader derives which one applies from its own width (useNavCollapsed).
+  const [navLgCollapsed, setNavLgCollapsed] = useState(() =>
+    navStartsCollapsed(DESKTOP_MEDIA, storedProductMode()),
   );
+  const [navDrawerOpen, setNavDrawerOpen] = useState(false);
+  useLayoutEffect(() => {
+    if (isLg) setNavDrawerOpen(false);
+  }, [isLg]);
   const queueRef = useRef<string[]>([]);
   const drainingRef = useRef(false);
   const groundedTablesRef = useRef(groundedTables);
@@ -176,34 +195,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setProductMode = useCallback((mode: ProductMode) => {
     setProductModeState(mode);
-    setNavCollapsed(
-      navStartsCollapsed(
-        typeof window !== "undefined" && typeof window.matchMedia === "function"
-          ? (q) => window.matchMedia(q)
-          : undefined,
-        mode,
-      ),
-    );
+    setNavLgCollapsed(navStartsCollapsed(DESKTOP_MEDIA, mode));
+    setNavDrawerOpen(false);
   }, []);
 
-  const closeNavDrawer = useCallback(() => {
-    if (typeof window !== "undefined" && !isLgViewport(window.innerWidth)) {
-      setNavCollapsed(true);
-    }
+  // Closes the phone drawer. At lg the nav is a dock, which a link tap must leave as it is.
+  const closeNavDrawer = useCallback(() => setNavDrawerOpen(false), []);
+  const toggleNav = useCallback(() => {
+    (isLgNow() ? setNavLgCollapsed : setNavDrawerOpen)((v) => !v);
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = productMode;
     window.localStorage.setItem("dms-theme", productMode);
-  }, [productMode]);
-
-  useEffect(() => {
-    const mq = window.matchMedia(`(min-width: ${LG_MIN_WIDTH_PX}px)`);
-    const onChange = () => {
-      setNavCollapsed(navStartsCollapsed((q) => window.matchMedia(q), productMode));
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
+    // The browser chrome around the page (Safari's tab bar, an installed app's status area) takes
+    // its colour from this tag. Static in index.html it stayed cream in Operate mode.
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", getComputedStyle(document.documentElement).getPropertyValue("--color-panel").trim());
   }, [productMode]);
 
   useEffect(() => {
@@ -295,14 +304,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const ctrl = new AbortController();
     if (!activeSpaceId) {
-      setScopedSourceCount(null);
+      setScoped({ id: null, n: null });
       return () => ctrl.abort();
     }
     void fetchLibrarySources(activeSpaceId, ctrl.signal)
-      .then((rows) => setScopedSourceCount(rows.length))
-      .catch(() => setScopedSourceCount(activeSpace?.source_count ?? null));
+      .then((rows) => setScoped({ id: activeSpaceId, n: rows.length }))
+      .catch(() => {
+        // An aborted request belongs to a Space or render that is already gone.
+        if (ctrl.signal.aborted) return;
+        setScoped({ id: activeSpaceId, n: activeSpace?.source_count ?? null });
+      });
     return () => ctrl.abort();
   }, [activeSpaceId, activeSpace?.source_count]);
+
+  const scopedSourceCount = scoped.id === activeSpaceId ? scoped.n : null;
 
   const latestAnswer = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -322,10 +337,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setSelectedValueId(id);
       if (id && latestAnswer?.contributing_sources[0]) {
         setFocusedSourceId(latestAnswer.contributing_sources[0].ref_id);
-        const width = typeof window === "undefined" ? LG_MIN_WIDTH_PX : window.innerWidth;
-        if (shouldExpandSourcesDock(width)) {
-          setSourcePanelOpen(true);
-        }
+        // Tapping a figure is an explicit ask for its sources, at every width.
+        // (An ask on its own still leaves the phone sheet closed.)
+        setSourcePanelOpen(true);
       }
     },
     [latestAnswer],
@@ -477,10 +491,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     focusedSourceId,
     setFocusedSourceId,
     contributingSources: sourcesForPanel(latestAnswer),
-    sourcePanelOpen,
+    dockOpen,
+    sheetOpen,
     setSourcePanelOpen,
-    navCollapsed,
-    toggleNav: () => setNavCollapsed((c) => !c),
+    navLgCollapsed,
+    navDrawerOpen,
+    toggleNav,
     closeNavDrawer,
     productMode,
     setProductMode,
@@ -493,4 +509,20 @@ export function useApp(): AppState {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useApp outside AppProvider");
   return ctx;
+}
+
+/**
+ * Whether Sources is open at the width this component renders at. Every reader derives it from its
+ * own useIsLg(), not from a value the provider computed: a media-query listener in a child can
+ * commit before the provider's does, and a provider-computed value would then be one width behind.
+ */
+export function useSourcePanelOpen(): boolean {
+  const { dockOpen, sheetOpen } = useApp();
+  return useIsLg() ? dockOpen : sheetOpen;
+}
+
+/** Whether the nav is collapsed (the rail at lg, the closed drawer below it) at this component's width. */
+export function useNavCollapsed(): boolean {
+  const { navLgCollapsed, navDrawerOpen } = useApp();
+  return useIsLg() ? navLgCollapsed : !navDrawerOpen;
 }
