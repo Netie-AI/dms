@@ -365,35 +365,47 @@ def test_fsync_refused_after_issue_still_stores_the_token(
         assert stat.S_IMODE(secret.stat().st_mode) == 0o600
 
 
-def test_write_error_after_issue_is_a_named_failure_not_a_raw_oserror(
-    secret: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("case", ["write_then_close_fail", "close_fail_after_write"])
+def test_write_or_close_error_after_issue_is_a_named_failure_not_a_raw_oserror(
+    secret: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
-    """A full disk after OV issued the token. Callers catch OpenVaultTokenError
-    only, so the abstain must be named, and no partial file may remain."""
+    """A full disk, or a quota that only bites at close (NFS), after OV issued the
+    token. Callers catch OpenVaultTokenError only, so the abstain must be named
+    even when close() fails too (a buffered handle re-flushes there and its error
+    used to replace the named one), and no partial file may remain."""
     real_fdopen = os.fdopen
 
-    class _FullDisk:
+    class _Failing:
+        """The real handle, so close() really runs; only the failing calls differ."""
+
         def __init__(self, fh) -> None:  # noqa: ANN001
             self._fh = fh
 
-        def __enter__(self) -> _FullDisk:
+        def __enter__(self) -> _Failing:
             return self
 
-        def __exit__(self, *_exc: object) -> bool:
-            self._fh.close()
-            return False
+        def __exit__(self, *_exc: object) -> None:
+            self.close()
 
-        def write(self, _text: str) -> int:
-            raise OSError(errno.ENOSPC, "No space left on device")
+        def write(self, data):  # noqa: ANN001, ANN201
+            if case == "write_then_close_fail":
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return self._fh.write(data)
 
         def flush(self) -> None:
-            return None
+            if case == "write_then_close_fail":
+                raise OSError(errno.ENOSPC, "No space left on device")
+            self._fh.flush()
 
         def fileno(self) -> int:
             return self._fh.fileno()
 
+        def close(self) -> None:
+            self._fh.close()
+            raise OSError(errno.EDQUOT if case == "close_fail_after_write" else errno.EIO, "close")
+
     monkeypatch.setattr(
-        manifest_mod.os, "fdopen", lambda fd, *a, **k: _FullDisk(real_fdopen(fd, *a, **k))
+        manifest_mod.os, "fdopen", lambda fd, *a, **k: _Failing(real_fdopen(fd, *a, **k))
     )
     ov = _OpenVault()
     err = _fail(ov)
