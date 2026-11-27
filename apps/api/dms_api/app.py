@@ -35,6 +35,7 @@ from dms_api.routes import (
     runs,
     spaces,
     studio,
+    studio_adjust,
     studio_chat,
     trust,
 )
@@ -199,6 +200,8 @@ def create_app() -> FastAPI:
         app.include_router(mcp.router)
     if insight_proof.enabled():
         app.include_router(insight_proof.router)
+    if studio_adjust.enabled():
+        app.include_router(studio_adjust.router)
     return app
 
 

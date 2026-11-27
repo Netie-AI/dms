@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, UNICODE-IDENT-01, STREAM-STAGES-01, BENCH-MATRIX-01
+**Last updated:** 2026-11-27, UNICODE-IDENT-01, STREAM-STAGES-01, BENCH-MATRIX-01, ADJUST-SQL-VQ-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_UNICODE_IDENT` defaults off. Off, identifiers and prompts stay the previous fold. On, a non-ASCII name lands as `<ascii stem or t>_<8 hex of sha256(source)>` and the original is `source_name`. `DMS_ASK_STREAM` and `DMS_BENCH_MATRIX` stay off. Off, the matrix runner sends no ask. Not PASS. Armed grade52 not run.
+**Tip:** `DMS_UNICODE_IDENT` defaults off. Off, identifiers and prompts stay the previous fold. On, a non-ASCII name lands as `<ascii stem or t>_<8 hex of sha256(source)>` and the original is `source_name`. `DMS_ASK_STREAM` default off. Off, the events route is not mounted and the envelope is unchanged. `DMS_BENCH_MATRIX` defaults off. Off, the matrix runner sends no ask. No live dataset score. `DMS_STUDIO_ADJUST` default off. Off, the adjust router is absent and the answer view has no button. On, a steward runs SQL through the model gates. Save writes `steward_adjusted` only when `DMS_VQ_RAG` is on, and lookup never replays that provenance. Full suite before the commit: 4625 passed, 119 skipped, 34 xfailed. The 8 failures and 4 errors were grade52 refusing a dirty tree. Those files on this commit: 46 passed. 52 not remeasured. Not PASS. `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` stay off. Armed grade52 not run.
 
 ## Direction
 

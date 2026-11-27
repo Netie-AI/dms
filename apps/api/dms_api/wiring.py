@@ -199,6 +199,30 @@ def list_verified_queries(*, space_id: str) -> list[dict[str, Any]]:
     return dms_executor.list_verified_queries(space_id=space_id)
 
 
+def preview_adjusted_sql(*, space_id: str, sql: str) -> dict[str, Any]:
+    return dms_executor.preview_adjusted_sql(
+        space_id=space_id,
+        sql=sql,
+        dialect=dms_executor.SERVING_DIALECT,
+    )
+
+
+def save_steward_adjusted(
+    *,
+    space_id: str,
+    question: str,
+    sql: str,
+    actor: str,
+) -> dict[str, Any] | None:
+    return dms_executor.save_steward_adjusted(
+        space_id=space_id,
+        question=question,
+        sql=sql,
+        actor=actor,
+        dialect=dms_executor.SERVING_DIALECT,
+    )
+
+
 def sql_source_describe(
     *,
     kind: str,
