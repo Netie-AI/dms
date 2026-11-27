@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
+import { ResultView } from "@/components/studio/ResultView";
 import { ScopeChip } from "@/components/ScopeChip";
 import { useApp } from "@/context/AppContext";
 
@@ -10,6 +11,8 @@ export function ChatPage() {
     ask,
     askError,
     asking,
+    askStages,
+    cancelAsk,
     clearThread,
     activeSpace,
     askMode,
@@ -199,6 +202,13 @@ export function ChatPage() {
                 {askError}
               </p>
             )}
+            {asking || askStages.length > 0 ? (
+              <ResultView
+                envelope={null}
+                stages={askStages}
+                onCancel={asking ? cancelAsk : undefined}
+              />
+            ) : null}
             {asking && <p className="text-sm text-[var(--color-ink-muted)]">Thinking…</p>}
             {messages.some((m) => m.role === "assistant") && (
               <div>

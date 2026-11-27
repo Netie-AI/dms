@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-26, LATENCY-01
+**Last updated:** 2026-11-27, STREAM-STAGES-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** Rebased onto f4fb2676 (ONTO-GAPS-01). `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` default off. Flag off, the envelope has no timings key. DEFER does not skip the second reading. Full suite not run. Not PASS.
+**Tip:** `DMS_ASK_STREAM` default off. Off, the events route is not mounted and the envelope is unchanged. `DMS_ASK_LEAN` and `DMS_ASK_TIMINGS` stay default off. Not PASS. Armed grade52 not run.
 
 ## Direction
 

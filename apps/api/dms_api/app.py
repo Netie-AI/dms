@@ -182,6 +182,9 @@ def create_app() -> FastAPI:
     app.include_router(connect.router)
     app.include_router(studio.router)
     app.include_router(studio_chat.router)
+    events = studio_chat.events_router()
+    if events is not None:
+        app.include_router(events)
     app.include_router(pipelines.router)
     app.include_router(amend.router)
     app.include_router(audit.router)

@@ -154,10 +154,13 @@ export type AskPayload = {
 export async function postAsk(
   payload: AskPayload,
   signal?: AbortSignal,
+  askId?: string,
 ): Promise<AnswerEnvelope> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (askId) headers["X-Dms-Ask-Id"] = askId;
   const res = await fetch("/api/v1/chat/ask", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({
       question: payload.question,
       space_id: payload.space_id ?? undefined,
