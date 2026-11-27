@@ -3045,6 +3045,12 @@ def _armed_ask(
                 "env": env,
                 "served": _served_block(env, cortex.payloads),
             }
+            from cortex_client.ask_clock import take_published_timings
+
+            published = take_published_timings()
+            timings = env.get("timings") if isinstance(env.get("timings"), dict) else published
+            if isinstance(timings, dict):
+                record["timings"] = timings
             pending = record
             if profile == PROFILE_AI_FIRST:
                 record["served"]["example_sql_sha256"] = sorted(cortex.examples)
@@ -3634,6 +3640,85 @@ def grade_main(mode: str | None = None, *, ai_first: bool = False) -> dict[str, 
     )
 
 
+_STAGE_ORDER = (
+    "retrieve_context",
+    "schema_context",
+    "ground_defs",
+    "tasks_choose",
+    "insights_generate",
+    "validate_explain",
+    "submit_execute",
+    "second_reading",
+    "reconfirm_build",
+    "total",
+)
+
+
+def _timing_block(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    raw = record.get("timings")
+    if isinstance(raw, Mapping):
+        return raw
+    env = record.get("env")
+    if isinstance(env, Mapping) and isinstance(env.get("timings"), Mapping):
+        return env["timings"]
+    return {}
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = max(0, math.ceil(pct / 100.0 * len(ordered)) - 1)
+    return ordered[min(rank, len(ordered) - 1)]
+
+
+def format_stage_table(records: Sequence[Mapping[str, Any]]) -> str:
+    """p50/p90/max per stage, calls per ask, abandoned calls. No question text."""
+    blocks = [_timing_block(record) for record in records]
+    spans: dict[str, list[float]] = {name: [] for name in _STAGE_ORDER}
+    calls: list[float] = []
+    abandoned = 0
+    for block in blocks:
+        raw_spans = block.get("spans_ms")
+        if isinstance(raw_spans, Mapping):
+            for name in _STAGE_ORDER:
+                value = raw_spans.get(name)
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    spans[name].append(0.0)
+                else:
+                    spans[name].append(float(value))
+            for name, value in raw_spans.items():
+                if name in spans or isinstance(value, bool) or not isinstance(value, (int, float)):
+                    continue
+                spans.setdefault(str(name), []).append(float(value))
+        else:
+            for name in _STAGE_ORDER:
+                spans[name].append(0.0)
+        raw_calls = block.get("model_calls")
+        if isinstance(raw_calls, bool) or not isinstance(raw_calls, (int, float)):
+            calls.append(0.0)
+        else:
+            calls.append(float(raw_calls))
+        raw_abandoned = block.get("abandoned")
+        if isinstance(raw_abandoned, list):
+            abandoned += len(raw_abandoned)
+    lines = [f"stage table n={len(records)}"]
+    lines.append(f"{'stage':<22} {'p50':>10} {'p90':>10} {'max':>10}")
+    for name, values in spans.items():
+        lines.append(
+            f"{name:<22} {_percentile(values, 50):10.1f} "
+            f"{_percentile(values, 90):10.1f} {_percentile(values, 100):10.1f}"
+        )
+    lines.append(
+        "calls_per_ask "
+        f"p50={_percentile(calls, 50):.0f} "
+        f"p90={_percentile(calls, 90):.0f} "
+        f"max={_percentile(calls, 100):.0f}"
+    )
+    lines.append(f"abandoned={abandoned}")
+    return "\n".join(lines)
+
+
 def grade_armed(
     layout: str = "copy-only",
     *,
@@ -3664,6 +3749,7 @@ def grade_armed(
         name = "grade52.armed.jsonl" if runs == 1 else f"grade52.armed.run{i}.jsonl"
         capture = write_capture(records, {"dms_sha": sha, **meta}, _artifact_dir() / name)
         print(f"armed capture: {capture}")
+        print(format_stage_table(records))
         extra = {
             key: meta[key]
             for key in (

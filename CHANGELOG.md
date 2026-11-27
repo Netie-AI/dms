@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-26 - LATENCY-01: ask stage timings, lean cuts default off
+
+- **Timings.** The ask clock always records stage spans, prompt size, and abandoned calls. `DMS_ASK_TIMINGS` defaults to 0. Off, the envelope has no `timings` key. The snapshot is published in-process for `grade52 --armed`. On, the same snapshot is also written on the envelope. It is not in the vendored OpenAPI pin.
+- **Flag.** `DMS_ASK_LEAN` defaults to 0. Sub-flags `DMS_ASK_LEAN_CANCEL`, `DMS_ASK_LEAN_DEFER`, `DMS_ASK_LEAN_TRIM`, `DMS_ASK_LEAN_SINGLE` follow the master unless set. Cancel closes the HTTP client and POSTs `/v1/insights/cancel` (the companion route, not in the contract). Trim caps the catalog with `rank_texts`. Single holds one model POST unless `DMS_CLOOP_B` voting is on.
+- **Defer.** The second reading stays on the answer path. Defer skips only the reconfirm suggestion model call. SQL and rows are unchanged.
+- **Not a word rule.** Trim ranks chunks. It does not scan the question.
+
 ## 2026-11-26 - ONTO-GAPS-01: propose a missing measure, steward confirms it
 
 - **Flag.** `DMS_ONTO_GAP_PROPOSE` defaults to 0 and also needs `DMS_ONTO_PG`. Off, the ask envelope, the prompt, and the served route are unchanged. On, an ask that reconfirms `unknown_measure` or `ungrounded_measure`, or whose SQL aggregate is not a declared measure, is logged. A background drain (or `scripts/onto/propose_gaps.py --since`) asks OpenVault role `ontology` for one measure. The ask does not wait.

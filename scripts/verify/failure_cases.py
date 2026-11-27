@@ -67,17 +67,37 @@ def failure_class(case: Mapping[str, Any], record: Mapping[str, Any] | None) -> 
     return f"bucket:{_text(case.get('bucket')).lower() or 'unknown'}"
 
 
+def dominant_stage(env: Mapping[str, Any] | None) -> str:
+    """The longest measured stage, ignoring ``total``. ``unknown`` when unset."""
+    timings = env.get("timings") if isinstance(env, Mapping) else None
+    spans = timings.get("spans_ms") if isinstance(timings, Mapping) else None
+    if not isinstance(spans, Mapping):
+        return "unknown"
+    best = "unknown"
+    best_ms = 0.0
+    for name, raw in spans.items():
+        if name == "total":
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue
+        if float(raw) > best_ms:
+            best_ms = float(raw)
+            best = str(name)
+    return best if best_ms > 0 else "unknown"
+
+
 def case_row(
     case: Mapping[str, Any], record: Mapping[str, Any] | None, run: Mapping[str, Any]
 ) -> dict[str, Any]:
     env = (record or {}).get("env") or {}
     served = (record or {}).get("served") or {}
     reconfirm = env.get("reconfirm") if isinstance(env.get("reconfirm"), Mapping) else {}
-    return {
+    label = failure_class(case, record)
+    row = {
         "run": run,
         "id": case.get("id"),
         "bucket": case.get("bucket"),
-        "failure_class": failure_class(case, record),
+        "failure_class": label,
         "grade_reason": case.get("reason"),
         "serve_path": case.get("serve_path"),
         "badge": case.get("badge"),
@@ -88,6 +108,15 @@ def case_row(
         "sql_served": bool(_text(env.get("sql_used"))),
         "reconfirm_has_question": bool(_text(reconfirm.get("suggested_question"))),
     }
+    if "timeout" in label:
+        timings = env.get("timings") if isinstance(env, Mapping) else None
+        if not isinstance(timings, Mapping):
+            raw_top = (record or {}).get("timings")
+            timings = raw_top if isinstance(raw_top, Mapping) else None
+            if isinstance(timings, Mapping):
+                env = {"timings": timings}
+        row["dominant_stage"] = dominant_stage(env if isinstance(env, Mapping) else None)
+    return row
 
 
 def _run_meta(report: Mapping[str, Any], run_dir: Path) -> dict[str, Any]:

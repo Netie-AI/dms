@@ -484,9 +484,14 @@ def apply_reconfirm(
     # The in-budget reading already named a question. Do not spend another call.
     suggested = _existing_suggestion(env)
     if not suggested:
+        from cortex_client.ask_clock import ask_lean_defer, note_skipped
         from cortex_client.compute import insights_call_cap, recorded_model_calls
 
-        if recorded_model_calls() >= insights_call_cap():
+        # The suggestion is not the answer. The second reading is not this call.
+        if ask_lean_defer():
+            note_skipped("reconfirm_suggestion")
+            suggested = ""
+        elif recorded_model_calls() >= insights_call_cap():
             suggested = ""
         else:
             try:

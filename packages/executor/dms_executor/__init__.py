@@ -319,6 +319,12 @@ def _insights_compute_seam(
             onto = {k: v for k, v in lifted.items() if k not in _hidden}
         else:
             onto = lifted
+    from cortex_client.ask_clock import ask_lean_trim
+
+    if ask_lean_trim():
+        from dms_executor.ask_lean import apply_prompt_trim
+
+        defs, examples, onto = apply_prompt_trim(question, defs, examples, onto)
     if examples:
         asked = f"{asked.rstrip()}\nExamples:\n{examples}"
     if defs:
@@ -724,7 +730,10 @@ class Executor:
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
-        return self.submit_sql(sql, acl)
+        from cortex_client.ask_clock import span
+
+        with span("submit_execute"):
+            return self.submit_sql(sql, acl)
 
     def _ledger_verified_query(
         self,
@@ -782,6 +791,14 @@ class Executor:
         )
 
         begin_answer_model_calls()
+        from cortex_client.ask_clock import (
+            attach_timings,
+            ensure_clock,
+            note_deadline,
+            release_clock,
+        )
+
+        clock_token = ensure_clock()
         # BANK-02: what actually runs for this ask is recorded as it runs, apart
         # from the envelope (see executed_trace). The caller reads it with
         # take_executed() right after this returns or raises.
@@ -790,6 +807,7 @@ class Executor:
         # Whole-ask clock. Each Insights leg keeps its own 8s HTTP timeout.
         ask_budget_s = serving_deadline_s()
         deadline = time.monotonic() + ask_budget_s
+        note_deadline(deadline)
         deadline_tokens = bind_ask_deadline(deadline)
         own_control = current_ask_control() is None
         control_token: Any = None
@@ -947,6 +965,7 @@ class Executor:
             # the one this turn resolved; none resolved grants nothing.
             if isinstance(masked, dict):
                 hide_echo(masked, "", grants=turn_grants())
+                attach_timings(masked)
             return masked
         finally:
             if example_token is not None:
@@ -957,6 +976,7 @@ class Executor:
             if own_control and control_token is not None:
                 reset_ask_control(control_token)
             reset_ask_deadline(deadline_tokens)
+            release_clock(clock_token)
 
     def _live_ask(
         self,
