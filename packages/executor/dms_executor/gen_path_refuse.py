@@ -105,7 +105,7 @@ _FANOUT_SAYS = (
 )
 
 
-_KEY_COLUMNS = re.compile(r"\(([A-Za-z_][A-Za-z0-9_]*(?:, [A-Za-z_][A-Za-z0-9_]*)*)\)")
+_KEY_COLUMNS = re.compile(r"(?<=\s)\(([A-Za-z_][A-Za-z0-9_]*(?:, [A-Za-z_][A-Za-z0-9_]*)*)\)")
 
 
 def _measured_gap_text(head: str, gap: str) -> str:
@@ -122,7 +122,7 @@ def _measured_gap_text(head: str, gap: str) -> str:
         says = _CHECK_SAYS.get(check.strip(), "it did not verify against the data")
         # The key columns the detail names, e.g. (customer_code). Names, not counts.
         cols = [c for c in _KEY_COLUMNS.findall(detail) if not any(ch.isdigit() for ch in c)]
-        named_cols = f" ({cols[-1]})" if cols else ""
+        named_cols = f" ({', '.join(dict.fromkeys(cols))})" if cols else ""
         named.append(f"{check.strip()} on {subject.strip()}{named_cols} - {says}")
     return f"{head}: " + "; ".join(named) if named else head
 
