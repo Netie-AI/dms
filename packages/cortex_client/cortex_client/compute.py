@@ -173,6 +173,13 @@ def insights_timeout_s(env: Mapping[str, str] | None = None) -> float:
     )
 
 
+def log_effective_insights_timeout(env: Mapping[str, str] | None = None) -> float:
+    """Log the timeout the process will use. Does not change the 8s default."""
+    seconds = insights_timeout_s(env)
+    _log.info("%s effective %s", INSIGHTS_TIMEOUT_ENV, seconds)
+    return seconds
+
+
 def _flag_on(env: Mapping[str, str] | None, name: str) -> bool:
     src = os.environ if env is None else env
     raw = str(src.get(name) or "").strip().lower()
@@ -1674,6 +1681,7 @@ __all__ = [
     "insights_query_sql",
     "insights_timeout_env_set",
     "insights_timeout_s",
+    "log_effective_insights_timeout",
     "insights_was_reached",
     "ontology_ranked_lane_enabled",
     "normalize_insights_compute",
