@@ -1,0 +1,42 @@
+name: handoff-state
+
+# Docs only. Reads GitHub, prints the machine block of handoff/STATE.md to the job summary
+# and an artifact. It never commits, never pushes, never touches a protected path, and it
+# cannot fail a PR: the job is continue-on-error and the script always exits 0 on a read error.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: handoff-state
+  cancel-in-progress: true
+
+jobs:
+  state:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Render the machine block
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/handoff/update_state.py --stdout | tee handoff-machine-block.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: handoff-machine-block
+          path: handoff-machine-block.md
+          if-no-files-found: ignore
