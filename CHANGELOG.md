@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - SCALE-MISS-01: budget ask-back, re-gate replacement SQL
+
+- **Budget.** With `DMS_SCALE_MISS` on, an insights budget stop returns a stored partial or an ask-back. The card names what was understood, the SQL so far, and continue or narrow it. It does not abstain as a timeout. Flag off still abstains.
+- **Gates.** Replacement and escalated SQL run the qualifier, currency, and numeric gates again before submit. A failed gate is not served.
+- **Stub 52.** `grade52 --main` at `907d8f1`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Armed grade52 and pack H were not run. Not PASS.
+
 ## 2026-11-27 - SCALE-MISS-01: generate first, repair EXPLAIN, ask back
 
 - **Flag.** `DMS_SCALE_MISS` defaults off. Only the digit 1 turns it on. Off, clarify, the ladder reserve, the schema ladder, an empty SQL abstain, and a timeout abstain stay as they were.

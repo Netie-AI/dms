@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-27, SCALE-MISS-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_SCALE_MISS` default off (`92cc991`, base `b84563f`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, the same stub stays correct=43 wrong=0 reconfirm=5 ai=0 rule=43: the stub returns no SQL, so compile is not replaced. That stays above `DMS_RULES_OFF` 23/0/18. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_SCALE_MISS` default off (`907d8f1`, base `b84563f`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, the same stub stays correct=43 wrong=0 reconfirm=5 ai=0 rule=43: the stub returns no SQL, so compile is not replaced. That stays above `DMS_RULES_OFF` 23/0/18. Armed and pack H unmeasured. Not PASS.
 
 ## Direction
 
@@ -12,7 +12,7 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `92cc991`, `grade52 --main`, base `b84563f`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `907d8f1`, `grade52 --main`, base `b84563f`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
