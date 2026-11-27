@@ -11,8 +11,10 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from dms_executor.abstain import build_abstain
+from dms_executor.demo_grants import is_demo_space
 from dms_executor.demo_warehouse import (
     DEMO_TABLES,
+    DEMO_WAREHOUSE_ORIGIN,
     execute_sql,
     stamp_engine_clock,
     total_outbound_revenue,
@@ -35,7 +37,7 @@ _SOURCES = [
         "kind": "sql",
         "row_count": 10,
         "contribution": 1.0,
-        "origin_uri": "duckdb://dms_demo/transactions",
+        "origin_uri": f"{DEMO_WAREHOUSE_ORIGIN}transactions",
     },
     {
         "ref_id": "ref_loc",
@@ -43,7 +45,7 @@ _SOURCES = [
         "kind": "sql",
         "row_count": 3,
         "contribution": 0.0,
-        "origin_uri": "duckdb://dms_demo/locations",
+        "origin_uri": f"{DEMO_WAREHOUSE_ORIGIN}locations",
     },
 ]
 
@@ -293,8 +295,12 @@ def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[
 
     ``DMS_RULES_OFF=1`` returns None. The regex router does not decide, and
     the ask falls through to the AI lane. Callers still type a dict.
+
+    A customer Space also returns None. Demo SQL is not its data. The caller
+    continues on that Space's own granted sources, and asks back only when
+    nothing is granted.
     """
-    if _rules_off():
+    if _rules_off() or not is_demo_space(space_id):
         return cast(dict[str, Any], None)
     q = question.lower().strip()
 
@@ -524,7 +530,7 @@ def _capacity(*, space_id: str | None) -> dict[str, Any]:
                 "kind": "sql",
                 "row_count": len(rows),
                 "contribution": 1.0,
-                "origin_uri": "duckdb://dms_demo/locations",
+                "origin_uri": f"{DEMO_WAREHOUSE_ORIGIN}locations",
             }
         ],
         rows=[
@@ -627,7 +633,7 @@ def _active_alerts(*, space_id: str | None) -> dict[str, Any]:
                 "kind": "sql",
                 "row_count": len(rows),
                 "contribution": 1.0,
-                "origin_uri": "duckdb://dms_demo/alerts",
+                "origin_uri": f"{DEMO_WAREHOUSE_ORIGIN}alerts",
             }
         ],
         rows=[
@@ -667,6 +673,50 @@ def _abstain(
         as_of=_as_of(),
         suggestions=SUGGESTIONS,
     )
+    stamp_engine_clock(env)
+    assert_envelope_valid(env)
+    return env
+
+
+def customer_scope_askback(
+    question: str,
+    *,
+    space_id: str | None,
+    missing: str,
+) -> dict[str, Any]:
+    """Ask back when a customer Space has no granted source that can answer.
+
+    The demo lanes already did not run. This names the missing grant. It does
+    not read the question for a table, and it does not serve a demo figure.
+    """
+    gap = missing.strip() or "a granted table"
+    text = (
+        f"This Space cannot answer from its own data yet: {gap}. "
+        "Grant that source, then ask again."
+    )
+    env = build_abstain(
+        reason="demo_scope",
+        question=question,
+        stage="demo_scope",
+        abstain_reason="demo_scope",
+        answer_id="ans_demo_scope",
+        text=text,
+        values=[],
+        assumptions=[f"demo_scope: {gap}"],
+        space_id=space_id,
+        contributing_sources=[],
+        rows=[],
+        ask_mode="live",
+        as_of=_as_of(),
+        route="abstain",
+    )
+    env["reconfirm"] = {
+        "reason_code": "demo_scope",
+        "reason_text": gap,
+        "suggested_question": question,
+        "closest_question": question,
+        "missing": gap,
+    }
     stamp_engine_clock(env)
     assert_envelope_valid(env)
     return env
