@@ -23,6 +23,8 @@ from typing import Any
 from cortex_client.compute import schema_retry_enabled
 from cortex_client.insights import schema_context_enabled
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
+
 _REPAIR_LINE = "Fix only the identifier and kind named in repair_hint."
 _KINDS = frozenset(
     {
@@ -518,7 +520,7 @@ def _sql_identifiers(sql: str, dialect: str) -> dict[str, str]:
     try:
         from sqlglot import exp, parse_one
 
-        tree = parse_one(sql or "", read=dialect or "duckdb")
+        tree = parse_one(sql or "", read=dialect or SERVING_DIALECT)
     except Exception:
         tree = None
     if tree is not None:
@@ -540,7 +542,7 @@ def _referenced_tables(sql: str, dialect: str) -> list[str]:
     try:
         from sqlglot import exp, parse_one
 
-        tree = parse_one(sql or "", read=dialect or "duckdb")
+        tree = parse_one(sql or "", read=dialect or SERVING_DIALECT)
     except Exception:
         tree = None
     if tree is None:
