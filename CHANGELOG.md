@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - SCALE-MISS-01: generate first, repair EXPLAIN, ask back
+
+- **Flag.** `DMS_SCALE_MISS` defaults off. Only the digit 1 turns it on. Off, clarify, the ladder reserve, the schema ladder, an empty SQL abstain, and a timeout abstain stay as they were.
+- **Clock.** On, the first model call writes SQL before clarify and retrieval. Clarify does not run first. The ladder does not hold a call back for a suggestion that never runs. A step with 2 seconds or less left returns a stored partial or an ask-back. It does not abstain as a serving timeout.
+- **Empty SQL.** A reply with no SQL gets one plan-then-SQL retry before any ask-back.
+- **EXPLAIN.** The failure is fed back with ontology joins and a schema slice, then `route_hint=escalate`. OpenVault picks the route. DMS does not name a model. Ungranted, PII, hostile, and destructive SQL do not climb.
+- **Compile.** Compile stays. It is replaced only when checked model SQL exists and the judge returns misfit. Any other verdict keeps the compile SQL.
+- **Vague.** An existing vague question becomes an ask-back with 2 or 3 readings. It is not a refusal. No new phrase rule. The rule inventory does not grow.
+- **Stub 52.** `grade52 --main` at `92cc991`, base `b84563f`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: the same counts. The stub returns no SQL, so compile is not replaced. That is above `DMS_RULES_OFF` 23/0/18. stamp_contradiction=0. Armed grade52 and pack H were not run. Not PASS.
+
 ## 2026-11-27 - JOIN-HOLE-01 (P0): a CTE self-join takes the join gate
 
 - **Hole.** `_JoinRule.check` returned before the join checks when the statement named at most one base table. A CTE name is not a base table, so a CTE joined to itself never reached the gate, and a fanned-out total was served under L2_VALIDATED.
