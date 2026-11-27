@@ -2453,9 +2453,8 @@ def _maybe_generative_ask_impl(
     dialect = resolved
     # Armed product asks pass demo_gate=False. The planted paraphrase list
     # stays in front of test fakes; it does not abstain a CortexClient ask.
-    # DMS_ASK_LADDER does not label the question from its wording. The model
-    # reading list does, when DMS_AI_CLARIFY is on. No verdict keeps the
-    # existing early returns, so a silent model cannot serve a trap.
+    # DMS_AI_CLARIFY on: the model reading list decides. Those two checkers
+    # do not run, including when the model sends nothing.
     from dms_executor.ask_ladder import ask_ladder_enabled
     from dms_executor.clarify import ai_clarify_enabled
 
@@ -2489,11 +2488,6 @@ def _maybe_generative_ask_impl(
                 q, "predictive: history is not a forecast",
                 space_id=space_id, session_id=session_id,
             )
-    elif clarify_on and _is_predictive(q):
-        return _abstain(
-            q, "predictive: history is not a forecast",
-            space_id=space_id, session_id=session_id,
-        )
 
     lake: Path | None
     if warehouse is not None:
@@ -2564,9 +2558,18 @@ def _maybe_generative_ask_impl(
         if isinstance(clarified, dict):
             return clarified
         if clarified is None:
-            held_phrase = _phrase_hold()
-            if held_phrase is not None:
-                return held_phrase
+            return _climb_after_silent_verdict(
+                q,
+                compute=compute,
+                submit=submit,
+                ledger_append=ledger_append,
+                warehouse=lake,
+                dialect=dialect,
+                grantable=set(allowed),
+                ontology=onto,
+                space_id=space_id,
+                session_id=session_id,
+            )
     # A Space ontology (never the demo one). Compile serves run the same
     # join rule the AI lane runs, so this is known before the rank window.
     space_onto = (declared or onto) if not demo_ontology_allowed else None
@@ -3581,6 +3584,99 @@ def _maybe_generative_ask_impl(
             served_route=ROUTE_COMPILE,
         )
     )
+
+
+def _climb_after_silent_verdict(
+    question: str,
+    *,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    submit: Callable[[str], Any] | None,
+    ledger_append: Callable[[dict[str, Any]], Any] | None,
+    warehouse: Path | None,
+    dialect: str,
+    grantable: set[str],
+    ontology: Any,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """No understand verdict. Climb repair, context, plan, then escalate.
+
+    The last rung sends route_hint escalate. OpenVault picks the model.
+    Every rung empty is a reconfirm from build_abstain. No phrase checker.
+    """
+    from dms_executor.ask_ladder import ClimbSession, bind_climb, is_direct_abstain
+    from dms_executor.sql_loop import AskCallBudget
+
+    code = "no_sql"
+    notes: tuple[str, ...] = ()
+    served: dict[str, Any] | None = None
+    if submit is not None and ledger_append is not None:
+        attempts: list[dict[str, Any]] = []
+        session = ClimbSession(
+            compute=compute,
+            budget=AskCallBudget(),
+            ctx={},
+            question=question,
+            warehouse=warehouse,
+            dialect=dialect,
+            grantable=set(grantable),
+            space_id=space_id,
+            session_id=session_id,
+            ontology=ontology,
+            attempts=attempts,
+            check=lambda sql: validate_compiled_sql(
+                sql,
+                grantable=set(grantable),
+                warehouse=warehouse,
+                dialect=dialect,
+            ),
+            submit=lambda sql, payload: _submit_validated(
+                sql,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=(),
+                plan_source=PLAN_SOURCE_OTHER,
+                coverage=coverage_from_sql_path(sql=sql),
+                warehouse=warehouse,
+                grantable=set(grantable),
+                served_route=_sql_route(payload if isinstance(payload, dict) else None),
+            ),
+            reserve=False,
+        )
+        bind_climb(session)
+        served = session.finish_miss()
+        code = session.exhausted_reason("no_sql")
+        notes = session.notes()
+    if isinstance(served, dict) and served.get("abstained") is not True:
+        return served
+    env = build_abstain(
+        reason=code,
+        ticket_reason=code,
+        abstain_reason=code,
+        question=question,
+        stage="generative",
+        answer_id="ans_gen01_abstain",
+        text=customer_abstain_text(code),
+        rows=[],
+        sql_used=None,
+        assumptions=[f"GEN-01: {code}", *notes],
+        as_of=_as_of(),
+        space_id=space_id,
+        session_id=session_id,
+        ask_mode="live",
+        route="generated",
+    )
+    if not is_direct_abstain(code):
+        env["reconfirm"] = {
+            "reason_code": code,
+            "reason_text": str(env.get("text") or ""),
+            "suggested_question": "",
+        }
+    assert_envelope_valid(env)
+    return env
 
 
 def maybe_generative_ask(

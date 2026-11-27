@@ -73,8 +73,8 @@ def clarify_before_sql(
 ) -> dict[str, Any] | str | None:
     """One understand call.
 
-    ``"answerable"`` means the caller continues with the phrase gates off.
-    ``None`` means the model sent no verdict, so the caller keeps those gates.
+    ``"answerable"`` means the caller continues and does not climb.
+    ``None`` means no verdict. The caller climbs and does not read the question.
     A dict is a clarify, an unanswerable reconfirm, or an ungranted refusal.
     Ungranted is never a clarify.
     """
@@ -95,8 +95,7 @@ def clarify_before_sql(
         },
     )
     verdict = parse_understand(payload if isinstance(payload, dict) else None)
-    # No structured verdict: the caller keeps its existing gates. A silent
-    # model is not permission to serve.
+    # No structured verdict. The caller climbs. A silent model is not a serve.
     if verdict is None:
         return None
     if verdict["category"] == "answerable" and not verdict["missing"]:
