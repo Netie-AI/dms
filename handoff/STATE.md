@@ -124,23 +124,24 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-27 19:04 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-27 20:10 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `844eae1a` R1-ARBITER-01: checked model SQL wins when compile SQL disagrees (#580)
+main: `e895382c` R1-EVAL-01: one eval report for the 52, pack H, BIRD, and clarify (#572)
 
-open PRs: 41 (cap 60)
+open PRs: 42 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
+| #583 | n | `0769bdf9` | - | 3 ok, 6 running | HOTFIX-MAIN-RED-01: shape-check and arbiter compose on main |
+| #582 | y | `aaf2bc2e` | - | 7 ok, 2 FAIL, 1 running | R2-CONNECT-CORE-01: Persisted connections, test, introspect, and auto-grant |
+| #581 | n | `b2880586` | tier:fast | 5 ok, 2 FAIL | handoff: state refresh |
 | #579 | y | `3441eecc` | - | no checks | R1-RULES-OUT-01: gate question-word lanes behind DMS_RULES_OFF |
-| #578 | y | `feb124d8` | - | 4 ok, 3 running | R1-LIVE-FIX-01: Fix the broken live pages: Ontology 404 and Spaces sources 500 |
 | #576 | y | `0345f183` | - | no checks | R1-RUNTIME-01: pin the insights timeout and flag a loopback caller |
-| #575 | y | `788bb6fa` | - | 3 ok, 3 running | R1-UI-CLARIFY-01: Clarify chips and access card in Chat and Studio |
+| #575 | n | `f7202c34` | - | 8 ok, 2 FAIL | R1-UI-CLARIFY-01: Clarify chips and access card in Chat and Studio |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
-| #572 | y | `c56050f9` | - | 5 ok, 3 running | R1-EVAL-01: one eval harness for the 52, pack H, BIRD, and clarify |
-| #570 | y | `08d9d712` | - | 7 ok | DMS-AI-ABSTAIN-01: climb misses, and ask back when the question is ambiguous |
+| #570 | y | `982957f0` | - | 8 ok, 2 FAIL | DMS-AI-ABSTAIN-01: climb misses, and ask back when the question is ambiguous |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
 | #542 | y | `e08f4664` | - | 3 ok, 1 FAIL | T5 install hardening: #387 TLS host guard (carried) + IPv4 serve; #388 and #377  |
