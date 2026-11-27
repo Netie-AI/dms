@@ -1415,6 +1415,20 @@ def build_answer_envelope(
         space_id=space_id,
     )
     sources = stamp_contributing_source_watermarks(sources)
+    outside_demo = False
+    if not abstained and _demo_sources_outside_space(sources, space_id):
+        # A confident badge over demo-warehouse sources in a customer Space
+        # is the served WRONG. Drop the figure before any later check cites it.
+        outside_demo = True
+        badge_out = "ABSTAIN"
+        abstained = True
+        text = (
+            "I can't answer this from the demo warehouse. "
+            "Demo answers are only for the demo Space."
+        )
+        assumptions_list.append("demo_scope: sources are outside the asked Space")
+        sql_used = None
+        sources = []
     rows_out = [dict(r) for r in (rows or []) if isinstance(r, dict)]
     values_out = _ensure_values(values, rows_out, abstained=abstained)
 
@@ -1782,14 +1796,32 @@ def build_answer_envelope(
     if abstained and not _from_builder:
         from dms_executor.abstain import build_abstain
 
+        ask_back: dict[str, Any] = {}
+        if outside_demo:
+            ask_back["text"] = (
+                "That figure cites the demo warehouse, which this Space does not "
+                "read. Grant a source in this Space, then ask again."
+            )
         build_abstain(
-            reason="envelope_demoted",
+            reason="demo_scope" if outside_demo else "envelope_demoted",
             question=question or "",
             sql=sql_out if isinstance(sql_out, str) else None,
             retries=0,
-            stage="envelope",
+            stage="demo_scope" if outside_demo else "envelope",
+            abstain_reason="demo_scope" if outside_demo else None,
             demote=masked,
+            **ask_back,
         )
+        if outside_demo:
+            masked["reconfirm"] = {
+                "reason_code": "demo_scope",
+                "reason_text": (
+                    "The figure cites the demo warehouse, which this Space does not read."
+                ),
+                "suggested_question": question or "",
+                "closest_question": question or "",
+                "missing": "a granted source in this Space",
+            }
     # CHART-SPEC-01. Off, this returns the same dict and sends no prompt.
     # R1-RUNTIME-01. Off, the same dict. On and degraded, banner keys only.
     from cortex_client.runtime_check import attach_runtime_banner
@@ -1835,7 +1867,7 @@ def normalize_contributing_sources(
                     "row_count": 1,
                     "contribution": 1.0 / max(len(items), 1),
                     "origin_uri": name,
-                    **({"space_id": space_id} if space_id else {}),
+                    **_source_space_id(space_id, name),
                 }
             )
             continue
@@ -1870,10 +1902,38 @@ def normalize_contributing_sources(
             src["snippet"] = str(snippet)[:500]
         if d.get("chunk_index") is not None:
             src["chunk_index"] = int(d["chunk_index"])
-        if space_id:
-            src["space_id"] = space_id
+        src.update(_source_space_id(space_id, src.get("origin_uri")))
         out.append(src)
     return out
+
+
+def _source_space_id(space_id: str | None, origin: object) -> dict[str, str]:
+    """The asked Space id, only when this source is one that Space read.
+
+    A demo-warehouse origin in a customer Space is not that Space's data.
+    Stamping the caller's id on it would say the customer read the demo rows.
+    """
+    if not space_id:
+        return {}
+    from dms_executor.demo_grants import is_demo_space
+    from dms_executor.demo_warehouse import is_demo_warehouse_origin
+
+    if not is_demo_space(space_id) and is_demo_warehouse_origin(origin):
+        return {}
+    return {"space_id": space_id}
+
+
+def _demo_sources_outside_space(
+    sources: list[dict[str, Any]],
+    space_id: str | None,
+) -> bool:
+    """True when a customer Space is being handed demo-warehouse sources."""
+    from dms_executor.demo_grants import is_demo_space
+    from dms_executor.demo_warehouse import is_demo_warehouse_origin
+
+    if is_demo_space(space_id):
+        return False
+    return any(is_demo_warehouse_origin(src.get("origin_uri")) for src in sources)
 
 
 def _parse_numbers(text: str) -> list[float]:

@@ -341,13 +341,21 @@ def run_cascade(
     *,
     warehouse: Path | str | None,
     tables: Iterable[str],
+    space_id: str | None = None,
 ) -> CascadeOutcome:
     """Settle sense, class and geo before anything is executed.
 
     Stops at the first stage that does not certify. Later stages are not run at
     all, so their absence from the trace is a fact about the cascade rather than
     a gap in it.
+
+    ``space_id`` omitted is the demo Space, which is every caller that predates
+    the scope gate. A customer Space does not enter the hand-coded binders.
     """
+    from dms_executor.demo_grants import is_demo_space
+
+    if not is_demo_space(space_id):
+        return CascadeOutcome(engaged=False)
     asked = _proposals(question)
     if not any(asked.values()):
         return CascadeOutcome(engaged=False)
