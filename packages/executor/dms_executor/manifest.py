@@ -341,23 +341,32 @@ class ManifestMinter:
                 OV_TOKEN_MISSING, f"token file not writable: {type(exc).__name__}"
             ) from exc
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            # Raw and unbuffered: a buffered text handle re-flushes at close(), and a
+            # full disk then raises a second, raw OSError over the named one.
+            fh = os.fdopen(fd, "wb", buffering=0)
+            try:
                 token = self._register()
+                data = token.encode("utf-8")
                 try:
-                    fh.write(token)
-                    fh.flush()
+                    if fh.write(data) != len(data):
+                        raise OSError("short write")
+                    # Best effort: the bytes are written, and a filesystem that refuses
+                    # fsync (some bind mounts) must not cost the only copy of the token.
+                    with contextlib.suppress(OSError):
+                        os.fsync(fh.fileno())
+                    fh.close()  # a quota can bite here (NFS): still a named failure
                 except OSError as exc:
                     # OV has issued the token and will not issue it twice. Callers
-                    # catch OpenVaultTokenError only, so a full disk is a named abstain.
+                    # catch OpenVaultTokenError only, so this is a named abstain.
                     raise OpenVaultTokenError(
                         OV_MINT_FAILED,
                         "register succeeded but the token was not stored: "
                         f"write {type(exc).__name__}. An OpenVault admin rotate is needed",
                     ) from exc
-                # Best effort: the bytes are written, and a filesystem that refuses
-                # fsync (some bind mounts) must not cost the only copy of the token.
+            finally:
+                # Releases the descriptor on every path, a failed register included.
                 with contextlib.suppress(OSError):
-                    os.fsync(fh.fileno())
+                    fh.close()
             _install_token_file(tmp, path, token)
         finally:
             # After a rename the temp name is gone. On any failure it must go.
