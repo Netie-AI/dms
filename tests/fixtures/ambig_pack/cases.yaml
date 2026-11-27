@@ -1,0 +1,340 @@
+# Synthetic ambiguity pack on the demo warehouse (locations, suppliers,
+# inventory, shipments, alerts, transactions). Written fresh for R1-EVAL-01.
+# Not copied from a held-out pack. expect is data. No row values.
+schema: demo_warehouse
+version: 1
+cases:
+  - id: amb-scope-spend
+    kind: ambiguous
+    expect: clarify
+    ambiguity: scope
+    space: finance
+    question: What is our spend?
+    why: Spend has no grain. Country, supplier, and shipment cost are all in the schema.
+
+  - id: amb-scope-performance
+    kind: ambiguous
+    expect: clarify
+    ambiguity: scope
+    space: ops
+    question: Which warehouse is performing best?
+    why: Performing names no measure. Capacity, alerts, and delayed shipments all exist.
+
+  - id: amb-temporal-recent
+    kind: ambiguous
+    expect: clarify
+    ambiguity: temporal
+    space: ops
+    question: Show me the recent shipments.
+    why: Recent names no window. Shipments have a status and no certified as-of cut.
+
+  - id: amb-temporal-lately
+    kind: ambiguous
+    expect: clarify
+    ambiguity: temporal
+    space: finance
+    question: What changed lately in inventory?
+    why: Lately names no period. Transactions have timestamps and no default window.
+
+  - id: amb-entity-risky
+    kind: ambiguous
+    expect: clarify
+    ambiguity: predicate
+    space: finance
+    question: Who are the risky suppliers?
+    why: Risky names no threshold. risk_score is a column, not a certified cut.
+
+  - id: amb-predicate-doing
+    kind: ambiguous
+    expect: clarify
+    ambiguity: underspecified
+    space: ops
+    question: How is inventory doing?
+    why: Doing names no measure. Quantity, reorder, and value are different questions.
+
+  - id: amb-predicate-worry
+    kind: ambiguous
+    expect: clarify
+    ambiguity: underspecified
+    space: ops
+    question: Which items should we worry about?
+    why: Worry is not a column. Low stock, expiry, and alerts are separate.
+
+  - id: amb-scope-big
+    kind: ambiguous
+    expect: clarify
+    ambiguity: predicate
+    space: ops
+    question: Compare the big locations.
+    why: Big names no measure. Capacity and current load are both on locations.
+
+  - id: amb-scope-top
+    kind: ambiguous
+    expect: clarify
+    ambiguity: scope
+    space: finance
+    question: Give me the top products.
+    why: Top names no N and no measure. Volume and value are both computable.
+
+  - id: amb-entity-cold
+    kind: ambiguous
+    expect: clarify
+    ambiguity: entity
+    space: ops
+    question: Is the cold warehouse a problem?
+    why: Problem names no measure. Cold storage is a flag, not a verdict.
+
+  - id: amb-scope-moved
+    kind: ambiguous
+    expect: clarify
+    ambiguity: scope
+    space: finance
+    question: How much did we move?
+    why: Move could be shipment quantity or outbound transactions.
+
+  - id: amb-entity-better
+    kind: ambiguous
+    expect: clarify
+    ambiguity: predicate
+    space: finance
+    question: Which supplier is better?
+    why: Better names no measure. Lead time, risk, and country are different.
+
+  - id: amb-entity-main
+    kind: ambiguous
+    expect: clarify
+    ambiguity: entity
+    space: ops
+    question: What is the stock situation at the main site?
+    why: Main site is not a location id. Five warehouses are in the schema.
+
+  - id: amb-predicate-expensive
+    kind: ambiguous
+    expect: clarify
+    ambiguity: predicate
+    space: finance
+    question: Show the expensive shipments.
+    why: Expensive names no cost cut. cost_myr is a column, not a certified band.
+
+  - id: amb-predicate-important
+    kind: ambiguous
+    expect: clarify
+    ambiguity: underspecified
+    space: ops
+    question: Are we low on anything important?
+    why: Important is not a column. Reorder level is a different, answerable question.
+
+  - id: amb-temporal-trend
+    kind: ambiguous
+    expect: clarify
+    ambiguity: temporal
+    space: finance
+    question: What is the trend for parts?
+    why: Trend names no period. Parts is a category and transactions have timestamps.
+
+  - id: ans-sku-n
+    kind: answerable
+    expect: answer
+    space: finance
+    question: How many distinct SKUs are on the inventory table?
+    why: inventory.sku is granted to finance.
+    gold_sql: SELECT COUNT(DISTINCT sku) AS sku_n FROM inventory
+
+  - id: ans-capacity
+    kind: answerable
+    expect: answer
+    space: ops
+    question: List each location code with its capacity in kilograms.
+    why: locations.capacity_kg is on the ops grant.
+    gold_sql: SELECT location_code, capacity_kg FROM locations ORDER BY location_code
+
+  - id: ans-cold
+    kind: answerable
+    expect: answer
+    space: ops
+    question: Which location ids are flagged as cold storage?
+    why: locations.is_cold_storage is a boolean column.
+    gold_sql: SELECT location_id FROM locations WHERE is_cold_storage ORDER BY location_id
+
+  - id: ans-delayed
+    kind: answerable
+    expect: answer
+    space: ops
+    question: How many shipments have status delayed?
+    why: shipments.status is on the ops grant.
+    gold_sql: SELECT COUNT(*) AS delayed_n FROM shipments WHERE status = 'delayed'
+
+  - id: ans-by-category
+    kind: answerable
+    expect: answer
+    space: finance
+    question: How many inventory rows are in each category?
+    why: inventory.category is a grouping column.
+    gold_sql: SELECT category, COUNT(*) AS n FROM inventory GROUP BY category ORDER BY category
+
+  - id: ans-ship-cost
+    kind: answerable
+    expect: answer
+    space: ops
+    question: What is the sum of shipment cost by destination location id?
+    why: shipments.cost_myr groups by destination_location_id.
+    gold_sql: >
+      SELECT destination_location_id, SUM(cost_myr) AS total_cost_myr
+      FROM shipments GROUP BY destination_location_id
+      ORDER BY destination_location_id
+
+  - id: ans-supplier-country
+    kind: answerable
+    expect: answer
+    space: finance
+    question: List each supplier id with its country.
+    why: Finance is granted suppliers. Ops is not.
+    gold_sql: SELECT supplier_id, country FROM suppliers ORDER BY supplier_id
+
+  - id: ans-open-alerts
+    kind: answerable
+    expect: answer
+    space: finance
+    question: How many alerts are not resolved?
+    why: alerts.resolved is boolean. This pack does not claim a Space grant.
+    gold_sql: SELECT COUNT(*) AS open_alerts FROM alerts WHERE resolved = FALSE
+
+  - id: ans-below-reorder
+    kind: answerable
+    expect: answer
+    space: ops
+    question: Which SKUs have quantity below the reorder level?
+    why: Both columns are on inventory.
+    gold_sql: >
+      SELECT sku FROM inventory
+      WHERE quantity_kg < reorder_level_kg
+      ORDER BY sku
+
+  - id: ans-stock-value
+    kind: answerable
+    expect: answer
+    space: finance
+    question: What is quantity times unit cost, summed by category?
+    why: Both factors are columns on inventory.
+    gold_sql: >
+      SELECT category, SUM(quantity_kg * unit_cost_myr) AS stock_value_myr
+      FROM inventory GROUP BY category ORDER BY category
+
+  - id: ans-outbound
+    kind: answerable
+    expect: answer
+    space: finance
+    question: How many transactions have type outbound?
+    why: transactions.txn_type is a filter column.
+    gold_sql: SELECT COUNT(*) AS outbound_n FROM transactions WHERE txn_type = 'outbound'
+
+  - id: ans-in-transit
+    kind: answerable
+    expect: answer
+    space: ops
+    question: Which shipment ids are in transit?
+    why: shipments.status is a filter column.
+    gold_sql: SELECT shipment_id FROM shipments WHERE status = 'in_transit' ORDER BY shipment_id
+
+  - id: ans-suppliers-by-country
+    kind: answerable
+    expect: answer
+    space: finance
+    question: How many suppliers are there in each country?
+    why: suppliers.country groups. Finance holds the suppliers grant.
+    gold_sql: SELECT country, COUNT(*) AS n FROM suppliers GROUP BY country ORDER BY country
+
+  - id: ans-load-ratio
+    kind: answerable
+    expect: answer
+    space: ops
+    question: Which location ids have current load above 90 percent of capacity?
+    why: Both measures are columns on locations.
+    gold_sql: >
+      SELECT location_id FROM locations
+      WHERE current_load_kg > 0.9 * capacity_kg
+      ORDER BY location_id
+
+  - id: una-margin
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: What is our gross margin by SKU?
+    why: The demo schema has cost columns and no selling price.
+
+  - id: una-headcount
+    kind: unanswerable
+    expect: abstain
+    space: ops
+    question: How many employees work in warehouse A?
+    why: There is no employee table.
+
+  - id: una-returns
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: What was the customer return rate last quarter?
+    why: There is no customer or return table.
+
+  - id: una-salesperson
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: Which salesperson closed the most deals?
+    why: There is no salesperson or deal table.
+
+  - id: una-sla
+    kind: unanswerable
+    expect: abstain
+    space: ops
+    question: What is the on-time rate versus the carrier SLA?
+    why: Shipments have a status and no carrier SLA column.
+
+  - id: una-tax
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: How much tax did we pay on outbound shipments?
+    why: There is no tax column.
+
+  - id: una-nps
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: What is the NPS of warehouse B customers?
+    why: There is no customer survey table.
+
+  - id: una-po
+    kind: unanswerable
+    expect: abstain
+    space: ops
+    question: Which purchase orders are awaiting approval?
+    why: There is no purchase-order table.
+
+  - id: una-forecast
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: What is the forecast demand for next month?
+    why: There is no forecast table. A model must not invent one.
+
+  - id: una-forklift
+    kind: unanswerable
+    expect: abstain
+    space: ops
+    question: How many forklifts are assigned to each location?
+    why: There is no asset table.
+
+  - id: una-fx
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: What exchange rate did we use for Singapore shipments?
+    why: Costs are already in MYR. There is no FX table.
+
+  - id: una-contract
+    kind: unanswerable
+    expect: abstain
+    space: finance
+    question: Which customer contracts expire this year?
+    why: There is no contract table.
