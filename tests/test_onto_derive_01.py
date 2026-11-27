@@ -684,10 +684,12 @@ def test_space_body_carries_the_schema_context_prompt(
     rig.ask(VERIFIED_Q, {"query_sql": VERIFIED_SQL, "plan_source": "ontology_plan"})
     sent = rig.cortex.insights[-1]
     assert sent["ontology"]["source"] == "space"
-    # The catalog reads schema main only, so a Space's bronze tables are not
-    # listed yet. A header-only prompt is a Cortex abstain (schema_context_empty,
-    # F118): none is sent rather than one that names no table.
-    assert "schema_context" not in sent["ontology"], sent["ontology"].get("schema_context")
+    # CATALOG-SCHEMA-01: the Space's bronze tables are on the prompt. A
+    # header-only prompt is still not sent (schema_context_empty, F118).
+    prompt = str(sent["ontology"].get("schema_context") or "")
+    assert prompt, "file Space sent no schema_context"
+    assert any(name in prompt for name in SPACE_TABLES), prompt
+    assert "inventory" not in prompt
 
     # Carried, not dropped: a prompt that lists a granted table rides the Space body.
     listed = f"DIALECT: duckdb\nSCHEMA\n- {SCHOOLS} reason=score:0.50\n- name VARCHAR"
