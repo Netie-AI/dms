@@ -31,6 +31,7 @@ from dms_executor.grant_struct import (
     structural_grant_stop,
 )
 from dms_executor.manifest import OpenVaultTokenError, SecurityEvent, reject_hostile_chat_sql
+from dms_executor.row_listing import found_rows_text
 from dms_executor.verified_queries import rows_from_submit_result
 
 SPEND_BY_COUNTRY_Q = "What is our total spend by supplier country?"
@@ -694,11 +695,7 @@ def envelope_from_pack_submit(
     receipt = (audit_id or "").strip() or (str(run_id).strip() if run_id else "")
     if not receipt:
         receipt = f"cortex_submit_{metric.metric_id}"
-    text = f"Found {len(out_rows)} row(s)."
-    if out_rows:
-        text += "\n" + "\n".join(
-            "  - " + ", ".join(f"{k}={v}" for k, v in row.items()) for row in out_rows[:12]
-        )
+    text = found_rows_text(out_rows)
     env = build_answer_envelope(
         answer_id=f"ans_{metric.metric_id}",
         text=text,

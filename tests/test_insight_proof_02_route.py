@@ -276,9 +276,14 @@ def test_flag_on_run_serves_the_proven_insight_with_its_ledger_receipt(world: _W
     assert env["audit_id"] == world.cortex.receipts[got["proof"]["insight_id"]].entry_id
     assert env["abstained"] is False
     assert env["badge"] == "L2_VALIDATED"  # demo ontology: never above L2
-    # No Python-derived figure: whatever values[] carries is a returned cell.
+    # No Python-derived figure: whatever values[] carries is a returned cell,
+    # except the headline's k-of-n counts, declared as row_count (dms#590).
     cells = {float(v) for r in env["rows"] for k, v in r.items() if k != "label"}
-    assert all(float(v["value"]) in cells for v in env["values"])
+    result = [v for v in env["values"] if v["label"] != "row_count"]
+    assert all(float(v["value"]) in cells for v in result)
+    assert sorted(
+        (v["id"], v["value"]) for v in env["values"] if v["label"] == "row_count"
+    ) == [("v_k", 2), ("v_n", 5)]
     for item in body["insights"]:
         assert_envelope_valid(item["envelope"])
         iid = item["proof"]["insight_id"]

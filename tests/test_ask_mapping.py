@@ -9,7 +9,7 @@ from dms_executor.envelope import assert_envelope_valid
 
 def test_ask_response_flattens_provenance():
     raw = {
-        "answer": "Total revenue was 100.",
+        "answer": "Total revenue was 10.0.",
         "audit_id": "aud_1",
         "route": "governed_metric",
         "provenance": {"badge": "governed_metric", "layer": "L1", "assumptions": "outbound only"},
@@ -414,7 +414,7 @@ def test_vq04_uncertified_paraphrase_demotes_cortex_l1():
 
     resp = AskResponse.model_validate(
         {
-            "answer": "WH-A 91.0 delayed 3",
+            "answer": "WH-A 91.0",
             "audit_id": "aud_trap_l1",
             "route": "governed_metric",
             "provenance": {"badge": "governed_metric", "layer": "L1"},

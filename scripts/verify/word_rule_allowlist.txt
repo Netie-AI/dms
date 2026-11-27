@@ -33,20 +33,20 @@ packages/cortex_client/cortex_client/qualifiers.py:622	regex	rank_window_measure
 packages/cortex_client/cortex_client/qualifiers.py:623	regex	rank_window_measure	_REVENUE_RE.search(qn)	#1
 packages/cortex_client/cortex_client/qualifiers.py:624	regex	rank_window_measure	_SELLING_RE.search(qn)	#1
 packages/cortex_client/cortex_client/qualifiers.py:621	regex	rank_window_measure	_UNIT_WORD_RE.search(qn)	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:107	regex	bronze_lane_table	_CATEGORY.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:112	regex	bronze_lane_table	_FOR_FILTER.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:113	regex	bronze_lane_table	_MEASURE.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:95	regex	bronze_lane_table	_NO_SQL.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:97	regex	bronze_lane_table	_SCOPED.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:106	regex	bronze_lane_table	_TOP_N.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:114	regex	bronze_lane_table	_TOTAL.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:180	regex	maybe_bronze_sheet_ask	_CATEGORY.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:202	regex	maybe_bronze_sheet_ask	_FOR_FILTER.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:184	regex	maybe_bronze_sheet_ask	_MEASURE.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:203	regex	maybe_bronze_sheet_ask	_MEASURE.search(question or "")	#2
-packages/executor/dms_executor/bronze_sheet_ask.py:169	regex	maybe_bronze_sheet_ask	_SCOPED.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:179	regex	maybe_bronze_sheet_ask	_TOP_N.search(question or "")	#1
-packages/executor/dms_executor/bronze_sheet_ask.py:204	regex	maybe_bronze_sheet_ask	_TOTAL.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:109	regex	bronze_lane_table	_CATEGORY.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:114	regex	bronze_lane_table	_FOR_FILTER.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:115	regex	bronze_lane_table	_MEASURE.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:97	regex	bronze_lane_table	_NO_SQL.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:99	regex	bronze_lane_table	_SCOPED.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:108	regex	bronze_lane_table	_TOP_N.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:116	regex	bronze_lane_table	_TOTAL.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:182	regex	maybe_bronze_sheet_ask	_CATEGORY.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:204	regex	maybe_bronze_sheet_ask	_FOR_FILTER.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:186	regex	maybe_bronze_sheet_ask	_MEASURE.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:205	regex	maybe_bronze_sheet_ask	_MEASURE.search(question or "")	#2
+packages/executor/dms_executor/bronze_sheet_ask.py:171	regex	maybe_bronze_sheet_ask	_SCOPED.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:181	regex	maybe_bronze_sheet_ask	_TOP_N.search(question or "")	#1
+packages/executor/dms_executor/bronze_sheet_ask.py:206	regex	maybe_bronze_sheet_ask	_TOTAL.search(question or "")	#1
 packages/executor/dms_executor/cca/geo.py:246	regex	_cased_ok	_WORD.findall(question or "")	#1
 packages/executor/dms_executor/cca/geo.py:262	regex	propose_region	_WORD.findall(question or "")	#1
 packages/executor/dms_executor/demo_ask.py:208	regex	_excluded_skus	re.finditer( r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|remov(?:e|ing)|drop(?:ping)?|without|except)\s+(?:the\s+)?(.+)", question, flags=re.I, )	#1
@@ -79,20 +79,20 @@ packages/executor/dms_executor/demo_ask.py:192	regex	normalize_ask_question	_NO_
 packages/executor/dms_executor/demo_ask.py:196	regex	normalize_ask_question	_WITHOUT_EXCLUSION_DECLINE.search(q)	#1
 packages/executor/dms_executor/demo_ask.py:182	in	with_grounded_scope	t.lower() not in q.lower()	#1
 packages/executor/dms_executor/demo_ask.py:182	in	with_grounded_scope	t.split(".", 1)[-1].lower() not in q.lower()	#1
-packages/executor/dms_executor/demo_pack.py:601	in	is_curated_l0_without_pack_metric	n in curated_l0_question_norms()	#1
-packages/executor/dms_executor/demo_pack.py:437	in	is_uncertified_paraphrase	qn in _UNCERTIFIED_PARAPHRASE	#1
-packages/executor/dms_executor/envelope.py:857	regex	_forecast_history_pad	_FORECAST_ASK.search(question or "")	#1
-packages/executor/dms_executor/envelope.py:642	regex	_negated_concepts	_NEGATION_MARK.finditer(question)	#1
-packages/executor/dms_executor/envelope.py:646	regex	_negated_concepts	_WORD.finditer(tail)	#1
-packages/executor/dms_executor/envelope.py:647	regex	_negated_concepts	re.search(r"[?!.;]", tail[last_end : tok.start()])	#1
-packages/executor/dms_executor/envelope.py:491	regex	_requests_multiple_rows	_PER_GROUP_ASK.search(q)	#1
-packages/executor/dms_executor/envelope.py:484	regex	_requests_multiple_rows	_TOP_N_ASK.search(q)	#1
-packages/executor/dms_executor/envelope.py:573	regex	_requests_single_total	_TOTAL_ASK.search(question or "")	#1
-packages/executor/dms_executor/envelope.py:343	in	_scope_uniquely_named	bare.lower() in q_low	#1
-packages/executor/dms_executor/envelope.py:347	in	_scope_uniquely_named	stem in q_low	#1
-packages/executor/dms_executor/envelope.py:358	regex	_scope_uniquely_named	_EXPLICIT_SHEET.search(q)	#1
-packages/executor/dms_executor/envelope.py:555	regex	_should_demote_xlsx_ask_hit_demo_warehouse	_XLSX_IN_ASK.search(question or "")	#1
-packages/executor/dms_executor/envelope.py:837	regex	asked_calendar_years	_CALENDAR_YEAR.findall(question)	#1
+packages/executor/dms_executor/demo_pack.py:602	in	is_curated_l0_without_pack_metric	n in curated_l0_question_norms()	#1
+packages/executor/dms_executor/demo_pack.py:438	in	is_uncertified_paraphrase	qn in _UNCERTIFIED_PARAPHRASE	#1
+packages/executor/dms_executor/envelope.py:860	regex	_forecast_history_pad	_FORECAST_ASK.search(question or "")	#1
+packages/executor/dms_executor/envelope.py:645	regex	_negated_concepts	_NEGATION_MARK.finditer(question)	#1
+packages/executor/dms_executor/envelope.py:649	regex	_negated_concepts	_WORD.finditer(tail)	#1
+packages/executor/dms_executor/envelope.py:650	regex	_negated_concepts	re.search(r"[?!.;]", tail[last_end : tok.start()])	#1
+packages/executor/dms_executor/envelope.py:494	regex	_requests_multiple_rows	_PER_GROUP_ASK.search(q)	#1
+packages/executor/dms_executor/envelope.py:487	regex	_requests_multiple_rows	_TOP_N_ASK.search(q)	#1
+packages/executor/dms_executor/envelope.py:576	regex	_requests_single_total	_TOTAL_ASK.search(question or "")	#1
+packages/executor/dms_executor/envelope.py:346	in	_scope_uniquely_named	bare.lower() in q_low	#1
+packages/executor/dms_executor/envelope.py:350	in	_scope_uniquely_named	stem in q_low	#1
+packages/executor/dms_executor/envelope.py:361	regex	_scope_uniquely_named	_EXPLICIT_SHEET.search(q)	#1
+packages/executor/dms_executor/envelope.py:558	regex	_should_demote_xlsx_ask_hit_demo_warehouse	_XLSX_IN_ASK.search(question or "")	#1
+packages/executor/dms_executor/envelope.py:840	regex	asked_calendar_years	_CALENDAR_YEAR.findall(question)	#1
 packages/executor/dms_executor/keyword_routes.py:147	in	_group_from_hints	n in qn	#1
 packages/executor/dms_executor/keyword_routes.py:85	regex	asks_for_dimension	_ENTITY_PREFIX.search(q)	#1
 packages/executor/dms_executor/keyword_routes.py:85	regex	asks_for_dimension	_NEEDS_DIM.search(q)	#1
@@ -165,5 +165,5 @@ packages/executor/dms_executor/ontology.py:394	regex	detect_supply_chain_grains	
 packages/executor/dms_executor/semantic_retrieve.py:126	regex	question_tokens	re.findall(r"[a-z0-9]+", (question or "").lower())	#1
 packages/executor/dms_executor/session_followup.py:42	regex	is_followup_question	_ADD.match(q)	#1
 packages/executor/dms_executor/session_followup.py:42	regex	is_followup_question	_AVG.match(q)	#1
-packages/executor/dms_executor/session_followup.py:239	regex	maybe_followup	_ADD.match(q)	#1
-packages/executor/dms_executor/session_followup.py:238	regex	maybe_followup	_AVG.match(q)	#1
+packages/executor/dms_executor/session_followup.py:242	regex	maybe_followup	_ADD.match(q)	#1
+packages/executor/dms_executor/session_followup.py:241	regex	maybe_followup	_AVG.match(q)	#1

@@ -135,6 +135,19 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     return env
 
 
+def gate_refusal_envelope(
+    exc: BaseException,
+    *,
+    question: str = "",
+    space_id: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """The named abstain for a rule 10a gate refusal (dms#590), else None."""
+    return dms_executor.gate_refusal_abstain(
+        exc, question=question, space_id=space_id, session_id=session_id
+    )
+
+
 def scrub_ask_envelope(env: dict[str, Any]) -> dict[str, Any]:
     """Scrub an ask envelope built outside ``live_ask``. Opens no connection.
 

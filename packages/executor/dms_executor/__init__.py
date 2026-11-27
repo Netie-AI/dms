@@ -23,6 +23,7 @@ from dms_executor import executed_trace
 from dms_executor.abstain import (
     backstop_missing_ticket,
     build_abstain,
+    gate_refusal_abstain,
     refuse_ungranted_answer,
 )
 from dms_executor.acl import (
@@ -97,6 +98,7 @@ from dms_executor.envelope import (
     chart_from_rows,
     normalize_contributing_sources,
     reserved_as_of_abstain,
+    wire_value,
 )
 from dms_executor.gen_path_refuse import GRANT_UNREADABLE
 from dms_executor.generative_ask import (
@@ -901,6 +903,16 @@ class Executor:
                     if ask_took_serving_lease():
                         raise ServingDeadlineExceeded() from exc
                     raise
+            except AssertionError as exc:
+                # ENVELOPE-GATE-01 (dms#590): a lane whose envelope fails the
+                # rule 10a gate answers a named abstain, never a 503. Any other
+                # AssertionError is a defect and propagates.
+                refusal = gate_refusal_abstain(
+                    exc, question=question, space_id=space_id, session_id=session_id
+                )
+                if refusal is None:
+                    raise
+                env = refusal
             except OpenVaultTokenError as exc:
                 # Every lane needs the signing key; no lane may relabel its absence.
                 env = build_abstain(
@@ -2146,7 +2158,10 @@ def map_ask_response_to_envelope(
             f"Rather than show you a number under a badge I cannot stand behind, "
             f"I'm abstaining. This usually means DMS is older than the engine."
         )
-    values = list(resp.values or [])
+    # dms#590: a label from the wire is text, not a declaration. ``row_count`` and
+    # ``operand`` exempt a figure from ONTOLOGY-AUDIT-01 and are honoured only on
+    # values DMS producers mint, so a Cortex value carrying one is relabelled.
+    values = [wire_value(v) for v in (resp.values or [])]
     # Promote ALL numeric cells from rows (E4 — every decimal in prose must be
     # present in values[]; a single first-cell v0 is not enough for listings).
     if resp.rows:
@@ -2293,6 +2308,7 @@ def get_serving_engine() -> ServingEnginePort:
 
 
 __all__ = [
+    "gate_refusal_abstain",
     "run_crosscheck",
     "run_extract",
     "run_golden",

@@ -620,7 +620,9 @@ def test_question_needing_the_broken_link_abstains_naming_it(
     env = rig.ask(BROKEN_Q, {"query_sql": BROKEN_SQL, "plan_source": "ontology_plan"})
 
     text = _assert_abstain(env, f"ontology_unverified: fk_intact on {BROKEN_LINK}")
-    assert "2 rows" in text, text
+    # dms#590: the orphan count is in the GEN-01 assumption, never the sentence.
+    assert "2 rows" not in text, text
+    assert any("2 rows" in a for a in env["assumptions"]), env["assumptions"]
     assert rig.cortex.executed == [], "a join over a broken link reached Cortex submit"
     # The plausible wrong answer really exists: the inner join silently drops
     # the 52 students whose school is missing (107 enrolled, 55 reported).

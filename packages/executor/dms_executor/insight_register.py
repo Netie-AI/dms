@@ -1102,6 +1102,7 @@ def _execute(executor: Any, pin: Mapping[str, Any]) -> _Replayed:
         answer_id=str(pin["insight_id"]),
         text=text,
         badge=badge,
+        values=ip.headline_counts(k, n),
         sql_used=sql,
         rows=[dict(r) for r in run2],
         assumptions=assumptions,

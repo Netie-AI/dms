@@ -356,7 +356,10 @@ def test_followup_average_of_them_after_stock(
     assert_envelope_valid(env)
     assert env["abstained"] is False
     assert env["badge"] == "L2_VALIDATED"
-    assert len(env["values"]) == 1
+    # dms#590: one result figure, and the count the sentence states, declared.
+    result = [v for v in env["values"] if v["label"] not in {"row_count", "operand"}]
+    assert len(result) == 1
+    assert [v["value"] for v in env["values"] if v["label"] == "row_count"] == [4]
     assert "Average" in env["text"] or "average" in env["text"]
     assert len(cortex.asks) == asks_before
 
@@ -388,8 +391,11 @@ def test_scalar_total_spend_then_add_2000(
     assert_envelope_valid(env)
     assert env["abstained"] is False
     assert env["badge"] == "L2_VALIDATED"
-    assert len(env["values"]) == 1
-    assert abs(float(env["values"][0]["value"]) - (prior + 2000.0)) < 0.011
+    # dms#590: one result figure, and the added amount the sentence states.
+    result = [v for v in env["values"] if v["label"] not in {"row_count", "operand"}]
+    assert len(result) == 1
+    assert abs(float(result[0]["value"]) - (prior + 2000.0)) < 0.011
+    assert [v["value"] for v in env["values"] if v["label"] == "operand"] == [2000.0]
     assert "2000" in env["text"] or "2,000" in env["text"]
 
 

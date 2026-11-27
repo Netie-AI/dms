@@ -126,6 +126,39 @@ Append-only. Never edited, only added to. Newest first.
 - **Check.** When a grounded definition has a predicate, generated SQL must use that predicate on the measure's columns. The comparison is the normalized sqlglot tree. A mismatch reconfirms `definition_mismatch` and is not served. Yes re-asks. It does not run the mismatched SQL.
 - **Not in this change.** The token locks in `semantic_retrieve` stay until WORD-RULES-OUT-01 (see PARKING_LOT). `DMS_SCHEMA_CONTEXT` is not added to the armed flag set.
 
+## 2026-11-21 - DECIMAL-EXACT-01 (#540): a certified figure is computed in exact decimal
+
+- **Ingest.** A CSV or sheet column the sniffer types as a binary float lands as `DECIMAL(38,s)` (s = largest observed scale, at most 18) when every value is a plain decimal (`+5.25`, `.5`, `5.` included). Otherwise it keeps DOUBLE and the receipt says why (`column x kept DOUBLE: ...`). A value DOUBLE cannot read (`0x10`) still quarantines the file.
+- **Sums.** The bronze sheet lane sums in DECIMAL, not `ROUND(SUM(DOUBLE), 2)`. A value that reads as a number but not as a plain decimal (`1e3`), or a sum past DECIMAL(38), makes the lane decline rather than drop the value or return a 503. 0.1 + 0.2 is 0.3 in text and rows on the generated and sheet paths, and `0.30000000000000004` appears nowhere in the envelope.
+- **Floats.** A binary float is never stated past 15 significant digits (fixed point at 1e15 and above). A DECIMAL past 15 digits is rounded once, half up, to 15 (`StatedFloat`). Either way the envelope carries `precision: a binary-float figure is shown at 15 significant digits`. A true DOUBLE source still serves.
+- **Open, routed.** Rows carry floats because the masker reads a Decimal cell as text and masks its digits; exact display past 15 digits needs the masker to treat Decimal as a number, which narrows masking (#318). Acceptance 4: nothing infers minor units; no way to declare a scale exists.
+- **Tests.** `tests/test_decimal_exact_540.py` through `POST /v1/chat/ask`; 11 of the first 13 fail on main and on 96f9979, each later round red first; mutations red. Reviewed by an Opus agent that did not build it (three rounds).
+
+## 2026-11-21 - BIRD-ALLOWLIST-01 (#304): the scorer's preflight, loader and counts
+
+- **Preflight.** Blocks a flagged table in any casing, schema or prefix, and under the names DMS gives a copy: a collision rename (`public_users_1a2b3c4d`, `dbo_users_8fa81536`), a number (`schools2`), underscores (`post_history`). A table's registry source is read too, reduced to the table it names (`...#dbo.users`). An empty grants list blocks. Grants are not required to be on the allowlist: with the committed list empty, that blocked every legitimate live run (5 tests on main).
+- **Loader.** Pins scan file, sha256, 31 zero-hit tables, held `{trans, yearmonth}` and the ten flagged tables in code.
+- **Counts.** `n_without_excluded` drops GOLD_ERROR and SKIP like the main lines; every unlisted table a question reads is counted; labels name a parsed table.
+- **Open.** The 31 zero-hit table names exist only in Platform's `pii_counts.csv` (not reachable here); `tables: []`. An Excel sheet copy of a flagged table (`users_Sheet1`, source `users_Sheet1.csv`) passes: batch ingest does not record the workbook (routed). `schools_view` passes.
+
+## 2026-11-21 - FIG-FIDELITY-01 (#508): verifier rounds 3 and 4
+
+- **E14.** A bullet label is compared with its raw text ("MY" and "MY " are two groups); each listed line uses its row once; a listing longer than the result fails; an exponent literal states the cell to the unit; a prose label names a row exactly, ignoring case, or by its longest leading row label, and one that names no row of a many-group column withholds. Summary bullets below the listing are prose. A listing line is checked on every pair, so a figure masked in its row cannot be shown as a number.
+- **Timing.** `test_conn_pool_01` deadline p95 over 10 interleaved isolated runs: branch 7.289 s, main 7.296 s (p = 0.66); the one full-suite miss (7.503 s) is load on a 0.2 s margin that main has too.
+
+## 2026-11-20 - FIG-FIDELITY-01 (#508): verifier rounds
+
+- **Verifier.** An Opus verifier that did not build the fix returned PASS WITH NITS twice. Fixed from its findings, each with a test that failed first: a padded or punctuated label (`"KL "`, `"Acme Sdn Bhd,"`) no longer withholds a correct listing (a bullet line equal to the row writer's own line states that row); a figure under a near-twin label (`"MY"` vs `"MY "`) is withheld; a label cell reading `col=` is read pair by pair and withheld; `rate=1e9999999` abstains instead of a 5xx; a mask that touches a decimal (`212.5551234`) is counted and the answer withheld; masking a long text is linear again (16000 phone shapes 0.08 s, was 38.7 s).
+- **Open, on main before this branch.** An integer the mask replaces whole (`5552345678` as a derived sum) is served as a mask token; E14 does not read `k = v`, `k: v` or numbered listings; a noisy float sent as a string is masked and served. Reported for routing.
+
+## 2026-11-20 - FIG-FIDELITY-01 (#508, P0): a served figure is the figure the query returned (E14)
+
+- **Defect.** Live run 2026-11-06 (Warehouse Ops, "Show shipment cost by destination"): the rows held `1610511.0500000012`, the text showed `total_cost_myr=1610511.DMSMASK_phone_01` under `L1_GOVERNED_METRIC`, said "Found 20 row(s)" while listing 12, and `assert_envelope_valid` passed it. The PII text scanner read the float's fraction as a phone number.
+- **Listing.** One writer, `dms_executor/row_listing.py`, for the five "Found N row(s)" renderers (L1 pack, verified query, generated L2, two bronze sheet paths). A float prints at 15 significant digits when that drops float noise (`1610511.05`). A cut listing says `Showing 12 of 20.`
+- **E14.** `assert_envelope_valid` fails a non-abstain envelope when (a) a mask token sits inside a number, (b) a listed `k=v` value of a numeric column is not a cell of that column (bare integers included, which E4 never read), or (c) "Found N row(s)" is not `len(rows)` or a cut listing does not say so. `build_answer_envelope` withholds the answer (ABSTAIN, no rows, no values) on any E14 clause, and when the masker rewrote a figure the result holds (`figure_hits`).
+- **Masking.** Unchanged from main: masked text is byte-identical to `ebe65cc` on 120000 generated texts. A mask that rewrites a figure is counted, never undone (#318 widen-only). The unmask variant (PR-a in #508) is not on this branch; it needs the founder's yes.
+- **Cost.** A figure whose digits still read as a phone or card after rounding (`234567.8901`, `12.3456789012`, `4111.111111111111`), and Cortex prose that prints the raw float, now abstain instead of serving.
+- **Tests.** `tests/test_fig_fidelity_01.py`, through `POST /v1/chat/ask` and `assert_envelope_valid`. Mutations (unmask re-added, rewrites not counted, E14 demotion off, E14 validator off, cut line off) each turn tests red. No test on main edited, no skip or xfail.
 ## 2026-11-13 - CI: the pytest shard gate was made to fail on purpose, and one hole was closed (F-TBD-42)
 
 - **Red test.** A probe test that always fails was pushed to the branch (`252827d`). Its shard concluded `failure`, the other two shards ran to `success`, and `lint-type-test` concluded `failure` (not skipped), printing `protected-paths=success contract-pin=success pytest=failure`.

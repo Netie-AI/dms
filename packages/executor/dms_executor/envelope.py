@@ -10,7 +10,8 @@ include / exclude / unsure on every envelope; missing or COMPLETE is illegal.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+import unicodedata
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -23,6 +24,8 @@ from dms_executor.bronze import (
     unicode_ident_enabled,
 )
 from dms_executor.demo_warehouse import DEMO_TABLES, RESERVED_PARAM_AS_OF, clear_engine_clock
+from dms_executor.route_stamp import is_abstain_route
+from dms_executor.row_listing import StatedFloat, cell_text, float_precision_note
 
 ALLOWED_BADGES = frozenset(
     {
@@ -308,7 +311,7 @@ def _ranking_totals_present(
         raw = v.get("value")
         if not isinstance(raw, (int, float)) or isinstance(raw, bool):
             continue
-        if str(v.get("label")) == "row_count":
+        if str(v.get("label")) in DECLARED_NOT_RESULT:
             continue
         fv = float(raw)
         if abs(fv) >= 100.0:
@@ -880,6 +883,585 @@ def _close(a: float, b: float) -> bool:
     return abs(a - b) < 0.011 or abs(a - b) / max(abs(b), 1e-9) < 1e-4
 
 
+# E14 (FIG-FIDELITY-01, dms#508) - the figure the reader sees is the figure the
+# query returned. Three clauses, read from the envelope alone:
+#   a. no mask token sits inside a numeric literal (1610511.DMSMASK_phone_01);
+#   b. a listed k=v value of a numeric column is a cell of that column, bare
+#      integers included, which E4 never read;
+#   c. a stated row count is the row count, and a cut listing says "of N".
+_MASK_IN_FIGURE = re.compile(r"\d\.?DMSMASK_[a-z]+_\d{2,}|DMSMASK_[a-z]+_\d{2,}\.\d")
+_LISTED_NUMBER = re.compile(
+    r"[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?"
+)
+_FOUND_ROWS = re.compile(r"\bFound (\d+) row\(s\)")
+_LISTED_LINE = re.compile(r"^\s*(?:[-*\u00b7\u2022]|\d+[.)]) \S")
+_LIST_MARKER = re.compile(r"^\s*(?:[-*\u00b7\u2022]|\d+[.)]) +")
+_SHOWING = re.compile(r"\bShowing (\d+) of (\d+)\b")
+
+
+
+# The builder's own withhold texts (ENVELOPE-GATE-01, dms#590). An answer the
+# builder withholds says one of these; a served answer never does (E15).
+_TEXT_BREAKDOWN_FOR_TOTAL = (
+    'You asked for one total, and the query I matched returns a grouped '
+    'ranking instead. Those figures answer a different question. Rather '
+    "than show a breakdown as though it were the total, I'm stopping here. "
+    'Ask for the breakdown by name, or for the overall total.'
+)
+_TEXT_DEMO_FOR_WORKBOOK = (
+    'You named a workbook, and the query I matched reads the demo warehouse'
+    ' instead of that file. Those figures answer a different dataset. '
+    "Rather than show them as though they came from the upload, I'm "
+    'stopping here. Ground the ask in that file, or ask without a filename '
+    'to use the Space warehouse.'
+)
+_TEXT_E14_WITHHELD = (
+    'This answer shows a figure that does not match the query result. '
+    "Rather than show a number I cannot stand behind, I'm stopping here. "
+    'Ask again, or ask for the columns you need by name.'
+)
+_TEXT_E4_WITHHELD = (
+    'This answer states figure(s) I cannot cite from the query result. '
+    "Rather than show numbers I cannot stand behind, I'm stopping here. Ask"
+    ' for columns returned by the query, or a metric that includes the '
+    'figure in the result set.'
+)
+_TEXT_E16_WITHHELD = (
+    "I can't answer that from this data, and no figure from it is shown here. "
+    "Ask again, or name the table and the metric you need."
+)
+_TEXT_E17_WITHHELD = (
+    "This answer states a figure the query did not return. Rather than show "
+    "a number I cannot stand behind, I'm stopping here. Ask for the columns "
+    "you need by name."
+)
+_TEXT_FILTER_MATCHED_NOTHING = (
+    'No matching rows for that filter. Stored encodings may differ (e.g. '
+    'BETA vs SKU-BETA, KL vs Kuala Lumpur). Use the exact value from the '
+    'data, or ask without that filter.'
+)
+_TEXT_HISTORY_FOR_FORECAST = (
+    'You asked for a forecast, but the query I matched reads historical '
+    'transactions. That is not a prediction, so I cannot confirm the '
+    "figure. Rather than pad history as a forecast, I'm stopping here."
+)
+_TEXT_INVENTED_TOTAL_WITHHELD = (
+    'This answer states figure(s) I cannot cite from the include rows. '
+    "Rather than pad or invent a total, I'm stopping here."
+)
+_TEXT_NO_EXECUTED_ROWS = (
+    "I don't have executed rows for that, so I cannot certify a figure. "
+    'Name a table and a metric, or ground the ask in one uploaded file.'
+)
+_TEXT_TOTAL_FOR_BREAKDOWN = (
+    'You asked for a breakdown, and the query I matched returns a single '
+    'total instead - it has no grouping, so it cannot answer per-group or '
+    'top-N. Rather than show you one number as though it were the '
+    "breakdown, I'm stopping here. Name the grouping column, or ask for the"
+    ' overall total if that is what you want.'
+)
+WITHHOLD_TEXTS = (
+    _TEXT_BREAKDOWN_FOR_TOTAL,
+    _TEXT_DEMO_FOR_WORKBOOK,
+    _TEXT_E14_WITHHELD,
+    _TEXT_E4_WITHHELD,
+    _TEXT_E16_WITHHELD,
+    _TEXT_E17_WITHHELD,
+    _TEXT_FILTER_MATCHED_NOTHING,
+    _TEXT_HISTORY_FOR_FORECAST,
+    _TEXT_INVENTED_TOTAL_WITHHELD,
+    _TEXT_NO_EXECUTED_ROWS,
+    _TEXT_TOTAL_FOR_BREAKDOWN,
+)
+
+
+def _is_number(cell: Any) -> bool:
+    if isinstance(cell, bool) or not isinstance(cell, (int, float, Decimal)):
+        return False
+    return not isinstance(cell, float) or cell == cell and abs(cell) != float("inf")
+
+
+def _listed_records(
+    text: str, columns: list[str]
+) -> list[tuple[bool, list[tuple[str, str, str]]]]:
+    """``column=value`` pairs in the text, one record per listed row.
+
+    Row columns only. The flag is True for a bullet line, the form the row
+    writer prints: that line is one record. In prose a record also ends where a
+    column repeats. Each pair carries the value read for a figure (edge space
+    and a trailing , or ; dropped) and the raw label text (only the writer's
+    ", " separator dropped), so "MY" and "MY " stay two labels.
+    """
+    if not columns:
+        return []
+    names = "|".join(re.escape(c) for c in sorted(columns, key=len, reverse=True))
+    key = re.compile(rf"(?<![A-Za-z0-9_.])({names})=")
+    out: list[tuple[bool, list[tuple[str, str, str]]]] = []
+    # With a "Found N rows" line, the listing is the run of bullets right
+    # after it; a "Highlights:" bullet further down is prose. Without one,
+    # every bullet is a listing line.
+    has_found = bool(_FOUND_ROWS.search(text))
+    in_block = not has_found
+    for line in text.splitlines():
+        bullet = bool(_LISTED_LINE.match(line))
+        if has_found:
+            if _FOUND_ROWS.search(line):
+                in_block = True
+            elif not bullet and line.strip():
+                # Only a line of text ends the listing; a blank line does not.
+                in_block = False
+        record: list[tuple[str, str, str]] = []
+        hits = list(key.finditer(line))
+        # A row line is the marker then its k=v pairs. "1. Note that orders=7
+        # ..." has text before its first key: commentary, read as prose.
+        marker = _LIST_MARKER.match(line)
+        listing = (
+            bullet and in_block and bool(hits) and marker is not None
+            and hits[0].start() == marker.end()
+        )
+        for i, hit in enumerate(hits):
+            last = i + 1 == len(hits)
+            raw = line[hit.end() : len(line) if last else hits[i + 1].start()]
+            if not last and raw.endswith(", "):
+                raw = raw[:-2]
+            shown = raw.strip().rstrip(",;").strip()
+            if not listing and any(col == hit.group(1) for col, _, _ in record):
+                out.append((listing, record))
+                record = []
+            record.append((hit.group(1), shown, raw))
+        if record:
+            out.append((listing, record))
+    return out
+
+
+#: A prose label that names no row of a column holding two or more groups.
+_NO_ROW = "\x00no row\x00"
+
+
+def _prose_label(col: str, shown: str, rows: list[dict[str, Any]]) -> str | None:
+    """The row label a prose label names, or None when it names none.
+
+    The exact label, else the longest row label it starts with at a word end:
+    "MY (largest)" and "MY." name MY. A label that names no row narrows nothing.
+    """
+    labels = {str(r.get(col)) for r in rows if col in r}
+    if shown in labels:
+        return shown
+    # 'MY', "MY", `MY`, **MY**: a wrapped label is the label.
+    bare = shown.strip("'\"`*")
+    if bare != shown and bare in labels:
+        return bare
+    folded = [label for label in labels if label.casefold() == shown.casefold()]
+    if len(folded) == 1:
+        return folded[0]
+    starts = [
+        label
+        for label in labels
+        if label and shown.startswith(label) and not shown[len(label)].isalnum()
+    ]
+    if starts:
+        return max(starts, key=len)
+    # A label that names no row ("Malaysia" for MY, "SG" when only MY was
+    # returned) cannot be shown to name the right one: withheld (rule 13).
+    if not labels:
+        return None
+    return _NO_ROW
+
+
+def _shows_cell(shown: str, cell: Any) -> bool:
+    """``shown`` states this cell.
+
+    A number: the leading literal is the cell rounded to the literal's own
+    decimals, so 1610511.05 states 1610511.0500000012 and 1610400.05 does not.
+    An exponent literal (1e6) has no decimals of its own and must state the
+    cell to the unit. A unit after it is allowed (12.5 MYR, 4). Anything else:
+    the same string.
+    """
+    if not _is_number(cell):
+        return str(cell) == shown
+    head = _LISTED_NUMBER.match(shown)
+    if not head or re.match(r"[A-Za-z0-9_]|\.\d", shown[head.end() :]):
+        return False
+    try:
+        literal = Decimal(head.group(0).replace(",", ""))
+        exponent = literal.as_tuple().exponent
+        assert isinstance(exponent, int)
+        have = cell if isinstance(cell, Decimal) else Decimal(repr(cell))
+        tol = Decimal(5).scaleb(min(exponent, 0) - 1)
+        if isinstance(cell, float) and cell and literal == Decimal(format(cell, ".15g")):
+            # A binary float holds 15 significant digits: the listing's own
+            # 15-digit statement of it (12345678901234600 for
+            # 1.2345678901234568e16) states it. Any other literal is exact.
+            return True
+        return abs(literal - have) <= tol
+    except ArithmeticError:
+        # 1e9999999 overflows the context. A figure we cannot compare is not shown.
+        return False
+
+
+def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> list[str]:
+    """E14 clauses a served answer breaks. Codes only: no value is repeated."""
+    text = text or ""
+    row_list = [r for r in (rows or []) if isinstance(r, dict)]
+    out: list[str] = []
+    if _MASK_IN_FIGURE.search(text):
+        out.append("a: a mask token sits inside a number")
+    numeric: set[str] = set()
+    for row in row_list:
+        numeric.update(str(col) for col, cell in row.items() if _is_number(cell))
+    columns = sorted({str(col) for row in row_list for col in row})
+    records = _listed_records(text, columns)
+    has_found = bool(_FOUND_ROWS.search(text))
+    # A column every row holds as a mask token: a number shown for it is not
+    # the result's (the mask took the figure; the text states one anyway).
+    masked_cols = {
+        col
+        for col in columns
+        if row_list
+        and all(str(r.get(col, "")).startswith("DMSMASK_") for r in row_list)
+    }
+    for _, record in records:
+        if any(
+            col in masked_cols and _LISTED_NUMBER.fullmatch(shown.replace(" ", ""))
+            for col, shown, _ in record
+        ):
+            out.append("a: a figure is shown where the result holds a mask")
+            break
+    # A listing line states one row, and each row is listed once: a line that
+    # repeats a row while another is left out is not the result.
+    used: set[int] = set()
+    for listing, record in records:
+        figures = [(col, shown) for col, shown, _ in record if col in numeric]
+        # A line of a Found listing states a whole row, so it is checked even
+        # with no numeric cell. A label-only bullet elsewhere is commentary.
+        shows_number = any(_LISTED_NUMBER.fullmatch(shown) for _, shown, _ in record)
+        if not figures and not (listing and (has_found or shows_number)):
+            continue
+        # On a listing line the label is the row's own text, exactly. In prose
+        # a label may be reworded, so it narrows the rows only when it names one.
+        if listing:
+            labels = [(col, raw) for col, _, raw in record if col not in numeric]
+        else:
+            labels = []
+            for col, shown, _ in record:
+                named = None if col in numeric else _prose_label(col, shown, row_list)
+                if named is not None:
+                    labels.append((col, named))
+        fits = [
+            at
+            for at, row in enumerate(row_list)
+            if not (listing and at in used)
+            and all(col in row and _shows_cell(shown, row[col]) for col, shown in figures)
+            and all(str(row.get(col)) == want for col, want in labels)
+        ]
+        # A row whose cell text is the shown figure first: "7" takes the 7 row,
+        # not the 7.4 row it also rounds to.
+        exact = [
+            at
+            for at in fits
+            if all(cell_text(row_list[at][col]) == shown for col, shown in figures)
+        ]
+        match: int | None = (exact or fits)[0] if (exact or fits) else None
+        if match is None:
+            out.append("b: a listed row shows a figure its row does not hold")
+            break
+        if listing:
+            used.add(match)
+    found = _FOUND_ROWS.search(text)
+    if found:
+        # A listing line is a bullet that names a row column. An "Insights:"
+        # bullet under the listing is not a row.
+        listed = sum(1 for is_listing, _ in records if is_listing)
+        cut = _SHOWING.search(text)
+        if int(found.group(1)) != len(row_list):
+            out.append("c: the stated row count is not the row count")
+        elif listed > len(row_list):
+            out.append("c: the listing shows more rows than the result holds")
+        elif cut and (int(cut.group(1)), int(cut.group(2))) != (listed, len(row_list)):
+            out.append("c: the stated cut is not the listing")
+        elif 0 < listed < len(row_list) and not cut:
+            out.append("c: the listing is cut and does not say so")
+    return out
+
+
+# ENVELOPE-GATE-01 (dms#590). Abstention is read from the envelope's own
+# structure, never from its wording (rule 15): the abstain reason code, the
+# abstain route stamp, the builder's withhold stamp, the builder's withhold text.
+_WITHHOLD_STAMP = re.compile(r"withheld \((?:E\d+|ONTOLOGY-AUDIT-01)\b")
+
+
+#: A stated figure, with an exponent when it has one (1e-07 is one figure, not
+#: a 1 and a 07). Same boundaries as the masker's ``NUMBER_LITERAL``.
+_FIGURE = re.compile(
+    r"(?<![A-Za-z0-9_.])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    r"(?![A-Za-z0-9_]|\.\d)"
+)
+_GAP_PREFIX = "GEN-01: "
+
+#: values[] labels that declare a figure the answer states but that is not a
+#: result figure: ``row_count`` (how many rows, or how many of them) and
+#: ``operand`` (a figure the answer applies: a rank position, a scale factor, an
+#: added amount). E17 accepts them as declared; ONTOLOGY-AUDIT-01 does not read
+#: them as totals.
+DECLARED_NOT_RESULT = frozenset({"row_count", "operand"})
+
+
+def wire_value(value: Any) -> Any:
+    """A values[] entry from Cortex, with any DMS-only declared label relabelled."""
+    if isinstance(value, dict) and str(value.get("label") or "") in DECLARED_NOT_RESULT:
+        out = dict(value)
+        out["label"] = f"cortex_{value['label']}"
+        return out
+    return value
+
+
+def _literal_figure(literal: str) -> float | None:
+    try:
+        value = float(literal.replace(",", ""))
+    except ValueError:
+        return None
+    return value if value == value and abs(value) != float("inf") else None
+
+
+def _without_labels(text: str, labels: set[str]) -> str:
+    """Blank each label that carries a digit, as a whole token (WH-01, q4_cost).
+
+    Whole-token only, so a label ``1`` does not eat the 1 of ``9.1``.
+    """
+    for label in sorted(labels, key=len, reverse=True):
+        if label and any(ch.isdigit() for ch in label):
+            text = re.sub(
+                r"(?<![A-Za-z0-9_.,])" + re.escape(label) + r"(?![A-Za-z0-9_]|[.,]\d)",
+                " ",
+                text,
+            )
+    return text
+
+
+#: A calendar date (2026-11-20) is a date, not three figures.
+_ISO_DATE = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r"(?:[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?Z?)?(?![A-Za-z0-9_])"
+)
+#: A numbered-list marker at a line start: ``1.`` or ``1)``.
+_ORDINAL = re.compile(r"^(\s*)(\d+)[.)] +")
+
+
+def _blank_real_date(hit: re.Match[str]) -> str:
+    raw = hit.group(0)[:10]
+    try:
+        date.fromisoformat(raw)
+    except ValueError:
+        return hit.group(0)
+    return " "
+
+
+def _without_list_markers(text: str) -> str:
+    """Drop a numbered list's line-start ordinals, and calendar dates.
+
+    An ordinal is a marker only when the numbered lines count 1, 2, 3 ... in
+    order; otherwise none is dropped, so ``1610511. was the total`` stays a
+    figure. Bullets (``-``, ``*``) carry no digits and are left alone. A date
+    is blanked only when it is a real calendar date (not 2026-02-31).
+    """
+    text = _ISO_DATE.sub(_blank_real_date, text)
+    lines = text.split("\n")
+    numbered = [(i, _ORDINAL.match(line)) for i, line in enumerate(lines)]
+    hits = [(i, m) for i, m in numbered if m]
+    if not hits or [int(m.group(2)) for _i, m in hits] != list(range(1, len(hits) + 1)):
+        return text
+    for i, m in hits:
+        lines[i] = m.group(1) + lines[i][m.end() :]
+    return "\n".join(lines)
+
+
+#: A digit run glued to a letter (RM1610511, 3.0M, USD12): a figure the
+#: whole-token reader cannot see. Read structurally, never by currency word.
+_GLUED = re.compile(
+    r"[A-Za-z_]+[-+]?\d[\d,]*(?:\.\d+)?[A-Za-z_\d]*|\d[\d,]*(?:\.\d+)?[A-Za-z_]+[A-Za-z_\d]*"
+)
+_GLUED_NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?")
+
+
+def _glued_figures(text: str) -> list[tuple[str, float | None]]:
+    """Each glued token, with its value when the letters only lead (RM1610511 -> 1610511).
+
+    A token whose digits run into a trailing letter (3.0M, 12k) has no value
+    the envelope can match, so its value is None.
+    """
+    out: list[tuple[str, float | None]] = []
+    # A whole figure (1e-07, 9.1) is read by _FIGURE; only the rest is glued.
+    for hit in _GLUED.finditer(_FIGURE.sub(" ", text)):
+        token = hit.group(0)
+        num = _GLUED_NUMBER.search(token)
+        if num is None:
+            continue
+        tail = token[num.end() :]
+        out.append((token, None if tail else _literal_figure(num.group(0))))
+    return out
+
+
+#: ENVELOPE-GATE-01: the reason codes whose digits E16 reads as part of the
+#: code. A fixed set, each digit's source named. No code here is built from the
+#: customer's rows; a code that is (ontology_unverified, fanout_refused) has no
+#: exemption, so its sentence states no figure (gen_path_refuse).
+_FIXED_CODES = (
+    re.compile(r"insights_call_cap:\d+"),  # configured call budget
+    re.compile(r"unhonored_qualifier:rank_window=\d+-\d+"),  # positions asked
+    re.compile(r"unrequested_offset:\d+"),  # the OFFSET the plan carried
+)
+
+
+_GATE_CLAUSE = re.compile(r"(E\d+[a-z]?)(?:-\d+)?:")
+
+
+def envelope_gate_clause(exc: BaseException) -> str | None:
+    """The clause (``E17``) when ``exc`` is a rule 10a gate refusal, else None."""
+    if not isinstance(exc, AssertionError):
+        return None
+    hit = _GATE_CLAUSE.match(str(exc))
+    return hit.group(1) if hit else None
+
+
+def _readable(text: str) -> str:
+    """NFKC, so superscript and full-width digits read as digits (¹⁶¹⁰ is 1610)."""
+    return unicodedata.normalize("NFKC", text or "")
+
+
+#: A schema identifier: starts with a letter and joins parts with ``_``
+#: (orders_2024, enrollments_school_id_fkey). Its digits name a table or
+#: link, they are not a figure.
+_SNAKE_IDENT = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])"
+)
+
+
+def _declared_identifiers(*sources: Any) -> set[str]:
+    """Snake-case identifiers the envelope names: its GEN-01 codes, grants, row labels.
+
+    Never the SQL text (an alias can be anything) and never free assumptions.
+    """
+    found: set[str] = set()
+    for source in sources:
+        items = source if isinstance(source, (list, tuple, set)) else [source]
+        for item in items:
+            found.update(_SNAKE_IDENT.findall(str(item or "")))
+    return found
+
+
+def _gap_details(assumptions: list[Any]) -> list[str]:
+    """The ``GEN-01: <code>`` lines, the only assumptions that name schema objects."""
+    return [str(a) for a in assumptions if str(a).startswith(_GAP_PREFIX)]
+
+
+def _without_identifiers(text: str, idents: set[str]) -> str:
+    if not idents:
+        return text
+    return _SNAKE_IDENT.sub(lambda m: " " if m.group(0) in idents else m.group(0), text)
+
+
+def declared_codes(envelope: dict[str, Any]) -> list[str]:
+    """E16: the declared reason codes (``abstain_reason``, ``GEN-01: <code>``) in the fixed set."""
+    raw: list[str] = []
+    reason = envelope.get("abstain_reason")
+    if isinstance(reason, str) and reason.strip():
+        raw.append(reason.strip())
+    for item in envelope.get("assumptions") or []:
+        text = str(item)
+        if text.startswith(_GAP_PREFIX):
+            raw.append(text[len(_GAP_PREFIX) :].strip())
+    return [code for code in raw if any(p.fullmatch(code) for p in _FIXED_CODES)]
+
+
+def abstain_markers(envelope: dict[str, Any]) -> list[str]:
+    """E15: the structural marks of an abstention an envelope carries."""
+    from dms_executor.abstain import _SERVED_UNGRANTED_TEXT
+
+    out: list[str] = []
+    reason = envelope.get("abstain_reason")
+    if isinstance(reason, str) and reason.strip():
+        out.append("abstain_reason")
+    for key in ("served_route", "ladder_rung"):
+        route = envelope.get(key)
+        if isinstance(route, str) and is_abstain_route(route):
+            out.append(key)
+    if any(_WITHHOLD_STAMP.search(str(item)) for item in envelope.get("assumptions") or []):
+        out.append("withhold stamp")
+    text = str(envelope.get("text") or "")
+    if any(template in text for template in (*WITHHOLD_TEXTS, _SERVED_UNGRANTED_TEXT)):
+        out.append("withhold text")
+    return out
+
+
+def abstained_figures(
+    text: str, codes: list[str] | None, idents: set[str] | None = None
+) -> list[str]:
+    """E16: figures an abstention states outside its own declared reason codes.
+
+    A code is the product's structural reason (``insights_call_cap:2``,
+    ``unhonored_qualifier:rank_window=4-8``); digits inside the code it
+    declares are part of that code. A numbered list's ordinal is a marker.
+    Every other figure in abstained text fails.
+    """
+    stripped = _without_list_markers(_readable(text))
+    for code in sorted({c for c in codes or [] if c}, key=len, reverse=True):
+        stripped = stripped.replace(code, " ")
+    stripped = _without_identifiers(stripped, idents or set())
+    found = [
+        hit.group(0)
+        for hit in _FIGURE.finditer(stripped)
+        if _literal_figure(hit.group(0)) is not None
+    ]
+    return found + [token for token, _value in _glued_figures(stripped)]
+
+
+def uncited_figures(
+    text: str,
+    values: list[dict[str, Any]] | None,
+    rows: list[dict[str, Any]] | None,
+) -> list[str]:
+    """E17: figures in a served SQL answer the envelope does not declare.
+
+    Declared: a ``values[]`` figure, a numeric row cell, the row count and the
+    listing's cut. Digits inside a row label, a column name or a value label
+    (WH-01, q4_cost) are part of that label, not figures.
+    """
+    row_list = [r for r in (rows or []) if isinstance(r, dict)]
+    allowed: list[float] = _value_nums(values)
+    labels: set[str] = set()
+    for row in row_list:
+        for col, cell in row.items():
+            labels.add(str(col))
+            if _is_number(cell):
+                allowed.append(float(cell))
+            elif cell is not None and str(cell).strip():
+                labels.add(str(cell))
+    for v in values or []:
+        if isinstance(v, dict) and v.get("label"):
+            labels.add(str(v["label"]))
+    allowed.append(float(len(row_list)))
+    cut = _SHOWING.search(text or "")
+    if cut:
+        allowed.append(float(cut.group(1)))
+    # Only the rows, values[] and the count declare a figure. A literal in the
+    # SQL does not (a WHERE threshold or a LIMIT is not a result; verifier r3).
+    stripped = _without_labels(_without_list_markers(_readable(text)), labels)
+    stripped = _without_identifiers(stripped, _declared_identifiers(list(labels)))
+    out: list[str] = []
+    for hit in _FIGURE.finditer(stripped):
+        token = hit.group(0)
+        value = _literal_figure(token)
+        # A zero-led group (the 003 of "3 003 003") is never matched by value.
+        bare = token.lstrip("+-")
+        zero_led = len(bare) > 1 and bare[0] == "0" and bare[1] != "."
+        if value is not None and (zero_led or not any(_close(value, a) for a in allowed)):
+            out.append(token)
+    for token, glued in _glued_figures(stripped):
+        if glued is None or not any(_close(glued, a) for a in allowed):
+            out.append(token)
+    return out
+
+
 def _value_nums(values: list[dict[str, Any]] | None) -> list[float]:
     out: list[float] = []
     for v in values or []:
@@ -1145,7 +1727,7 @@ def invented_totals(
     for v in values or []:
         if not isinstance(v, dict):
             continue
-        if str(v.get("label") or "") == "row_count":
+        if str(v.get("label") or "") in DECLARED_NOT_RESULT:
             continue
         raw = v.get("value")
         if not isinstance(raw, (int, float)) or isinstance(raw, bool):
@@ -1493,11 +2075,7 @@ def build_answer_envelope(
     if not abstained and _executed_query(sql_used) and not rows_out:
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "No matching rows for that filter. Stored encodings may differ "
-            "(e.g. BETA vs SKU-BETA, KL vs Kuala Lumpur). Use the exact value "
-            "from the data, or ask without that filter."
-        )
+        text = _TEXT_FILTER_MATCHED_NOTHING
         assumptions_list.append(
             "empty result after executed SQL: withheld (hard rule 12)"
         )
@@ -1516,10 +2094,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "I don't have executed rows for that, so I cannot certify a figure. "
-            "Name a table and a metric, or ground the ask in one uploaded file."
-        )
+        text = _TEXT_NO_EXECUTED_ROWS
         assumptions_list.append(
             "confident badge with no executed rows: withheld (E9-03)"
         )
@@ -1561,13 +2136,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You asked for a breakdown, and the query I matched returns a single "
-            "total instead - it has no grouping, so it cannot answer per-group or "
-            "top-N. Rather than show you one number as though it were the "
-            "breakdown, I'm stopping here. Name the grouping column, or ask for "
-            "the overall total if that is what you want."
-        )
+        text = _TEXT_TOTAL_FOR_BREAKDOWN
         assumptions_list.append(
             "grouped/ranked ask answered by an ungrouped scalar: shape mismatch (E10/FF-01)"
         )
@@ -1579,12 +2148,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You asked for one total, and the query I matched returns a grouped "
-            "ranking instead. Those figures answer a different question. Rather "
-            "than show a breakdown as though it were the total, I'm stopping "
-            "here. Ask for the breakdown by name, or for the overall total."
-        )
+        text = _TEXT_BREAKDOWN_FOR_TOTAL
         assumptions_list.append(
             "scalar ask answered by a grouped ranking: shape mismatch (E12/ANS-02)"
         )
@@ -1595,13 +2159,7 @@ def build_answer_envelope(
     ):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You named a workbook, and the query I matched reads the demo "
-            "warehouse instead of that file. Those figures answer a different "
-            "dataset. Rather than show them as though they came from the "
-            "upload, I'm stopping here. Ground the ask in that file, or ask "
-            "without a filename to use the Space warehouse."
-        )
+        text = _TEXT_DEMO_FOR_WORKBOOK
         assumptions_list.append(
             "xlsx-named ask answered from demo warehouse: scope mismatch"
         )
@@ -1642,11 +2200,7 @@ def build_answer_envelope(
     if not abstained and _forecast_history_pad(question, sql_used):
         badge_out = "ABSTAIN"
         abstained = True
-        text = (
-            "You asked for a forecast, but the query I matched reads historical "
-            "transactions. That is not a prediction, so I cannot confirm the "
-            "figure. Rather than pad history as a forecast, I'm stopping here."
-        )
+        text = _TEXT_HISTORY_FOR_FORECAST
         assumptions_list.append(
             "predict/forecast ask answered by historical SQL: history pad"
         )
@@ -1679,11 +2233,45 @@ def build_answer_envelope(
         column_sources=column_sources,
     )
     text = masked["text"]
+    unmasked_rows = rows_out
     rows_out = masked["rows"]
     values_out = masked["values"]
     sources = masked["sources"]
     chart = masked["chart"]
     sql_used = masked["sql_used"]
+
+    # E14 (FIG-FIDELITY-01, dms#508) - a served figure is the figure the query
+    # returned. A figure the masker rewrote (digits of a float that look like a
+    # phone, an integer with a phone or account shape, a figure a longer match
+    # ran into) is withheld here, never shown as a mask. The mask itself is
+    # never undone (dms#318). Before E4, so the reason names what happened.
+    if not abstained:
+        broken = figure_fidelity_violations(text or "", rows_out)
+        if masked.get("figure_hits"):
+            broken.insert(0, "the mask rewrote a figure the result holds")
+        if any(
+            isinstance(cell, StatedFloat) and str(masked_row.get(col, "")).startswith("DMSMASK_")
+            for row, masked_row in zip(unmasked_rows, rows_out, strict=False)
+            for col, cell in row.items()
+        ):
+            # dms#540: a computed DECIMAL figure the masker took is not served
+            # as a token; the answer is withheld.
+            broken.insert(0, "the mask took a computed figure the result holds")
+        if broken:
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = _TEXT_E14_WITHHELD
+            assumptions_list.append(
+                f"rendered figure differs from query result: withheld (E14 {broken[0]})"
+            )
+
+    # DECIMAL-EXACT-01 (dms#540): a binary-float figure the listing states at 15
+    # significant digits, which that float does not equal, says so.
+    if not abstained:
+        # Read before masking: a masked float cell is a token, not a figure.
+        note = float_precision_note(unmasked_rows)
+        if note and note not in assumptions_list:
+            assumptions_list.append(note)
 
     # E4 (ENV-E4 / dms#28) — money-like prose must be citeable from the result.
     # ``assert_envelope_valid`` raises on orphans → customer 500 on the ask path.
@@ -1698,12 +2286,7 @@ def build_answer_envelope(
         if orphans:
             badge_out = "ABSTAIN"
             abstained = True
-            text = (
-                "This answer states figure(s) I cannot cite from the query "
-                "result. Rather than show numbers I cannot stand behind, I'm "
-                "stopping here. Ask for columns returned by the query, or a "
-                "metric that includes the figure in the result set."
-            )
+            text = _TEXT_E4_WITHHELD
             assumptions_list.append(
                 "prose figure not in query result: withheld (E4)"
             )
@@ -1716,13 +2299,32 @@ def build_answer_envelope(
         if invented:
             badge_out = "ABSTAIN"
             abstained = True
-            text = (
-                "This answer states figure(s) I cannot cite from the include "
-                "rows. Rather than pad or invent a total, I'm stopping here."
-            )
+            text = _TEXT_INVENTED_TOTAL_WITHHELD
             assumptions_list.append(
                 "stated figure not in include rows: withheld (ONTOLOGY-AUDIT-01)"
             )
+
+    # E17 (ENVELOPE-GATE-01, dms#590) - every figure a served SQL answer states
+    # is one the envelope declares: a values[] figure, a row cell, the row count.
+    # A figure no query returned is withheld here, so the gate never raises on
+    # the ask path.
+    if not abstained and _executed_query(sql_used):
+        stray = uncited_figures(text or "", values_out, rows_out)
+        if stray:
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = _TEXT_E17_WITHHELD
+            assumptions_list.append(
+                "prose figure not in values or rows: withheld (E17)"
+            )
+
+    # E16 - an abstention states no figure outside the reason code it declares.
+    if abstained:
+        codes = declared_codes({"assumptions": assumptions_list})
+        idents = _declared_identifiers(_gap_details(assumptions_list), grounded_tables or [])
+        if abstained_figures(text or "", codes, idents):
+            text = _TEXT_E16_WITHHELD
+            assumptions_list.append("abstention stated a figure: withheld (E16)")
 
     if abstained:
         values_out = []
@@ -1987,7 +2589,7 @@ def reserved_as_of_abstain(
 
 
 def assert_envelope_valid(envelope: dict[str, Any]) -> None:
-    """E1–E9 property assertions. Raises AssertionError on violation."""
+    """E1-E17 property assertions. Raises AssertionError on violation."""
     badge = envelope.get("badge")
     abstained = bool(envelope.get("abstained"))
     values = envelope.get("values") or []
@@ -2028,6 +2630,41 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             f"E4: orphan number {orphans[0]} in text not in "
             f"values[]={_value_nums(values if isinstance(values, list) else [])}"
         )
+
+    # E14 (FIG-FIDELITY-01) - a served figure is the figure the query returned.
+    if not abstained:
+        env_rows_e14 = envelope.get("rows")
+        broken = figure_fidelity_violations(
+            text, env_rows_e14 if isinstance(env_rows_e14, list) else []
+        )
+        assert not broken, f"E14: {broken[0]}"
+
+    # E15 (ENVELOPE-GATE-01) - a green badge never sits on an abstention.
+    if not abstained:
+        marks = abstain_markers(envelope)
+        assert not marks, f"E15: served answer carries abstention marks {marks}"
+
+    # E16 - an abstention states no figure outside its declared reason codes.
+    if abstained:
+        stated = abstained_figures(
+            text,
+            declared_codes(envelope),
+            _declared_identifiers(
+                _gap_details(envelope.get("assumptions") or []),
+                envelope.get("grounded_tables") or [],
+            ),
+        )
+        assert not stated, f"E16: abstention states figure(s) {stated}"
+
+    # E17 - every figure in a served SQL answer is one the envelope declares.
+    if not abstained and _executed_query(sql_used):
+        env_rows_e17 = envelope.get("rows")
+        stray = uncited_figures(
+            text,
+            values if isinstance(values, list) else [],
+            env_rows_e17 if isinstance(env_rows_e17, list) else [],
+        )
+        assert not stray, f"E17: figure(s) {stray} in text are not in values[] or rows"
 
     # E6
     if envelope.get("demo_fallback_used") is True:
@@ -2162,6 +2799,7 @@ __all__ = [
     "build_audit_receipt",
     "chart_from_rows",
     "competing_category_scopes",
+    "figure_fidelity_violations",
     "invented_totals",
     "normalize_badge",
     "normalize_contributing_sources",

@@ -110,12 +110,15 @@ def _pack_compute(
     session_id: str | None,
     question: str,
     why: str,
+    declared: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     env = build_answer_envelope(
         answer_id="ans_followup",
         text=text,
         badge="L2_VALIDATED",
         abstained=False,
+        # dms#590: the count or operand the sentence states, declared (E17).
+        values=list(declared or []),
         rows=rows,
         sql_used=sql,
         assumptions=[
@@ -287,6 +290,7 @@ def maybe_followup(
             session_id=session_id,
             question=question,
             why="average of them",
+            declared=[{"id": "v_prior_n", "value": len(nums), "label": "row_count"}],
         )
     delta = float(add.group(1))  # type: ignore[union-attr]
     if len(nums) != 1:
@@ -333,4 +337,5 @@ def maybe_followup(
         session_id=session_id,
         question=question,
         why=f"add {delta:g}",
+        declared=[{"id": "v_delta", "value": delta, "label": "operand"}],
     )
