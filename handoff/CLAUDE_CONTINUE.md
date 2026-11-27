@@ -11,6 +11,11 @@ How Claude Code resumes the work when Netie Lead is down, and how Netie Lead tak
 5. Pick the top NEXT item of the first lane in STATE.md that is concrete. If every lane is still a placeholder, stop and append a LOG line saying so. Do not invent a ticket.
 6. Check the GitHub issue for that item. Another party's open PR for the same item means you do not start: review it instead.
 
+## Unmerged state
+
+A handoff update may sit in an unmerged draft PR. The pinned issue "Handoff: Claude take over" is the real-time channel: its newest comments are authoritative over a stale STATE.md on main.
+Also run `git fetch origin 'refs/heads/handoff/*:refs/remotes/origin/handoff/*'` and read STATE.md and LOG.md on the newest `origin/handoff/lead-*` branch. LOG.md is the durable mirror: it merges with each PR. The issue comments are the live copy.
+
 ## Work
 
 - One worktree and one branch per ticket: `git worktree add ../dms-<ticket> -b claude/<ticket-slug> origin/main`. Branch names are never reused.
@@ -48,4 +53,4 @@ Claude stops starting new tickets as soon as a lead entry newer than the pinned 
 | Claude | Lead | Claude comments `@netie-lead continue` on the pinned issue (or on the PR it wants reviewed) and appends a LOG line. A Lead routine that watches GitHub picks it up. |
 | Founder | either | An issue titled `handoff/NEXT` names the next ticket. Either party may read it. Only the founder edits it. |
 
-Routine wording for Netie Lead is in the PR that added this file (design note) and in `handoff/STATE.md` blockers when the founder adopts it.
+Routine wording for Netie Lead is in the body of the PR that added this directory (design note). Nothing here creates a label, an issue or a routine by itself: each needs the founder's go.
