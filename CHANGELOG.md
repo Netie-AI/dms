@@ -42,6 +42,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Flag.** `DMS_RUNTIME_SELFCHECK` defaults off. Off, the offline banner is the previous sentence. On, it states the runtime problem in plain language. The ask path does not read the flag.
 - **52.** Unmeasured (stub). No serving change. Not PASS.
 
+## 2026-11-27 - R1-RULES-OUT-01: question-word lanes behind DMS_RULES_OFF
+
+- **Flag.** `DMS_RULES_OFF` defaults to off. Only the digit `1` turns it on. Off, prompt bytes, the envelope, and the served route stay the same. On, `answer_demo_question` returns None, `_is_predictive` and `is_uncertified_paraphrase` return False, and the bronze sheet lane names no table. `DMS_RULES_OFF` implies `DMS_NO_WORD_RULES`, so measure linking ranks instead of the keyword locker. `locked_measure` returns None.
+- **Guard.** `scripts/verify/rule_inventory.py` lists every regex or `in` test that traces to a question argument (`file:line`). Today's 166 sites are the allowlist and the day-1 ceiling. A new key fails CI. The ceiling hash is pinned. Deletion of the lanes waits on the armed A/B.
+- **Stub 52.** `grade52 --main`, two runs each, flag off and flag on, same commit. Flag off: correct=43 wrong=0 reconfirm=5 refusal_wrong=0 ai=0 rule=43. Flag on: correct=37 wrong=4 (printed wrong includes refusal_wrong) refusal_wrong=1 reconfirm=2 abstain=3 ai=0 rule=41. Clarify and p50 are not in this stub. Armed and pack H were not run. Not PASS.
+
 ## 2026-11-27 - WORD-RULES-OUT-01: rank measures instead of keyword locks
 
 - **Flag.** `DMS_NO_WORD_RULES` defaults to 0. Off, `semantic_retrieve` still calls the keyword locker in `keyword_routes.py`. Prompt, envelope, and served route stay the same. On, measure linking uses `rank_texts` (embedder, else BM25) over the ontology name, description, and synonyms stored on the measure. Floor 0.5, top 3. A unique top score links that measure. A tie or nothing above the floor reconfirms `measure_tie` or `measure_unranked` and is not served.

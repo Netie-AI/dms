@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, R1-RUNTIME-01, R1-CLARIFY-01, DMS-AI-ABSTAIN-01, WORD-RULES-OUT-01
+**Last updated:** 2026-11-27, R1-RUNTIME-01, R1-CLARIFY-01, DMS-AI-ABSTAIN-01, R1-RULES-OUT-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_NO_WORD_RULES` default 0. Off, keyword measure locks stay. On, linking ranks the ontology. `DMS_RUNTIME_SELFCHECK` defaults off. Off, `/health` and envelopes gain no runtime key. On, a loopback caller or an insights timeout under 30s stamps `runtime_degraded`. Compose pins `DMS_INSIGHTS_TIMEOUT_S` to 60. Process default stays 8s. `DMS_ASK_LADDER` and `DMS_AI_CLARIFY` default off. Armed grade52 not run. Not PASS.
+**Tip:** `DMS_RULES_OFF` default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 (two runs). On, the demo router, predictive regex, trap list, and bronze lane do not decide, and measure linking ranks. Stub on: correct=37 wrong=4 refusal_wrong=1 ai=0 rule=41. Armed and pack H unmeasured. `DMS_ASK_LADDER`, `DMS_AI_CLARIFY`, and `DMS_RUNTIME_SELFCHECK` default off. Not PASS.
 
 ## Direction
 

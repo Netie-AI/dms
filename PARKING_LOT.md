@@ -9,6 +9,12 @@ The keyword branches live in `keyword_routes.py`. `DMS_NO_WORD_RULES` defaults t
 
 **Unlock to delete `keyword_routes.py`:** armed grade52, `DMS_NO_WORD_RULES` on vs off, same SHA, the 52 and pack H, 2 runs each. WRONG stays 0 and correct does not drop beyond run-to-run noise. Do not replace the module with a new word list.
 
+## R1-RULES-OUT-01 - delete the question-word lanes after the armed A/B
+
+`DMS_RULES_OFF` (default off) makes the demo regex router, the predictive regex, the exact-match trap list, and the bronze sheet lane return None or False. It implies `DMS_NO_WORD_RULES`. The code stays until the armed run.
+
+**Unlock to delete those lanes:** two clean armed A/B runs, `DMS_RULES_OFF` on vs off, same SHA, the 52 and pack H, with `DMS_AI_ARBITER`, `DMS_SHAPE_CHECK`, and `DMS_AI_CLARIFY` on. WRONG stays 0 and correct does not drop by more than 1. Then archive the lanes. Do not add a phrase list in their place.
+
 ---
 
 ## Done this pass (not parked)
