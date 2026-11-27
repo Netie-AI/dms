@@ -9,10 +9,17 @@ multi-statement SQL, file reads, ungranted tables, a missing extract, and
 a reply with no SQL abstain at once and are not pasted into a retry prompt.
 The second reading sets ``recover_failures`` and also feeds back a pre-run
 refusal and an empty result. Hostile SQL stays out of that prompt.
+
+``DMS_SHAPE_CHECK`` defaults off. Off, a successful execute is served as
+before and no shape call is made. On, one OpenVault call with role ``reason``
+checks the result shape. One misfit is repaired through the schema-retry
+feedback slot. A second misfit, or an unreadable reply, is a ``shape_misfit``
+reconfirm and is not served.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
@@ -714,6 +721,166 @@ def _schema_dispatch(
     return ("retry", got)
 
 
+def _shape_flag_on() -> bool:
+    """True only when ``DMS_SHAPE_CHECK`` is the digit 1. Unset is off."""
+    return os.environ.get("DMS_SHAPE_CHECK", "0").strip() == "1"
+
+
+def _shape_rung():
+    """#570's ladder supplies ``shape_rung`` once it has that name.
+
+    Until then this is ``dms_executor.shape_check.shape_rung``. The flag-off
+    path does not import either module.
+    """
+    import importlib
+
+    try:
+        module = importlib.import_module("dms_executor.ask_ladder")
+    except ImportError:
+        module = None
+    if module is not None:
+        found = getattr(module, "shape_rung", None)
+        if callable(found):
+            return found
+    from dms_executor.shape_check import shape_rung
+
+    return shape_rung
+
+
+def _shape_reconfirm(
+    abstain: Callable[..., dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    sql: str,
+    retries: int,
+    kind: str,
+    reasons: list[str],
+) -> dict[str, Any]:
+    """Reconfirm. Rows and SQL are cleared so a misfit is not served."""
+    env = abstain("shape_misfit", attempts, sql=sql, retries=retries)
+    if not isinstance(env, dict):
+        env = {}
+    env["abstained"] = True
+    env["badge"] = "ABSTAIN"
+    env["rows"] = []
+    env["values"] = []
+    env["sql_used"] = None
+    env["abstain_reason"] = "shape_misfit"
+    shown = "; ".join(reasons) if reasons else kind
+    env["text"] = f"shape_misfit: {shown}"
+    assumptions = [item for item in (env.get("assumptions") or []) if isinstance(item, str)]
+    for item in reasons:
+        line = f"shape_reason: {item}"
+        if line not in assumptions:
+            assumptions.append(line)
+    env["assumptions"] = assumptions
+    env["reconfirm"] = {
+        "reason_code": "shape_misfit",
+        "verdict": kind if kind in {"misfit", "unknown"} else "unknown",
+        "reasons": list(reasons),
+        "why": "shape_misfit",
+        "closest_question": "",
+    }
+    return env
+
+
+def _shape_after_execute(
+    *,
+    question: str,
+    sql: str,
+    rows: list[dict[str, Any]],
+    dialect: str,
+    ctx: dict[str, Any],
+    attempts: list[dict[str, Any]],
+    prompt: str,
+    payload: dict[str, Any] | None,
+    budget: AskCallBudget,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    abstain: Callable[..., dict[str, Any]],
+    retries: int,
+    shape_repairs: int,
+) -> tuple[str, Any]:
+    """``serve`` keeps today's path. ``repair`` and ``reconfirm`` do not serve.
+
+    Flag off returns ``serve`` before any shape import or model call.
+    """
+    if not _shape_flag_on():
+        return ("serve", None)
+    ontology = ctx.get("shape_ontology")
+    if ontology is None:
+        ontology = ctx.get("ontology")
+    try:
+        verdict = _shape_rung()(
+            question,
+            sql,
+            rows=rows,
+            ontology=ontology,
+            dialect=dialect,
+        )
+    except Exception:
+        verdict = {"verdict": "unknown", "reasons": ["shape_call_failed"], "fix_hint": None}
+    if not isinstance(verdict, dict):
+        verdict = {"verdict": "unknown", "reasons": ["shape_call_failed"], "fix_hint": None}
+    kind = verdict.get("verdict")
+    raw_reasons = verdict.get("reasons")
+    if isinstance(raw_reasons, list):
+        reasons = [item for item in raw_reasons if isinstance(item, str)]
+    else:
+        reasons = []
+    hint = verdict.get("fix_hint") if isinstance(verdict.get("fix_hint"), str) else None
+    if kind in {"skipped", "fit"}:
+        return ("serve", None)
+    attempts.append(
+        loop_entry(
+            prompt=prompt,
+            payload=payload,
+            sql=sql,
+            outcome="shape_unknown" if kind == "unknown" else "shape_misfit",
+            dialect=dialect,
+        )
+    )
+    if kind == "misfit" and shape_repairs < 1 and budget.take():
+        reason = "shape_misfit"
+        if hint:
+            reason = f"{reason}\nfix_hint:\n{hint}"
+        repair_prompt = feedback_prompt(question, previous_sql=sql, reason=reason)
+        feedback = {
+            "previous_sql": mask_feedback_text(sql),
+            "reason": mask_feedback_text(reason),
+            "prompt": repair_prompt,
+            "repair_hint": {
+                "kind": "shape_misfit",
+                "fix_hint": mask_feedback_text(hint or ""),
+                "reasons": [mask_feedback_text(item) for item in reasons],
+            },
+        }
+        nxt = dict(ctx)
+        nxt["sql_loop_feedback"] = feedback
+        try:
+            got = compute(nxt)
+        except Exception:
+            got = None
+        return (
+            "repair",
+            {
+                "current": got if isinstance(got, dict) else None,
+                "reason": reason,
+                "shape_repairs": shape_repairs + 1,
+                "retries": retries + 1,
+            },
+        )
+    return (
+        "reconfirm",
+        _shape_reconfirm(
+            abstain,
+            attempts,
+            sql,
+            retries,
+            str(kind or "unknown"),
+            reasons,
+        ),
+    )
+
+
 def run_model_loop(
     *,
     question: str,
@@ -749,6 +916,7 @@ def run_model_loop(
     The next SQL still goes through ``check``. Hostile SQL does not.
     """
     retries = 0
+    shape_repairs = 0
     current = payload if isinstance(payload, dict) else None
     reason: str | None = None
     prev_sql: str | None = None
@@ -946,6 +1114,32 @@ def run_model_loop(
             continue
 
         got = rows or []
+        action, detail = _shape_after_execute(
+            question=question,
+            sql=sql,
+            rows=got,
+            dialect=dialect,
+            ctx=ctx,
+            attempts=attempts,
+            prompt=prompt,
+            payload=current,
+            budget=budget,
+            compute=compute,
+            abstain=abstain,
+            retries=retries,
+            shape_repairs=shape_repairs,
+        )
+        if action == "reconfirm":
+            return detail
+        if action == "repair":
+            shape_repairs = int(detail["shape_repairs"])
+            retries = int(detail["retries"])
+            prev_sql = sql
+            reason = str(detail["reason"])
+            current = detail["current"]
+            if not protected_sql:
+                protected_sql = sql
+            continue
         if not got:
             decision = empty_result_reason(sql)
             if decision:
