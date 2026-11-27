@@ -14,11 +14,10 @@ import re
 from pathlib import Path
 
 import pytest
-from cortex_client.compute import (
+from cortex_client.compute import insights_timeout_s, log_effective_insights_timeout
+from cortex_client.runtime_check import (
     attach_runtime_banner,
     classify_cortex_caller,
-    insights_timeout_s,
-    log_effective_insights_timeout,
     log_runtime_selfcheck,
 )
 from dms_api.app import create_app
@@ -38,7 +37,6 @@ _SECRET = re.compile(
 _NEW_FUNCS = frozenset(
     {
         "runtime_selfcheck_enabled",
-        "log_effective_insights_timeout",
         "classify_cortex_caller",
         "runtime_is_degraded",
         "runtime_health_fields",
@@ -207,13 +205,13 @@ def test_startup_logs_the_effective_timeout_and_not_the_key(
     runtime_env.setenv(_TIMEOUT, "8")
     runtime_env.setenv("CORTEX_API_KEY", _SERVICE_KEY)
     get_settings.cache_clear()
-    with caplog.at_level(logging.INFO, logger="cortex_client.compute"):
+    with caplog.at_level(logging.INFO, logger="cortex_client"):
         with TestClient(create_app()):
             pass
     messages = [
         record.getMessage()
         for record in caplog.records
-        if record.name == "cortex_client.compute"
+        if record.name.startswith("cortex_client.")
     ]
     text = "\n".join(messages)
     assert "DMS_INSIGHTS_TIMEOUT_S effective 8.0" in text
@@ -227,7 +225,7 @@ def test_selfcheck_off_does_not_warn(
 ) -> None:
     runtime_env.setenv(_TIMEOUT, "8")
     runtime_env.setenv("CORTEX_API_KEY", _LOOPBACK_KEY)
-    with caplog.at_level(logging.WARNING, logger="cortex_client.compute"):
+    with caplog.at_level(logging.WARNING, logger="cortex_client.runtime_check"):
         log_runtime_selfcheck(_LOOPBACK_KEY)
     assert "runtime_degraded" not in caplog.text
     assert _LOOPBACK_KEY not in caplog.text
@@ -246,7 +244,7 @@ def test_deploy_pins_timeout_60_and_leaves_the_flag_off() -> None:
 
 
 def test_runtime_functions_do_not_read_question_text() -> None:
-    source = (ROOT / "packages/cortex_client/cortex_client/compute.py").read_text(
+    source = (ROOT / "packages/cortex_client/cortex_client/runtime_check.py").read_text(
         encoding="utf-8"
     )
     tree = ast.parse(source)

@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from cortex_client.compute import runtime_health_fields
+from cortex_client.runtime_check import runtime_health_fields
 from fastapi import APIRouter
 
 from dms_api.deps import SettingsDep, StoreBindingDep

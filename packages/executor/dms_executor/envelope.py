@@ -1792,7 +1792,7 @@ def build_answer_envelope(
         )
     # CHART-SPEC-01. Off, this returns the same dict and sends no prompt.
     # R1-RUNTIME-01. Off, the same dict. On and degraded, banner keys only.
-    from cortex_client.compute import attach_runtime_banner
+    from cortex_client.runtime_check import attach_runtime_banner
 
     from dms_executor.chart_spec import attach_chart_spec
 

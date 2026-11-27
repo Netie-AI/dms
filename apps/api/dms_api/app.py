@@ -5,7 +5,8 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from cortex_client import CortexClient
-from cortex_client.compute import log_effective_insights_timeout, log_runtime_selfcheck
+from cortex_client.compute import log_effective_insights_timeout
+from cortex_client.runtime_check import log_runtime_selfcheck
 from dms_core.control_plane.ask_audit import (
     AskAuditStorePort,
     InMemoryAskAuditStore,

@@ -48,7 +48,6 @@ from cortex_client.insights import (
     SCHEMA_CONTEXT_FIELD,
     apply_schema_context,
     generate_bearer_refuse,
-    is_published_demo_key,
     without_route_fields,
 )
 
@@ -174,126 +173,11 @@ def insights_timeout_s(env: Mapping[str, str] | None = None) -> float:
     )
 
 
-#: R1-RUNTIME-01. Check only. Off, health and envelopes gain no key.
-RUNTIME_SELFCHECK_ENV = "DMS_RUNTIME_SELFCHECK"
-#: A configured timeout under this is ``runtime_degraded``. 30 itself is not.
-RUNTIME_TIMEOUT_FLOOR_S = 30.0
-BANNER_RUNTIME_DEGRADED = "runtime_degraded"
-_CALLER_SERVICE = "service"
-_CALLER_LOOPBACK = "loopback"
-_CALLER_UNKNOWN = "unknown"
-#: OpenVault service caller keys use this prefix. Compared, never returned.
-_SERVICE_KEY_PREFIX = "ov_"
-
-
-def runtime_selfcheck_enabled(env: Mapping[str, str] | None = None) -> bool:
-    """``DMS_RUNTIME_SELFCHECK``: off unless set to a true token."""
-    return _flag_on(env, RUNTIME_SELFCHECK_ENV)
-
-
 def log_effective_insights_timeout(env: Mapping[str, str] | None = None) -> float:
     """Log the timeout the process will use. Does not change the 8s default."""
     seconds = insights_timeout_s(env)
     _log.info("%s effective %s", INSIGHTS_TIMEOUT_ENV, seconds)
     return seconds
-
-
-def classify_cortex_caller(api_key: str | None) -> str:
-    """``service``, ``loopback``, or ``unknown``. The key value is not returned.
-
-    ponytail: loopback is the published demo viewer digest only. A third
-    identity needs Cortex ``/health`` ``runtime.cortex_caller_kind``. Upgrade:
-    trust that field when Cortex reports it, still without copying the key id.
-    """
-    if api_key is None or not str(api_key).strip():
-        return _CALLER_UNKNOWN
-    if is_published_demo_key(api_key):
-        return _CALLER_LOOPBACK
-    if str(api_key).strip().startswith(_SERVICE_KEY_PREFIX):
-        return _CALLER_SERVICE
-    return _CALLER_UNKNOWN
-
-
-def runtime_is_degraded(*, caller_kind: str, timeout_s: float) -> bool:
-    """Loopback caller, or an effective insights timeout under 30s."""
-    return caller_kind == _CALLER_LOOPBACK or float(timeout_s) < RUNTIME_TIMEOUT_FLOOR_S
-
-
-def _caller_key(api_key: str | None, env: Mapping[str, str] | None) -> str | None:
-    if api_key is not None:
-        return api_key
-    src = os.environ if env is None else env
-    return src.get("CORTEX_API_KEY")
-
-
-def runtime_health_fields(
-    api_key: str | None,
-    *,
-    cortex_reachable: bool,
-    ov_reachable: bool,
-    env: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    """Flag off: ``{}``. Flag on: the ``runtime`` block, and the banner when set.
-
-    No key value and no key id. ``ov_reachable`` is the field name from the
-    ticket; it is not a caller key.
-    """
-    if not runtime_selfcheck_enabled(env):
-        return {}
-    timeout_s = insights_timeout_s(env)
-    kind = classify_cortex_caller(_caller_key(api_key, env))
-    fields: dict[str, Any] = {
-        "runtime": {
-            "insights_timeout_s": timeout_s,
-            "cortex_reachable": bool(cortex_reachable),
-            "cortex_caller_kind": kind,
-            "ov_reachable": bool(ov_reachable),
-        }
-    }
-    if runtime_is_degraded(caller_kind=kind, timeout_s=timeout_s):
-        fields["runtime_degraded"] = True
-        fields["banner_reason"] = BANNER_RUNTIME_DEGRADED
-    return fields
-
-
-def attach_runtime_banner(
-    env: dict[str, Any],
-    *,
-    api_key: str | None = None,
-    environ: Mapping[str, str] | None = None,
-) -> dict[str, Any]:
-    """Flag off, or a healthy runtime: the same dict.
-
-    Flag on and degraded: a copy with ``runtime_degraded`` and ``banner_reason``.
-    Does not read the question, the prompt, the SQL, or the route.
-    """
-    src = os.environ if environ is None else environ
-    if not runtime_selfcheck_enabled(src):
-        return env
-    timeout_s = insights_timeout_s(src)
-    kind = classify_cortex_caller(_caller_key(api_key, src))
-    if not runtime_is_degraded(caller_kind=kind, timeout_s=timeout_s):
-        return env
-    out = dict(env)
-    out["runtime_degraded"] = True
-    out["banner_reason"] = BANNER_RUNTIME_DEGRADED
-    return out
-
-
-def log_runtime_selfcheck(
-    api_key: str | None, env: Mapping[str, str] | None = None
-) -> None:
-    """Flag on and degraded: one warning. The key is not logged."""
-    if not runtime_selfcheck_enabled(env):
-        return
-    timeout_s = insights_timeout_s(env)
-    kind = classify_cortex_caller(api_key)
-    if runtime_is_degraded(caller_kind=kind, timeout_s=timeout_s):
-        _log.warning(
-            "runtime_degraded caller_kind=%s insights_timeout_s=%s",
-            kind,
-            timeout_s,
-        )
 
 
 def _flag_on(env: Mapping[str, str] | None, name: str) -> bool:
@@ -1797,13 +1681,7 @@ __all__ = [
     "insights_query_sql",
     "insights_timeout_env_set",
     "insights_timeout_s",
-    "attach_runtime_banner",
-    "classify_cortex_caller",
     "log_effective_insights_timeout",
-    "log_runtime_selfcheck",
-    "runtime_health_fields",
-    "runtime_is_degraded",
-    "runtime_selfcheck_enabled",
     "insights_was_reached",
     "ontology_ranked_lane_enabled",
     "normalize_insights_compute",
