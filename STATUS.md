@@ -53,7 +53,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 | SQL-VOTE: equal rows, one call cap. Not PASS. | #463 |
 | DR-0006: writer family | #440 |
 | ONTO-DERIVE-01 (BANK-02 has merged) | #316 |
-| IPHONE-PWA-01 to 05, IPHONE-A11Y-01 to -05, IPHONE-CONTRAST-01, IPHONE-INSTALL-01, IPHONE-ROTATE-01, IPHONE-LINE-01, IPHONE-TAP-01, IPHONE-AUDIT-13, hardened offline shell (#512, EPIC-008): installable iPhone PWA, one-handed layout, phone tables, charts, ontology, tap arbitration between stacked figures, landscape Library and Chat, shell that stores only the app (e2e:sw 67). Round 13: Playwright 439 of 441 (library-receipt needs Cortex), vitest 138, 45 of 46 shell mutations red; desktop identical to main (34 pairs). Chromium emulation only; A10 needs a physical iPhone. Not PASS. | #510 |
+| IPHONE-PWA-01 to 05, IPHONE-A11Y-01 to -05, IPHONE-CONTRAST-01, IPHONE-INSTALL-01, IPHONE-ROTATE-01, IPHONE-LINE-01, IPHONE-TAP-01, IPHONE-AUDIT-13, hardened offline shell (#512, EPIC-008): installable iPhone PWA, one-handed layout, phone tables, charts, ontology, tap arbitration between stacked figures, landscape Library and Chat, shell that stores only the app (e2e:sw 67). Round 13: Playwright 439 of 441 (library-receipt needs Cortex), vitest 138, 45 of 46 shell mutations red; desktop identical to main (34 pairs). Chromium emulation only; A10 needs a physical iPhone. PHONE-PATH-01 (#513) merged in: stranger path at 390x844, B1 B5 pass, B3 red (EPIC-003), B4 unverifiable. Merged with main 5c173ce; desktop 0 pixel diffs vs main (30 pairs). Not PASS. | #510 |
 | AI-LADDER-PLAN-01 / ASK-CLARIFY-01 | #431 / #419 |
 | GRANT-STRUCT-01 / GRANT-KEY-01 / GRANT-UNICODE-01 | #421 / #422 / #438 |
 | GOLD-LEAK-01 / serving-lock deadline | #435 / #437 |

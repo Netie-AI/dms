@@ -180,7 +180,9 @@ test.describe("Ontology page at 390px", () => {
     await stubOntology(page, false);
     await openClientSide(page, "/ontology");
     const box = page.getByTestId("ontology-unavailable");
-    await expect(box).toContainText("Ontology unavailable");
+    // main's honest card (ontologyHonestCard): an ok:false store is named for what it is.
+    await expect(box).toHaveAttribute("data-reason", "store_unreadable");
+    await expect(box).toContainText("Ontology store could not be read");
     await expect(box).toContainText("Cortex is not answering on http://127.0.0.1:8010");
     await expect(page.getByText(/No object type matches/)).toHaveCount(0);
     expect(await shortControls(page)).toEqual([]);

@@ -175,9 +175,9 @@ for (const mode of MODES) {
       // The header (title and the Postgres notice) is one compact line; the filter box is tight.
       const head = (await page.locator("h1").evaluate((h) => h.parentElement!.getBoundingClientRect().height));
       expect(head).toBeLessThanOrEqual(60);
-      // The Postgres notice (shown when the API has no DATABASE_URL, as on the demo stack) shares the title's
+      // The saved-database notice (shown when the API has no DATABASE_URL, as on the demo stack) shares the title's
       // row, fills it to the right margin and stays short.
-      const notice = page.getByText("Postgres sources need").first();
+      const notice = page.getByText("Saved database sources need").first();
       await expect(notice).toBeVisible();
       const n = (await notice.boundingBox())!;
       expect(n.x + n.width).toBeGreaterThanOrEqual(vp.width - 16 - 2);

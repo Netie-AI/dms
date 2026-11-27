@@ -413,7 +413,7 @@ test.describe("PHONE-PATH-01 stranger path at 390x844", () => {
     const banner = page.getByTestId("spaces-memory-banner");
     if (api.persisted === false) {
       await expect(banner).toBeVisible();
-      await expect(banner).toContainText(/not persisted/i);
+      await expect(banner).toContainText(/not saved|not persisted/i);
       await expect(banner).toBeInViewport();
     } else {
       await expect(banner).toHaveCount(0);

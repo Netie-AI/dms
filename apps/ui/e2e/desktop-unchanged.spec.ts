@@ -52,19 +52,48 @@ test("Spaces shows no derived-ontology card (it is a phone screen for now)", asy
   await expect(page.getByTestId("space-ontology-card")).toHaveCount(0);
 });
 
-test("Ontology with the engine down keeps the notice, the tiles and the tabs", async ({ page }) => {
+test("Ontology with the engine down shows main's honest card, not tiles or tabs", async ({ page }) => {
   await stubOntologyDown(page);
   await operate(page, "/ontology");
-  await expect(page.getByText("Ontology unavailable — Cortex did not answer")).toBeVisible();
+  // origin/main (R1-UI-COPY-01, ontologyHonestCard): an ok:false store is one named card.
+  const card = page.getByTestId("ontology-honest-card");
+  await expect(card).toBeVisible();
+  await expect(card).toHaveAttribute("data-reason", "store_unreadable");
+  await expect(card).toContainText("Ontology store could not be read");
+  // The phone-only card is not rendered at lg.
   await expect(page.getByTestId("ontology-unavailable")).toHaveCount(0);
-  await expect(page.getByText("Object types").first()).toBeVisible();
-  await expect(page.getByRole("tab", { name: "Map" })).toBeVisible();
+  await expect(page.getByText("Object types")).toHaveCount(0);
+  await expect(page.getByRole("tab")).toHaveCount(0);
 });
 
+/** A healthy, empty store: the tiles and tabs render, so their desktop layout can be measured. */
+async function stubOntologyHealthy(page: Page) {
+  await page.route("**/api/v1/ontology**", (route) => {
+    const section = new URL(route.request().url()).pathname.split("/").pop() ?? "";
+    const bodies: Record<string, unknown> = {
+      ontology: {
+        ok: true,
+        pack: "test",
+        counts: { object_types: 0, properties: 0, sensitive_properties: 0, link_types: 0, action_types: 0, action_tools: 0, action_events: 0, functions: 0, metrics: 0 },
+        objects_without_metrics: [],
+      },
+      objects: { ok: true, object_types: [] },
+      links: { ok: true, link_types: [] },
+      actions: { ok: true, action_types: [] },
+      functions: { ok: true, functions: [] },
+      metrics: { ok: true, metrics: [] },
+      graph: { ok: true, nodes: [], edges: [] },
+    };
+    return route.fulfill({ json: bodies[section] ?? { ok: true } });
+  });
+}
+
 test("Ontology tabs keep their 8px gap and the filter sits on the same row", async ({ page }) => {
-  await stubOntologyDown(page);
+  await stubOntologyHealthy(page);
   await operate(page, "/ontology");
+  await expect(page.getByTestId("ontology-honest-card")).toHaveCount(0);
   const tabs = await page.getByRole("tab").all();
+  expect(tabs.length, "the tabs render for a healthy store").toBeGreaterThan(1);
   const boxes = await Promise.all(tabs.map(async (t) => (await t.boundingBox())!));
   for (let i = 1; i < boxes.length; i += 1) {
     expect(Math.round(boxes[i].x - (boxes[i - 1].x + boxes[i - 1].width))).toBe(8);
