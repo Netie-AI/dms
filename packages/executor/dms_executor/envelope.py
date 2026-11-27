@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from dms_core.pii import NUMBER_LITERAL, fail_closed_mask_payload, mask_unknown_keys
+from dms_core.pii import fail_closed_mask_payload, mask_unknown_keys
 
 from dms_executor import executed_trace
 from dms_executor.bronze import (
@@ -310,7 +310,7 @@ def _ranking_totals_present(
         raw = v.get("value")
         if not isinstance(raw, (int, float)) or isinstance(raw, bool):
             continue
-        if str(v.get("label")) == "row_count":
+        if str(v.get("label")) in DECLARED_NOT_RESULT:
             continue
         fv = float(raw)
         if abs(fv) >= 100.0:
@@ -925,6 +925,15 @@ _TEXT_E4_WITHHELD = (
     ' for columns returned by the query, or a metric that includes the '
     'figure in the result set.'
 )
+_TEXT_E16_WITHHELD = (
+    "I can't answer that from this data, and no figure from it is shown here. "
+    "Ask again, or name the table and the metric you need."
+)
+_TEXT_E17_WITHHELD = (
+    "This answer states a figure the query did not return. Rather than show "
+    "a number I cannot stand behind, I'm stopping here. Ask for the columns "
+    "you need by name."
+)
 _TEXT_FILTER_MATCHED_NOTHING = (
     'No matching rows for that filter. Stored encodings may differ (e.g. '
     'BETA vs SKU-BETA, KL vs Kuala Lumpur). Use the exact value from the '
@@ -955,6 +964,8 @@ WITHHOLD_TEXTS = (
     _TEXT_DEMO_FOR_WORKBOOK,
     _TEXT_E14_WITHHELD,
     _TEXT_E4_WITHHELD,
+    _TEXT_E16_WITHHELD,
+    _TEXT_E17_WITHHELD,
     _TEXT_FILTER_MATCHED_NOTHING,
     _TEXT_HISTORY_FOR_FORECAST,
     _TEXT_INVENTED_TOTAL_WITHHELD,
@@ -1178,9 +1189,20 @@ def figure_fidelity_violations(text: str, rows: list[dict[str, Any]] | None) -> 
 _WITHHOLD_STAMP = re.compile(r"withheld \((?:E\d+|ONTOLOGY-AUDIT-01)\b")
 
 
-def question_figures(question: str | None) -> list[str]:
-    """The number literals the question states, so an abstention may echo them."""
-    return sorted({hit.group(0) for hit in NUMBER_LITERAL.finditer(str(question or ""))})
+#: A stated figure, with an exponent when it has one (1e-07 is one figure, not
+#: a 1 and a 07). Same boundaries as the masker's ``NUMBER_LITERAL``.
+_FIGURE = re.compile(
+    r"(?<![A-Za-z0-9_.])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?"
+    r"(?![A-Za-z0-9_]|\.\d)"
+)
+_GAP_PREFIX = "GEN-01: "
+
+#: values[] labels that declare a figure the answer states but that is not a
+#: result figure: ``row_count`` (how many rows, or how many of them) and
+#: ``operand`` (a figure the answer applies: a rank position, a scale factor, an
+#: added amount). E17 accepts them as declared; ONTOLOGY-AUDIT-01 does not read
+#: them as totals.
+DECLARED_NOT_RESULT = frozenset({"row_count", "operand"})
 
 
 def _literal_figure(literal: str) -> float | None:
@@ -1189,6 +1211,44 @@ def _literal_figure(literal: str) -> float | None:
     except ValueError:
         return None
     return value if value == value and abs(value) != float("inf") else None
+
+
+def _without_labels(text: str, labels: set[str]) -> str:
+    """Blank each label that carries a digit, as a whole token (WH-01, q4_cost).
+
+    Whole-token only, so a label ``1`` does not eat the 1 of ``9.1``.
+    """
+    for label in sorted(labels, key=len, reverse=True):
+        if label and any(ch.isdigit() for ch in label):
+            text = re.sub(
+                r"(?<![A-Za-z0-9_.,])" + re.escape(label) + r"(?![A-Za-z0-9_]|[.,]\d)",
+                " ",
+                text,
+            )
+    return text
+
+
+#: A calendar date (2026-11-20) is a date, not three figures.
+_ISO_DATE = re.compile(r"(?<![A-Za-z0-9_.-])\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?Z?)?(?![A-Za-z0-9_])")
+
+
+def _without_list_markers(text: str) -> str:
+    """Drop a numbered list's line-start ordinal (``1. ...``), as E14 reads it, and dates."""
+    text = _ISO_DATE.sub(" ", text)
+    return "\n".join(_LIST_MARKER.sub("", line, count=1) for line in text.split("\n"))
+
+
+def declared_codes(envelope: dict[str, Any]) -> list[str]:
+    """The reason codes an abstention declares: ``abstain_reason`` and ``GEN-01: <code>``."""
+    out: list[str] = []
+    reason = envelope.get("abstain_reason")
+    if isinstance(reason, str) and reason.strip():
+        out.append(reason.strip())
+    for item in envelope.get("assumptions") or []:
+        raw = str(item)
+        if raw.startswith(_GAP_PREFIX) and raw[len(_GAP_PREFIX) :].strip():
+            out.append(raw[len(_GAP_PREFIX) :].strip())
+    return out
 
 
 def abstain_markers(envelope: dict[str, Any]) -> list[str]:
@@ -1211,13 +1271,21 @@ def abstain_markers(envelope: dict[str, Any]) -> list[str]:
     return out
 
 
-def abstained_figures(text: str, echoed: list[Any] | None) -> list[str]:
-    """E16: figures an abstention states that the question did not."""
-    echo = {_literal_figure(str(item)) for item in echoed or []}
+def abstained_figures(text: str, codes: list[str] | None) -> list[str]:
+    """E16: figures an abstention states outside its own declared reason codes.
+
+    A code is the product's structural reason (``insights_call_cap:2``,
+    ``unhonored_qualifier:rank_window=4-8``); digits inside the code it
+    declares are part of that code. A numbered list's ordinal is a marker.
+    Every other figure in abstained text fails.
+    """
+    stripped = _without_list_markers(text or "")
+    for code in sorted({c for c in codes or [] if c}, key=len, reverse=True):
+        stripped = stripped.replace(code, " ")
     return [
         hit.group(0)
-        for hit in NUMBER_LITERAL.finditer(text or "")
-        if _literal_figure(hit.group(0)) not in echo
+        for hit in _FIGURE.finditer(stripped)
+        if _literal_figure(hit.group(0)) is not None
     ]
 
 
@@ -1247,12 +1315,9 @@ def uncited_figures(
     cut = _SHOWING.search(text or "")
     if cut:
         allowed.append(float(cut.group(1)))
-    stripped = text or ""
-    for label in sorted(labels, key=len, reverse=True):
-        if any(ch.isdigit() for ch in label):
-            stripped = stripped.replace(label, " ")
+    stripped = _without_labels(_without_list_markers(text or ""), labels)
     out: list[str] = []
-    for hit in NUMBER_LITERAL.finditer(stripped):
+    for hit in _FIGURE.finditer(stripped):
         value = _literal_figure(hit.group(0))
         if value is not None and not any(_close(value, a) for a in allowed):
             out.append(hit.group(0))
@@ -1524,7 +1589,7 @@ def invented_totals(
     for v in values or []:
         if not isinstance(v, dict):
             continue
-        if str(v.get("label") or "") == "row_count":
+        if str(v.get("label") or "") in DECLARED_NOT_RESULT:
             continue
         raw = v.get("value")
         if not isinstance(raw, (int, float)) or isinstance(raw, bool):
@@ -2087,6 +2152,27 @@ def build_answer_envelope(
                 "stated figure not in include rows: withheld (ONTOLOGY-AUDIT-01)"
             )
 
+    # E17 (ENVELOPE-GATE-01, dms#590) - every figure a served SQL answer states
+    # is one the envelope declares: a values[] figure, a row cell, the row count.
+    # A figure no query returned is withheld here, so the gate never raises on
+    # the ask path.
+    if not abstained and _executed_query(sql_used):
+        stray = uncited_figures(text or "", values_out, rows_out)
+        if stray:
+            badge_out = "ABSTAIN"
+            abstained = True
+            text = _TEXT_E17_WITHHELD
+            assumptions_list.append(
+                "prose figure not in values or rows: withheld (E17)"
+            )
+
+    # E16 - an abstention states no figure outside the reason code it declares.
+    if abstained:
+        codes = declared_codes({"assumptions": assumptions_list})
+        if abstained_figures(text or "", codes):
+            text = _TEXT_E16_WITHHELD
+            assumptions_list.append("abstention stated a figure: withheld (E16)")
+
     if abstained:
         values_out = []
         sources = []
@@ -2132,8 +2218,6 @@ def build_answer_envelope(
         # holding all six demo tables (dms#5). The count a viewer reads has to
         # come from the manifest, not from the request that asked for it.
         "grounded_tables": list(grounded_tables or []),
-        # ENVELOPE-GATE-01: the figures the question stated (E16 echo).
-        "question_figures": question_figures(question),
         "audit_receipt": build_audit_receipt(
             abstained=bool(abstained),
             badge=badge_out,
@@ -2361,9 +2445,9 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
         marks = abstain_markers(envelope)
         assert not marks, f"E15: served answer carries abstention marks {marks}"
 
-    # E16 - an abstention states no figure the question did not.
+    # E16 - an abstention states no figure outside its declared reason codes.
     if abstained:
-        stated = abstained_figures(text, envelope.get("question_figures"))
+        stated = abstained_figures(text, declared_codes(envelope))
         assert not stated, f"E16: abstention states figure(s) {stated}"
 
     # E17 - every figure in a served SQL answer is one the envelope declares.

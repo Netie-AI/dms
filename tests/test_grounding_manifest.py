@@ -45,7 +45,7 @@ class RecordingCortex:
     def ask(self, req: Any) -> AskResponse:
         self.asks.append(req)
         return AskResponse(
-            answer="4 rows across 3 SKUs.",
+            answer="SKU-00397 sold 12 units.",
             abstained=False,
             badge="certified",
             sql_used=f"SELECT * FROM {UPLOAD}",

@@ -402,6 +402,8 @@ def _scale_revenue(factor: float, *, space_id: str | None) -> dict[str, Any]:
                 "unit": "MYR",
                 "label": f"Revenue ÷ {factor:g}",
             },
+            # dms#590: the divisor the sentence states, declared (E17).
+            {"id": "v_factor", "value": factor, "label": "operand"},
         ],
         badge="L2_VALIDATED",
         sql_used=sql,
@@ -469,7 +471,12 @@ def _top_skus(
                 "value": round(float(top["revenue_myr"]), 2),
                 "unit": "MYR",
                 "label": f"{top['sku']} revenue",
-            }
+            },
+            # dms#590: the rank positions the sentence states, declared (E17).
+            *(
+                {"id": f"v_rank_{pos}", "value": pos, "label": "operand"}
+                for pos in sorted({rank_start, rank_start + len(rows) - 1})
+            ),
         ],
         badge="L2_VALIDATED",
         sql_used=" ".join(sql.split()),

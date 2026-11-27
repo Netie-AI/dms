@@ -128,9 +128,46 @@ def test_gap2_an_abstention_that_states_an_integer_fails() -> None:
         assert_envelope_valid(env)
 
 
-def test_gap2_an_abstention_may_echo_a_figure_from_the_question() -> None:
-    env = _abstain(question="What was shipment cost in 2024?")
-    env["text"] = "You asked about 2024, but the query is not filtered to that year."
+def test_gap2_an_abstention_may_quote_the_reason_code_it_declares() -> None:
+    """Digits inside the declared ``GEN-01: <code>`` are part of the code.
+
+    The question is not read (rule 15), so a figure echoed from it, outside
+    the code, still fails.
+    """
+    env = _abstain()
+    env["assumptions"] = ["GEN-01: unhonored_qualifier:rank_window=4-8"]
+    env["text"] = (
+        "I cannot certify an ontology-grounded query for that question "
+        "(gap: unhonored_qualifier:rank_window=4-8), so I am not executing one."
+    )
+    assert_envelope_valid(env)
+    env["text"] += " You asked for ranks 4 to 8."
+    with pytest.raises(AssertionError, match="E16"):
+        assert_envelope_valid(env)
+
+
+def test_gap2_a_numbered_list_ordinal_is_not_a_figure() -> None:
+    env = _abstain()
+    env["text"] = "Which reading should I answer?\n1. List sku values\n2. List location ids"
+    assert_envelope_valid(env)
+    env["text"] += "\n3. List the 12 largest"
+    with pytest.raises(AssertionError, match="E16"):
+        assert_envelope_valid(env)
+
+
+def test_gap2_the_builder_withholds_a_figure_stating_abstention() -> None:
+    """At runtime the builder demotes the text, so the gate never raises on the ask path."""
+    env = build_answer_envelope(
+        answer_id="ans_gate_e16",
+        text="Maybe 999.00.",
+        badge="ABSTAIN",
+        abstained=True,
+        rows=[],
+        sql_used=None,
+    )
+    assert env["abstained"] is True
+    assert "999" not in env["text"]
+    assert any("withheld (E16)" in a for a in env["assumptions"])
     assert_envelope_valid(env)
 
 
@@ -138,7 +175,8 @@ def test_gap2_an_abstention_may_echo_a_figure_from_the_question() -> None:
 
 
 def test_gap3_an_integer_not_in_values_or_rows_fails() -> None:
-    env = _served(text=found_rows_text(ROWS) + "\nThat is 42 more than last month.")
+    env = _served()
+    env["text"] = found_rows_text(ROWS) + "\nThat is 42 more than last month."
     with pytest.raises(AssertionError, match="E17"):
         assert_envelope_valid(env)
 
@@ -147,3 +185,49 @@ def test_gap3_figures_the_envelope_declares_pass() -> None:
     """Row cells, values, the row count and digits inside a row label are declared."""
     text = found_rows_text(ROWS) + "\n3 destinations; WH-02 is the highest at 1002.5."
     assert_envelope_valid(_served(text=text))
+
+
+def test_gap3_the_builder_withholds_an_uncited_figure() -> None:
+    env = build_answer_envelope(
+        answer_id="ans_gate_e17",
+        text="RM 1,000.50 across 412 outbound movements.",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        rows=copy.deepcopy(ROWS[:1]),
+        sql_used=SQL,
+    )
+    assert env["abstained"] is True
+    assert env["badge"] == "ABSTAIN"
+    assert "412" not in env["text"]
+    assert env["values"] == [] and env["rows"] == []
+    assert any("withheld (E17)" in a for a in env["assumptions"])
+    assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize("label", ["row_count", "operand"])
+def test_gap3_a_declared_count_or_operand_passes(label: str) -> None:
+    rows = copy.deepcopy(ROWS)
+    env = build_answer_envelope(
+        answer_id="ans_gate_declared",
+        text="2 of 3 location_code values (WH-02, WH-01) carry 1002.5 and 1001.5.",
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        values=[{"id": "v_k", "value": 2, "label": label}],
+        rows=rows,
+        sql_used=SQL,
+    )
+    assert env["abstained"] is False, env["text"]
+    assert_envelope_valid(env)
+    env["values"] = [v for v in env["values"] if v.get("id") != "v_k"]
+    with pytest.raises(AssertionError, match="E17"):
+        assert_envelope_valid(env)
+
+
+def test_gap3_tokens_are_read_whole() -> None:
+    """1e-07 is one figure; a label 1 does not eat the 1 of 9.1; a date is a date."""
+    rows = [{"zone": "1", "share": 9.1}, {"zone": "2", "share": 1e-07}]
+    env = _served(text="Zone 1 holds 9.1 pct; zone 2 holds 1e-07 as of 2026-11-20.", rows=rows)
+    assert_envelope_valid(env)
+    env["text"] = "Zone 1 holds 9.1 pct across 7 shipments."
+    with pytest.raises(AssertionError, match="E17"):
+        assert_envelope_valid(env)

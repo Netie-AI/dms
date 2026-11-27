@@ -9,7 +9,7 @@ from dms_executor.envelope import assert_envelope_valid
 
 def test_ask_response_flattens_provenance():
     raw = {
-        "answer": "Total revenue was 100.",
+        "answer": "Total revenue was 10.0.",
         "audit_id": "aud_1",
         "route": "governed_metric",
         "provenance": {"badge": "governed_metric", "layer": "L1", "assumptions": "outbound only"},

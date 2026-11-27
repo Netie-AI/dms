@@ -460,6 +460,11 @@ def test_every_proven_figure_is_a_row_cell(
             cells = {float(v) for r in env["rows"] for v in r.values()
                      if isinstance(v, (int, float)) and not isinstance(v, bool)}
             for v in env["values"]:
+                if v["label"] == "row_count":
+                    # dms#590: the headline's k-of-n counts, declared; nothing else.
+                    assert v["id"] in {"v_k", "v_n"}
+                    assert int(v["value"]) == (p.k if v["id"] == "v_k" else p.n)
+                    continue
                 assert float(v["value"]) in cells
             assert ip.headline_numbers_backed(env["text"], env["rows"], {p.k, p.n}) == []
 

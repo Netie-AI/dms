@@ -76,7 +76,7 @@ class ManifestEnforcingCortex:
                 audit_id="aud-refused",
             )
         return AskResponse(
-            answer="RM 128,400.00 across 412 outbound movements.",
+            answer="RM 128,400.00 in outbound revenue.",
             abstained=False,
             badge="certified",
             sql_used=f"SELECT * FROM {needed}",

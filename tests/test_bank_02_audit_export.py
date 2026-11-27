@@ -182,7 +182,7 @@ class LedgerCortex:
         entry = self._append({"event": "ask.executed", "sql": sql})
         return AskResponse.model_validate(
             {
-                "answer": "RM 128,400.00 across 412 outbound movements.",
+                "answer": "RM 128,400.00 in outbound revenue.",
                 "abstained": False,
                 "badge": "certified",
                 "sql_used": sql,

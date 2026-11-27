@@ -1070,6 +1070,7 @@ def _l2_envelope(
     plan_origin: str = "",
     lead: str = "",
     served_route: str = "",
+    lead_values: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     out_rows = rows_from_submit_result(result)
     text = f"{lead}\n" if lead else ""
@@ -1081,6 +1082,7 @@ def _l2_envelope(
         text=text,
         badge="L2_VALIDATED",
         abstained=False,
+        values=[dict(v) for v in lead_values],
         rows=out_rows,
         sql_used=sql,
         chart=chart,
@@ -1163,6 +1165,7 @@ def _submit_validated(
     lead: str = "",
     served_route: str = "",
     grantable: set[str] | None = None,
+    lead_values: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     if not coverage_valid(coverage):
         return _abstain(
@@ -1308,6 +1311,7 @@ def _submit_validated(
         plan_origin=plan_origin,
         lead=lead,
         served_route=served_route,
+        lead_values=lead_values,
     )
 
 
@@ -1660,7 +1664,15 @@ def rank_window_ask(
         grantable=allowed,
         lead=lead,
         served_route=ROUTE_LADDER,
+        # dms#590: the rank positions the lead states, declared (E17).
+        lead_values=rank_window_operands(win.offset, win.limit),
     )
+
+
+def rank_window_operands(offset: int, limit: int) -> list[dict[str, Any]]:
+    """The rank positions a rank-window lead states: first, last, and 1..offset excluded."""
+    positions = sorted({offset + 1, offset + limit, 1, offset} - {0})
+    return [{"id": f"v_rank_{p}", "value": p, "label": "operand"} for p in positions]
 
 
 def _ungrounded_measure(

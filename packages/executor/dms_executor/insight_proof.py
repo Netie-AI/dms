@@ -344,6 +344,18 @@ def headline_numbers_backed(
     return unbacked
 
 
+def headline_counts(k: int, n: int) -> list[dict[str, Any]]:
+    """The two counts a headline states (``k of n values``), declared (dms#590).
+
+    Both are counts of result rows, so they are ``row_count`` values: E17 reads
+    them as declared and ONTOLOGY-AUDIT-01 does not read them as totals.
+    """
+    return [
+        {"id": "v_k", "value": int(k), "label": "row_count"},
+        {"id": "v_n", "value": int(n), "label": "row_count"},
+    ]
+
+
 # --------------------------------------------------------------------------
 # proof shape
 # --------------------------------------------------------------------------
@@ -1904,6 +1916,7 @@ def _emit(
     env = build_answer_envelope(
         answer_id=insight_id,
         text=headline,
+        values=headline_counts(k, n),
         badge="L1_GOVERNED_METRIC" if ctx.source == "approved_store" else "L2_VALIDATED",
         sql_used=sql,
         rows=[dict(r) for r in rows],
