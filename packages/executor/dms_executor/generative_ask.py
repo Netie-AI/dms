@@ -64,6 +64,7 @@ from cortex_client.qualifiers import (
     rank_window_shape_reason,
     unhonored_qualifier_reason,
 )
+from dms_core.ask_stream import note_rungs, note_stage
 from dms_core.pii import mask_unknown_keys
 from sqlglot import exp
 
@@ -787,6 +788,22 @@ def validate_compiled_sql(
     file does not know stays a grant miss, and the contract ask is what binds
     a qualifier against the catalog.
     """
+    note_stage("validate_explain", "started")
+    try:
+        return _validate_compiled_sql(
+            sql, grantable=grantable, warehouse=warehouse, dialect=dialect
+        )
+    finally:
+        note_stage("validate_explain", "done")
+
+
+def _validate_compiled_sql(
+    sql: str,
+    *,
+    grantable: set[str],
+    warehouse: Path | None,
+    dialect: str | None = None,
+) -> str | None:
     with span("validate_explain"):
         if sql_has_reserved_as_of(sql):
             return RESERVED_PARAM_AS_OF
@@ -978,6 +995,9 @@ def _abstain(
         ask_mode="live",
         route="generated",
     )
+    note_stage(stage, "done")
+    if isinstance(env.get("reconfirm"), dict):
+        note_stage("reconfirm", "done")
     assert_envelope_valid(env)
     # build_abstain already wrote abstain:<stage>. Successes stamp their own.
     return with_plan_source(env, plan_source)
@@ -1732,6 +1752,7 @@ def _run_extract_loop(
                     "why": str(reason),
                     "closest_question": "",
                 }
+                note_stage("reconfirm", "done")
         prov = held.get("provenance")
         if isinstance(prov, dict) and isinstance(env, dict):
             env["ontology_provenance"] = dict(prov)
@@ -1804,26 +1825,30 @@ def _run_extract_loop(
     if first.get("abstained") or not first.get("rows"):
         return first
     # The second reading can change the served SQL. It stays on the path.
-    with span("second_reading"):
-        return _second_reading(
-        first,
-        question=question,
-        ctx=ctx,
-        compute=compute,
-        warehouse=warehouse,
-        dialect=dialect,
-        model_sql=model_sql,
-        check=check,
-        abstain=abstain,
-        empty_answer=empty_answer,
-        publish=submit_sql,
-        attempts=attempts,
-        space_id=space_id,
-        session_id=session_id,
-        grantable=grantable,
-        budget=budget,
-        schema_ladder=schema_ladder,
-    )
+    note_stage("second_reading", "started")
+    try:
+        with span("second_reading"):
+            return _second_reading(
+                first,
+                question=question,
+                ctx=ctx,
+                compute=compute,
+                warehouse=warehouse,
+                dialect=dialect,
+                model_sql=model_sql,
+                check=check,
+                abstain=abstain,
+                empty_answer=empty_answer,
+                publish=submit_sql,
+                attempts=attempts,
+                space_id=space_id,
+                session_id=session_id,
+                grantable=grantable,
+                budget=budget,
+                schema_ladder=schema_ladder,
+            )
+    finally:
+        note_stage("second_reading", "done")
 
 
 def _vote_rows(
@@ -1835,6 +1860,27 @@ def _vote_rows(
     session_id: str | None,
 ) -> dict[str, Any]:
     """Rows for the comparison. The customer submit happens after agreement."""
+    note_stage("sql_vote", "started")
+    try:
+        return _vote_rows_body(
+            sql,
+            warehouse,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+    finally:
+        note_stage("sql_vote", "done")
+
+
+def _vote_rows_body(
+    sql: str,
+    warehouse: Path | None,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
     if warehouse is None or not Path(warehouse).is_file():
         return _abstain(
             question,
@@ -1937,6 +1983,7 @@ def _second_reading(
         budget=budget,
         schema_ladder=schema_ladder,
     )
+    note_rungs(second_attempts)
     second_sql = str(second.get("sql_used") or "")
     raw_first = first.get("rows")
     raw_second = second.get("rows")
@@ -1990,6 +2037,7 @@ def _second_reading(
     parsed = reconfirm_from_payload(rec if isinstance(rec, dict) else None)
     if parsed:
         why, closest = parsed
+    note_stage("reconfirm", "done")
     return reconfirm_envelope(
         question=question,
         why=why,
@@ -2228,13 +2276,16 @@ def _maybe_generative_ask_impl(
     # Short retrieved context only -- not the full ontology dump.
     # Schema work runs only when DMS_SCHEMA_CONTEXT is on. Off: no
     # introspection, no sampling, no prompt, no value index.
+    note_stage("retrieve_context", "started")
     with span("retrieve_context"):
         ctx = retrieve_short_context(
             q, warehouse=lake, grantable=allowed, ontology=onto
         )
+    note_stage("retrieve_context", "done")
     envelope_prompt = ""
     index_stamp = ""
     if schema_context_enabled():
+        note_stage("schema_context", "started")
         with span("schema_context"):
             ctx = prepare_generate_context(
             ctx,
@@ -2253,6 +2304,7 @@ def _maybe_generative_ask_impl(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+        note_stage("schema_context", "done")
     # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
     # generated SQL must follow. Measured just above, against the lake as it is.
     space_onto = (declared or onto) if not demo_ontology_allowed else None
@@ -2289,6 +2341,7 @@ def _maybe_generative_ask_impl(
     grounded: list[GroundedDef] = []
     if ground_defs_enabled():
         defs_onto = onto if demo_ontology_allowed else space_onto
+        note_stage("ground_defs", "started")
         with span("ground_defs"):
             text, grounded = build_grounding(
             q,
@@ -2297,6 +2350,7 @@ def _maybe_generative_ask_impl(
             examples=example_rows,
             grantable=allowed,
         )
+        note_stage("ground_defs", "done")
         if text:
             insights_ctx = dict(insights_ctx)
             insights_ctx["governed_definitions"] = text
@@ -2331,14 +2385,18 @@ def _maybe_generative_ask_impl(
 
     def _timed_compute(ctx: dict[str, Any]) -> dict[str, Any] | None:
         before = recorded_model_calls()
-        with span("insights_generate"):
-            try:
-                if _compute_fn is None:
-                    return None
-                return _compute_fn(ctx)
-            finally:
-                if recorded_model_calls() == before:
-                    note_prompt_ctx(ctx)
+        note_stage("insights_generate", "started")
+        try:
+            with span("insights_generate"):
+                try:
+                    if _compute_fn is None:
+                        return None
+                    return _compute_fn(ctx)
+                finally:
+                    if recorded_model_calls() == before:
+                        note_prompt_ctx(ctx)
+        finally:
+            note_stage("insights_generate", "done")
 
     compute = _timed_compute
     vote_budget: AskCallBudget | None = None
@@ -2403,6 +2461,7 @@ def _maybe_generative_ask_impl(
         stamped = with_served_attribution(env, setup_src)
         if not isinstance(stamped, dict):
             return stamped
+        note_rungs(loop_attempts)
         if loop_attempts:
             stamped["loop"] = list(loop_attempts)
         apply_sql_credit(stamped, setup_src, loop_attempts, dialect=dialect)

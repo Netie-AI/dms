@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { describeApiError, postAsk } from "@/lib/api";
 import type { AnswerEnvelope } from "@/lib/types";
+import { AskStages, useAskStages } from "./AskStages";
 
 /** Same sentence as ``dms_core.studio_chat_turn.NOT_PROVIDED``. */
 export const NOT_PROVIDED = "not provided by Cortex";
@@ -76,8 +77,12 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
   const [turn, setTurn] = useState<StudioTurn | null>(null);
   const [plannedQuestion, setPlannedQuestion] = useState("");
   const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [result, setResult] = useState<AnswerEnvelope | null>(null);
+  const [askId, setAskId] = useState<string | null>(null);
+  const stages = useAskStages(running ? askId : null);
+  const askAbort = useRef<AbortController | null>(null);
 
   useEffect(() => {
     setDraft("");
@@ -87,6 +92,8 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
     setPlannedQuestion("");
     setErr(null);
     setResult(null);
+    setAskId(null);
+    setRunning(false);
   }, [spaceId]);
 
   const dirty = turn !== null && edit.trim() !== plannedQuestion.trim();
@@ -124,14 +131,29 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
         setErr("Confirm did not authorize a run.");
         return;
       }
-      const env = await postAsk({
-        question: gate.question,
-        space_id: spaceId,
-      });
+      const id = crypto.randomUUID();
+      const ctrl = new AbortController();
+      askAbort.current = ctrl;
+      setAskId(id);
+      setRunning(true);
+      const env = await postAsk(
+        {
+          question: gate.question,
+          space_id: spaceId,
+        },
+        ctrl.signal,
+        id,
+      );
       setResult(env);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "confirm failed");
+      if (askAbort.current?.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+        setErr("Cancelled.");
+      } else {
+        setErr(e instanceof Error ? e.message : "confirm failed");
+      }
     } finally {
+      askAbort.current = null;
+      setRunning(false);
       setBusy(false);
     }
   };
@@ -284,6 +306,9 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
           </div>
         </div>
       )}
+      {running || stages.length > 0 ? (
+        <AskStages stages={stages} onCancel={running ? () => askAbort.current?.abort() : undefined} />
+      ) : null}
       {result && (
         <div className="mt-4" data-testid="studio-chat-result">
           <p className="text-sm text-[var(--color-ink)]">{result.text}</p>

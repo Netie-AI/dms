@@ -5,6 +5,7 @@ import { copyText } from "@/lib/copilotPrompts";
 import { postAskConfirm } from "@/lib/api";
 import { splitInsights } from "@/lib/splitInsights";
 import { isAbstain, namedAbstainReason, type AbstainFields } from "./abstainReason";
+import { AskStages, type AskStageEvent } from "./AskStages";
 import { chartFromRows } from "./chartShape";
 import { StampsPanel } from "./StampsPanel";
 
@@ -43,6 +44,8 @@ const PAGE_SIZE = 10;
 
 type Props = {
   envelope: StudioAskEnvelope | null;
+  stages?: AskStageEvent[];
+  onCancel?: () => void;
 };
 
 /**
@@ -50,7 +53,7 @@ type Props = {
  * Chart is SimpleChart (apps/ui/src/components/SimpleChart.tsx), the SVG
  * chart already in the UI. No chart package is added.
  */
-export function ResultView({ envelope }: Props) {
+export function ResultView({ envelope, stages, onCancel }: Props) {
   const [page, setPage] = useState(0);
   const [copied, setCopied] = useState(false);
   const [follow, setFollow] = useState<StudioAskEnvelope | null>(null);
@@ -60,7 +63,15 @@ export function ResultView({ envelope }: Props) {
     setFollow(null);
     setConfirmError(null);
   }, [envelope]);
-  if (!envelope) return null;
+  const stageList = stages ?? [];
+  if (!envelope) {
+    if (stageList.length === 0) return null;
+    return (
+      <section data-testid="studio-result" className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4">
+        <AskStages stages={stageList} onCancel={onCancel} />
+      </section>
+    );
+  }
   const shown = follow ?? envelope;
 
   const offer = shown.reconfirm;
@@ -101,6 +112,7 @@ export function ResultView({ envelope }: Props) {
       <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
         Ask result
       </p>
+      <AskStages stages={stageList} onCancel={onCancel} />
 
       {reconfirm && offer ? (
         <div

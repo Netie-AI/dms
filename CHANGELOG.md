@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - STREAM-STAGES-01: live ask stages over SSE
+
+- **Flag.** `DMS_ASK_STREAM` defaults to off. Off, `GET /v1/studio/ask/{id}/events` is not mounted and `POST /v1/chat/ask` is unchanged. On, the ladder stages already recorded (retrieve, plan, generate, validate, retry rung N, vote, reconfirm) are pushed as `{stage, t_ms, status}`. Studio shows elapsed seconds and Cancel. Cancel aborts the ask request, which is the existing client-disconnect path.
+- **Not a word rule.** The stage token is the span or attempt field the ladder already stored (`retrieve_context`, `schema_context`, `insights_generate`, `validate_explain`, `sql_vote`, `second_reading`, `reconfirm_build`, `rung1`..`rung9`). Question text is not read. SQL, row values, and relation names are not fields on the event.
+- **Not PASS.** Armed `grade52` and pack H were not run.
+
 ## 2026-11-27 - AO-JSON-01: ontology compile can ask for a JSON schema
 
 - **Flag.** `DMS_AO_RESPONSE_FORMAT` defaults to off. Only the digit `1` turns it on. Off, the OpenVault ontology body is still `role`, `messages`, and the pydantic class name, and a string reply is `json.loads` only. On, the body also sends `response_format` (`type` `json_schema`, name and schema from that class, no `strict`, no model id). A string that is not JSON gets one retry: drop one leading fence line and one trailing fence, then `json.loads` again.

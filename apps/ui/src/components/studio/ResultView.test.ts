@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ResultView, type StudioAskEnvelope } from "./ResultView";
+import type { AskStageEvent } from "./AskStages";
 import { STAMP_SLOTS } from "./stamps";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -153,6 +154,35 @@ describe("Studio result view", () => {
     expect(markup).toContain(">No<");
     expect(markup).not.toContain('data-testid="studio-abstain"');
     expect(markup).not.toContain('data-testid="studio-rows"');
+  });
+
+  it("shows ask stages and cancel while the envelope is still empty", () => {
+    const stages: AskStageEvent[] = [
+      { stage: "retrieve", t_ms: 1500, status: "done" },
+      { stage: "generate", t_ms: 4000, status: "started" },
+    ];
+    const markup = renderToStaticMarkup(
+      createElement(ResultView, {
+        envelope: null,
+        stages,
+        onCancel: () => undefined,
+      }),
+    );
+    expect(markup).toContain('data-testid="ask-stages"');
+    expect(markup).toContain("Retrieve");
+    expect(markup).toContain("Generate");
+    expect(markup).toContain(">1s<");
+    expect(markup).toContain('data-testid="ask-stages-cancel"');
+    expect(markup).not.toContain('data-testid="studio-sql"');
+  });
+
+  it("an empty stage list leaves the answered view unchanged", () => {
+    const plain = html(answered());
+    const withEmpty = renderToStaticMarkup(
+      createElement(ResultView, { envelope: answered(), stages: [] }),
+    );
+    expect(withEmpty).toBe(plain);
+    expect(withEmpty).not.toContain("ask-stages");
   });
 
   it("Chat answer card mounts ResultView", () => {
