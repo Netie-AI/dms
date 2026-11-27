@@ -10,7 +10,8 @@ include / exclude / unsure on every envelope; missing or COMPLETE is illegal.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+import unicodedata
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -1246,14 +1247,24 @@ _ISO_DATE = re.compile(
 _ORDINAL = re.compile(r"^(\s*)(\d+)[.)] +")
 
 
+def _blank_real_date(hit: re.Match[str]) -> str:
+    raw = hit.group(0)[:10]
+    try:
+        date.fromisoformat(raw)
+    except ValueError:
+        return hit.group(0)
+    return " "
+
+
 def _without_list_markers(text: str) -> str:
     """Drop a numbered list's line-start ordinals, and calendar dates.
 
     An ordinal is a marker only when the numbered lines count 1, 2, 3 ... in
     order; otherwise none is dropped, so ``1610511. was the total`` stays a
-    figure. Bullets (``-``, ``*``) carry no digits and are left alone.
+    figure. Bullets (``-``, ``*``) carry no digits and are left alone. A date
+    is blanked only when it is a real calendar date (not 2026-02-31).
     """
-    text = _ISO_DATE.sub(" ", text)
+    text = _ISO_DATE.sub(_blank_real_date, text)
     lines = text.split("\n")
     numbered = [(i, _ORDINAL.match(line)) for i, line in enumerate(lines)]
     hits = [(i, m) for i, m in numbered if m]
@@ -1312,6 +1323,48 @@ def envelope_gate_clause(exc: BaseException) -> str | None:
     return hit.group(1) if hit else None
 
 
+def _readable(text: str) -> str:
+    """NFKC, so superscript and full-width digits read as digits (¹⁶¹⁰ is 1610)."""
+    return unicodedata.normalize("NFKC", text or "")
+
+
+#: A schema identifier: starts with a letter and joins parts with ``_``
+#: (orders_2024, enrollments_school_id_fkey). Its digits name a table or
+#: link, they are not a figure.
+_SNAKE_IDENT = re.compile(
+    r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+(?![A-Za-z0-9_])"
+)
+
+
+def _declared_identifiers(*sources: Any) -> set[str]:
+    """Snake-case identifiers the envelope itself names (assumptions, SQL, grants)."""
+    found: set[str] = set()
+    for source in sources:
+        items = source if isinstance(source, (list, tuple, set)) else [source]
+        for item in items:
+            found.update(_SNAKE_IDENT.findall(str(item or "")))
+    return found
+
+
+def _without_identifiers(text: str, idents: set[str]) -> str:
+    if not idents:
+        return text
+    return _SNAKE_IDENT.sub(lambda m: " " if m.group(0) in idents else m.group(0), text)
+
+
+def sql_literal_figures(sql: str | None) -> list[float]:
+    """The numeric literals the executed query states (WHERE yr = 2025, LIMIT 10)."""
+    if not _executed_query(sql):
+        return []
+    body = _SQL_COMMENT.sub(" ", str(sql))
+    out: list[float] = []
+    for hit in _FIGURE.finditer(body):
+        value = _literal_figure(hit.group(0))
+        if value is not None:
+            out.append(value)
+    return out
+
+
 def declared_codes(envelope: dict[str, Any]) -> list[str]:
     """E16: the declared reason codes (``abstain_reason``, ``GEN-01: <code>``) in the fixed set."""
     raw: list[str] = []
@@ -1345,7 +1398,9 @@ def abstain_markers(envelope: dict[str, Any]) -> list[str]:
     return out
 
 
-def abstained_figures(text: str, codes: list[str] | None) -> list[str]:
+def abstained_figures(
+    text: str, codes: list[str] | None, idents: set[str] | None = None
+) -> list[str]:
     """E16: figures an abstention states outside its own declared reason codes.
 
     A code is the product's structural reason (``insights_call_cap:2``,
@@ -1353,9 +1408,10 @@ def abstained_figures(text: str, codes: list[str] | None) -> list[str]:
     declares are part of that code. A numbered list's ordinal is a marker.
     Every other figure in abstained text fails.
     """
-    stripped = _without_list_markers(text or "")
+    stripped = _without_list_markers(_readable(text))
     for code in sorted({c for c in codes or [] if c}, key=len, reverse=True):
         stripped = stripped.replace(code, " ")
+    stripped = _without_identifiers(stripped, idents or set())
     found = [
         hit.group(0)
         for hit in _FIGURE.finditer(stripped)
@@ -1365,7 +1421,10 @@ def abstained_figures(text: str, codes: list[str] | None) -> list[str]:
 
 
 def uncited_figures(
-    text: str, values: list[dict[str, Any]] | None, rows: list[dict[str, Any]] | None
+    text: str,
+    values: list[dict[str, Any]] | None,
+    rows: list[dict[str, Any]] | None,
+    sql: str | None = None,
 ) -> list[str]:
     """E17: figures in a served SQL answer the envelope does not declare.
 
@@ -1390,12 +1449,18 @@ def uncited_figures(
     cut = _SHOWING.search(text or "")
     if cut:
         allowed.append(float(cut.group(1)))
-    stripped = _without_labels(_without_list_markers(text or ""), labels)
+    allowed.extend(sql_literal_figures(sql))
+    stripped = _without_labels(_without_list_markers(_readable(text)), labels)
+    stripped = _without_identifiers(stripped, _declared_identifiers(sql, list(labels)))
     out: list[str] = []
     for hit in _FIGURE.finditer(stripped):
-        value = _literal_figure(hit.group(0))
-        if value is not None and not any(_close(value, a) for a in allowed):
-            out.append(hit.group(0))
+        token = hit.group(0)
+        value = _literal_figure(token)
+        # A zero-led group (the 003 of "3 003 003") is never matched by value.
+        bare = token.lstrip("+-")
+        zero_led = len(bare) > 1 and bare[0] == "0" and bare[1] != "."
+        if value is not None and (zero_led or not any(_close(value, a) for a in allowed)):
+            out.append(token)
     for token, glued in _glued_figures(stripped):
         if glued is None or not any(_close(glued, a) for a in allowed):
             out.append(token)
@@ -2235,7 +2300,7 @@ def build_answer_envelope(
     # A figure no query returned is withheld here, so the gate never raises on
     # the ask path.
     if not abstained and _executed_query(sql_used):
-        stray = uncited_figures(text or "", values_out, rows_out)
+        stray = uncited_figures(text or "", values_out, rows_out, sql_used)
         if stray:
             badge_out = "ABSTAIN"
             abstained = True
@@ -2247,7 +2312,8 @@ def build_answer_envelope(
     # E16 - an abstention states no figure outside the reason code it declares.
     if abstained:
         codes = declared_codes({"assumptions": assumptions_list})
-        if abstained_figures(text or "", codes):
+        idents = _declared_identifiers(assumptions_list, grounded_tables or [], sql_used)
+        if abstained_figures(text or "", codes, idents):
             text = _TEXT_E16_WITHHELD
             assumptions_list.append("abstention stated a figure: withheld (E16)")
 
@@ -2525,7 +2591,15 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
 
     # E16 - an abstention states no figure outside its declared reason codes.
     if abstained:
-        stated = abstained_figures(text, declared_codes(envelope))
+        stated = abstained_figures(
+            text,
+            declared_codes(envelope),
+            _declared_identifiers(
+                envelope.get("assumptions") or [],
+                envelope.get("grounded_tables") or [],
+                envelope.get("sql_used"),
+            ),
+        )
         assert not stated, f"E16: abstention states figure(s) {stated}"
 
     # E17 - every figure in a served SQL answer is one the envelope declares.
@@ -2535,6 +2609,7 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             text,
             values if isinstance(values, list) else [],
             env_rows_e17 if isinstance(env_rows_e17, list) else [],
+            sql_used if isinstance(sql_used, str) else None,
         )
         assert not stray, f"E17: figure(s) {stray} in text are not in values[] or rows"
 

@@ -326,3 +326,70 @@ def test_round1_a_cortex_label_cannot_declare_a_figure(label: str) -> None:
     assert env["abstained"] is True and env["badge"] == "ABSTAIN"
     assert "9,999,999" not in env["text"]
     assert_envelope_valid(env)
+
+
+# --- verifier round 2 (Opus): availability, and the residual smuggles -------------
+
+
+def test_round2_a_named_gap_keeps_a_schema_name_with_digits() -> None:
+    """orders_2024 is a table the envelope names in its GEN-01 code, not a figure."""
+    from dms_executor.gen_path_refuse import customer_abstain_text
+
+    gap = (
+        "fanout_refused: reaching 'customer' means joining through 'orders_2024', "
+        "whose parent side is not unique (up to 3x)."
+    )
+    env = build_abstain(
+        reason=gap,
+        question="revenue by customer",
+        answer_id="ans_gate_gap",
+        text=customer_abstain_text(gap),
+        rows=[],
+        sql_used=None,
+        assumptions=[f"GEN-01: {gap}"],
+        log_ticket=False,
+        stage="gate_test",
+    )
+    assert "orders_2024" in env["text"], env["text"]
+    assert "3x" not in env["text"]
+    assert_envelope_valid(env)
+
+
+def test_round2_a_snake_name_the_envelope_does_not_declare_is_still_a_figure() -> None:
+    env = _abstain()
+    env["text"] = "I can't answer that; total_1610511 was not checked."
+    with pytest.raises(AssertionError, match="E16"):
+        assert_envelope_valid(env)
+
+
+def test_round2_a_figure_the_executed_query_states_is_declared() -> None:
+    sql = SQL.replace("GROUP BY 1", "WHERE yr = 2025 GROUP BY 1 LIMIT 10")
+    rows = copy.deepcopy(ROWS)
+    env = build_answer_envelope(
+        answer_id="ans_gate_sql_lit",
+        text="Top 10 destinations in 2025:\n" + found_rows_text(rows),
+        badge="L1_GOVERNED_METRIC",
+        abstained=False,
+        rows=rows,
+        sql_used=sql,
+    )
+    assert env["abstained"] is False, env["text"]
+    assert_envelope_valid(env)
+    env["text"] += "\nThat is 42 more than last month."
+    with pytest.raises(AssertionError, match="E17"):
+        assert_envelope_valid(env)
+
+
+@pytest.mark.parametrize("text", ["Revenue was ¹⁶¹⁰.", "As of 2026-02-31."])
+def test_round2_superscript_digits_and_unreal_dates_are_figures(text: str) -> None:
+    env = _abstain()
+    env["text"] = text
+    with pytest.raises(AssertionError, match="E16"):
+        assert_envelope_valid(env)
+
+
+def test_round2_a_zero_led_group_never_matches_a_declared_count() -> None:
+    env = _served()
+    env["text"] = found_rows_text(ROWS) + "\nTotal 3 003 003."
+    with pytest.raises(AssertionError, match="E17"):
+        assert_envelope_valid(env)
