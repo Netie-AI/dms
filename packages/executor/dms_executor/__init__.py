@@ -60,6 +60,7 @@ from dms_executor.db_connector import (
 )
 from dms_executor.demo_ask import (
     answer_demo_question,
+    customer_scope_askback,
     normalize_ask_question,
     with_grounded_scope,
 )
@@ -560,9 +561,42 @@ class Executor:
         assert_envelope_valid(env)
         return env
 
-    def demo_ask(self, question: str, *, space_id: str | None = None) -> dict[str, Any]:
-        ensure_demo_warehouse(self._warehouse)
-        return answer_demo_question(question, space_id=space_id)
+    def demo_ask(
+        self,
+        question: str,
+        *,
+        space_id: str | None = None,
+        allow_live: bool = True,
+    ) -> dict[str, Any] | None:
+        """Demo router for a demo Space. A customer Space does not use it.
+
+        ``allow_live`` is false on the demo-fallback path, so a failed live
+        ask cannot be replaced by another live call or by demo rows. None
+        means the router did not decide (``DMS_RULES_OFF``, or a customer
+        Space whose grant can still be asked on the live path).
+        """
+        if is_demo_space(space_id):
+            ensure_demo_warehouse(self._warehouse)
+            return answer_demo_question(question, space_id=space_id)
+        if not allow_live:
+            return None
+        try:
+            granted = self.grantable_tables(space_id=space_id)
+        except Exception:  # noqa: BLE001 -- no demo rows when the grant cannot be read
+            return customer_scope_askback(
+                question,
+                space_id=space_id,
+                missing="its grant could not be read",
+            )
+        if not granted:
+            return customer_scope_askback(
+                question,
+                space_id=space_id,
+                missing="it has no granted table",
+            )
+        if self._cortex is None:
+            return None
+        return self.live_ask(question, space_id=space_id)
 
     def mint_manifest(self, session: SessionContext | SessionAcl) -> Any:
         if isinstance(session, SessionAcl):
@@ -1196,7 +1230,7 @@ class Executor:
             from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
 
             held_pack = False
-            if ai_first_enabled():
+            if ai_first_enabled() and is_demo_space(space_id):
                 phrase = match_pack_phrase(question, tables=tables)
                 if phrase is not None:
                     hit = lookup_pack_metric(
@@ -1245,7 +1279,7 @@ class Executor:
                     self._store_turn(session_id, space_id, pack_env)
                     return pack_env
 
-        if not armed_product:
+        if not armed_product and is_demo_space(space_id):
             refuse_env = maybe_uncertified_refuse_ask(
                 question, space_id=space_id, session_id=session_id
             )
@@ -1256,7 +1290,7 @@ class Executor:
         if ladder == "exact":
             # Curated l0 phrase missing from PACK_METRICS is step 1, not a
             # later-lane abstain. Other exact misses stay a plain path miss.
-            if is_curated_l0_without_pack_metric(question):
+            if is_demo_space(space_id) and is_curated_l0_without_pack_metric(question):
                 env = curated_pack_metric_miss(
                     question, space_id=space_id, session_id=session_id
                 )
@@ -1286,8 +1320,9 @@ class Executor:
                 question,
                 warehouse=ensure_demo_warehouse(self._warehouse),
                 tables=readable,
+                space_id=space_id,
             )
-            if cascade_enabled()
+            if cascade_enabled() and is_demo_space(space_id)
             else CascadeOutcome(engaged=False)
         )
         if cascade.blocked_at is not None:
@@ -1345,7 +1380,7 @@ class Executor:
                             session_id=session_id,
                             warehouse=self._warehouse,
                         )
-                        if bronze_sheet_lane_enabled()
+                        if bronze_sheet_lane_enabled() and is_demo_space(space_id)
                         else None
                     )
                 else:
@@ -1417,7 +1452,11 @@ class Executor:
                     ),
                     bind_on_miss=False,
                     ontology=data_onto if data_onto is not None else space_onto,
-                    demo_ontology_allowed=data_onto is None and space_onto is None,
+                    demo_ontology_allowed=(
+                        is_demo_space(space_id)
+                        and data_onto is None
+                        and space_onto is None
+                    ),
                     # Extract and EXPLAIN run on the DuckDB serving copy
                     # (connect_serving), not on the source connector in self.dialect.
                     dialect=SERVING_DIALECT,
@@ -1441,6 +1480,7 @@ class Executor:
                 if (
                     gen_env.get("abstained")
                     and not insights_budget_stop(gen_env)
+                    and is_demo_space(space_id)
                     and is_curated_l0_without_pack_metric(asked)
                 ):
                     kept_loop = gen_env.get("loop")
@@ -1580,7 +1620,11 @@ class Executor:
             )
             if join_why:
                 env = path_miss_envelope(
-                    question, join_why, space_id=space_id, session_id=session_id
+                    question,
+                    join_why,
+                    space_id=space_id,
+                    session_id=session_id,
+                    sql=sql_used,
                 )
                 self._store_turn(session_id, space_id, env)
                 return env

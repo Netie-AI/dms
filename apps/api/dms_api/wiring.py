@@ -1366,3 +1366,427 @@ def pin_owner_space(ask: Any, *, token: str | None = None, asset_id: str | None 
     if token is not None:
         return dms_executor.token_space(token)
     return dms_executor.pin_space(ask, asset_id or "")
+
+
+def _connect_v2():
+    return dms_executor.connectors
+
+
+def _note_probe(
+    code: str,
+    *,
+    actor: str,
+    token_id: str,
+    database_url: str | None,
+    tenant_id: str,
+) -> None:
+    from dms_core.control_plane.connect_store import ConnectStore, note_probe
+
+    note_probe(code, actor=actor, token_id=token_id)
+    if not database_url:
+        return
+    try:
+        ConnectStore(database_url, tenant_id).note_durable(
+            code, actor=actor, token_id=token_id, source_id=None
+        )
+    except Exception:
+        return
+
+
+def _group_tables(names: list[str], granted: set[str]) -> list[dict[str, Any]]:
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    for qualified in names:
+        schema, dot, table = qualified.partition(".")
+        if not dot:
+            schema, table = "main", qualified
+        buckets.setdefault(schema, []).append(
+            {"name": table, "granted": qualified in granted}
+        )
+    return [{"name": schema, "tables": tables} for schema, tables in buckets.items()]
+
+
+def _rehydrate(rows: list[dict[str, Any]], *, actor: str, token_id: str) -> None:
+    from dms_core.control_plane.connect_grants import grant_tables as grant_book
+    from dms_core.control_plane.connect_grants import register_source, source_for
+
+    for row in rows:
+        if source_for(row["source_id"]) is not None:
+            continue
+        try:
+            register_source(
+                source_id=row["source_id"],
+                space_id=row["space_id"],
+                connector_id=row["connector_id"],
+                exposed=list(row["exposed_tables"]),
+                actor=actor,
+                token_id=token_id,
+            )
+            if row["granted_tables"]:
+                grant_book(
+                    source_id=row["source_id"],
+                    tables=list(row["granted_tables"]),
+                    actor=actor,
+                    token_id=token_id,
+                )
+        except (KeyError, ValueError):
+            continue
+
+
+def connect_v2_probe(
+    ask: Any,
+    *,
+    kind: str,
+    host: str,
+    port: int,
+    database: str,
+    cred_ref: str,
+    tls: bool,
+    actor: str,
+    token_id: str,
+    database_url: str | None,
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Probe a source. The returned dict has no credential and no row values."""
+    secret = _resolve_connect_secret(ask, cred_ref)
+    user = ""
+    password = ""
+    code = "network"
+    try:
+        user, password = _connect_v2().parse_login(secret)
+        probed = _connect_v2().probe_source(
+            kind=kind,
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            tls=tls,
+        )
+    except _connect_v2().ConnectProbeError as exc:
+        code = exc.code
+        _note_probe(
+            code, actor=actor, token_id=token_id, database_url=database_url, tenant_id=tenant_id
+        )
+        return {"ok": False, "error": code, "latency_ms": 0}
+    except Exception:
+        _note_probe(
+            code, actor=actor, token_id=token_id, database_url=database_url, tenant_id=tenant_id
+        )
+        return {"ok": False, "error": code, "latency_ms": 0}
+    finally:
+        secret = ""
+        user = ""
+        password = ""
+    _note_probe(
+        "probe_ok", actor=actor, token_id=token_id, database_url=database_url, tenant_id=tenant_id
+    )
+    return {
+        "ok": True,
+        "latency_ms": int(probed.get("latency_ms") or 0),
+        "server_version": str(probed.get("server_version") or ""),
+        "tables_visible": int(probed.get("tables_visible") or 0),
+    }
+
+
+def connect_v2_register(
+    *,
+    store: Any,
+    ask: Any,
+    database_url: str | None,
+    tenant_id: str,
+    connector_id: str,
+    space_name: str,
+    credential_ref: str,
+    kind: str,
+    host: str,
+    port: int,
+    database: str,
+    mode: str,
+    grant_tables: list[str] | None,
+    tls: bool,
+    actor: str,
+    token_id: str,
+) -> dict[str, Any]:
+    """Introspect, persist, grant every listed table (or the steward's subset)."""
+    from uuid import uuid4
+
+    from dms_core.control_plane.connect_grants import clean_tables, register_source
+    from dms_core.control_plane.connect_grants import grant_tables as grant_book
+    from dms_core.control_plane.connect_store import ConnectStore, ConnectStoreError
+
+    if not database_url:
+        raise ConnectStoreError("connect_store_unavailable")
+    secret = _resolve_connect_secret(ask, credential_ref)
+    user = ""
+    password = ""
+    try:
+        user, password = _connect_v2().parse_login(secret)
+        probed = _connect_v2().probe_source(
+            kind=kind,
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            tls=tls,
+        )
+    except _connect_v2().ConnectProbeError as exc:
+        raise ValueError(exc.code) from None
+    finally:
+        secret = ""
+        user = ""
+        password = ""
+    listed = clean_tables(list(probed.get("tables") or []))
+    if grant_tables is None:
+        chosen = listed
+    else:
+        chosen = clean_tables(grant_tables)
+        if any(table not in listed for table in chosen):
+            raise ValueError("table_not_exposed")
+    record = store.create(space_name.strip())
+    source_id = str(uuid4())
+    saved = ConnectStore(database_url, tenant_id).save_source(
+        source_id=source_id,
+        space_id=str(record.id),
+        connector_id=connector_id,
+        kind=kind,
+        host=host,
+        port=port,
+        database=database,
+        cred_ref=credential_ref,
+        mode=mode,
+        server_version=str(probed.get("server_version") or ""),
+        exposed=list(listed),
+        chosen=list(chosen),
+        actor=actor,
+        token_id=token_id,
+    )
+    register_source(
+        source_id=source_id,
+        space_id=str(record.id),
+        connector_id=connector_id,
+        exposed=list(listed),
+        actor=actor,
+        token_id=token_id,
+    )
+    granted: tuple[str, ...] = ()
+    if chosen:
+        granted = grant_book(
+            source_id=source_id,
+            tables=list(chosen),
+            actor=actor,
+            token_id=token_id,
+        )
+    try:
+        _connect_v2().fire_auto_onto(source_id, tuple(listed))
+    except Exception:
+        pass
+    return {
+        "space": _space_payload(record),
+        "source_id": source_id,
+        "connector_id": connector_id,
+        "exposed_tables": list(listed),
+        "granted_tables": list(granted),
+        "mode": mode,
+        "read_only": True,
+        "onto_job_id": saved["onto_job_id"],
+        "server_version": str(probed.get("server_version") or ""),
+    }
+
+
+def connect_v2_list(
+    *,
+    database_url: str,
+    tenant_id: str,
+    actor: str,
+    token_id: str,
+) -> dict[str, Any]:
+    from dms_core.control_plane.connect_store import ConnectStore
+
+    rows = ConnectStore(database_url, tenant_id).list_sources()
+    _rehydrate(rows, actor=actor, token_id=token_id)
+    return {"sources": rows}
+
+
+def connect_v2_schema(
+    ask: Any,
+    *,
+    database_url: str,
+    tenant_id: str,
+    source_id: str,
+) -> dict[str, Any]:
+    from dms_core.control_plane.connect_secrets import ConnectCredentialError
+    from dms_core.control_plane.connect_store import ConnectStore
+
+    row = ConnectStore(database_url, tenant_id).get_source(source_id)
+    if row is None:
+        raise KeyError(source_id)
+    live = False
+    error: str | None = None
+    secret = ""
+    user = ""
+    password = ""
+    try:
+        secret = _resolve_connect_secret(ask, row["cred_ref"])
+        user, password = _connect_v2().parse_login(secret)
+        _connect_v2().probe_source(
+            kind=row["kind"],
+            host=row["host"],
+            port=int(row["port"]),
+            database=row["db"],
+            user=user,
+            password=password,
+            tls=False,
+        )
+        live = True
+    except _connect_v2().ConnectProbeError as exc:
+        error = exc.code
+    except ConnectCredentialError:
+        error = "connect_credential_unresolved"
+    except Exception:
+        error = "network"
+    finally:
+        secret = ""
+        user = ""
+        password = ""
+    return {
+        "source_id": source_id,
+        "live": live,
+        "error": error,
+        "schemas": _group_tables(list(row["exposed_tables"]), set(row["granted_tables"])),
+        "truncated": False,
+        "bounded": False,
+    }
+
+
+def _live_row(database_url: str, tenant_id: str, source_id: str) -> dict[str, Any]:
+    from dms_core.control_plane.connect_store import ConnectStore, ConnectStoreError
+
+    row = ConnectStore(database_url, tenant_id).get_source(source_id)
+    if row is None:
+        raise KeyError(source_id)
+    if row["mode"] != "live":
+        raise ConnectStoreError("source_mode_extract")
+    return row
+
+
+def connect_v2_query(
+    ask: Any,
+    *,
+    database_url: str,
+    tenant_id: str,
+    source_id: str,
+    sql: str,
+    offset: int,
+    page_size: int,
+    confirm_runaway: bool,
+) -> dict[str, Any]:
+    row = _live_row(database_url, tenant_id, source_id)
+    secret = _resolve_connect_secret(ask, row["cred_ref"])
+    user = ""
+    password = ""
+    try:
+        user, password = _connect_v2().parse_login(secret)
+        return _connect_v2().run_live_select(
+            kind=row["kind"],
+            host=row["host"],
+            port=int(row["port"]),
+            database=row["db"],
+            user=user,
+            password=password,
+            sql=sql,
+            grantable=set(row["granted_tables"]),
+            offset=offset,
+            page_size=page_size,
+            confirm_runaway=confirm_runaway,
+        )
+    except _connect_v2().ConnectProbeError as exc:
+        raise ValueError(exc.code) from None
+    except _connect_v2().ConnectQueryError as exc:
+        raise ValueError(exc.code) from None
+    finally:
+        secret = ""
+        user = ""
+        password = ""
+
+
+def connect_v2_export(
+    ask: Any,
+    *,
+    database_url: str,
+    tenant_id: str,
+    source_id: str,
+    sql: str,
+    confirm_runaway: bool,
+) -> tuple[str, Any]:
+    row = _live_row(database_url, tenant_id, source_id)
+    secret = _resolve_connect_secret(ask, row["cred_ref"])
+    user = ""
+    password = ""
+    try:
+        user, password = _connect_v2().parse_login(secret)
+        query_id, event = _connect_v2().open_cancel()
+        iterator = _connect_v2().iter_live_export(
+            kind=row["kind"],
+            host=row["host"],
+            port=int(row["port"]),
+            database=row["db"],
+            user=user,
+            password=password,
+            sql=sql,
+            grantable=set(row["granted_tables"]),
+            confirm_runaway=confirm_runaway,
+            cancel=event,
+        )
+        return query_id, iterator
+    finally:
+        secret = ""
+        user = ""
+        password = ""
+
+
+def connect_v2_close(query_id: str) -> None:
+    _connect_v2().close_cancel(query_id)
+
+
+def connect_v2_cancel(query_id: str) -> dict[str, Any]:
+    if not _connect_v2().cancel_live(query_id):
+        raise ValueError("query_not_found")
+    return {"ok": True, "cancelled": True}
+
+
+def connect_v2_set_granted(
+    *,
+    database_url: str,
+    tenant_id: str,
+    source_id: str,
+    tables: list[str],
+    granted: bool,
+    actor: str,
+    token_id: str,
+) -> dict[str, Any]:
+    from dms_core.control_plane.connect_grants import grant_tables as grant_book
+    from dms_core.control_plane.connect_grants import revoke_tables
+    from dms_core.control_plane.connect_store import ConnectStore
+
+    store = ConnectStore(database_url, tenant_id)
+    row = store.get_source(source_id)
+    if row is None:
+        raise KeyError(source_id)
+    _rehydrate([row], actor=actor, token_id=token_id)
+    names = store.set_granted(
+        source_id, tables, granted=granted, actor=actor, token_id=token_id
+    )
+    try:
+        if granted:
+            grant_book(source_id=source_id, tables=names, actor=actor, token_id=token_id)
+        else:
+            revoke_tables(source_id=source_id, tables=names, actor=actor, token_id=token_id)
+    except (KeyError, ValueError):
+        pass
+    body: dict[str, Any] = {"source_id": source_id, "space_id": row["space_id"]}
+    if granted:
+        body["granted_tables"] = list(names)
+    else:
+        body["revoked_tables"] = list(names)
+    return body

@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-27 - JOIN-HOLE-01 (P0): a CTE self-join takes the join gate
+
+- **Hole.** `_JoinRule.check` returned before the join checks when the statement named at most one base table. A CTE name is not a base table, so a CTE joined to itself never reached the gate, and a fanned-out total was served under L2_VALIDATED.
+- **Gate.** The early return is one base table with no join, counted from the sqlglot AST. A scalar subquery, a one-row constant beside the table, and `WITH RECURSIVE` that never names itself are that shape and still answer. A join, including a CTE joined to itself, and a scalar total multiplied by `COUNT(*)`, take the same checks (`cte_over_join`, `derived_table_over_join`, `set_operation`, or the link rules).
+- **Ask-back.** `UNION ALL SELECT 0` on one table adds a 0 row, so the old total can be wrong. It is not a join and not an abstain: the envelope shows that SQL and asks back (`unverified_join:rowset_reconfirm`). A set operation that is joined to the table still fails closed. Statements that read two or more base tables are unchanged. Refs #527. Not a word rule. The adversary round is a different run.
+
 ## 2026-11-27 - R1-EVAL-01: one eval report for the 52, pack H, BIRD, and an ambiguity pack
 
 - **Harness.** `scripts/verify/eval_all.py --stub` writes `report.md` and `report.json`. It grades the 52 with `grade52 --main` and `--main --ai-first`. Pack H, BIRD execution accuracy, and OpenVault hop-stamp pin splits are `unmeasured (stub)`. `--armed` is the box run and refuses when Cortex settings are missing. No new serving flag.

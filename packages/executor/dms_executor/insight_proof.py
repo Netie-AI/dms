@@ -1065,10 +1065,15 @@ def _reads_unmodelled(
 def _generated_columns(con: Any) -> dict[str, list[tuple[str, str | None]]] | None:
     """Bare casefolded table -> ``(column, generation expression)`` for its generated columns.
 
-    Read from ``information_schema.columns`` on the serving connection. None when
-    the catalog cannot answer, which callers treat as all-PII.
+    Read from ``information_schema.columns`` on the serving connection. DuckDB
+    1.x leaves ``is_generated`` null, so that engine is read from the stored
+    CREATE statement instead. None when the catalog cannot answer, which
+    callers treat as all-PII.
     """
     try:
+        flagged = con.execute(
+            "SELECT count(*) FROM information_schema.columns WHERE is_generated IS NOT NULL"
+        ).fetchone()
         rows = con.execute(
             "SELECT table_name, column_name, generation_expression "
             "FROM information_schema.columns "
@@ -1076,11 +1081,51 @@ def _generated_columns(con: Any) -> dict[str, list[tuple[str, str | None]]] | No
         ).fetchall()
     except Exception:  # noqa: BLE001 - a catalog that cannot answer fails closed
         return None
+    # A reported flag, including zero generated columns, is the whole answer.
+    if flagged and flagged[0]:
+        out: dict[str, list[tuple[str, str | None]]] = {}
+        for table, column, expression in rows:
+            out.setdefault(str(table).casefold(), []).append(
+                (str(column).casefold(), None if expression is None else str(expression))
+            )
+        return out
+    return _generated_from_create(con)
+
+
+def _generated_from_create(con: Any) -> dict[str, list[tuple[str, str | None]]] | None:
+    """Generated columns from CREATE text when ``is_generated`` is not reported.
+
+    A default is not a generated column. A statement that does not parse fails
+    closed. One unreadable table is enough to return None.
+    """
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.errors import SqlglotError
+
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    try:
+        listed = con.execute(
+            "SELECT table_name, sql FROM duckdb_tables() WHERE NOT internal AND sql IS NOT NULL"
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - a catalog that cannot answer fails closed
+        return None
     out: dict[str, list[tuple[str, str | None]]] = {}
-    for table, column, expression in rows:
-        out.setdefault(str(table).casefold(), []).append(
-            (str(column).casefold(), None if expression is None else str(expression))
-        )
+    for table, sql in listed:
+        try:
+            tree = sqlglot.parse_one(str(sql), read=SERVING_DIALECT)
+        except (SqlglotError, ValueError):
+            return None
+        if not isinstance(tree, exp.Create):
+            return None
+        for col in tree.find_all(exp.ColumnDef):
+            for constraint in col.args.get("constraints") or []:
+                kind = getattr(constraint, "args", {}).get("kind")
+                if not isinstance(kind, exp.GeneratedAsIdentityColumnConstraint):
+                    continue
+                expr = kind.args.get("expression")
+                text = None if expr is None else expr.sql(dialect=SERVING_DIALECT)
+                out.setdefault(str(table).casefold(), []).append((str(col.name).casefold(), text))
     return out
 
 

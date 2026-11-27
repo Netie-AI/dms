@@ -112,6 +112,8 @@ def build_abstain(
         # After the scrub, so a cleared sql_used still gets abstain:<stage>,
         # and the stamp is not a field the scrub rewrites.
         _stamp_no_sql(demote, stage=stage)
+        if abstain_reason is not None:
+            demote["abstain_reason"] = abstain_reason
         return demote
 
     from dms_executor.envelope import build_answer_envelope

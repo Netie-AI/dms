@@ -857,11 +857,204 @@ def _under_predicate(node: exp.Expression, stop: exp.Expression) -> bool:
     return False
 
 
+def _from_items(select: exp.Select) -> list[exp.Expression] | None:
+    """What this SELECT's FROM and JOIN clauses name, or None if a JOIN is opaque.
+
+    A comma FROM is a JOIN in the AST. Scope sources are not this list: a scope
+    also lists every CTE visible to it, used or not.
+    """
+    items: list[exp.Expression] = []
+    frm = select.args.get("from")
+    if isinstance(frm, exp.From):
+        if frm.this is not None:
+            items.append(frm.this)
+        items.extend(frm.expressions)
+    for join in select.args.get("joins") or []:
+        if not isinstance(join, exp.Join) or join.this is None:
+            return None
+        items.append(join.this)
+    return items
+
+
+def _base_or_cte(item: exp.Expression, ctes: set[str]) -> str | None:
+    """``cte:<name>`` or ``base`` when ``item`` is one table, else None.
+
+    A parenthesized table (``FROM (orders)``) is that table. A qualified name
+    is a base table: a CTE reference is unqualified.
+    """
+    table = item
+    if isinstance(item, exp.Subquery) and isinstance(item.this, exp.Table):
+        table = item.this
+    if not isinstance(table, exp.Table) or not isinstance(table.this, exp.Identifier):
+        return None
+    name = table.name.lower()
+    if not table.db and not table.catalog and name in ctes:
+        return f"cte:{name}"
+    return "base"
+
+
+def _one_row_constant(item: exp.Expression) -> bool:
+    """A parenthesized SELECT with no row source. One row. Not a table read."""
+    node: exp.Expression = item
+    while isinstance(node, exp.Subquery):
+        inner = node.this
+        if not isinstance(inner, exp.Expression):
+            return False
+        node = inner
+    if not isinstance(node, exp.Select):
+        return False
+    if node.args.get("from") or node.args.get("joins"):
+        return False
+    if node.find(*_SET_OPS) or node.find(exp.Values) or node.find(exp.Unnest):
+        return False
+    return True
+
+
+def _table_key(table: exp.Table) -> str:
+    return ".".join(part.lower() for part in (table.catalog, table.db, table.name) if part)
+
+
+def _cte_names(root: exp.Expression) -> set[str]:
+    return {
+        str(cte.alias_or_name).lower()
+        for cte in root.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
+
+
+def _recursive_self(root: exp.Expression) -> bool:
+    """True when a CTE body names itself. The RECURSIVE keyword alone does not."""
+    for cte in root.find_all(exp.CTE):
+        name = str(cte.alias_or_name or "").lower()
+        body = cte.this
+        if not name or not isinstance(body, exp.Expression):
+            continue
+        for table in body.find_all(exp.Table):
+            if (
+                isinstance(table.this, exp.Identifier)
+                and not table.db
+                and not table.catalog
+                and table.name.lower() == name
+            ):
+                return True
+    return False
+
+
+def _count_outside_subquery(node: exp.Expression) -> bool:
+    """True when ``node`` has a COUNT that is not inside a subquery of ``node``."""
+    for count in node.find_all(exp.Count):
+        parent = count.parent
+        inside = False
+        while parent is not None and parent is not node:
+            if isinstance(parent, exp.Subquery):
+                inside = True
+                break
+            parent = parent.parent
+        if not inside:
+            return True
+    return False
+
+
+def _times_outer_count(root: exp.Expression) -> bool:
+    """A scalar subquery multiplied by the outer row count. One wrong figure.
+
+    ``(SELECT SUM(x) FROM c) * COUNT(*)`` is the total times the row count.
+    A ratio ``SUM(n) / (SELECT SUM(n) FROM c)`` has no outer COUNT, so it is
+    not this shape.
+    """
+    for mul in root.find_all(exp.Mul):
+        left, right = mul.this, mul.expression
+        if not isinstance(left, exp.Expression) or not isinstance(right, exp.Expression):
+            continue
+        if left.find(exp.Subquery) is not None and _count_outside_subquery(right):
+            return True
+        if right.find(exp.Subquery) is not None and _count_outside_subquery(left):
+            return True
+    return False
+
+
+def _row_sources(select: exp.Select) -> list[exp.Expression] | None:
+    """FROM items that can return more than one row. A one-row constant is not one.
+
+    None when a JOIN is opaque.
+    """
+    items = _from_items(select)
+    if items is None:
+        return None
+    return [item for item in items if not _one_row_constant(item)]
+
+
+def _one_base_tables(root: exp.Expression) -> set[str] | None:
+    """The one base table, or None when a FROM joins two multi-row sources.
+
+    A CTE named again from a scalar subquery is still this one table. An
+    opaque JOIN or an unknown row source (VALUES, UNNEST) is None.
+    """
+    ctes = _cte_names(root)
+    selects = list(root.find_all(exp.Select))
+    if not selects:
+        return None
+    bases: set[str] = set()
+    for select in selects:
+        sources = _row_sources(select)
+        if sources is None or len(sources) > 1:
+            return None
+        if not sources:
+            continue
+        item = sources[0]
+        kind = _base_or_cte(item, ctes)
+        if kind == "base":
+            table = item.this if isinstance(item, exp.Subquery) else item
+            if isinstance(table, exp.Table):
+                bases.add(_table_key(table))
+            continue
+        if isinstance(kind, str) and kind.startswith("cte:"):
+            continue
+        if isinstance(item, exp.Subquery) and isinstance(item.this, exp.Select):
+            continue
+        return None
+    return bases
+
+
+def _one_base_read(root: exp.Expression) -> bool:
+    """True for one base table read with no join and no set operation.
+
+    A scalar subquery that reads the same CTE, a one-row constant beside the
+    table, and ``WITH RECURSIVE`` that never names itself are this shape.
+    A CTE joined to itself, a second multi-row FROM item, a self-referential
+    CTE, a set operation, or a scalar total multiplied by ``COUNT(*)`` is not.
+    """
+    if root.find(*_SET_OPS) or _recursive_self(root) or _times_outer_count(root):
+        return False
+    bases = _one_base_tables(root)
+    return bases is not None and len(bases) == 1
+
+
+def _rowset_reconfirm(root: exp.Expression) -> bool:
+    """One base table, no fan-out join, but a set operation changes the rows.
+
+    The old answer can be a different row set (``UNION ALL SELECT 0`` adds a
+    0). That is not a join and not a dead abstain: the caller shows the SQL.
+    A set operation joined to the table (two multi-row FROM items, or a CTE
+    that names itself) is a fan-out and stays on the join gate.
+    """
+    if not root.find(*_SET_OPS) or _recursive_self(root):
+        return False
+    bases = _one_base_tables(root)
+    return bases is not None and len(bases) == 1
+
+
 class _JoinRule:
     """An allowlist, not a blocklist (adversary rounds 1 and 2, ONTO-DERIVE-01).
 
-    SQL reading one table reference has nothing to join and passes. SQL reading
-    two or more must be ONE flat SELECT over base tables:
+    One read of one base table has nothing to join and passes. A second
+    reference that is not a join passes too: a scalar subquery, a one-row
+    constant beside the table, or ``WITH RECURSIVE`` that never names itself.
+    A set operation on that one table is not served: the caller shows the SQL
+    and asks back. A join does not take the shortcut. A CTE joined to itself,
+    a second multi-row FROM item, a CTE that names itself, or a scalar total
+    multiplied by ``COUNT(*)`` takes the same checks as any other join. SQL
+    reading two or more base tables must be ONE flat SELECT over base tables:
 
     * no set operation, no CTE, no derived table, no subquery outside the
       top-level WHERE conjuncts;
@@ -1027,8 +1220,14 @@ class _JoinRule:
             if not isinstance(t.this, exp.Identifier):
                 # query('...'), read_csv(...): a table function can hide any join.
                 raise _Refuse("table_function")
-        if len(tables) <= 1:
+        # One physical table is not one read. A CTE self-join names that table
+        # once and joins the CTE to itself; it takes these same checks.
+        # A scalar reread and a one-row constant are not joins.
+        if len(tables) <= 1 and _one_base_read(root_expr):
             return
+        # UNION ALL SELECT 0 changes the rows and can be wrong. Show the SQL.
+        if len(tables) <= 1 and _rowset_reconfirm(root_expr):
+            raise _Refuse("rowset_reconfirm")
         if not isinstance(root_expr, exp.Select) or root_expr.find(*_SET_OPS):
             raise _Refuse("set_operation")
         if root_expr.find(exp.With):

@@ -229,6 +229,156 @@ WRONG_JOIN_SQL = (
     "WHERE d.name = 'North'"
 )
 
+#: JOIN-HOLE-01 (dms#527). One base table, read twice. On the parent,
+#: ``unverified_join_reason`` returned None and the ask served ``wrong``.
+#: ``true`` is the one-table figure. Must-fail on that parent.
+_SCHOOL_TOTAL = f"SELECT SUM(CAST(school_id AS INTEGER)) AS total FROM {SCHOOLS}"
+_ENROLL_TOTAL = f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL}"
+JOIN_HOLE_SHAPES: dict[str, dict[str, Any]] = {
+    "s1_cte_self_join_on": {
+        "sql": (
+            f"WITH c AS (SELECT * FROM {SCHOOLS}) "
+            "SELECT SUM(CAST(a.school_id AS INTEGER)) AS total "
+            "FROM c a JOIN c b ON a.district_id = b.district_id"
+        ),
+        "true_sql": _SCHOOL_TOTAL,
+        "wrong": 24,
+        "true": 10,
+        "reason": "unverified_join:cte_over_join",
+    },
+    "s2_cte_comma": {
+        "sql": (
+            f"WITH c AS (SELECT * FROM {ENROLL}) "
+            "SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a, c b"
+        ),
+        "true_sql": _ENROLL_TOTAL,
+        "wrong": 428,
+        "true": 107,
+        "reason": "unverified_join:cte_over_join",
+    },
+    "s2b_cte_comma_three": {
+        "sql": (
+            f"WITH c AS (SELECT * FROM {ENROLL}) "
+            "SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a, c b, c d"
+        ),
+        "true_sql": _ENROLL_TOTAL,
+        "wrong": 1712,
+        "true": 107,
+        "reason": "unverified_join:cte_over_join",
+    },
+    "s3_cte_cross_join": {
+        "sql": (
+            f"WITH c AS (SELECT * FROM {ENROLL}) "
+            "SELECT SUM(CAST(a.students AS INTEGER)) AS total FROM c a CROSS JOIN c b"
+        ),
+        "true_sql": _ENROLL_TOTAL,
+        "wrong": 428,
+        "true": 107,
+        "reason": "unverified_join:cte_over_join",
+    },
+    "s4_recursive_cte": {
+        "sql": (
+            "WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) "
+            f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, r"
+        ),
+        "true_sql": _ENROLL_TOTAL,
+        "wrong": 321,
+        "true": 107,
+        "reason": "unverified_join:set_operation",
+    },
+    "s5_cte_using": {
+        "sql": (
+            f"WITH c AS (SELECT * FROM {SCHOOLS}) "
+            "SELECT SUM(CAST(a.school_id AS INTEGER)) AS total "
+            "FROM c a JOIN c b USING (district_id)"
+        ),
+        "true_sql": _SCHOOL_TOTAL,
+        "wrong": 24,
+        "true": 10,
+        "reason": "unverified_join:cte_over_join",
+    },
+    "s6_cte_scalar_reread": {
+        "sql": (
+            f"WITH c AS (SELECT * FROM {SCHOOLS}) "
+            "SELECT (SELECT SUM(CAST(school_id AS INTEGER)) FROM c) * COUNT(*) AS total FROM c"
+        ),
+        "true_sql": _SCHOOL_TOTAL,
+        "wrong": 40,
+        "true": 10,
+        "reason": "unverified_join:cte_over_join",
+    },
+    "s7_cross_join_union": {
+        "sql": (
+            f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o "
+            "CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) v"
+        ),
+        "true_sql": _ENROLL_TOTAL,
+        "wrong": 214,
+        "true": 107,
+        "reason": "unverified_join:set_operation",
+    },
+    "s8_values_cte": {
+        "sql": (
+            "WITH r AS (SELECT * FROM (VALUES (1), (2)) v(n)) "
+            f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, r"
+        ),
+        "true_sql": _ENROLL_TOTAL,
+        "wrong": 214,
+        "true": 107,
+        "reason": "unverified_join:cte_over_join",
+    },
+}
+#: One read of one base table. Same outcome as the parent: the join rule allows it.
+JOIN_HOLE_STILL: dict[str, str] = {
+    "plain_select": f"SELECT COUNT(*) AS n FROM {SCHOOLS}",
+    "cte_once": f"WITH c AS (SELECT * FROM {SCHOOLS}) SELECT COUNT(*) AS n FROM c",
+    "cte_chain": (
+        f"WITH c AS (SELECT * FROM {SCHOOLS}), d AS (SELECT * FROM c) "
+        "SELECT COUNT(*) AS n FROM d"
+    ),
+    "cte_chain_three": (
+        f"WITH c AS (SELECT * FROM {SCHOOLS}), d AS (SELECT * FROM c), "
+        "e AS (SELECT * FROM d) SELECT COUNT(*) AS n FROM e"
+    ),
+    "derived_once": f"SELECT COUNT(*) AS n FROM (SELECT * FROM {SCHOOLS}) d",
+    "nested_derived": (
+        f"SELECT COUNT(*) AS n FROM (SELECT * FROM (SELECT * FROM {SCHOOLS}) a) b"
+    ),
+    "scalar_constant": f"SELECT COUNT(*) AS n, (SELECT 1) AS k FROM {SCHOOLS}",
+}
+#: One base table and no join. Same outcome as the parent: the gate allows it.
+#: A scalar reread, a one-row constant, and WITH RECURSIVE that never names
+#: itself are not joins.
+JOIN_HOLE_KEEP: dict[str, str] = {
+    "cte_filtered_against_its_own_average": (
+        f"WITH c AS (SELECT district_id, COUNT(*) AS n FROM {SCHOOLS} GROUP BY district_id) "
+        "SELECT SUM(n) AS total FROM c WHERE n > (SELECT AVG(n) FROM c)"
+    ),
+    "cte_divided_by_its_own_total": (
+        f"WITH c AS (SELECT district_id, COUNT(*) AS n FROM {SCHOOLS} GROUP BY district_id) "
+        "SELECT SUM(n) * 100 / (SELECT SUM(n) FROM c) AS total FROM c"
+    ),
+    "one_row_constant_cross_join": (
+        f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} o "
+        "CROSS JOIN (SELECT 1 AS n) v"
+    ),
+    "recursive_keyword_without_recursion": (
+        f"WITH RECURSIVE c AS (SELECT * FROM {ENROLL}) "
+        "SELECT SUM(CAST(students AS INTEGER)) AS total FROM c"
+    ),
+    "cte_scalar_count_reread": (
+        f"WITH c AS (SELECT * FROM {SCHOOLS}) "
+        "SELECT (SELECT COUNT(*) FROM c) AS total FROM c"
+    ),
+}
+#: UNION ALL SELECT 0 adds a 0 row. The old total can be wrong. Not a join
+#: and not an abstain: the envelope shows this SQL and asks back.
+JOIN_HOLE_RECONFIRM: dict[str, str] = {
+    "constant_union_branch": (
+        f"SELECT SUM(CAST(students AS INTEGER)) AS total FROM {ENROLL} UNION ALL SELECT 0"
+    ),
+}
+
 
 def make_minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
     """The real ``mint_manifest`` on a local key (as ``test_space_gen_01``)."""
@@ -717,6 +867,26 @@ def test_join_rule_units(
             "ON e.school_id = d.district_id"
         )
         or ""
+    )
+    # JOIN-HOLE-01. Must-fail on the parent early return (it returned None).
+    for name, shape in JOIN_HOLE_SHAPES.items():
+        assert why(shape["sql"]) == shape["reason"], (name, why(shape["sql"]))
+    for name, sql in {**JOIN_HOLE_STILL, **JOIN_HOLE_KEEP}.items():
+        assert why(sql) is None, (name, why(sql))
+    for name, sql in JOIN_HOLE_RECONFIRM.items():
+        assert why(sql) == "unverified_join:rowset_reconfirm", (name, why(sql))
+    # A base-table self-join already reached the gate. It still does.
+    assert (why(
+        f"SELECT SUM(CAST(a.school_id AS INTEGER)) AS total FROM {SCHOOLS} a "
+        f"JOIN {SCHOOLS} b ON a.district_id = b.district_id"
+    ) or "").startswith("unverified_join:")
+    assert (
+        why(f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, (VALUES (1), (2)) v(n)")
+        == "unverified_join:derived_table_over_join"
+    )
+    assert (
+        why(f"SELECT SUM(CAST(o.students AS INTEGER)) AS total FROM {ENROLL} o, UNNEST([1, 2]) u(n)")
+        == "unverified_join:derived_table_over_join"
     )
 
 

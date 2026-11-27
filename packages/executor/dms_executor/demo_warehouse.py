@@ -187,6 +187,14 @@ DEMO_TABLES = (
     "alerts",
 )
 
+#: Origin of a row read from the seeded demo warehouse, not a customer source.
+DEMO_WAREHOUSE_ORIGIN = "duckdb://dms_demo/"
+
+
+def is_demo_warehouse_origin(uri: object) -> bool:
+    """True when ``uri`` names the seeded demo warehouse."""
+    return str(uri or "").startswith(DEMO_WAREHOUSE_ORIGIN)
+
 _REVENUE_SQL = """
 SELECT COALESCE(SUM(quantity_kg * unit_cost_myr), 0)::DOUBLE AS revenue_myr
 FROM transactions

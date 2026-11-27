@@ -470,7 +470,12 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
-def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:
+def load_verified_ontology(
+    warehouse: Path | None,
+    onto: Ontology | None = None,
+    *,
+    space_id: str | None = None,
+) -> Ontology | None:
     """Verify against the lake. Failed subjects stay marked; the rest can answer.
 
     A caller-declared ontology that fails verify is returned with those
@@ -478,8 +483,13 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     still returns None on failure so lakes it was never declared for
     (BIRD, live product) keep today's SQL behaviour.
 
+    A customer Space does not fall back to ``demo_ontology``. The caller
+    abstains with a named reason instead of compiling the demo measures.
+    ``space_id`` omitted is the demo Space, which is every caller that
+    predates the scope gate.
+
     Does not reseed. A test warehouse must already hold the relations the
-    ontology names — ``ensure_demo_warehouse`` would drop them.
+    ontology names. ``ensure_demo_warehouse`` would drop them.
     """
     if warehouse is None or not Path(warehouse).is_file():
         return None
@@ -490,6 +500,10 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
         target = Ontology.from_store()
         declared = True
     else:
+        from dms_executor.demo_grants import is_demo_space
+
+        if not is_demo_space(space_id):
+            return None
         target = demo_ontology(Path(warehouse))
         declared = False
     con = connect_serving(Path(warehouse))
@@ -1048,6 +1062,7 @@ def _abstain(
         except Exception:
             pass
     note_stage(stage, "done")
+    _offer_rowset_sql(env, question, reason, sql)
     if isinstance(env.get("reconfirm"), dict):
         note_stage("reconfirm", "done")
     assert_envelope_valid(env)
@@ -1358,6 +1373,7 @@ def path_miss_envelope(
     *,
     space_id: str | None,
     session_id: str | None,
+    sql: str | None = None,
 ) -> dict[str, Any]:
     """Isolated A/B miss: ABSTAIN, do not mix Cortex/pack into the other lane."""
     return _abstain(
@@ -1366,7 +1382,31 @@ def path_miss_envelope(
         space_id=space_id,
         session_id=session_id,
         plan_source=PLAN_SOURCE_OTHER,
+        sql=sql,
     )
+
+
+def _offer_rowset_sql(
+    env: dict[str, Any], question: str, reason: str, sql: str | None
+) -> None:
+    """One-table set operation: show the generated SQL and ask back.
+
+    The badge stays the abstain envelope every reconfirm card uses. The SQL
+    is the card definition, so the customer sees the statement. A fan-out
+    join does not come here.
+    """
+    statement = str(sql or "").strip()
+    if not statement or "rowset_reconfirm" not in str(reason or ""):
+        return
+    block = env.get("reconfirm")
+    if not isinstance(block, dict):
+        block = {}
+    block["definition"] = statement
+    block["reason_code"] = str(reason)
+    block["why"] = str(reason)
+    block["suggested_question"] = question
+    block["closest_question"] = question
+    env["reconfirm"] = block
 
 
 def _rules_off() -> bool:
@@ -2577,7 +2617,7 @@ def _maybe_generative_ask_impl(
     declared_violations: list[Violation] = []
     verify_cache_missing = False
     if onto is None:
-        onto = load_verified_ontology(lake)
+        onto = load_verified_ontology(lake, space_id=space_id)
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:
@@ -3305,6 +3345,7 @@ def _maybe_generative_ask_impl(
                     space_id=space_id,
                     session_id=session_id,
                     plan_source=source,
+                    sql=sql,
                 )
             )
         if why:

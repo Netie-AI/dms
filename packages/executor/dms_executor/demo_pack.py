@@ -468,7 +468,9 @@ def maybe_uncertified_refuse_ask(
     Exact phrase only, same ``_norm`` as pack match. Does not grow an intent
     cascade. Cortex L1 must not green these to raise coverage.
     """
-    if not is_uncertified_paraphrase(question):
+    from dms_executor.demo_grants import is_demo_space
+
+    if not is_demo_space(space_id) or not is_uncertified_paraphrase(question):
         return None
     env = build_abstain(
         reason="abstain",
@@ -757,7 +759,14 @@ def maybe_pack_ask(
     Missing submit/ledger does not fall back to local DuckDB (F83). A phrase
     match whose grants, Cortex SQL, or ledger step fails is a named ABSTAIN.
     None means the phrase did not match, so a later lane may run.
+
+    A customer Space never reaches this pack. None there is not a phrase miss
+    the caller should treat as a demo abstain; the customer's own lanes run.
     """
+    from dms_executor.demo_grants import is_demo_space
+
+    if not is_demo_space(space_id):
+        return None
     phrase = match_pack_phrase(question, tables=tables)
     if phrase is None:
         return None
