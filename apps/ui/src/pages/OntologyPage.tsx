@@ -331,7 +331,7 @@ export function OntologyPage() {
       <PageHeader
         phase="Shared vocabulary"
         title="Ontology"
-        blurb="The names, links, and measures this Space allows every answer to use, shown blank when its store is empty or unreadable."
+        blurb="The names, links, and measures every answer is allowed to use. An empty or unreadable store stays empty."
         actions={
           <button
             type="button"
