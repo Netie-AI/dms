@@ -1,9 +1,13 @@
-"""R1-LIVE-FIX-01. Ontology is the Space store. Space sources bind the uuid.
+"""R1-LIVE-FIX-01. Ontology is the named Space store. Space sources bind the uuid.
 
 The sources 500 was ``list_sources(settings)`` (the FastAPI route). Its
 ``space_id`` default is a Query object, which is truthy, and ``UUID()`` then
 raises ``AttributeError: 'Query' object has no attribute 'replace'`` only when
 ``DATABASE_URL`` is set. The helper receives the Space id string instead.
+
+A missing ``space_id`` is ``reason=space_required``. An empty or unreadable
+store is ``ok: false`` with ``empty_store`` or ``store_unreadable``. Neither
+path fills in the seeded Finance id or ``ontology_spine.yaml``.
 
 No flag. The old Cortex ``/dms/ontology`` proxy is not called.
 """
@@ -133,7 +137,11 @@ def test_unknown_space_sources_stay_404(client: TestClient) -> None:
     assert client.get(f"/v1/spaces/{uuid4()}/sources").status_code == 404
 
 
-def test_pack_fallback_matches_the_schema(
+def _ids(body: dict[str, Any]) -> set[str]:
+    return {row["id"] for row in body["object_types"]}
+
+
+def test_missing_space_is_required_not_finance(
     client: TestClient, empty_ontology: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def boom(*_args: object, **_kwargs: object) -> None:
@@ -142,19 +150,64 @@ def test_pack_fallback_matches_the_schema(
     monkeypatch.setattr("dms_api.cortex_read.cortex_get", boom)
     body = client.get("/v1/ontology").json()
     _assert_schema(body)
-    assert body["ok"] is True
-    assert body["source"] == "pack"
-    assert body["space_id"] == FINANCE
-    assert body["counts"]["object_types"] >= 1
-    assert body["counts"]["metrics"] >= 1
-    ops = client.get(f"/v1/ontology?space_id={OPS}").json()
-    assert ops["source"] == "pack"
-    assert ops["space_id"] == OPS
+    assert body["ok"] is False
+    assert body["reason"] == "space_required"
+    assert body["source"] == "none"
+    assert body["space_id"] == ""
+    assert body["object_types"] == []
+    assert body["nodes"] == []
+    assert "transaction" not in _ids(body)
     for section in ("objects", "links", "actions", "functions", "metrics", "graph"):
         res = client.get(f"/v1/ontology/{section}")
         assert res.status_code == 200
-        assert res.json()["source"] == "pack"
+        got = res.json()
+        _assert_schema(got)
+        assert got["reason"] == "space_required"
+        assert got["space_id"] == ""
+        assert got["object_types"] == []
     assert client.get("/v1/ontology/secrets").status_code == 404
+
+
+def test_empty_store_is_named_not_the_pack(
+    client: TestClient, empty_ontology: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ontology must not call Cortex")
+
+    monkeypatch.setattr("dms_api.cortex_read.cortex_get", boom)
+    body = client.get(f"/v1/ontology?space_id={OPS}").json()
+    _assert_schema(body)
+    assert body["ok"] is False
+    assert body["reason"] == "empty_store"
+    assert body["source"] == "none"
+    assert body["space_id"] == OPS
+    assert body["object_types"] == []
+    assert body["metrics"] == []
+    assert body["nodes"] == []
+    assert "transaction" not in _ids(body)
+    assert "outbound_value_myr" not in {row["id"] for row in body["metrics"]}
+
+
+def test_unreadable_store_is_named_not_the_pack(
+    client: TestClient, empty_ontology: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("ontology must not call Cortex")
+
+    def down(*_args: object, **_kwargs: object) -> list[dict[str, Any]]:
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr("dms_api.cortex_read.cortex_get", boom)
+    monkeypatch.setattr("dms_executor.space_ontology_views", down)
+    body = client.get(f"/v1/ontology/graph?space_id={FINANCE}").json()
+    _assert_schema(body)
+    assert body["ok"] is False
+    assert body["reason"] == "store_unreadable"
+    assert body["source"] == "none"
+    assert body["space_id"] == FINANCE
+    assert body["nodes"] == []
+    assert body["edges"] == []
+    assert "transaction" not in _ids(body)
 
 
 def test_graph_comes_from_the_finance_store(
@@ -204,16 +257,22 @@ def test_graph_comes_from_the_finance_store(
         violations=[],
         verified=True,
     )
-    body = client.get("/v1/ontology/graph").json()
+    body = client.get(f"/v1/ontology/graph?space_id={FINANCE}").json()
     _assert_schema(body)
+    assert body["ok"] is True
+    assert body["reason"] == ""
     assert body["source"] == "store"
     assert body["space_id"] == FINANCE
     assert {node["id"] for node in body["nodes"]} == {"invoice", "customer"}
     assert body["edges"][0]["source"] == "invoice"
     assert body["edges"][0]["target"] == "customer"
+    omitted = client.get("/v1/ontology/graph").json()
+    assert omitted["reason"] == "space_required"
+    assert omitted["nodes"] == []
     other = client.get(f"/v1/ontology/graph?space_id={OPS}").json()
-    assert other["source"] == "pack"
-    assert other["nodes"]
+    assert other["reason"] == "empty_store"
+    assert other["source"] == "none"
+    assert other["nodes"] == []
     assert "invoice" not in {node["id"] for node in other["nodes"]}
 
 
@@ -247,8 +306,9 @@ def test_approved_items_are_the_store(client: TestClient, empty_ontology: None) 
     )
     for item in stored["items"]:
         ontology_data_store().approve(item["id"], actor="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
-    body = client.get("/v1/ontology").json()
+    body = client.get(f"/v1/ontology?space_id={FINANCE}").json()
     _assert_schema(body)
+    assert body["ok"] is True
     assert body["source"] == "store"
     assert "Invoice" in {row["id"] for row in body["object_types"]}
     assert any(row["id"] == "invoice_total" for row in body["metrics"])
@@ -258,6 +318,46 @@ def test_approved_items_are_the_store(client: TestClient, empty_ontology: None) 
 
 def test_page_load_gets_are_not_errors(client: TestClient, empty_ontology: None) -> None:
     smoke = _smoke()
-    bad = smoke.failing_paths(lambda path: client.get(path).status_code)
+    onto = [path for path, _needle in smoke.page_load_paths() if path.startswith("/v1/ontology")]
+    assert onto
+    assert all("space_id=" in path for path in onto)
+
+    def status_of(path: str) -> int:
+        res = client.get(path)
+        if path.split("?", 1)[0].startswith("/v1/ontology"):
+            lie = smoke.ontology_lie(path, res.json())
+            if lie:
+                raise RuntimeError(lie)
+        return res.status_code
+
+    bad = smoke.failing_paths(status_of)
     assert bad == [], bad
     assert smoke.self_check() == 0
+    assert (
+        smoke.ontology_lie(
+            f"/v1/ontology?space_id={FINANCE}",
+            {"ok": True, "source": "pack", "space_id": FINANCE},
+        )
+        == "source-pack"
+    )
+    assert (
+        smoke.ontology_lie(
+            f"/v1/ontology?space_id={OPS}",
+            {
+                "ok": False,
+                "source": "none",
+                "reason": "empty_store",
+                "space_id": OPS,
+            },
+        )
+        is None
+    )
+
+
+def test_ontology_page_sends_the_active_space() -> None:
+    page = (ROOT / "apps/ui/src/pages/OntologyPage.tsx").read_text(encoding="utf-8")
+    api = (ROOT / "apps/ui/src/lib/api.ts").read_text(encoding="utf-8")
+    assert "fetchOntology(activeSpaceId, signal)" in page
+    assert 'data-testid="ontology-honest-card"' in page
+    assert "ontologyReadPath(" in api
+    assert "cccccccc-cccc-cccc-cccc-cccccccccccc" not in api

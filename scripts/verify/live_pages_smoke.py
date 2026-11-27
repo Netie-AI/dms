@@ -1,6 +1,8 @@
 """GET every endpoint the UI calls while a page is opening.
 
-A 4xx or 5xx fails the run. Response bodies are not printed.
+A 4xx or 5xx fails the run. An ontology body whose source is ``pack``, or whose
+``space_id`` is not the one on the query, fails the run. Response bodies are
+not printed.
 
 The paths come from apps/ui/src/lib/api.ts and the page modules. Flag-off
 routes that are not mounted (insight-proof, studio adjust) are omitted: the
@@ -16,6 +18,8 @@ import argparse
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -31,13 +35,13 @@ def page_load_paths() -> list[tuple[str, str]]:
         ("/v1/spaces", "/v1/spaces"),
         ("/v1/library/sources", "/v1/library/sources"),
         ("/v1/library/tree", "/v1/library/tree"),
-        ("/v1/ontology", "/v1/ontology"),
-        ("/v1/ontology/objects", "/v1/ontology/objects"),
-        ("/v1/ontology/links", "/v1/ontology/links"),
-        ("/v1/ontology/actions", "/v1/ontology/actions"),
-        ("/v1/ontology/functions", "/v1/ontology/functions"),
-        ("/v1/ontology/metrics", "/v1/ontology/metrics"),
-        ("/v1/ontology/graph", "/v1/ontology/graph"),
+        (f"/v1/ontology?space_id={finance}", "fetchOntology(activeSpaceId"),
+        (f"/v1/ontology/objects?space_id={finance}", 'ontologyReadPath("objects"'),
+        (f"/v1/ontology/links?space_id={finance}", 'ontologyReadPath("links"'),
+        (f"/v1/ontology/actions?space_id={finance}", 'ontologyReadPath("actions"'),
+        (f"/v1/ontology/functions?space_id={finance}", 'ontologyReadPath("functions"'),
+        (f"/v1/ontology/metrics?space_id={finance}", 'ontologyReadPath("metrics"'),
+        (f"/v1/ontology/graph?space_id={finance}", 'ontologyReadPath("graph"'),
         ("/v1/trust/summary", "/v1/trust/summary"),
         ("/v1/runs", "/v1/runs"),
         ("/v1/amend/proposals", "/v1/amend/proposals"),
@@ -57,6 +61,32 @@ def page_load_paths() -> list[tuple[str, str]]:
         (f"/v1/runs?space_id={finance}", "/v1/runs"),
         (f"/v1/amend/proposals?space_id={finance}", "/v1/amend/proposals"),
     ]
+
+
+def ontology_lie(path: str, body: object) -> str | None:
+    """A named problem when an ontology GET is not that Space's store. No rows."""
+    route = path.split("?", 1)[0]
+    if not route.startswith("/v1/ontology"):
+        return None
+    if not isinstance(body, dict):
+        return "not-json"
+    wanted = parse_qs(urlsplit(path).query).get("space_id", [""])[0]
+    if not wanted:
+        return "missing-space-id"
+    if body.get("space_id") != wanted:
+        return "space-mismatch"
+    source = body.get("source")
+    if source == "pack":
+        return "source-pack"
+    if body.get("ok") is True and source != "store":
+        return "ok-without-store"
+    if body.get("ok") is False and body.get("reason") not in {
+        "empty_store",
+        "store_unreadable",
+        "space_required",
+    }:
+        return "unnamed-reason"
+    return None
 
 
 def failing_paths(status_of: Callable[[str], int]) -> list[str]:
@@ -111,6 +141,14 @@ def main(argv: list[str] | None = None) -> int:
 
     def status_of(path: str) -> int:
         res = httpx.get(f"{origin}{path}", timeout=30.0)
+        if res.status_code < 400 and path.split("?", 1)[0].startswith("/v1/ontology"):
+            try:
+                payload: Any = res.json()
+            except ValueError:
+                payload = None
+            lie = ontology_lie(path, payload)
+            if lie:
+                raise RuntimeError(lie)
         return res.status_code
 
     bad = failing_paths(status_of)

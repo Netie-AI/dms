@@ -722,29 +722,74 @@ def bind_ontology_store(database_url: str, tenant_id: str) -> None:
     dms_executor.set_ontology_store(PostgresOntologyStore(database_url, tenant_id=tenant_id))
 
 
+class _OntologyUnread(Exception):
+    """The Space ontology store raised. The page must not invent a spine."""
+
+
+_ONTOLOGY_REASONS = {
+    "space_required": "Select a Space. Ontology is not read from a default Space.",
+    "empty_store": "This Space has no approved ontology in the store.",
+    "store_unreadable": "The ontology store could not be read.",
+}
+
+
 def read_live_ontology(section: str, *, space_id: str | None) -> dict[str, Any]:
     """The ontology page body for one Space.
 
-    ``space_ontology`` views plus approved onto_data items. The seeded Finance
-    id is the page default when the request does not name a Space. ``source``
-    is ``store`` when either store has rows for that Space, otherwise ``pack``
-    (``ontology_spine.yaml``). No Cortex call.
+    ``space_ontology`` views plus approved onto_data items for ``space_id``.
+    No Space id, an empty store, or an unreadable store is ``ok: false`` with
+    ``reason`` set. Never the seeded Finance id, and never ``ontology_spine.yaml``.
+    No Cortex call.
     """
-    resolved = _page_space_id(space_id)
-    views = _space_views(resolved)
-    approved = _approved_for_space(resolved)
-    if views or approved:
-        payload = _payload_from_store(views, approved)
-        source = "store"
-    else:
-        payload = _payload_from_pack()
-        source = "pack"
+    resolved = (space_id or "").strip()
+    if not resolved:
+        return _honest_ontology(section, "", "space_required")
+    try:
+        views = _space_views(resolved)
+        approved = _approved_for_space(resolved)
+    except _OntologyUnread:
+        return _honest_ontology(section, resolved, "store_unreadable")
+    if not views and not approved:
+        return _honest_ontology(section, resolved, "empty_store")
+    return _ontology_body(
+        section, resolved, _payload_from_store(views, approved), ok=True, source="store", reason=""
+    )
+
+
+def _honest_ontology(section: str, space_id: str, reason: str) -> dict[str, Any]:
+    return _ontology_body(
+        section,
+        space_id,
+        {
+            "object_types": [],
+            "link_types": [],
+            "action_types": [],
+            "functions": [],
+            "metrics": [],
+        },
+        ok=False,
+        source="none",
+        reason=reason,
+    )
+
+
+def _ontology_body(
+    section: str,
+    space_id: str,
+    payload: dict[str, Any],
+    *,
+    ok: bool,
+    source: str,
+    reason: str,
+) -> dict[str, Any]:
     nodes, edges = _graph(payload)
     return {
-        "ok": True,
+        "ok": ok,
         "section": section or "summary",
-        "space_id": resolved,
+        "space_id": space_id,
         "source": source,
+        "reason": reason,
+        "hint": _ONTOLOGY_REASONS.get(reason, ""),
         "counts": _ontology_counts(payload),
         "object_types": payload["object_types"],
         "link_types": payload["link_types"],
@@ -756,21 +801,12 @@ def read_live_ontology(section: str, *, space_id: str | None) -> dict[str, Any]:
     }
 
 
-def _page_space_id(space_id: str | None) -> str:
-    text = (space_id or "").strip()
-    if text:
-        return text
-    from dms_core.control_plane.seed import SPACE_Q3
-
-    return str(SPACE_Q3)
-
-
 def _space_views(space_id: str) -> list[dict[str, Any]]:
     try:
         views = dms_executor.space_ontology_views(space_id)
-    except Exception as exc:  # noqa: BLE001 - a down store must not 500 the page
+    except Exception as exc:  # noqa: BLE001 - a down store is a named reason, not a 500
         logger.warning("space ontology unreadable (%s)", type(exc).__name__)
-        return []
+        raise _OntologyUnread from exc
     return [view for view in views if isinstance(view, dict)]
 
 
@@ -781,8 +817,13 @@ def _approved_for_space(space_id: str) -> list[dict[str, Any]]:
     store = ontology_data_store()
     versions = getattr(store, "_versions", None)
     if isinstance(versions, dict):
+        try:
+            items = store.approved_items()
+        except Exception as exc:  # noqa: BLE001 - a down store is a named reason, not a 500
+            logger.warning("approved ontology items unreadable (%s)", type(exc).__name__)
+            raise _OntologyUnread from exc
         out: list[dict[str, Any]] = []
-        for item in store.approved_items():
+        for item in items:
             version = versions.get(item.get("version_id"))
             if version is not None and str(getattr(version, "space_id", "") or "") == space_id:
                 out.append(item)
@@ -815,7 +856,7 @@ def _approved_for_space(space_id: str) -> list[dict[str, Any]]:
             conn.close()
     except Exception as exc:  # noqa: BLE001 - missing table or a non-uuid id
         logger.warning("approved ontology items unreadable (%s)", type(exc).__name__)
-        return []
+        raise _OntologyUnread from exc
     return [_public_item(_item_from_db(row)) for row in rows]
 
 
@@ -872,41 +913,6 @@ def _payload_from_store(
         "functions": [],
         "metrics": metrics,
     }
-
-
-def _payload_from_pack() -> dict[str, Any]:
-    data = _spine_document()
-    objects = [
-        _object_row({"name": name})
-        for name in data.get("objects") or []
-        if isinstance(name, str) and name
-    ]
-    metrics = [
-        _metric_row({"name": name})
-        for name in data.get("measures") or []
-        if isinstance(name, str) and name
-    ]
-    return {
-        "object_types": [row for row in objects if row is not None],
-        "link_types": [],
-        "action_types": [],
-        "functions": [],
-        "metrics": [row for row in metrics if row is not None],
-    }
-
-
-def _spine_document() -> dict[str, Any]:
-    from pathlib import Path
-
-    import yaml
-
-    path = Path(dms_executor.__file__).resolve().parent / "ontology_spine.yaml"
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        logger.warning("ontology spine unreadable (%s)", type(exc).__name__)
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
 
 
 def _object_row(raw: dict[str, Any]) -> dict[str, Any] | None:

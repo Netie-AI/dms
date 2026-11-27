@@ -270,12 +270,14 @@ def test_ontology_and_trust_routes_refuse_by_name_with_zero_outbound_calls(
 ) -> None:
     calls = _wire(no_key_env)
     client = TestClient(create_app())
-    # Ontology is the Space store. A missing key does not blank it and it
-    # makes no outbound call. Trust still refuses by name.
+    # Ontology is the named Space store. A missing key does not call Cortex,
+    # and a missing space_id does not invent Finance. Trust still refuses by name.
     for path in ("/v1/ontology", "/v1/ontology/metrics"):
         body = client.get(path).json()
-        assert body["ok"] is True, path
-        assert body["source"] in {"store", "pack"}, path
+        assert body["ok"] is False, path
+        assert body["reason"] == "space_required", path
+        assert body["source"] == "none", path
+        assert body["object_types"] == [], path
         assert DEMO_VIEWER_KEY not in json.dumps(body), path
     for path in ("/v1/trust/summary", "/v1/trust/runs/corpus"):
         body = client.get(path).json()
@@ -291,7 +293,9 @@ def test_ontology_and_trust_routes_refuse_by_name_with_zero_outbound_calls(
     no_key_env.setenv("CORTEX_API_KEY", _FAKE)
     get_settings.cache_clear()
     keyed = TestClient(create_app())
-    assert keyed.get("/v1/ontology").json()["ok"] is True
+    keyed_body = keyed.get("/v1/ontology").json()
+    assert keyed_body["ok"] is False
+    assert keyed_body["reason"] == "space_required"
     assert calls == []
     keyed.get("/v1/trust/summary")
     assert [c["headers"].get("X-API-Key") for c in calls] == [_FAKE]

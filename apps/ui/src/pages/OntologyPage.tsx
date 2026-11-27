@@ -8,7 +8,9 @@ import {
   Section,
   StatTile,
 } from "@/components/PageShell";
+import { useApp } from "@/context/AppContext";
 import { fetchOntology } from "@/lib/api";
+import { ontologyHonestCard } from "@/lib/ontologyRead";
 import { useAsync } from "@/lib/useAsync";
 import type {
   OntologyBundle,
@@ -292,8 +294,10 @@ function MetricRow({ metric }: { metric: OntologyMetric }) {
 /* ── Page ────────────────────────────────────────────────────────────────── */
 
 export function OntologyPage() {
-  const { data, error, loading, reload } = useAsync<OntologyBundle>((signal) =>
-    fetchOntology(signal),
+  const { activeSpaceId } = useApp();
+  const { data, error, loading, reload } = useAsync<OntologyBundle>(
+    (signal) => fetchOntology(activeSpaceId, signal),
+    [activeSpaceId],
   );
   const [tab, setTab] = useState<Tab>("objects");
   const [query, setQuery] = useState("");
@@ -301,7 +305,7 @@ export function OntologyPage() {
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
   const counts = data?.summary.counts;
-  const degraded = data ? data.summary.ok === false : false;
+  const honest = ontologyHonestCard(data?.summary);
 
   const q = query.trim().toLowerCase();
   const objects = (data?.objects ?? []).filter(
@@ -327,7 +331,7 @@ export function OntologyPage() {
       <PageHeader
         phase="Shared vocabulary"
         title="Ontology"
-        blurb="The names, links, and measures every answer is allowed to use."
+        blurb="The names, links, and measures this Space allows every answer to use, shown blank when its store is empty or unreadable."
         actions={
           <button
             type="button"
@@ -339,14 +343,18 @@ export function OntologyPage() {
         }
       />
 
-      {degraded && (
+      {honest && (
         <DependencyNotice
+          data-testid="ontology-honest-card"
+          data-reason={honest.reason}
           tone="danger"
-          title="Ontology unavailable — Cortex did not answer"
-          hint={data?.summary.hint ?? "Start the engine on :8010, then Refresh."}
+          title={honest.title}
+          hint={honest.hint}
         />
       )}
 
+      {!honest && (
+      <>
       <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <StatTile label="Object types" value={counts?.object_types ?? "—"} />
         <StatTile label="Links" value={counts?.link_types ?? "—"} />
@@ -538,6 +546,8 @@ export function OntologyPage() {
           </Section>
         )}
       </AsyncBoundary>
+      </>
+      )}
     </Page>
   );
 }

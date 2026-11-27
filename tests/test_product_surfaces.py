@@ -69,17 +69,23 @@ def _stub_cortex(monkeypatch, payload: dict[str, Any] | None, *, ok: bool = True
 # ------------------------------------------------------------------- ontology
 
 
-def test_ontology_summary_reads_the_pack_when_the_space_has_none(client, monkeypatch):
-    """Cortex /dms/ontology is gone. An empty Space is the pack spine, ok true."""
+def test_ontology_summary_names_an_empty_space_instead_of_the_pack(client, monkeypatch):
+    """Cortex /dms/ontology is gone. An empty Space is a named empty, not the pack."""
 
     def boom(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("ontology must not call Cortex")
 
     monkeypatch.setattr("dms_api.cortex_read.cortex_get", boom)
-    body = client.get("/v1/ontology").json()
-    assert body["ok"] is True
-    assert body["source"] == "pack"
-    assert body["counts"]["object_types"] >= 1
+    missing = client.get("/v1/ontology").json()
+    assert missing["ok"] is False
+    assert missing["reason"] == "space_required"
+    assert missing["space_id"] == ""
+    assert missing["object_types"] == []
+    body = client.get("/v1/ontology?space_id=dddddddd-dddd-dddd-dddd-dddddddddddd").json()
+    assert body["ok"] is False
+    assert body["reason"] == "empty_store"
+    assert body["source"] == "none"
+    assert body["object_types"] == []
 
 
 def test_ontology_sections_are_an_allowlist_not_a_proxy(client):
@@ -94,10 +100,11 @@ def test_ontology_stays_up_when_cortex_is_down(client, monkeypatch):
         raise AssertionError("ontology must not call Cortex")
 
     monkeypatch.setattr("dms_api.cortex_read.cortex_get", boom)
-    body = client.get("/v1/ontology").json()
-    assert body["ok"] is True
-    assert body["source"] == "pack"
-    assert body["object_types"]
+    body = client.get("/v1/ontology?space_id=cccccccc-cccc-cccc-cccc-cccccccccccc").json()
+    assert body["ok"] is False
+    assert body["reason"] == "empty_store"
+    assert body["source"] == "none"
+    assert body["object_types"] == []
 
 
 # ---------------------------------------------------------------------- trust

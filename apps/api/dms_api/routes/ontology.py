@@ -2,11 +2,12 @@
 
 DMS does not proxy Cortex ``/dms/ontology`` (that route is gone). Object types,
 links, and approved measures come from ``space_ontology`` plus the approved
-onto_data items for the Space. When that Space has neither, the response is the
-pack ``ontology_spine.yaml`` and ``source`` is ``pack``.
+onto_data items for the Space named by ``space_id``. A missing Space id, an
+empty store, or an unreadable store is ``ok: false`` with a named ``reason``.
+The response never substitutes another Space or the pack spine.
 
 ``pack`` stays on the signature so older clients and the MCP metrics tool keep
-calling the same function. It does not select a Cortex pack.
+calling the same function. It does not select a Cortex pack or a default Space.
 """
 
 from __future__ import annotations
