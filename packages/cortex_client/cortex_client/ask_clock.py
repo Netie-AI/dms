@@ -225,6 +225,48 @@ def http_timeout(timeout: float) -> float:
     return min(timeout, left)
 
 
+# STUDIO-FIX-C. Off unless the digit 1. The reserve is the existing suggestion
+# call (CortexClient.complete uses min(2s, client timeout)), not a row cap.
+ASKBACK_ENV = "DMS_DEADLINE_ASKBACK"
+ASKBACK_RESERVE_S = 2.0
+
+
+def deadline_askback_enabled() -> bool:
+    """True only when ``DMS_DEADLINE_ASKBACK`` is the digit 1. Unset is off."""
+    return os.environ.get(ASKBACK_ENV, "0").strip() == "1"
+
+
+def generate_budget_left_s() -> float | None:
+    """Seconds left for a generate or retry leg, or None when the flag is off.
+
+    None means the caller keeps today's timeout. Zero means do not start a
+    leg: the remaining time is the ask-back reserve. A lake query does not
+    read this. It still interrupts at the full deadline minus the deliver margin.
+    """
+    if not deadline_askback_enabled():
+        return None
+    clock = _clock.get()
+    if clock is None or clock.deadline is None:
+        return None
+    return max(0.0, clock.deadline - time.monotonic() - ASKBACK_RESERVE_S)
+
+
+def askback_window_open() -> bool:
+    """True when the flag is on and only the reserved ask-back time remains.
+
+    Past the full deadline this is false: the named deadline abstain stands.
+    """
+    if not deadline_askback_enabled():
+        return False
+    clock = _clock.get()
+    if clock is None or clock.deadline is None:
+        return False
+    now = time.monotonic()
+    if now >= clock.deadline:
+        return False
+    return (clock.deadline - now) <= ASKBACK_RESERVE_S
+
+
 def ensure_clock() -> Token[AskClock | None] | None:
     """Bind a clock when this turn does not already have one.
 
