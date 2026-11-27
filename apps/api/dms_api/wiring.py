@@ -135,7 +135,7 @@ def build_validated_envelope(**kwargs: Any) -> dict[str, Any]:
     return env
 
 
-def gate_refusal_envelope(
+def envelope_refusal_envelope(
     exc: BaseException,
     *,
     question: str = "",
@@ -143,7 +143,7 @@ def gate_refusal_envelope(
     session_id: str | None = None,
 ) -> dict[str, Any] | None:
     """The named abstain for a rule 10a gate refusal (dms#590), else None."""
-    return dms_executor.gate_refusal_abstain(
+    return dms_executor.envelope_refusal_abstain(
         exc, question=question, space_id=space_id, session_id=session_id
     )
 

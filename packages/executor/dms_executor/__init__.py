@@ -23,7 +23,7 @@ from dms_executor import executed_trace
 from dms_executor.abstain import (
     backstop_missing_ticket,
     build_abstain,
-    gate_refusal_abstain,
+    envelope_refusal_abstain,
     refuse_ungranted_answer,
 )
 from dms_executor.acl import (
@@ -907,7 +907,7 @@ class Executor:
                 # ENVELOPE-GATE-01 (dms#590): a lane whose envelope fails the
                 # rule 10a gate answers a named abstain, never a 503. Any other
                 # AssertionError is a defect and propagates.
-                refusal = gate_refusal_abstain(
+                refusal = envelope_refusal_abstain(
                     exc, question=question, space_id=space_id, session_id=session_id
                 )
                 if refusal is None:
@@ -2308,7 +2308,7 @@ def get_serving_engine() -> ServingEnginePort:
 
 
 __all__ = [
-    "gate_refusal_abstain",
+    "envelope_refusal_abstain",
     "run_crosscheck",
     "run_extract",
     "run_golden",

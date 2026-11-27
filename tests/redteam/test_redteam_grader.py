@@ -235,7 +235,11 @@ def test_verdict_wrong_values() -> None:
 
 
 def test_verdict_wrong_on_prose_number() -> None:
-    out = _grade(_env([{"x": 1}], text="Found 1 row(s). There were 777 units."))
+    # dms#590: the builder now withholds an unbacked prose figure (E17), so the
+    # hostile envelope the grader must catch is edited after the builder.
+    env = _env([{"x": 1}])
+    env["text"] = "Found 1 row(s). There were 777 units."
+    out = _grade(env)
     assert out["verdict"] == "WRONG"
     assert any(r.startswith("prose_number_not_in_rows") for r in out["reasons"])
 

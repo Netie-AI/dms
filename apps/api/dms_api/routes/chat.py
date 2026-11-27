@@ -436,7 +436,7 @@ def _map_live_exception(
     from dms_api import wiring
 
     # ENVELOPE-GATE-01 (dms#590): a gate refusal is a named abstain, never a 503.
-    refusal = wiring.gate_refusal_envelope(
+    refusal = wiring.envelope_refusal_envelope(
         exc, question=question, space_id=space_id, session_id=session_id
     )
     if refusal is not None:

@@ -1315,7 +1315,7 @@ _FIXED_CODES = (
 _GATE_CLAUSE = re.compile(r"(E\d+[a-z]?)(?:-\d+)?:")
 
 
-def envelope_gate_clause(exc: BaseException) -> str | None:
+def envelope_refusal_clause(exc: BaseException) -> str | None:
     """The clause (``E17``) when ``exc`` is a rule 10a gate refusal, else None."""
     if not isinstance(exc, AssertionError):
         return None
@@ -1352,6 +1352,18 @@ def _declared_identifiers(*sources: Any) -> set[str]:
 def _gap_details(assumptions: list[Any]) -> list[str]:
     """The ``GEN-01: <code>`` lines, the only assumptions that name schema objects."""
     return [str(a) for a in assumptions if str(a).startswith(_GAP_PREFIX)]
+
+
+def _relation_names(sql: Any, grounded: Any) -> list[str]:
+    """Each relation the query reads (parsed, never an alias) and each granted table.
+
+    Split on dots, so ``bronze.q3_po_Sales`` declares ``q3_po_Sales``.
+    """
+    names: list[str] = []
+    cited = _sql_cited_labels(sql) if isinstance(sql, str) and sql.strip() else []
+    for raw in [*cited, *(grounded if isinstance(grounded, (list, tuple, set)) else [])]:
+        names.extend(part for part in str(raw).replace('"', "").split(".") if part)
+    return names
 
 
 def _without_identifiers(text: str, idents: set[str]) -> str:
@@ -1419,6 +1431,7 @@ def uncited_figures(
     text: str,
     values: list[dict[str, Any]] | None,
     rows: list[dict[str, Any]] | None,
+    relations: list[str] | None = None,
 ) -> list[str]:
     """E17: figures in a served SQL answer the envelope does not declare.
 
@@ -1439,6 +1452,9 @@ def uncited_figures(
     for v in values or []:
         if isinstance(v, dict) and v.get("label"):
             labels.add(str(v["label"]))
+        if isinstance(v, dict) and v.get("id"):
+            # A value placeholder ({v0}) the UI renders as that value.
+            labels.add("{" + str(v["id"]) + "}")
     allowed.append(float(len(row_list)))
     cut = _SHOWING.search(text or "")
     if cut:
@@ -1446,7 +1462,9 @@ def uncited_figures(
     # Only the rows, values[] and the count declare a figure. A literal in the
     # SQL does not (a WHERE threshold or a LIMIT is not a result; verifier r3).
     stripped = _without_labels(_without_list_markers(_readable(text)), labels)
-    stripped = _without_identifiers(stripped, _declared_identifiers(list(labels)))
+    stripped = _without_identifiers(
+        stripped, _declared_identifiers(list(labels), list(relations or []))
+    )
     out: list[str] = []
     for hit in _FIGURE.finditer(stripped):
         token = hit.group(0)
@@ -2309,7 +2327,9 @@ def build_answer_envelope(
     # A figure no query returned is withheld here, so the gate never raises on
     # the ask path.
     if not abstained and _executed_query(sql_used):
-        stray = uncited_figures(text or "", values_out, rows_out)
+        stray = uncited_figures(
+            text or "", values_out, rows_out, _relation_names(sql_used, grounded_tables)
+        )
         if stray:
             badge_out = "ABSTAIN"
             abstained = True
@@ -2321,7 +2341,9 @@ def build_answer_envelope(
     # E16 - an abstention states no figure outside the reason code it declares.
     if abstained:
         codes = declared_codes({"assumptions": assumptions_list})
-        idents = _declared_identifiers(_gap_details(assumptions_list), grounded_tables or [])
+        idents = _declared_identifiers(
+            _gap_details(assumptions_list), _relation_names(sql_used, grounded_tables)
+        )
         if abstained_figures(text or "", codes, idents):
             text = _TEXT_E16_WITHHELD
             assumptions_list.append("abstention stated a figure: withheld (E16)")
@@ -2651,7 +2673,7 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             declared_codes(envelope),
             _declared_identifiers(
                 _gap_details(envelope.get("assumptions") or []),
-                envelope.get("grounded_tables") or [],
+                _relation_names(envelope.get("sql_used"), envelope.get("grounded_tables")),
             ),
         )
         assert not stated, f"E16: abstention states figure(s) {stated}"
@@ -2663,6 +2685,7 @@ def assert_envelope_valid(envelope: dict[str, Any]) -> None:
             text,
             values if isinstance(values, list) else [],
             env_rows_e17 if isinstance(env_rows_e17, list) else [],
+            _relation_names(sql_used, envelope.get("grounded_tables")),
         )
         assert not stray, f"E17: figure(s) {stray} in text are not in values[] or rows"
 

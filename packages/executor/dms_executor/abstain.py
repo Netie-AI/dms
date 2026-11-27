@@ -146,7 +146,7 @@ _GATE_REFUSAL_TEXT = (
 )
 
 
-def gate_refusal_abstain(
+def envelope_refusal_abstain(
     exc: BaseException,
     *,
     question: str = "",
@@ -158,9 +158,9 @@ def gate_refusal_abstain(
     None when ``exc`` is not a gate refusal; the caller re-raises it. The
     clause stays in assumptions, so the sentence states no code digits.
     """
-    from dms_executor.envelope import assert_envelope_valid, envelope_gate_clause
+    from dms_executor.envelope import assert_envelope_valid, envelope_refusal_clause
 
-    clause = envelope_gate_clause(exc)
+    clause = envelope_refusal_clause(exc)
     if clause is None:
         return None
     env = build_abstain(
