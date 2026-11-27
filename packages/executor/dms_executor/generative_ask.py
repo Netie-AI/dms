@@ -469,7 +469,12 @@ def ontology_catalog(onto: Ontology) -> dict[str, Any]:
     }
 
 
-def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None) -> Ontology | None:
+def load_verified_ontology(
+    warehouse: Path | None,
+    onto: Ontology | None = None,
+    *,
+    space_id: str | None = None,
+) -> Ontology | None:
     """Verify against the lake. Failed subjects stay marked; the rest can answer.
 
     A caller-declared ontology that fails verify is returned with those
@@ -477,8 +482,13 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
     still returns None on failure so lakes it was never declared for
     (BIRD, live product) keep today's SQL behaviour.
 
+    A customer Space does not fall back to ``demo_ontology``. The caller
+    abstains with a named reason instead of compiling the demo measures.
+    ``space_id`` omitted is the demo Space, which is every caller that
+    predates the scope gate.
+
     Does not reseed. A test warehouse must already hold the relations the
-    ontology names — ``ensure_demo_warehouse`` would drop them.
+    ontology names. ``ensure_demo_warehouse`` would drop them.
     """
     if warehouse is None or not Path(warehouse).is_file():
         return None
@@ -489,6 +499,10 @@ def load_verified_ontology(warehouse: Path | None, onto: Ontology | None = None)
         target = Ontology.from_store()
         declared = True
     else:
+        from dms_executor.demo_grants import is_demo_space
+
+        if not is_demo_space(space_id):
+            return None
         target = demo_ontology(Path(warehouse))
         declared = False
     con = connect_serving(Path(warehouse))
@@ -2568,7 +2582,7 @@ def _maybe_generative_ask_impl(
     declared_violations: list[Violation] = []
     verify_cache_missing = False
     if onto is None:
-        onto = load_verified_ontology(lake)
+        onto = load_verified_ontology(lake, space_id=space_id)
     elif lake is not None and not onto.verified:
         loaded = load_verified_ontology(lake, onto)
         if loaded is not None:

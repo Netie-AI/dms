@@ -158,6 +158,12 @@ def maybe_bronze_sheet_ask(
         return None
     if not bronze_sheet_lane_enabled():
         return None
+    from dms_executor.demo_grants import is_demo_space
+
+    # Hand-coded sheet phrases stay a demo-Space regression. A customer Space
+    # keeps the grant refusal above this call and does not get this answer.
+    if not is_demo_space(space_id):
+        return None
     if bronze_lane_table(question) is None:
         return None
     scoped = _SCOPED.search(question or "")

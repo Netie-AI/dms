@@ -486,16 +486,18 @@ def _map_live_exception(
         # Never mask policy refusals with demo numbers (0 confidently wrong).
         if settings.dms_demo_fallback and exc.code not in _POLICY_CODES:
             logger.warning("live ask failed (%s); demo fallback", exc.code)
-            env = ask.demo_ask(question, space_id=space_id)
-            return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
+            env = ask.demo_ask(question, space_id=space_id, allow_live=False)
+            if isinstance(env, dict) and env.get("ask_mode") == "demo":
+                return _stamp_demo_fallback(env, f"fallback after live error: {exc.code}")
         raise HTTPException(
             status_code=_status_for(exc.code, exc.detail),
             detail={"code": exc.code, "message": exc.detail or exc.code},
         ) from exc
     if settings.dms_demo_fallback:
         logger.warning("live ask failed: %s; demo fallback", exc)
-        env = ask.demo_ask(question, space_id=space_id)
-        return _stamp_demo_fallback(env, "fallback — live ask failed")
+        env = ask.demo_ask(question, space_id=space_id, allow_live=False)
+        if isinstance(env, dict) and env.get("ask_mode") == "demo":
+            return _stamp_demo_fallback(env, "fallback — live ask failed")
     # A slow engine and a broken one are different answers. 504 tells the
     # caller to try again; 503 says the dependency is out. The launcher
     # prints "Cortex ok" the moment /health responds, which is before the
@@ -529,16 +531,25 @@ def _answer_ask(
         if not decision.allowed and decision.reason not in _SOFT_GATE:
             raise HTTPException(status_code=403, detail=decision.reason)
         env = ask.demo_ask(body.question, space_id=body.space_id)
-        env["ask_mode"] = "demo"
-        return _release(env)
+        # None: DMS_RULES_OFF, or a customer Space that still needs the live
+        # path (its grant exists and this call had no client). A live envelope
+        # keeps its own ask_mode. Only a demo-router envelope is labelled demo.
+        if isinstance(env, dict):
+            # live_ask already scrubbed with this turn's grants. _release
+            # grants nothing, so it must not run over that envelope.
+            if env.get("ask_mode") == "live":
+                return env
+            env["ask_mode"] = "demo"
+            return _release(env)
 
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
 
     if cortex is None:
         if settings.dms_demo_fallback:
-            env = ask.demo_ask(body.question, space_id=body.space_id)
-            return _release(_stamp_demo_fallback(env, "fallback — Cortex client missing"))
+            env = ask.demo_ask(body.question, space_id=body.space_id, allow_live=False)
+            if isinstance(env, dict) and env.get("ask_mode") == "demo":
+                return _release(_stamp_demo_fallback(env, "fallback — Cortex client missing"))
         raise HTTPException(
             status_code=503,
             detail={"code": "cortex_unavailable", "message": "Cortex client not configured"},

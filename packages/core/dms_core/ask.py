@@ -10,7 +10,13 @@ from typing import Any, Protocol, runtime_checkable
 class AskServicePort(Protocol):
     """Demo or live ask. Injected on app.state; API must not import dms_executor."""
 
-    def demo_ask(self, question: str, *, space_id: str | None = None) -> dict[str, Any]: ...
+    def demo_ask(
+        self,
+        question: str,
+        *,
+        space_id: str | None = None,
+        allow_live: bool = True,
+    ) -> dict[str, Any] | None: ...
 
     def live_ask(
         self,
