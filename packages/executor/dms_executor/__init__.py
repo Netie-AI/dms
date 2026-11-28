@@ -286,6 +286,8 @@ def _insights_compute_seam(
     onto: dict[str, Any] | None = ontology
     feedback = None
     route_hint = None
+    early_s: float | None = None
+    route_roles = frozenset({"escalate", "reason", "early_clarify"})
     asked = question
     examples = ""
     defs = ""
@@ -302,6 +304,7 @@ def _insights_compute_seam(
         "vq_examples",
         "governed_definitions",
         "route_hint",
+        "early_timeout_s",
     }
     if isinstance(ontology, dict) and (
         _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
@@ -313,8 +316,15 @@ def _insights_compute_seam(
             raw = lifted.get("sql_loop_feedback")
             feedback = raw if isinstance(raw, dict) else None
             hint = lifted.get("route_hint")
-            if hint in {"escalate", "reason"}:
+            if hint in route_roles:
                 route_hint = hint
+            raw_early = lifted.get("early_timeout_s")
+            if (
+                isinstance(raw_early, (int, float))
+                and not isinstance(raw_early, bool)
+                and raw_early > 0
+            ):
+                early_s = float(raw_early)
             vote_prompt = lifted.get("sql_vote_prompt")
             if isinstance(vote_prompt, str) and vote_prompt.strip():
                 asked = vote_prompt
@@ -349,7 +359,7 @@ def _insights_compute_seam(
         }
         if feedback is not None:
             kwargs["sql_feedback"] = feedback
-        if route_hint in {"escalate", "reason"}:
+        if route_hint in route_roles:
             kwargs["route_hint"] = route_hint
         from cortex_client.ask_clock import generate_budget_left_s
 
@@ -360,6 +370,9 @@ def _insights_compute_seam(
             return {"unsure": True}
         if left is not None:
             kwargs["timeout"] = left
+        if early_s is not None:
+            current = kwargs.get("timeout")
+            kwargs["timeout"] = early_s if current is None else min(float(current), early_s)
         try:
             return fn(asked, **kwargs)
         except TypeError:
@@ -1713,7 +1726,7 @@ class Executor:
 
         The stored preview is not executed. Free text is one new question.
         """
-        from dms_executor.clarify import peek_clarify, run_pick
+        from dms_executor.clarify import peek_clarify, record_confirmed_example, run_pick
         from dms_executor.demo_warehouse import SERVING_DIALECT
 
         pending = peek_clarify(clarify_id)
@@ -1756,6 +1769,11 @@ class Executor:
             ask=_ask,
         )
         if picked.ran is not None:
+            record_confirmed_example(
+                picked,
+                warehouse=self._warehouse,
+                dialect=self.dialect,
+            )
             return picked.ran
         if picked.envelope is not None:
             return picked.envelope

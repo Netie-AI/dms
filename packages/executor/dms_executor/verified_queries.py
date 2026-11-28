@@ -62,6 +62,7 @@ _FLAG_ON = frozenset({"1", "true", "yes", "on"})
 _SAVE_PROVENANCE = frozenset({"yes:reconfirm", "yes:vote"})
 _ADJUST_FLAG = "DMS_STUDIO_ADJUST"
 PROVENANCE_STEWARD_ADJUSTED = "steward_adjusted"
+PROVENANCE_CLARIFY = "clarify_example"
 # ponytail: fixed preview size. Upgrade: the ask page size, still read-only.
 _ADJUST_PREVIEW_CAP = 200
 _SKIP_ROUTES = frozenset({"verified_query", "l1_governed_metric"})
@@ -634,6 +635,64 @@ def maybe_save_checked_sql(
         return None
 
 
+def save_clarify_example(
+    *,
+    origin: str,
+    interpretation: str,
+    sql: str,
+    space_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+    dialect: str | None,
+) -> dict[str, Any] | None:
+    """One confirmed clarify choice. Retrieval only. Never a stored answer."""
+    origin_q = " ".join(str(origin or "").split())
+    reading = " ".join(str(interpretation or "").split())
+    if not origin_q or not reading or not str(sql or "").strip():
+        return None
+    question = origin_q if reading == origin_q else f"{origin_q}\ninterpretation: {reading}"
+    try:
+        return _save_example(
+            question=question,
+            sql=sql,
+            space_id=space_id,
+            warehouse=warehouse,
+            grantable=grantable,
+            dialect=dialect,
+            provenance=PROVENANCE_CLARIFY,
+        )
+    except Exception:
+        logger.warning("clarify_example_not_stored")
+        return None
+
+
+def list_clarify_examples(
+    *,
+    space_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str] | None,
+    dialect: str | None,
+) -> list[dict[str, Any]]:
+    """Confirmed clarify choices for the writer. Empty when the file is absent."""
+    if warehouse is None or not Path(warehouse).is_file():
+        return []
+    try:
+        sid = scope_key(space_id)
+        allowed = grantable if grantable is not None else _grantable(space_id, warehouse)
+        rows = [
+            row
+            for row in _rows_for_space(warehouse, sid)
+            if row.get("provenance") == PROVENANCE_CLARIFY and _example_ok(row, allowed, dialect)
+        ]
+    except Exception as exc:
+        from dms_executor.lake_registry import SERVING_ERRORS
+
+        if isinstance(exc, SERVING_ERRORS):
+            raise
+        return []
+    return [_example_public(row) for row in rows[:_EXAMPLE_LIMIT]]
+
+
 def _save_example(
     *,
     question: str,
@@ -744,10 +803,10 @@ def revoke_verified_example(
 
 
 def _replayable(row: dict[str, Any]) -> bool:
-    """Exact-match replay. ``steward_adjusted`` is a writer example, never an answer."""
+    """Exact-match replay. Writer examples are never an answer."""
     if row.get("revoked_at"):
         return False
-    return row.get("provenance") != PROVENANCE_STEWARD_ADJUSTED
+    return row.get("provenance") not in {PROVENANCE_STEWARD_ADJUSTED, PROVENANCE_CLARIFY}
 
 
 def _hit(question: str, row: dict[str, Any]) -> bool:

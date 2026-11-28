@@ -5,7 +5,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
 import { AccessCard } from "@/components/AccessCard";
-import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
+import { ClarifyCard, clarifyPickBody, clarifyRefineBody } from "@/components/studio/ClarifyCard";
 import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "@/components/studio/abstainReason";
 import { ResultView } from "@/components/studio/ResultView";
 import { useApp } from "@/context/AppContext";
@@ -388,6 +388,26 @@ export function AnswerMessage({
     }
   }
 
+  async function refineReading(text: string) {
+    if (!clarify || cardBusy) return;
+    setCardBusy(true);
+    setCardError(null);
+    try {
+      const next = await postClarifyPick(
+        clarifyRefineBody(clarify, text, {
+          question,
+          space_id: activeSpaceId,
+          session_id: sessionId,
+        }),
+      );
+      setFollow(next);
+    } catch {
+      setCardError("The reading did not run.");
+    } finally {
+      setCardBusy(false);
+    }
+  }
+
   const memberIds = serverSpaceIds(spaces, spacesFromApi);
 
   function switchSpace(space: GrantedSpace) {
@@ -543,7 +563,13 @@ export function AnswerMessage({
       </div>
       <AbstainNote envelope={envelope} />
       {clarify ? (
-        <ClarifyCard block={clarify} busy={cardBusy} error={cardError} onPick={pickReading} />
+        <ClarifyCard
+          block={clarify}
+          busy={cardBusy}
+          error={cardError}
+          onPick={pickReading}
+          onRefine={refineReading}
+        />
       ) : null}
       {access ? (
         <AccessCard

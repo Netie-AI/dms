@@ -39,14 +39,19 @@ function fieldText(value: unknown): string {
 
 function asReading(value: unknown): ClarifyReading | null {
   if (!value || typeof value !== "object") return null;
-  const row = value as { reading_id?: unknown; label?: unknown };
-  const reading_id = fieldText(row.reading_id);
-  const label = fieldText(row.label);
+  const row = value as {
+    reading_id?: unknown;
+    label?: unknown;
+    id?: unknown;
+    text?: unknown;
+  };
+  const reading_id = fieldText(row.reading_id) || fieldText(row.id);
+  const label = fieldText(row.label) || fieldText(row.text);
   if (!reading_id || !label) return null;
   return { reading_id, label };
 }
 
-/** 1 to 3 readings with ids and labels. Anything else is not a clarify card. */
+/** 1 to 4 readings. The server sends id and text. The card also accepts reading_id and label. */
 export function readClarify(env: AbstainFields): ClarifyBlock | null {
   const raw = env.clarify;
   if (!raw || typeof raw !== "object") return null;
@@ -54,7 +59,7 @@ export function readClarify(env: AbstainFields): ClarifyBlock | null {
   const clarify_id = fieldText(block.clarify_id);
   const question = fieldText(block.question);
   if (!clarify_id || !question || !Array.isArray(block.readings)) return null;
-  if (block.readings.length < 1 || block.readings.length > 3) return null;
+  if (block.readings.length < 1 || block.readings.length > 4) return null;
   const readings: ClarifyReading[] = [];
   const seen = new Set<string>();
   for (const item of block.readings) {

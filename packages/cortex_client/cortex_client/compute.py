@@ -267,6 +267,8 @@ class _BudgetStop(Exception):
 
 # FreeRoute pick stays in Cortex/OpenVault. Hint only; no provider ids or tokens.
 FREEROUTE_PREFERENCE = "free+normal"
+# OpenVault routes on this string. DMS does not name a model.
+_ROUTE_ROLES = frozenset({"escalate", "reason", "early_clarify"})
 _SELECT_SQL = re.compile(r"(?is)^\s*(with|select)\b")
 _TOP_FROM_ID = re.compile(r"(?:^|_)top(\d+)(?:_|$)", re.I)
 _PACK_DIM: tuple[tuple[str, str, str], ...] = (
@@ -1211,9 +1213,7 @@ def _insights_body(
         if reason:
             asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
             asked += _repair_question_suffix(sql_feedback)
-    preference = (
-        route_hint if route_hint in {"escalate", "reason"} else FREEROUTE_PREFERENCE
-    )
+    preference = route_hint if route_hint in _ROUTE_ROLES else FREEROUTE_PREFERENCE
     onto, schema_context = _split_schema_context(ontology)
     onto, examples = lift_verified_examples(onto)
     evidence = None

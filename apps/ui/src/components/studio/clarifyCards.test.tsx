@@ -60,11 +60,34 @@ describe("ClarifyCard", () => {
     expect(html).toContain(">Revenue by month<");
     expect(html).toContain(">Revenue by country<");
     expect(html).toContain('data-testid="clarify-reading-r_month"');
+    expect(html).toContain('data-testid="clarify-refine"');
+    expect(html).toContain("Use this wording");
     expect(html).toContain('type="button"');
-    expect(html.match(/<button/g)).toHaveLength(2);
+    expect(html.match(/<button/g)).toHaveLength(3);
   });
 
-  it("does not render a card for 0 or 4 readings", () => {
+  it("renders a server envelope of id and text, including a fourth reading", () => {
+    const block = readClarify({
+      clarify: {
+        clarify_id: "c1",
+        question: "Which warehouse is best?",
+        readings: [
+          { id: "value", text: "Total outbound value by warehouse for the latest month" },
+          { id: "ship", text: "Shipment count by warehouse for the latest month" },
+          { id: "util", text: "Utilisation by warehouse for the latest month" },
+          { id: "stock", text: "Stock value by warehouse for the latest month" },
+        ],
+      },
+    });
+    expect(block?.readings.map((row) => row.reading_id)).toEqual(["value", "ship", "util", "stock"]);
+    const html = renderToStaticMarkup(
+      createElement(ClarifyCard, { block: block!, onPick: () => undefined }),
+    );
+    expect(html).toContain('data-testid="clarify-reading-value"');
+    expect(html).toContain("Total outbound value by warehouse for the latest month");
+  });
+
+  it("does not render a card for 0 or 5 readings", () => {
     expect(readClarify({ clarify: { ...BLOCK, readings: [] } })).toBeNull();
     expect(
       readClarify({
@@ -74,6 +97,7 @@ describe("ClarifyCard", () => {
             ...BLOCK.readings,
             { reading_id: "r3", label: "Third" },
             { reading_id: "r4", label: "Fourth" },
+            { reading_id: "r5", label: "Fifth" },
           ],
         },
       }),

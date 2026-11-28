@@ -2768,7 +2768,7 @@ def _maybe_generative_ask_impl(
     # DMS_AI_CLARIFY on: the model reading list decides. Those two checkers
     # do not run, including when the model sends nothing.
     from dms_executor.ask_ladder import ask_ladder_enabled
-    from dms_executor.clarify import ai_clarify_enabled
+    from dms_executor.clarify import ai_clarify_enabled, early_clarify_enabled
 
     clarify_on = ai_clarify_enabled()
     ladder_on = ask_ladder_enabled()
@@ -2854,6 +2854,22 @@ def _maybe_generative_ask_impl(
             space_id=space_id,
             session_id=session_id,
         )
+    # UX-CLARIFY-CARD-01. One model call before SQL. Off: this block does not run.
+    if early_clarify_enabled() and compute is not None:
+        from dms_executor.clarify import early_before_sql
+
+        early = early_before_sql(
+            q,
+            compute=compute,
+            warehouse=lake,
+            grantable=set(allowed),
+            dialect=dialect,
+            ontology=onto,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if isinstance(early, dict):
+            return early
     if _scale_miss_on():
         from dms_executor.scale_miss import begin as scale_begin
 

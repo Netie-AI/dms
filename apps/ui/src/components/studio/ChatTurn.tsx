@@ -4,7 +4,7 @@ import { useApp } from "@/context/AppContext";
 import { describeApiError, postAsk, postClarifyPick } from "@/lib/api";
 import type { AnswerEnvelope, ClarifyReading, GrantedSpace } from "@/lib/types";
 import { AskStages, useAskStages } from "./AskStages";
-import { ClarifyCard, clarifyPickBody } from "./ClarifyCard";
+import { ClarifyCard, clarifyPickBody, clarifyRefineBody } from "./ClarifyCard";
 import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "./abstainReason";
 
 /** Same sentence as ``dms_core.studio_chat_turn.NOT_PROVIDED``. */
@@ -227,6 +227,22 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
     }
   }
 
+  async function refineReading(text: string) {
+    if (!clarify || busy) return;
+    setBusy(true);
+    setCardError(null);
+    try {
+      const env = await postClarifyPick(
+        clarifyRefineBody(clarify, text, { question: plannedQuestion, space_id: spaceId }),
+      );
+      setResult(env);
+    } catch {
+      setCardError("The reading did not run.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const memberIds = serverSpaceIds(spaces, spacesFromApi);
 
   function switchSpace(space: GrantedSpace) {
@@ -391,7 +407,13 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
         <div className="mt-4" data-testid="studio-chat-result">
           <p className="text-sm text-[var(--color-ink)]">{result.text}</p>
           {clarify ? (
-            <ClarifyCard block={clarify} busy={busy} error={cardError} onPick={pickReading} />
+            <ClarifyCard
+              block={clarify}
+              busy={busy}
+              error={cardError}
+              onPick={pickReading}
+              onRefine={refineReading}
+            />
           ) : null}
           {access ? (
             <AccessCard

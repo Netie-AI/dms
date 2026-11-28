@@ -23,7 +23,11 @@ from typing import Any
 
 _ON = frozenset({"1", "true", "yes", "on"})
 CLARIFY_ENV = "DMS_AI_CLARIFY"
+EARLY_ENV = "DMS_EARLY_CLARIFY"
 ROLE_REASON = "reason"
+ROLE_EARLY = "early_clarify"
+EARLY_TIMEOUT_S = 3.0
+EARLY_REASON = "clarify_ambiguous"
 _CATEGORIES = frozenset({"answerable", "ambiguous", "unanswerable"})
 _LEASE = frozenset(
     {
@@ -47,6 +51,12 @@ def ai_clarify_enabled(env: os._Environ[str] | None = None) -> bool:
     return source.get(CLARIFY_ENV, "").strip().lower() in _ON
 
 
+def early_clarify_enabled(env: os._Environ[str] | None = None) -> bool:
+    """``DMS_EARLY_CLARIFY``: off unless set to a true token."""
+    source = os.environ if env is None else env
+    return source.get(EARLY_ENV, "").strip().lower() in _ON
+
+
 @dataclass
 class Pick:
     """A refusal envelope, or a question the caller must ask on the normal path."""
@@ -57,6 +67,9 @@ class Pick:
     session_id: str | None = None
     tables: list[str] | None = None
     ran: dict[str, Any] | None = None
+    origin: str | None = None
+    reading_text: str | None = None
+    early: bool = False
 
 
 def clarify_before_sql(
@@ -136,10 +149,16 @@ def clarify_before_sql(
     )
 
 
-def parse_understand(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+def parse_understand(
+    payload: dict[str, Any] | None,
+    *,
+    sql_object: bool = True,
+) -> dict[str, Any] | None:
     """Structured verdict, or None when the payload is not one.
 
     A JSON object in ``query_sql`` is a verdict, not SQL, and is cleared.
+    ``sql_object=False`` ignores that object so a SQL payload cannot become
+    a clarify verdict.
     """
     if not isinstance(payload, dict):
         return None
@@ -147,6 +166,8 @@ def parse_understand(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     if isinstance(raw, str):
         raw = _json_object(raw)
     if not isinstance(raw, dict):
+        if not sql_object:
+            return None
         sql = str(payload.get("query_sql") or "").strip()
         parsed = _json_object(sql) if sql.startswith("{") else None
         if isinstance(parsed, dict) and parsed.get("category") is not None:
@@ -208,6 +229,8 @@ def resolve_pick(
         snapshot = dict(pending)
         readings = list(pending.get("readings") or [])
     typed = " ".join(str(text or "").split())
+    early = snapshot.get("early") is True
+    origin = snapshot.get("question") if isinstance(snapshot.get("question"), str) else ""
     if typed:
         if snapshot.get("free_text_ok") is not True:
             raise ValueError("free text already used")
@@ -217,6 +240,9 @@ def resolve_pick(
             space_id=_str_or_none(snapshot.get("space_id")),
             session_id=_str_or_none(snapshot.get("session_id")),
             tables=_tables(snapshot.get("tables")),
+            origin=origin,
+            reading_text=typed,
+            early=early,
         )
     chosen = None
     for item in readings:
@@ -225,7 +251,9 @@ def resolve_pick(
             break
     if chosen is None:
         raise ValueError("unknown reading")
-    gap = _static_gap(str(chosen.get("sql_preview") or ""), grantable, dialect)
+    preview = str(chosen.get("sql_preview") or "")
+    # An early card has no preview SQL. The pick is a question, not a grant check.
+    gap = None if early and not preview.strip() else _static_gap(preview, grantable, dialect)
     if gap:
         return Pick(
             envelope=_ungranted(
@@ -240,6 +268,9 @@ def resolve_pick(
         space_id=_str_or_none(snapshot.get("space_id")),
         session_id=_str_or_none(snapshot.get("session_id")),
         tables=_tables(snapshot.get("tables")),
+        origin=origin,
+        reading_text=str(chosen.get("text") or ""),
+        early=early,
     )
 
 
@@ -268,6 +299,91 @@ def run_pick(
             tables=picked.tables,
         )
     return picked
+
+
+def early_before_sql(
+    question: str,
+    *,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    grantable: set[str],
+    dialect: str,
+    ontology: Any,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """One cheap ambiguity call, before any SQL.
+
+    A clarify card when the model returns 2 to 4 readings. Anything else,
+    including a silent model, is None and the caller keeps today's path.
+    The card reuses the clarify envelope. It does not run SQL.
+    """
+    payload = _call(
+        compute,
+        {
+            "sql_vote_prompt": _early_prompt(
+                question,
+                ontology=ontology,
+                warehouse=warehouse,
+                grantable=grantable,
+                dialect=dialect,
+                space_id=space_id,
+            ),
+            "sql_vote_kind": "early_clarify",
+            "route_hint": ROLE_EARLY,
+            "early_timeout_s": EARLY_TIMEOUT_S,
+        },
+    )
+    verdict = parse_understand(payload if isinstance(payload, dict) else None, sql_object=False)
+    if verdict is None or verdict["category"] != "ambiguous":
+        return None
+    readings = list(verdict["readings"])
+    if len(readings) < 2:
+        return None
+    for item in readings:
+        item["sql_preview"] = ""
+        item["gap"] = None
+    return _clarify_envelope(
+        question,
+        readings,
+        space_id=space_id,
+        session_id=session_id,
+        grantable=grantable,
+        dialect=dialect,
+        early=True,
+    )
+
+
+def record_confirmed_example(
+    picked: Pick,
+    *,
+    warehouse: Path | None,
+    dialect: str | None,
+) -> None:
+    """Store question, interpretation, and SQL as a writer example.
+
+    An abstain is not an example. The row is never replayed as the answer.
+    A store failure leaves the envelope the caller already has.
+    """
+    env = picked.ran if isinstance(picked.ran, dict) else None
+    if not picked.early or env is None:
+        return
+    if env.get("abstained") is True or str(env.get("badge") or "") == "ABSTAIN":
+        return
+    sql = env.get("sql_used")
+    if not isinstance(sql, str) or not sql.strip():
+        return
+    from dms_executor.verified_queries import save_clarify_example
+
+    save_clarify_example(
+        origin=picked.origin or "",
+        interpretation=picked.reading_text or "",
+        sql=sql,
+        space_id=picked.space_id,
+        warehouse=warehouse,
+        grantable=set(picked.tables or []),
+        dialect=dialect,
+    )
 
 
 def _understand_prompt(
@@ -325,6 +441,58 @@ def _previews(
     return out
 
 
+def _early_prompt(
+    question: str,
+    *,
+    ontology: Any,
+    warehouse: Path | None,
+    grantable: set[str],
+    dialect: str,
+    space_id: str | None,
+) -> str:
+    body = (
+        "Decide whether this question has more than one reasonable interpretation "
+        "given the schema and the ontology metrics. "
+        "Return a JSON object and nothing else. "
+        "category is answerable or ambiguous. "
+        "When ambiguous, readings is 2 to 4 objects with id, text, and slots. "
+        "text is one resolved question that names the metric, the grain, and the filter. "
+        "slots may carry metric, grain, and filter. "
+        "When one interpretation is enough, category is answerable and readings is empty. "
+        "Do not write SQL.\n"
+        f"Ontology metrics:\n{_ontology_slice(ontology)}\n"
+        f"Schema:\n{_schema_slice(warehouse, grantable)}\n"
+        f"Examples:\n{_early_examples(question, space_id, warehouse, grantable, dialect)}"
+    )
+    return f"{body}\nQuestion:\n{question}"
+
+
+def _early_examples(
+    question: str,
+    space_id: str | None,
+    warehouse: Path | None,
+    grantable: set[str],
+    dialect: str,
+) -> str:
+    prior = _examples(question, space_id, warehouse, grantable, dialect, None)
+    try:
+        from dms_executor.verified_queries import examples_text, list_clarify_examples
+
+        extra = examples_text(
+            list_clarify_examples(
+                space_id=space_id,
+                warehouse=warehouse,
+                grantable=grantable,
+                dialect=dialect,
+            )
+        )
+    except Exception as exc:
+        if type(exc).__name__ in _LEASE:
+            raise
+        extra = ""
+    return f"{prior}\n{extra}".strip()[:2000]
+
+
 def _clarify_envelope(
     question: str,
     readings: list[dict[str, Any]],
@@ -333,6 +501,7 @@ def _clarify_envelope(
     session_id: str | None,
     grantable: set[str],
     dialect: str,
+    early: bool = False,
 ) -> dict[str, Any]:
     from dms_executor.abstain import build_abstain
     from dms_executor.envelope import assert_envelope_valid, attach_clarify_block
@@ -362,6 +531,10 @@ def _clarify_envelope(
         readings=readings,
         clarify_id=clarify_id,
     )
+    if early:
+        block = env.get("clarify")
+        if isinstance(block, dict):
+            block["reason_code"] = EARLY_REASON
     assert_envelope_valid(env)
     stored = []
     for item in readings:
@@ -383,6 +556,7 @@ def _clarify_envelope(
             "tables": sorted(grantable),
             "dialect": dialect,
             "free_text_ok": True,
+            "early": early,
         },
     )
     return env

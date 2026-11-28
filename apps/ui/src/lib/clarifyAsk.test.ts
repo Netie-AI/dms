@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { clarifyPickBody } from "@/components/studio/ClarifyCard";
+import { clarifyPickBody, clarifyRefineBody } from "@/components/studio/ClarifyCard";
 import { accessRequestVisible } from "@/components/studio/abstainReason";
 import {
   askRequestBody,
@@ -77,6 +77,27 @@ describe("clarify pick", () => {
       clarify_id: "c1",
       reading_id: "r_month",
     });
+  });
+
+  it("sends a refine as text and does not send a reading id", async () => {
+    const calls: { url: string; body: string }[] = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: String(init?.body ?? "") });
+      return new Response(JSON.stringify(ANSWER), { status: 200 });
+    });
+    await postClarifyPick(
+      clarifyRefineBody(BLOCK, " Total outbound value by warehouse ", {
+        question: "Which warehouse is best?",
+        space_id: "sp",
+      }),
+    );
+    expect(JSON.parse(calls[0].body)).toEqual({
+      question: "Which warehouse is best?",
+      space_id: "sp",
+      clarify_id: "c1",
+      text: "Total outbound value by warehouse",
+    });
+    expect(JSON.parse(calls[0].body)).not.toHaveProperty("reading_id");
   });
 });
 

@@ -135,6 +135,11 @@ class AskBody(BaseModel):
     #: sets DMS_HARNESS_ASK_PATHS (GEN-03). A body field, not an x-dms header
     #: (DR-0004), and the switch that allows it is server config, not the request.
     ask_path: Literal["product", "exact", "generative"] | None = None
+    #: Set only when the user picked a clarify reading or typed a refine.
+    #: A normal ask omits them, so that JSON stays the same bytes.
+    clarify_id: str | None = None
+    reading_id: str | None = None
+    text: str | None = None
 
 
 #: The ask_path values only a measurement origin may run (GEN-03).
@@ -349,21 +354,27 @@ def chat_ask(
         # Asks that never reach the gate (the lane refusal, an unknown Space) are
         # rejected requests, not asks, and are not recorded.
         try:
-            env = _answer_ask(
-                body,
-                decision,
-                settings=settings,
-                store=store,
-                cortex=cortex,
-                ask=ask,
-                request=request,
-            )
-            with span("reconfirm_build"):
-                note_stage("reconfirm_build", "started")
-                try:
-                    env = _offer_reconfirm(ask, env, body, cortex)
-                finally:
-                    note_stage("reconfirm_build", "done")
+            picked = bool((body.clarify_id or "").strip())
+            if picked:
+                # clarify_pick already offers reconfirm. A second offer would
+                # spend another model call on the same envelope.
+                env = _answer_clarify_pick(body, ask)
+            else:
+                env = _answer_ask(
+                    body,
+                    decision,
+                    settings=settings,
+                    store=store,
+                    cortex=cortex,
+                    ask=ask,
+                    request=request,
+                )
+                with span("reconfirm_build"):
+                    note_stage("reconfirm_build", "started")
+                    try:
+                        env = _offer_reconfirm(ask, env, body, cortex)
+                    finally:
+                        note_stage("reconfirm_build", "done")
         except Exception as exc:
             record_ask(
                 audit,
@@ -512,6 +523,34 @@ def _map_live_exception(
             "retryable": timed_out,
         },
     ) from exc
+
+
+def _answer_clarify_pick(body: AskBody, ask: AskServicePort) -> dict[str, Any]:
+    """Run one stored reading, or one free-text refine, on the normal path."""
+    pick = getattr(ask, "clarify_pick", None)
+    if not callable(pick):
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "clarify_unsupported", "message": "this ask service has no clarify"},
+        )
+    try:
+        env = pick(body.clarify_id, reading_id=body.reading_id, text=body.text)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "clarify_unknown", "message": "that clarify id is unknown"},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "clarify_pick", "message": str(exc)},
+        ) from exc
+    if not isinstance(env, dict):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "clarify_pick", "message": "empty clarify pick"},
+        )
+    return env
 
 
 def _answer_ask(

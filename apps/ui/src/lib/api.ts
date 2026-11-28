@@ -150,9 +150,10 @@ export type AskPayload = {
   /** Tables the user grounded the question in. Narrows the session manifest,
    *  so the scope is enforced by the engine, not suggested to the model. */
   grounded_tables?: string[] | null;
-  /** Set only when the user picked a clarify reading. Omitted otherwise. */
+  /** Set only when the user picked a clarify reading or typed a refine. */
   clarify_id?: string | null;
   reading_id?: string | null;
+  text?: string | null;
 };
 
 /** Ask JSON. clarify_id and reading_id are omitted unless both were picked,
@@ -166,9 +167,13 @@ export function askRequestBody(payload: AskPayload): Record<string, unknown> {
   };
   const clarifyId = payload.clarify_id?.trim() ?? "";
   const readingId = payload.reading_id?.trim() ?? "";
+  const typed = payload.text?.trim() ?? "";
   if (clarifyId && readingId) {
     body.clarify_id = clarifyId;
     body.reading_id = readingId;
+  } else if (clarifyId && typed) {
+    body.clarify_id = clarifyId;
+    body.text = typed;
   }
   return body;
 }
@@ -217,7 +222,8 @@ export function postClarifyPick(
     space_id?: string | null;
     session_id?: string | null;
     clarify_id: string;
-    reading_id: string;
+    reading_id?: string;
+    text?: string;
   },
   signal?: AbortSignal,
   askId?: string,
@@ -229,6 +235,7 @@ export function postClarifyPick(
       session_id: body.session_id,
       clarify_id: body.clarify_id,
       reading_id: body.reading_id,
+      text: body.text,
     },
     signal,
     askId,

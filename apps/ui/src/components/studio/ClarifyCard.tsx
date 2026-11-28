@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import type { ClarifyBlock, ClarifyReading } from "@/lib/types";
 
 /** The ask body for one tap. Ids come from the envelope, not from the question text. */
@@ -22,23 +22,48 @@ export function clarifyPickBody(
   };
 }
 
+export function clarifyRefineBody(
+  block: ClarifyBlock,
+  text: string,
+  ctx: { question?: string | null; space_id?: string | null; session_id?: string | null },
+): {
+  question: string;
+  space_id?: string | null;
+  session_id?: string | null;
+  clarify_id: string;
+  text: string;
+} {
+  const typed = text.trim();
+  return {
+    question: (ctx.question ?? "").trim() || typed,
+    space_id: ctx.space_id,
+    session_id: ctx.session_id,
+    clarify_id: block.clarify_id,
+    text: typed,
+  };
+}
+
 const BUTTON =
   "min-h-[44px] w-full border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-2 text-left text-sm font-medium text-[var(--color-ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent)] disabled:opacity-50 sm:w-auto";
 
-/** Question plus 1 to 3 readings. The parent runs the picked reading_id. */
+/** Question, 1 to 4 reading buttons, and one free-text refine. */
 export function ClarifyCard({
   block,
   busy,
   error,
   onPick,
+  onRefine,
 }: {
   block: ClarifyBlock;
   busy?: boolean;
   error?: string | null;
   onPick: (reading: ClarifyReading) => void | Promise<void>;
+  onRefine?: (text: string) => void | Promise<void>;
 }) {
   const titleId = useId();
   const questionId = useId();
+  const refineId = useId();
+  const [draft, setDraft] = useState("");
   return (
     <section
       data-testid="clarify-card"
@@ -69,6 +94,35 @@ export function ClarifyCard({
           </button>
         ))}
       </div>
+      <form
+        className="mt-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const typed = draft.trim();
+          if (!typed || busy || !onRefine) return;
+          void onRefine(typed);
+        }}
+      >
+        <label className="block text-sm text-[var(--color-ink)]" htmlFor={refineId}>
+          Or describe it
+          <input
+            id={refineId}
+            data-testid="clarify-refine"
+            value={draft}
+            disabled={busy}
+            onChange={(event) => setDraft(event.target.value)}
+            className="mt-1 min-h-[44px] w-full border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-2 text-sm text-[var(--color-ink)]"
+          />
+        </label>
+        <button
+          type="submit"
+          data-testid="clarify-refine-submit"
+          disabled={busy || !draft.trim()}
+          className={`${BUTTON} mt-2`}
+        >
+          Use this wording
+        </button>
+      </form>
       {error ? (
         <p data-testid="clarify-error" className="mt-2 text-xs text-[var(--color-danger)]" role="alert">
           {error}
