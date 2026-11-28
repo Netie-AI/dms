@@ -393,7 +393,8 @@ jobs:
   # FEAT-CONNECT-GAUSS-01. openGauss must connect. A dead container fails
   # this job and prints its logs. opengauss/opengauss is MulanPSL-2.0.
   # gvenzl/oracle-free packages Oracle Database Free (Oracle Free Use Terms),
-  # not a paid edition, and still skips when that image will not pull.
+  # not a paid edition. It skips with a named reason when the image will not
+  # pull or the database never becomes ready. A live probe failure fails the job.
   connect-gauss-oracle:
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -590,31 +591,60 @@ jobs:
           export CONNECT_GAUSS_DB=postgres
           export CONNECT_GAUSS_PASSWORD="$GS_PASSWORD"
           oracle=0
+          export ORACLE_PASSWORD=Ci_only_Oracle1
+          redact_oracle_logs() {
+            python - << 'PY'
+          import os
+          import subprocess
+          pw = os.environ.get("ORACLE_PASSWORD", "")
+          proc = subprocess.run(["docker", "logs", "oracle-free"], capture_output=True)
+          text = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+          if pw:
+              text = text.replace(pw, "[redacted]")
+          print(text[-24000:])
+          PY
+          }
           if timeout 180 docker pull gvenzl/oracle-free:23-slim; then
-            docker run -d --name oracle-free -p 1521:1521 \
-              -e ORACLE_PASSWORD=Ci_only_Oracle1 gvenzl/oracle-free:23-slim || true
-            oracle=1
+            docker rm -f oracle-free >/dev/null 2>&1 || true
+            if docker run -d --name oracle-free -p 1521:1521 \
+              -e ORACLE_PASSWORD gvenzl/oracle-free:23-slim; then
+              oracle=1
+            else
+              echo "skipped: oracle free container did not start"
+            fi
           else
             echo "skipped: oracle free image unavailable"
           fi
           if [ "$oracle" = 1 ]; then
+            # The image opens port 1521 before the database is open.
+            # "DATABASE IS READY TO USE" is the real ready line. 90 * 8s.
             ready=0
-            for _ in $(seq 1 40); do
-              if python -c 'import socket; s=socket.create_connection(("127.0.0.1",1521),2); s.close()'; then
+            ora_reason=""
+            for _ in $(seq 1 90); do
+              running="$(docker inspect -f '{{.State.Running}}' oracle-free 2>/dev/null || echo false)"
+              if [ "$running" != "true" ]; then
+                ora_reason="oracle free container exited before ready"
+                break
+              fi
+              if docker logs oracle-free 2>&1 | grep -F 'DATABASE IS READY TO USE' >/dev/null; then
                 ready=1
                 break
               fi
-              sleep 6
+              sleep 8
             done
-            if [ "$ready" = 1 ]; then
+            if [ "$ready" != 1 ] && [ -z "$ora_reason" ]; then
+              ora_reason="oracle free did not become ready"
+            fi
+            if [ -n "$ora_reason" ]; then
+              echo "skipped: ${ora_reason}"
+              redact_oracle_logs
+            else
               export DMS_CONNECT_ORACLE_LIVE=1
               export CONNECT_ORACLE_HOST=127.0.0.1
               export CONNECT_ORACLE_PORT=1521
               export CONNECT_ORACLE_USER=system
               export CONNECT_ORACLE_DB=FREEPDB1
-              export CONNECT_ORACLE_PASSWORD=Ci_only_Oracle1
-            else
-              echo "skipped: oracle free did not accept connections"
+              export CONNECT_ORACLE_PASSWORD="$ORACLE_PASSWORD"
             fi
           fi
           if ! python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live_gauss; then
@@ -622,7 +652,7 @@ jobs:
             exit 1
           fi
           if [ "${DMS_CONNECT_ORACLE_LIVE:-}" = 1 ]; then
-            python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live_oracle || echo "oracle live failed"
+            python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live_oracle
           fi
 
   lint-type-test:

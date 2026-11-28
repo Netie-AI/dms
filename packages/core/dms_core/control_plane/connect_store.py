@@ -22,11 +22,9 @@ from dms_core.control_plane.connect_secrets import key_id_for_ref, value_has_sec
 from dms_core.control_plane.session import set_tenant_context
 
 _KINDS = frozenset({"postgresql", "mysql", "mariadb", "sqlserver", "sqlite"})
-_FLAG_ON = frozenset({"1", "true", "yes", "on"})
-
-
 def _flag_on(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in _FLAG_ON
+    """On only for the digit 1. ``true``, ``yes``, and ``on`` stay off."""
+    return os.environ.get(name, "").strip() == "1"
 
 
 def allowed_kinds() -> frozenset[str]:

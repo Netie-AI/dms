@@ -10,11 +10,10 @@ from __future__ import annotations
 import os
 from typing import Any
 
-_ON = frozenset({"1", "true", "yes", "on"})
-
 
 def flag_on(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in _ON
+    """On only for the digit 1. ``true``, ``yes``, and ``on`` stay off."""
+    return os.environ.get(name, "").strip() == "1"
 
 
 class DriverError(Exception):

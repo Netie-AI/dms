@@ -4,6 +4,7 @@ Flags, both default off:
 
 - `DMS_CONNECT_GAUSS=1` accepts kind `gauss` (GaussDB centralized and openGauss).
 - `DMS_CONNECT_ORACLE=1` accepts kind `oracle`.
+- Only the digit `1` turns a flag on. `true`, `yes`, and `on` leave it off.
 
 Off, both kinds are rejected with the same `bad_request` the connect API already
 returns for an unknown kind. The ask prompt, the envelope, and the served route
@@ -49,8 +50,10 @@ Gauss, `oracle` for Oracle.
 
 The CI job must start openGauss. A pull failure or a server that never
 reports running fails the job and prints the container logs with the password
-removed. Oracle Free still skips when that image will not pull. Neither image
-is a paid service.
+removed. Oracle Free skips, with a named reason, when the image will not pull
+or the database never prints that it is ready. A live Oracle probe failure
+fails the job and prints the driver error with the password removed. Neither
+image is a paid service.
 
 - `opengauss/opengauss:5.0.0` is openGauss, license MulanPSL-2.0.
 - `gvenzl/oracle-free:23-slim` packages Oracle Database Free. The image scripts

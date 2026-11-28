@@ -145,6 +145,24 @@ def test_flags_default_off_and_kinds_match_the_base_set(monkeypatch: pytest.Monk
     assert oracle.enabled() is False
 
 
+def test_word_flags_stay_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dms_executor.drivers import flag_on
+
+    for raw in ("true", "yes", "on"):
+        _flag(monkeypatch, "DMS_CONNECT_GAUSS", raw)
+        _flag(monkeypatch, "DMS_CONNECT_ORACLE", raw)
+        assert flag_on("DMS_CONNECT_GAUSS") is False
+        assert flag_on("DMS_CONNECT_ORACLE") is False
+        assert allowed_kinds() == _BASE_KINDS
+        assert gauss.enabled() is False
+        assert oracle.enabled() is False
+    _flag(monkeypatch, "DMS_CONNECT_GAUSS", "1")
+    _flag(monkeypatch, "DMS_CONNECT_ORACLE", "1")
+    assert flag_on("DMS_CONNECT_GAUSS") is True
+    assert "gauss" in allowed_kinds()
+    assert "oracle" in allowed_kinds()
+
+
 def test_flag_off_source_config_error_matches_an_unknown_kind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -628,7 +646,7 @@ def test_gauss_catalog_falls_back_when_the_server_rejects_ordinality() -> None:
 
 
 def _live(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return os.environ.get(name, "").strip() == "1"
 
 
 @pytest.mark.skipif(not _live("DMS_CONNECT_GAUSS_LIVE"), reason="openGauss image unavailable")
@@ -689,18 +707,55 @@ def test_live_gauss_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     assert password not in str(raised.value)
 
 
+def _oracle_driver_error(password: str) -> str:
+    """The driver exception, with the password removed. Printed when the probe says network."""
+    try:
+        import oracledb
+    except ImportError as exc:
+        return f"ImportError: {exc}"
+    try:
+        con = oracledb.connect(
+            user=os.environ.get("CONNECT_ORACLE_USER", "system"),
+            password=password,
+            host=os.environ.get("CONNECT_ORACLE_HOST", "127.0.0.1"),
+            port=int(os.environ.get("CONNECT_ORACLE_PORT", "1521")),
+            service_name=os.environ.get("CONNECT_ORACLE_DB", "FREEPDB1"),
+            tcp_connect_timeout=10,
+        )
+    except Exception as exc:
+        text = f"{type(exc).__name__}: {exc}"
+        return text.replace(password, "[redacted]")
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT banner FROM v$version WHERE ROWNUM = 1")
+        row = cur.fetchone()
+        banner = "" if not row else str(row[0])
+        return f"driver login ok banner={banner}".replace(password, "[redacted]")
+    except Exception as exc:
+        text = f"{type(exc).__name__}: {exc}"
+        return text.replace(password, "[redacted]")
+    finally:
+        con.close()
+
+
 @pytest.mark.skipif(not _live("DMS_CONNECT_ORACLE_LIVE"), reason="Oracle Free image unavailable")
 def test_live_oracle_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_CONNECT_ORACLE", "1")
     password = os.environ["CONNECT_ORACLE_PASSWORD"]
-    probed = probe_source(
-        kind="oracle",
-        host=os.environ.get("CONNECT_ORACLE_HOST", "127.0.0.1"),
-        port=int(os.environ.get("CONNECT_ORACLE_PORT", "1521")),
-        database=os.environ.get("CONNECT_ORACLE_DB", "FREEPDB1"),
-        user=os.environ.get("CONNECT_ORACLE_USER", "system"),
-        password=password,
-    )
+    try:
+        probed = probe_source(
+            kind="oracle",
+            host=os.environ.get("CONNECT_ORACLE_HOST", "127.0.0.1"),
+            port=int(os.environ.get("CONNECT_ORACLE_PORT", "1521")),
+            database=os.environ.get("CONNECT_ORACLE_DB", "FREEPDB1"),
+            user=os.environ.get("CONNECT_ORACLE_USER", "system"),
+            password=password,
+        )
+    except Exception as exc:
+        detail = _oracle_driver_error(password)
+        print(detail)
+        assert password not in detail
+        raise AssertionError(f"{exc}: {detail}") from None
     dumped = json.dumps(probed)
     assert password not in dumped
     assert probed["dialect"] == "oracle"
