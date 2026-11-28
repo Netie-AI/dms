@@ -8,11 +8,11 @@
 
 **Unlock:** OpenVault ships a per-user or per-key cap write API. Call that, and stop keeping a second cap in DMS.
 
-## READY-02 leftover: SAML 2.0 and SCIM (#634)
+## READY-02 leftover: SAML 2.0 (#634)
 
-`DMS_SSO` (default off, digit 1 only) covers password login, roles, and OIDC for Google, Microsoft Entra, and a generic Okta issuer. SAML 2.0 and SCIM group sync, including IdP deprovision, are not in that change.
+`DMS_SSO` (default off, digit 1 only) covers password login, roles, and OIDC for Google, Microsoft Entra, and a generic Okta issuer. SCIM 2.0 user and group provisioning is implemented behind `DMS_SCIM` (default off, digit 1 only) and is not this parked item. SAML 2.0 is not implemented.
 
-**Unlock:** a buyer names the SAML identity provider or asks for SCIM deprovision, and the founder GO for auth is still in force. Do not store an IdP secret in the repo. Use an OpenVault `cred_ref`.
+**Unlock:** a buyer names the SAML identity provider, and the founder GO for auth is still in force. Do not store an IdP secret in the repo. Use an OpenVault `cred_ref`.
 
 **Ledger updated:** 2026-08-05 afternoon — F29 NEEDS-YOU closed **A** (thin EPIC-023 deferred SURFACE; B/H6 rejected; P-DMS-30 stays parked). Accuracy RUN NOW = residual EPIC-017/018 completeness (#33/#35), then EPIC-019. EPIC-023 not ticketed.
 

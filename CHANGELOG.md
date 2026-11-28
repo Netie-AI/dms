@@ -2,6 +2,18 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - SCIM-01: Alembic head is 0014_scim
+
+- **Chain.** `0014_scim` revises `0013_gov_console`. `0013_gov_console` revises `0012_sign`. The single-head check stays.
+
+## 2026-11-28 - SCIM-01: directory provisioning behind DMS_SCIM
+
+- **Flag.** `DMS_SCIM` defaults off. Only the exact digit 1 turns it on. `true`, `yes`, `on`, and a padded ` 1 ` stay off. Off, `/scim/v2` is not mounted and the space list is unchanged.
+- **Protocol.** `/scim/v2` serves ServiceProviderConfig, ResourceTypes, Schemas, Users, and Groups. PATCH op names are case-insensitive. Pagination uses startIndex and count. Enterprise User carries department and manager. DELETE sets `active` false and leaves the row so a later GET still returns it.
+- **Auth.** A manager issues a per-tenant bearer. OpenVault stores the secret. DMS stores the sha256 and the cred_ref. The token is not logged. Rotation replaces the hash. The protocol path is rate limited. Writes call `compliance_gate` and fail closed.
+- **Mapping.** A manager saves department or group name to role, budget, and space grants in the Directory sync panel. Match is exact, ignoring case. The lowest priority number wins. A new hire in a mapped department gets that role. A leaver loses their sessions on the same call. Every provisioning event is audited.
+- **Stub 52.** Not remeasured. The ask path is unchanged when the flag is off. Armed grade52 and pack H were not run. Not PASS. SAML 2.0 stays parked (#634).
+
 ## 2026-11-28 - DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE
 
 - **Flag.** `DMS_GOV_CONSOLE` defaults off. Only the exact digit 1 turns it on. `true`, `yes`, `on`, and a padded ` 1 ` stay off. Off, `/v1/gov` is not mounted and the ask, ingest, and connect handlers return the same result they returned before.

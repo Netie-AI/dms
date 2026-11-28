@@ -216,7 +216,7 @@ def test_single_alembic_head() -> None:
     cfg.set_main_option("script_location", str(root / "alembic"))
     heads = ScriptDirectory.from_config(cfg).get_heads()
     assert len(heads) == 1
-    assert heads == ["0013_gov_console"]
+    assert heads == ["0014_scim"]
 
 
 def test_key_values_that_read_as_pii_or_run_long_are_refused() -> None:

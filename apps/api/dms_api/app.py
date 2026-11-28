@@ -13,6 +13,7 @@ from dms_core.control_plane.ask_audit import (
     PostgresAskAuditStore,
 )
 from dms_core.governance import enabled as gov_enabled
+from dms_core.scim import enabled as scim_enabled
 from dms_core.signing.flag import enabled as sign_enabled
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -270,6 +271,14 @@ def create_app() -> FastAPI:
 
         bind_store(settings)
         app.include_router(gov.router)
+    if scim_enabled():
+        from dms_core.scim.store import get_store
+
+        from dms_api.routes import scim
+
+        get_store().bind(settings.database_url, settings.dms_tenant_id)
+        app.include_router(scim.router)
+        app.include_router(scim.admin)
     return app
 
 
