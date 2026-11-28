@@ -1170,6 +1170,27 @@ class Executor:
             raise
         except Exception:  # noqa: BLE001 -- named refusal, never the whole space
             granted, grant_read = [], False
+        # FDE-SPACE-GRANT-01: a Space whose SQL source is bound has no grant
+        # until a steward grants tables. Both lanes abstain. An ungranted
+        # bronze name is not grounded. Flag off keeps the empty-grant fall
+        # through below.
+        from dms_core.control_plane.connect_grants import (
+            is_connected_space,
+            sql_source_bind_enabled,
+        )
+
+        if (
+            grant_read
+            and not granted
+            and sql_source_bind_enabled()
+            and space_id
+            and is_connected_space(canonical_space_id(space_id))
+        ):
+            env = path_miss_envelope(
+                question, "ungranted", space_id=space_id, session_id=session_id
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
         if not grant_read or (not granted and not allow_cortex):
             env = path_miss_envelope(
                 question, GRANT_UNREADABLE, space_id=space_id, session_id=session_id

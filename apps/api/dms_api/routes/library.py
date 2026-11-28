@@ -118,6 +118,19 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
         ]
     if space_id:
         sources = [s for s in sources if s.get("space_id") == space_id]
+    from dms_core.control_plane.connect_grants import (
+        sources_for_space,
+        sql_source_bind_enabled,
+    )
+
+    # Flag off: the list above is the whole answer. On, a studio SQL land
+    # that Postgres did not persist still shows, and a row already listed
+    # is not repeated.
+    if sql_source_bind_enabled() and space_id:
+        seen = {str(s.get("id")) for s in sources}
+        for row in sources_for_space(space_id):
+            if str(row["id"]) not in seen:
+                sources.append(row)
     return sources
 
 
