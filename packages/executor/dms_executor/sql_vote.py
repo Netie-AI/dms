@@ -85,9 +85,13 @@ def reading_prompt(
     """SQL instruction for one reading. Reading 2 includes the ontology and a plan."""
     q = question or ""
     if reading == 1:
-        return f"{_DIRECT}{_QUESTION}{q}"
-    body = json.dumps(plan if isinstance(plan, dict) else empty_plan(), sort_keys=True)
-    return f"{_FROM_PLAN}\nOntology:\n{ontology or '{}'}\nPlan:\n{body}{_QUESTION}{q}"
+        text = f"{_DIRECT}{_QUESTION}{q}"
+    else:
+        body = json.dumps(plan if isinstance(plan, dict) else empty_plan(), sort_keys=True)
+        text = f"{_FROM_PLAN}\nOntology:\n{ontology or '{}'}\nPlan:\n{body}{_QUESTION}{q}"
+    from cortex_client.compute import question_for_sql_writer
+
+    return question_for_sql_writer(text)
 
 
 def vote_plan_from_payload(payload: dict[str, Any] | None) -> dict[str, Any] | None:

@@ -1257,6 +1257,35 @@ def _split_knowledge(text: str) -> tuple[str, str]:
     return parts[0], SPACE_KNOWLEDGE_MARK + parts[1]
 
 
+# BIRD-TIES-PROJECTION-01. The SQL writer also names columns and readings.
+# Ranking still sees the original question argument, not this suffix.
+TIE_PROJECTION_ENV = "DMS_TIE_PROJECTION"
+_TIE_WRITER_SUFFIX = (
+    "\n\nReply with one JSON object and nothing else. "
+    "Keys are sql, asked_columns, and readings. "
+    "sql is one SELECT. "
+    "asked_columns is a list of result column names the question asks to see. "
+    "readings is a list of objects with keys id, text, and sql. "
+    "Include two readings only when two different answers both fit the schema. "
+    "Otherwise readings is empty. "
+    "Do not pick one reading when two are real."
+)
+
+
+def tie_projection_enabled() -> bool:
+    """True only when ``DMS_TIE_PROJECTION`` is the digit 1."""
+    return os.environ.get(TIE_PROJECTION_ENV, "0").strip() == "1"
+
+
+def question_for_sql_writer(question: str) -> str:
+    """The generate question. Flag off returns the same string."""
+    if not tie_projection_enabled():
+        return question
+    if question.endswith(_TIE_WRITER_SUFFIX):
+        return question
+    return f"{question}{_TIE_WRITER_SUFFIX}"
+
+
 def _insights_body(
     question: str,
     *,
@@ -1288,6 +1317,7 @@ def _insights_body(
         asked = question_with_examples(asked, examples)
     if tail:
         asked = f"{asked.rstrip()}{tail}"
+    asked = question_for_sql_writer(asked)
     body: dict[str, Any] = {
         "intent": asked,
         "question": asked,

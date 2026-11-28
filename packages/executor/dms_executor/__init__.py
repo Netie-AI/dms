@@ -907,6 +907,12 @@ class Executor:
         # from the envelope (see executed_trace). The caller reads it with
         # take_executed() right after this returns or raises.
         executed_trace.begin()
+        from cortex_client.compute import tie_projection_enabled
+
+        if tie_projection_enabled():
+            from dms_executor.tie_projection import begin_turn
+
+            begin_turn()
         seen: list[dict[str, Any] | None] = []
         # Whole-ask clock. Each Insights leg keeps its own 8s HTTP timeout.
         ask_budget_s = serving_deadline_s()
@@ -1090,11 +1096,24 @@ class Executor:
             out = stamped if stamped is not None else env
             if isinstance(out, dict):
                 raw_loop = out.get("loop")
-                apply_sql_credit(
+            apply_sql_credit(
+                out,
+                payload if isinstance(payload, dict) else None,
+                raw_loop if isinstance(raw_loop, list) else None,
+                dialect=extract_dialect(self.dialect),
+            )
+            if tie_projection_enabled():
+                from dms_executor.tie_projection import apply_on_warehouse
+
+                grants = turn_grants()
+                out = apply_on_warehouse(
                     out,
-                    payload if isinstance(payload, dict) else None,
-                    raw_loop if isinstance(raw_loop, list) else None,
-                    dialect=extract_dialect(self.dialect),
+                    warehouse=self._warehouse,
+                    dialect=extract_dialect(self.dialect) or "duckdb",
+                    question=question,
+                    space_id=space_id,
+                    session_id=session_id,
+                    grantable=set(grants) if grants is not None else None,
                 )
             from dms_core.ask import lane_for_route
             from dms_core.pii import mask_unknown_keys
