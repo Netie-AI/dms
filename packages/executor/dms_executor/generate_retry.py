@@ -268,13 +268,16 @@ def prefer_askback(
         return env
     if env.get("abstained") is not True:
         return env
-    reason = str(env.get("abstain_reason") or "")
+    reason = str(env.get("abstain_reason") or "").strip()
     from dms_executor.ask_ladder import is_direct_abstain
 
     if reason and is_direct_abstain(reason):
         return env
     text = str(env.get("text") or "").casefold()
-    if is_give_up(reason) or text.startswith("generative miss:"):
+    # An empty reason is not a give-up. The ungranted refusal often has none.
+    if reason and is_give_up(reason):
+        return held
+    if text.startswith("generative miss:"):
         return held
     if "cannot certify an ontology-grounded query" in text:
         return held
