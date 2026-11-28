@@ -156,6 +156,8 @@ def start_demo(
     if not demo_enabled():
         raise HTTPException(status_code=404, detail="ready_demo_disabled")
     actor = _actor(settings)
+    if not (tenant_enabled() and grant_enabled() and joins_enabled() and guide_enabled()):
+        raise HTTPException(status_code=404, detail="ready_demo_disabled")
     decision = compliance_gate(
         action="ready.demo.start",
         actor=actor,
@@ -170,8 +172,6 @@ def start_demo(
             store=store,
             persistent=binding.persistent,
         )
-        if not grant_enabled() or not joins_enabled() or not guide_enabled():
-            raise ReadyError("ready_demo_disabled", 404)
         path = write_demo_sqlite(demo_directory())
         source = connect_profiled(
             space_id=str(company["space_id"]),
