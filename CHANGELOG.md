@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - READY-07: Studio sell profile
+
+- **Flag.** `DMS_SELL_PROFILE` default off, digit 1 only. On, Studio `/ask` skips the rule lanes and asks the model to plan, pick tables, write read-only SQL, check, and answer. Self-repair and OpenVault escalation use the existing route hint. A clarify block is a question plus options.
+- **UI.** The card leads with the answer, then a chart from the result shape, with See SQL, See rows, and How I checked. Steps stream on the ask SSE with a breathing dot, elapsed time, and a short land animation. `prefers-reduced-motion` turns the motion off.
+- **Stub 52.** `grade52 --main` at `0294d87`. Off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On: correct=0 wrong=0 reconfirm=52 ai=0 rule=0. The stub insights have no `query_sql`, so nothing is served. WRONG stays 0. Not PASS.
+- **Rebase.** Calls `run_floor` when that module is present, and `big_schema.schema_for_ask` when that module is present. Neither file is edited here.
+
 ## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto a7c0ce4f
 
 - **Base.** Rebased onto `a7c0ce4f` (#627, #600). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the tie-projection row and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
