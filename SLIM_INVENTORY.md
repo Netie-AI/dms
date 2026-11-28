@@ -28,7 +28,7 @@ Live tree versus origin/main `5b8da59` (#656). Excludes `attic/`, `.git`, `.venv
 | product py (`apps` `packages` `scripts`) | 312 / 136885 | 309 / 136098 |
 | product py+ts+tsx | 436 / 155359 | 433 / 154572 |
 | docs md | 196 / 7319 | 76 / 4339 |
-| text (py ts tsx md yml) | 1026 / 307206 | 905 / 303627 |
+| text (py ts tsx md yml) | 1026 / 307206 | 905 / 303631 |
 
 Gitignored `playground/data/` is not in the count. `attic/` is not in the after column. The after column includes this file.
 
