@@ -11,7 +11,7 @@ Append-only. Never edited, only added to. Newest first.
 - **Flag.** `DMS_COMPILE_HONOUR_CHECK` defaults off. Only the digit 1 turns it on. Off, the compile serve, the prompt, and the route stay as they were.
 - **Honour.** On, role `reason` judges grouping, filters, entity, aggregation, and time from the question, the compiled SQL, and SQL-tree semantics. A miss falls through to model SQL, then an ask-back. The E10/E12 shape-guard abstain on that path falls through the same way.
 - **Destructive.** A typed non-SELECT statement, or a destructive verdict from role `reason`, refuses before compile. No keyword list. An unknown verdict is not a destructive abstain.
-- **Stub 52.** `grade52 --main` at `ca08157`, base `67ae704`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed grade52 and pack H were not run. Not PASS.
+- **Stub 52.** `grade52 --main` at `a9f0049`, base `43e4724`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed grade52 and pack H were not run. Not PASS.
 
 ## 2026-11-27 - SCALE-MISS-01: rename the SQL check, use the serving dialect
 
