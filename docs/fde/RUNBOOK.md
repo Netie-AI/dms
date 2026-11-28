@@ -46,13 +46,21 @@ Then start DMS with `DMS_TENANT_ID` set to that uuid, and create the Space in se
 
 ### Engine support on main
 
-| Engine | `kind` | Notes |
-|---|---|---|
-| PostgreSQL | `postgresql` | SELECT-only login. Key discovery for a SELECT-only login needs FDE-PG-KEYS-01 (#545); without it, check the ontology for missing links. |
-| MySQL / MariaDB | `mysql` | MariaDB uses the same `kind`. Measured on MariaDB 11.8. |
-| SQL Server / Azure SQL | `sqlserver` | ODBC Driver 18 on the DMS host. Encrypt is on by default; leave it on for Azure. |
-| CSV / Excel | Studio upload | `POST /v1/studio/ingest`, `/ingest-batch`. Keys are proposed by profiling (#521/#533). |
-| SQLite, Oracle, Snowflake, BigQuery, Databricks, Redshift | none yet | Export to CSV/Parquet, or wait for the connector. Do not promise these live. |
+Generated from the driver modules by `scripts/fde/kits/matrix.py`. A kind that is not in this table has no connector. PostgreSQL key discovery for a SELECT-only login reads `pg_catalog` (FDE-PG-KEYS-01). MariaDB uses the MySQL driver. Do not promise a kind this table marks as not a connector.
+
+<!-- fde-engine-matrix:start -->
+| Engine | `kind` | Flag | Port | Accepted when |
+|---|---|---|---|---|
+| `sqlserver` | `sqlserver` | (none) | 1433 | built in; encrypt defaults on (ODBC Driver 18 for SQL Server) |
+| `mysql` | `mysql` | (none) | 3306 | built in; connect book kind `mariadb` uses this driver |
+| `postgresql` | `postgresql` | (none) | 5432 | built in |
+| `sqlite` | `sqlite` | `DMS_SQLITE_SOURCE_ROOT` | file | the env names the directory that holds the file |
+| `gauss` | `gauss` | `DMS_CONNECT_GAUSS` | 5432 | digit 1 only |
+| `oracle` | `oracle` | `DMS_CONNECT_ORACLE` | 1521 | digit 1 only |
+| not a connector | `snowflake`, `bigquery`, `databricks`, `redshift` | (none) |  | no driver module and not in the connect book |
+<!-- fde-engine-matrix:end -->
+
+CSV and Excel stay a Studio upload (`POST /v1/studio/ingest`, `/ingest-batch`), not a SQL kind.
 
 All engines land in DuckDB bronze and every answer runs there (extract-only, DR-0005). The model writes one dialect, DuckDB, whatever the source.
 
