@@ -2012,30 +2012,30 @@ def bench_grantable(space_id: str) -> set[str]:
 def bench_warehouse() -> Any:
     from pathlib import Path
 
-    from dms_executor.demo_warehouse import warehouse_path
+    import dms_executor
 
-    path = warehouse_path()
+    path = dms_executor.warehouse_path()
     return path if isinstance(path, Path) else Path(path)
 
 
 def bench_example_rows(space_id: str) -> list[dict[str, Any]]:
     """Verified examples only. Benchmarks are a different table."""
-    from dms_executor.verified_queries import list_verified_queries
+    import dms_executor
 
-    return list_verified_queries(space_id=space_id, path=bench_warehouse())
+    return dms_executor.list_verified_queries(space_id=space_id, path=bench_warehouse())
 
 
 def classify_benchmark_sql(space_id: str, gold_sql: str) -> tuple[str, str]:
     """``(status, reason)``. A write or a scored row raises ``BenchRefused``."""
+    import dms_executor
     from dms_core.control_plane.bench_store import BenchRefused
-    from dms_executor.space_bench import check_gold_sql, guard_benchmark_write
 
     try:
-        guard_benchmark_write(sql=gold_sql)
+        dms_executor.guard_benchmark_write(sql=gold_sql)
     except ValueError as exc:
         code = str(exc) or "scored_pack_write_blocked"
         raise BenchRefused(code) from None
-    check = check_gold_sql(
+    check = dms_executor.check_gold_sql(
         gold_sql,
         grantable=bench_grantable(space_id),
         warehouse=bench_warehouse(),
@@ -2070,12 +2070,12 @@ def save_space_benchmark(
 
 def run_benchmark_job(store: Any, run_id: str, items: list[dict[str, Any]], ask_fn: Any) -> None:
     """Grade the snapshot. Progress is one item at a time. No extra deadline."""
-    from dms_executor.space_bench import execute_gold, run_items, tally
+    import dms_executor
 
     warehouse = bench_warehouse()
 
     def execute(sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
-        return execute_gold(sql, warehouse)
+        return dms_executor.execute_gold(sql, warehouse)
 
     done = 0
 
@@ -2087,14 +2087,14 @@ def run_benchmark_job(store: Any, run_id: str, items: list[dict[str, Any]], ask_
 
     store.set_status(run_id, "running")
     try:
-        status, results = run_items(
+        status, results = dms_executor.run_items(
             items,
             ask_fn,
             execute,
             cancelled=lambda: bool(store.cancel_requested(run_id)),
             on_result=on_result,
         )
-        store.finish_run(run_id, status=status, tally=tally(results))
+        store.finish_run(run_id, status=status, tally=dms_executor.tally(results))
     except Exception:
         logger.warning("bench_run_failed")
         store.finish_run(run_id, status="failed", tally={})

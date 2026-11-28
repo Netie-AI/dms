@@ -155,8 +155,10 @@ def _public_result(row: dict[str, Any]) -> dict[str, Any]:
 def _public_run(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    tally = row.get("tally") if isinstance(row.get("tally"), dict) else {}
-    results = row.get("results") if isinstance(row.get("results"), list) else []
+    raw_tally = row.get("tally")
+    raw_results = row.get("results")
+    tally = raw_tally if isinstance(raw_tally, dict) else {}
+    results = raw_results if isinstance(raw_results, list) else []
     return {
         "id": row["id"],
         "status": row["status"],

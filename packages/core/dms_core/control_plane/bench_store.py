@@ -77,8 +77,9 @@ class MemoryBenchStore:
             raise BenchRefused("bad_request")
         with self._lock:
             seq = self._tick()
+            item_id = str(uuid4())
             row = {
-                "id": str(uuid4()),
+                "id": item_id,
                 "space_id": space_id,
                 "question": question,
                 "gold_sql": gold_sql,
@@ -88,7 +89,7 @@ class MemoryBenchStore:
                 "created_at": _now(seq),
                 "seq": seq,
             }
-            self._items[row["id"]] = row
+            self._items[item_id] = row
             return dict(row)
 
     def list_items(self, space_id: str) -> list[dict[str, Any]]:

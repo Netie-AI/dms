@@ -13,6 +13,7 @@ import copy
 import json
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import duckdb
@@ -197,6 +198,7 @@ def test_flag_off_ask_bytes_match_flag_on(monkeypatch: pytest.MonkeyPatch) -> No
             lambda **_k: ComplianceDecision(allowed=True, reason="test_allow", action="chat.ask"),
         )
         app = create_app()
+        app.state.cortex = SimpleNamespace(base_url="")
         ask = app.state.ask_service
 
         def live_ask(question: str, **_k: Any) -> dict[str, Any]:
@@ -207,12 +209,8 @@ def test_flag_off_ask_bytes_match_flag_on(monkeypatch: pytest.MonkeyPatch) -> No
         ask.offer_reconfirm = lambda env, **_k: env  # type: ignore[method-assign]
         return TestClient(app)
 
-    off_body = client_for(False).post(
-        "/v1/chat/ask", json={"question": "how many bench rows"}
-    )
-    on_body = client_for(True).post(
-        "/v1/chat/ask", json={"question": "how many bench rows"}
-    )
+    off_body = client_for(False).post("/v1/chat/ask", json={"question": "how many bench rows"})
+    on_body = client_for(True).post("/v1/chat/ask", json={"question": "how many bench rows"})
     assert off_body.status_code == 200
     assert on_body.status_code == 200
     assert off_body.content == on_body.content
@@ -264,9 +262,7 @@ def test_update_ground_truth_is_refused(monkeypatch: pytest.MonkeyPatch) -> None
     assert client.get(base).json()["items"] == []
 
 
-def test_grant_miss_is_saved_invalid(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_grant_miss_is_saved_invalid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _grant(monkeypatch)
     _allow(monkeypatch)
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(_lake(tmp_path)))
@@ -297,9 +293,7 @@ def test_scored_sql_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert client.get(f"/v1/spaces/{SPACE}/benchmarks").json()["items"] == []
 
 
-def test_ten_rows_match_the_expected_tally(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ten_rows_match_the_expected_tally(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _grant(monkeypatch)
     _allow(monkeypatch)
     monkeypatch.setenv("DMS_WAREHOUSE_DB", str(_lake(tmp_path)))
@@ -443,13 +437,7 @@ def test_order_and_tolerance_follow_grade52() -> None:
 
 def test_synthetic_20_matches_grade_case() -> None:
     """In-product tally equals grade52.grade_case, which eval_all imports."""
-    plan = (
-        ["correct"] * 8
-        + ["wrong"] * 3
-        + ["clarify"] * 3
-        + ["reconfirm"] * 3
-        + ["abstain"] * 3
-    )
+    plan = ["correct"] * 8 + ["wrong"] * 3 + ["clarify"] * 3 + ["reconfirm"] * 3 + ["abstain"] * 3
     gold_sql = "SELECT qty FROM bench_sku"
     gold_rows = [{"qty": 1}]
     items = [

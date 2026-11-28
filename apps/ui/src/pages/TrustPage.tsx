@@ -8,7 +8,6 @@ import {
   Section,
   StatTile,
 } from "@/components/PageShell";
-import { useApp } from "@/context/AppContext";
 import { fetchTrustRun, fetchTrustSummary } from "@/lib/api";
 import {
   claimHeadline,
@@ -266,7 +265,6 @@ function CaseList({ items }: { items: TrustRunDetailItem[] }) {
 }
 
 export function TrustPage() {
-  const { activeSpaceId } = useApp();
   const { data, error, loading, reload } = useAsync<TrustSummary>((signal) =>
     fetchTrustSummary(signal),
   );
@@ -330,7 +328,7 @@ export function TrustPage() {
       </div>
 
       {tab === "benchmarks" ? (
-        <SpaceBenchPanel spaceId={activeSpaceId} />
+        <SpaceBenchPanel />
       ) : (
         <>
       {empty && (

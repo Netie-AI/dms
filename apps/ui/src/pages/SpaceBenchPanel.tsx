@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useApp } from "@/context/AppContext";
 import {
   fetchSpaceBench,
   postSpaceBench,
@@ -188,7 +189,8 @@ function BenchRow({
   );
 }
 
-export function SpaceBenchPanel({ spaceId }: { spaceId: string | null }) {
+export function SpaceBenchPanel() {
+  const { activeSpaceId: spaceId } = useApp();
   const state = useAsync(
     (signal) =>
       spaceId
