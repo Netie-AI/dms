@@ -2229,3 +2229,33 @@ def create_confirm_final(**kwargs: Any) -> dict[str, Any]:
     import dms_executor
 
     return dms_executor.create_confirm_final(**kwargs)
+
+
+def create_context_enabled() -> bool:
+    import dms_executor
+
+    return bool(dms_executor.create_context_enabled())
+
+
+def create_context_list(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_context_list(**kwargs)
+
+
+def create_context_save_chat(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_context_save_chat(**kwargs)
+
+
+def create_context_save_project(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_context_save_project(**kwargs)
+
+
+def create_context_share(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_context_share(**kwargs)
