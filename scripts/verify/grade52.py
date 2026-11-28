@@ -257,7 +257,7 @@ _RULE_STAMPS = {
     "ladder_rung": "ladder",
     "oracle": "oracle",
 }
-_AI_STAMPS = frozenset({"generate_sql", "model_sql", "ai"})
+_AI_STAMPS = frozenset({"generate_sql", "model_sql", "ai", "ai_cube_plan"})
 # Ladder rungs that serve model SQL. Cortex's plan+SQL ladder (cortex-contract
 # 1.5.0 ``plan_sql_rung``, copied verbatim into ``ladder_rung``): ``plan``,
 # ``error-fed-retry-<N>``, ``stronger-model``; its ``reconfirm`` is a refusal.
@@ -827,8 +827,22 @@ def model_sql_served(env: Mapping[str, Any], model_sql: str | None) -> bool:
     return sql_byte_equal(served, model_sql, SERVING_DIALECT)
 
 
+def _cube_plan_stamp(env: Mapping[str, Any]) -> bool:
+    """True when the builder stamped ``ai_cube_plan``.
+
+    The model chose the plan. Compiled SQL is not model SQL text, and no
+    provider model id is required.
+    """
+    route = _stamp_text(env, "served_route").lower()
+    rung = _stamp_text(env, "ladder_rung").lower()
+    return route == "ai_cube_plan" or rung == "ai_cube_plan"
+
+
 def serve_path(env: Mapping[str, Any], model_sql: str | None = None) -> str:
     """Path that served the answer, from the envelope's stamps and the model's SQL.
+
+    ``ai_cube_plan`` is AI. The compiler wrote the SQL from the model's plan,
+    so ``sql_used`` is not required to equal ``model_sql``.
 
     ``L0``, ``L1``, ``compile``, and ``oracle`` are rule-served. An ontology
     compile stamp (``ontology_ranking``, ``ontology_plan``, ``ontology_compile``)
@@ -843,6 +857,8 @@ def serve_path(env: Mapping[str, Any], model_sql: str | None = None) -> str:
     ``plan_source`` of ``ontology_plan`` under a model-SQL ``plan_origin`` is
     not a compile claim (see ``_compile_source``).
     """
+    if isinstance(env, Mapping) and _cube_plan_stamp(env) and not _is_abstain(env):
+        return "ai"
     path = _stamped_path(env)
     served = env.get("sql_used") if isinstance(env, Mapping) else None
     if (
