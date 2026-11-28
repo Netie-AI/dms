@@ -60,6 +60,7 @@ from dms_executor.db_connector import (
 from dms_executor.demo_ask import (
     answer_demo_question,
     customer_scope_askback,
+    is_rules_off_envelope,
     normalize_ask_question,
     with_grounded_scope,
 )
@@ -570,12 +571,16 @@ class Executor:
 
         ``allow_live`` is false on the demo-fallback path, so a failed live
         ask cannot be replaced by another live call or by demo rows. None
-        means the router did not decide (``DMS_RULES_OFF``, or a customer
-        Space whose grant can still be asked on the live path).
+        means a customer Space whose grant can still be asked on the live
+        path. ``DMS_RULES_OFF`` returns an ask-back, and a model client
+        takes the AI path instead of serving that card.
         """
         if is_demo_space(space_id):
             ensure_demo_warehouse(self._warehouse)
-            return answer_demo_question(question, space_id=space_id)
+            env = answer_demo_question(question, space_id=space_id)
+            if allow_live and self._cortex is not None and is_rules_off_envelope(env):
+                return self.live_ask(question, space_id=space_id)
+            return env
         if not allow_live:
             return None
         try:

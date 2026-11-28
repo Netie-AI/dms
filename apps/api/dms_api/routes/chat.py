@@ -531,9 +531,10 @@ def _answer_ask(
         if not decision.allowed and decision.reason not in _SOFT_GATE:
             raise HTTPException(status_code=403, detail=decision.reason)
         env = ask.demo_ask(body.question, space_id=body.space_id)
-        # None: DMS_RULES_OFF, or a customer Space that still needs the live
-        # path (its grant exists and this call had no client). A live envelope
-        # keeps its own ask_mode. Only a demo-router envelope is labelled demo.
+        # None: a customer Space that still needs the live path. A live
+        # envelope keeps its own ask_mode, including the rules_off ask-back
+        # when no model client is configured. Only a demo-router envelope
+        # is labelled demo.
         if isinstance(env, dict):
             # live_ask already scrubbed with this turn's grants. _release
             # grants nothing, so it must not run over that envelope.
