@@ -376,9 +376,9 @@ def _readings_prompt(question: str, schema: str) -> str:
 
 
 def _budget_blocked() -> bool:
-    from cortex_client.ask_clock import generate_budget_left_s
+    from cortex_client.ask_clock import model_leg_budget_s
 
-    left = generate_budget_left_s()
+    left = model_leg_budget_s()
     return left is not None and left <= 0
 
 

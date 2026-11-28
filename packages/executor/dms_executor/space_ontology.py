@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
-import sqlglot
 from dms_core.control_plane.onto_store import (
     OntologySnapshot,
     OntologyStore,
@@ -1478,16 +1477,22 @@ def unverified_join_reason(
     violations: Sequence[Violation],
     *,
     columns_of: Mapping[str, set[str]],
+    root: exp.Expression | None = None,
 ) -> str | None:
     """``unverified_join:<why>`` unless ``sql`` is the allowlisted join shape.
 
     See ``_JoinRule``. Fail closed: a statement the analysis cannot finish
-    proves nothing and refuses.
+    proves nothing and refuses. ``root`` is the ask's already-parsed tree.
     """
-    try:
-        roots = [r for r in sqlglot.parse(sql, read=_DIALECT) if r is not None]
-    except Exception:  # noqa: BLE001
-        return f"{REASON_UNVERIFIED_JOIN}:parse"
+    if root is not None:
+        roots = [root.copy()]
+    else:
+        from dms_executor.sql_parse import parse_cached
+
+        try:
+            roots = [r for r in parse_cached(sql, _DIALECT) if r is not None]
+        except Exception:  # noqa: BLE001
+            return f"{REASON_UNVERIFIED_JOIN}:parse"
     if len(roots) != 1:
         return f"{REASON_UNVERIFIED_JOIN}:statements"
     root = roots[0]

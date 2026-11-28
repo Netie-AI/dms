@@ -309,9 +309,9 @@ class CortexClient:
         bound = min(insights_timeout_s(), float(self.timeout))
         if timeout is not None:
             bound = min(bound, max(float(timeout), 0.0))
-        from cortex_client.ask_clock import generate_budget_left_s
+        from cortex_client.ask_clock import model_leg_budget_s
 
-        left = generate_budget_left_s()
+        left = model_leg_budget_s()
         if left is not None:
             bound = min(bound, left) if left > 0 else 0.0
         return post_compute_insights(
@@ -339,13 +339,23 @@ class CortexClient:
         does not declare it, and Cortex answers an undeclared field with 422
         ``unknown_request_fields`` (WIRE-CONFORM-01, #276).
         """
-        from cortex_client.ask_clock import askback_window_open, current_clock
+        from cortex_client.ask_clock import (
+            askback_window_open,
+            current_clock,
+            scale_budget_left_s,
+        )
         from cortex_client.compute import insights_call_cap, note_model_call, recorded_model_calls
 
         if recorded_model_calls() >= insights_call_cap() and not askback_window_open():
             return ""
+        # The ask deadline is already spent. Do not start the fixed 2s call.
+        scale_left = scale_budget_left_s()
+        if scale_left is not None and scale_left <= 0:
+            return ""
         note_model_call()
         timeout = min(2.0, float(self.timeout))
+        if scale_left is not None:
+            timeout = min(timeout, scale_left)
         clock = current_clock()
         if askback_window_open() and clock is not None and clock.deadline is not None:
             left = clock.deadline - time.monotonic()

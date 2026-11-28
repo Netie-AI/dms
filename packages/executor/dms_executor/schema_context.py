@@ -114,11 +114,16 @@ HINT_CANDIDATE_CAP = 3
 # column sends no hint. Upgrade: an equality index that still knows the
 # longest value without holding every string.
 INDEX_COLUMN_CAP = 500
+# A count above this skips the exact distinct read. The note by SAMPLE_ROWS
+# says why twice the cap is the line.
+_APPROX_CLEAR = INDEX_COLUMN_CAP * 2
 INDEX_TOTAL_CAP = 5000
 # Rows pulled per non-text column (samples), and across the whole build. A text
 # column reads DISTINCT values up to INDEX_COLUMN_CAP + 1: one past the cap is
-# how a column proves it is wider than the cap. Ceiling: DISTINCT scans the
-# column on the background build. Upgrade: an approximate distinct count.
+# how a column proves it is wider than the cap. The count that decides whether
+# to start that read is approx_count_distinct. Twice the cap is outside the
+# error of a column at the cap, and far below a multi-million-value column,
+# so a wide column does not hash every distinct value.
 SAMPLE_ROWS = 20
 INDEX_ROW_BUDGET = 8000
 # Background build ceiling.
@@ -2176,15 +2181,17 @@ def _bounded_read(
 
 
 def _count_distinct(con: Any, table: str, column: str) -> int | None:
-    """Distinct non-null values in ``column``, counted by the engine.
+    """Approximate distinct non-null values in ``column``.
 
-    One row comes back however wide the column is, so deciding "past the cap"
-    costs nothing against the index row budget. None means the count could
-    not be taken; the caller then indexes nothing for that column.
+    One row comes back however wide the column is. ``_index_column`` uses it
+    only to skip a full hash aggregate. A column that might still fit the
+    cap is confirmed by an exact distinct read of at most
+    ``INDEX_COLUMN_CAP + 1`` values. None means the count could not be
+    taken; the caller then indexes nothing for that column.
     """
     try:
         row = con.execute(
-            f"SELECT COUNT(DISTINCT CAST({_quote(column)} AS VARCHAR)) "
+            f"SELECT approx_count_distinct(CAST({_quote(column)} AS VARCHAR)) "
             f"FROM {_quote_relation(table)} WHERE {_quote(column)} IS NOT NULL"
         ).fetchone()
     except Exception:  # noqa: BLE001
@@ -2217,17 +2224,32 @@ def _index_column(
     rows_left -= 1
     if total is None:
         return rows_left
-    if total > INDEX_COLUMN_CAP:
+    # Clearly past the cap. The bounded read below is the exact decision
+    # for a count this close to the cap, where the approximation can sit
+    # on either side of INDEX_COLUMN_CAP.
+    if total > _APPROX_CLEAR:
+        col["capped"] = True
+        col["distinct"] = f">={INDEX_COLUMN_CAP}"
+        return rows_left
+    if total > rows_left and total > INDEX_COLUMN_CAP:
         col["capped"] = True
         col["distinct"] = f">={INDEX_COLUMN_CAP}"
         return rows_left
     if total > rows_left:
         return rows_left  # the row budget cannot hold the whole set
     with _scan_budget(con, deadline):
-        raw = _bounded_read(con, table, name, total + 1, distinct=True)
+        raw = _bounded_read(con, table, name, INDEX_COLUMN_CAP + 1, distinct=True)
+    if len(raw) > INDEX_COLUMN_CAP:
+        col["capped"] = True
+        col["distinct"] = f">={INDEX_COLUMN_CAP}"
+        return rows_left
+    if len(raw) > rows_left:
+        return rows_left
+    # A successful read shorter than the cap is the whole set: the limit
+    # was one past the cap. An interrupted read comes back empty.
+    if not raw and total > 0:
+        return rows_left
     rows_left -= len(raw)
-    if len(raw) != total:
-        return rows_left  # the column changed under the read, or the read was cut
     folded = [" ".join(value.split()) for value in raw]
     if len(set(folded)) != len(raw):
         # Two stored values are one after whitespace folding ('NORTH' and

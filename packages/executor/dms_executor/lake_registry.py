@@ -9,8 +9,12 @@ been closed. DuckDB refuses a read-only connect beside an open read-write
 one (and the reverse), which is the HTTP 503 this registry exists to stop.
 
 Callers get a cursor (``conn.cursor()``). Cursors from the read-only parent
-run concurrently. The parent closes when the last lease returns, so the other
-mode, or a later ``duckdb.connect`` in a test, can open the file.
+run concurrently. That parent stays open after the last serving cursor
+returns, and idle cursors go back to a bounded pool, so the next ask does
+not open the file again. A writer closes the idle read parent before it
+opens the file read-write. An external ``duckdb.connect`` on the same file
+does that too, when no serving cursor is out: DuckDB will not open the
+file read-write beside this parent. ``close_lakes`` drops both.
 
 ponytail: readers share one read-only parent. Once a writer is waiting, new
 reads wait behind it and in-flight reads finish, then that writer holds one
@@ -25,6 +29,7 @@ from __future__ import annotations
 import contextvars
 import math
 import os
+import re
 import threading
 import time
 from collections import deque
@@ -81,6 +86,20 @@ _LEASE_QUEUE_ENV = "DMS_LAKE_SERVING_LEASE_QUEUE_MAX"
 _LEASE_RESERVE_ENV = "DMS_LAKE_SERVING_LEASE_RESERVE_S"
 _DEADLINE_DELIVER_ENV = "DMS_LAKE_SERVING_DEADLINE_DELIVER_S"
 _SERVING_DEADLINE_ENV = "DMS_SERVING_DEADLINE_S"
+#: Serving parent memory cap. ``DMS_LAKE_MEMORY_LIMIT``. One parent, so every
+#: serving cursor on that file shares it. Invalid text falls back to 1GB.
+_MEMORY_ENV = "DMS_LAKE_MEMORY_LIMIT"
+DEFAULT_LAKE_MEMORY_LIMIT = "1GB"
+#: Serving parent thread cap. ``DMS_LAKE_THREADS``. Shared by cursors on that
+#: parent. Outside 1..32, or not a whole number, falls back to 4.
+_THREADS_ENV = "DMS_LAKE_THREADS"
+DEFAULT_LAKE_THREADS = 4
+_LAKE_THREADS_MAX = 32
+_MEMORY_LIMIT_RE = re.compile(
+    r"^[0-9]+(?:\.[0-9]+)?(?:[KMGT]I?B|B)$", re.IGNORECASE
+)
+#: Idle serving cursors kept on the read parent. A broken cursor is closed.
+_IDLE_CURSORS = 32
 _serving_block: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "dms_serving_lease_block",
     default=None,
@@ -217,6 +236,30 @@ def serving_deadline_s() -> float:
         return default
     if value > SERVING_DEADLINE_CEILING_S:
         return SERVING_DEADLINE_CEILING_S
+    return value
+
+
+def lake_memory_limit() -> str:
+    """``DMS_LAKE_MEMORY_LIMIT``. Unset or not a size uses ``1GB``."""
+    raw = os.environ.get(_MEMORY_ENV, "").strip().replace(" ", "")
+    if _MEMORY_LIMIT_RE.match(raw):
+        return raw.upper()
+    return DEFAULT_LAKE_MEMORY_LIMIT
+
+
+def lake_threads() -> int:
+    """``DMS_LAKE_THREADS``. Unset or out of range uses 4. Ceiling 32."""
+    raw = os.environ.get(_THREADS_ENV, "").strip()
+    if not raw:
+        return DEFAULT_LAKE_THREADS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_LAKE_THREADS
+    if value < 1:
+        return DEFAULT_LAKE_THREADS
+    if value > _LAKE_THREADS_MAX:
+        return _LAKE_THREADS_MAX
     return value
 
 
@@ -602,6 +645,8 @@ class _Lake:
         self.max_waiters = 0
         self._next_ticket = 0
         self.cancelled: set[int] = set()
+        self.idle: deque[duckdb.DuckDBPyConnection] = deque()
+        self.opens = 0
 
 
 class _Lease:
@@ -617,6 +662,7 @@ class _Lease:
         self._cur = cur
         self._mode = mode
         self._closed = False
+        self._broken = False
 
     def execute(self, *args: Any, **kwargs: Any) -> Any:
         return self._run(self._cur.execute, *args, **kwargs)
@@ -636,10 +682,13 @@ class _Lease:
         try:
             result = fn(*args, **kwargs)
         except ServingWaitCancelled:
+            self._broken = True
             raise
         except ServingDeadlineExceeded:
+            self._broken = True
             raise
         except Exception as exc:
+            self._broken = True
             if ask_disconnected():
                 raise ServingWaitCancelled() from exc
             interrupted = type(exc).__name__ == "InterruptException"
@@ -659,7 +708,7 @@ class _Lease:
             return
         self._closed = True
         try:
-            _give_back(self._lake, self._cur)
+            _give_back(self._lake, self._cur, reuse=not self._broken)
         finally:
             if self._mode == "write":
                 self._lake.rw.release_write()
@@ -701,31 +750,81 @@ def _lake_for(key: str) -> _Lake:
         return lake
 
 
+_OPENING = threading.local()
+
+
 def _open_parent(key: str, *, write: bool) -> duckdb.DuckDBPyConnection:
+    # The connect wrapper below releases an idle read parent. Skip that
+    # while this function is the one opening, or it deadlocks on lake.mu.
+    _OPENING.on = True
+    try:
+        return _open_parent_raw(key, write=write)
+    finally:
+        _OPENING.on = False
+
+
+def _open_parent_raw(key: str, *, write: bool) -> duckdb.DuckDBPyConnection:
     if write:
         # Ingest path. Not the connection chat, schema, or value reads use.
         return duckdb.connect(key)
-    # Serving instance. External access is off, then the config is locked so a
-    # later SET on this parent cannot turn it back on. Cursors inherit both.
-    # The lock is this connection only: after it closes, ingest may open the
-    # file read-write and read a CSV. The two opens are never at the same time.
+    # Serving instance. Memory and threads are set before the config lock so
+    # a later SET cannot raise them. External access is off, then the config
+    # is locked. Cursors inherit all of it. The lock is this connection only:
+    # after it closes, ingest may open the file read-write and read a CSV.
+    # The two opens are never at the same time.
     con = duckdb.connect(key, read_only=True)
+    con.execute(f"SET memory_limit='{lake_memory_limit()}'")
+    con.execute(f"SET threads={lake_threads()}")
     con.execute("SET enable_external_access=false")
     con.execute("SET lock_configuration=true")
     return con
 
 
-def _borrow(lake: _Lake, key: str, *, write: bool) -> duckdb.DuckDBPyConnection:
+def _shutdown_locked(lake: _Lake) -> None:
+    """Close idle cursors and the parent. Caller holds ``lake.mu``."""
+    while lake.idle:
+        cur = lake.idle.popleft()
+        try:
+            cur.close()
+        except Exception:  # noqa: BLE001
+            pass
+    if lake.conn is not None:
+        try:
+            lake.conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        lake.conn = None
+    lake.mode = None
+
+
+def _ensure_locked(lake: _Lake, key: str, *, write: bool) -> duckdb.DuckDBPyConnection:
+    """Cursor for ``key``. Caller holds ``lake.mu``.
+
+    A read parent stays up while idle. A write closes that parent first.
+    ponytail: one read-only parent per file, idle cursors capped at
+    ``_IDLE_CURSORS``. Ceiling: a writer still waits out in-flight reads.
+    Upgrade: a snapshot file if that wait is too long.
+    """
     want = "write" if write else "read"
-    with lake.mu:
-        if lake.conn is None:
-            lake.conn = _open_parent(key, write=write)
-            lake.mode = want
-        elif lake.mode != want:
+    if lake.conn is not None and lake.mode != want:
+        if lake.refs != 0:
             raise RuntimeError(f"lake is open {lake.mode}, refused {want}")
+        _shutdown_locked(lake)
+    if lake.conn is None:
+        lake.conn = _open_parent(key, write=write)
+        lake.mode = want
+        lake.opens += 1
+    if want == "read" and lake.idle:
+        cur = lake.idle.popleft()
+    else:
         cur = lake.conn.cursor()
-        lake.refs += 1
-        return cur
+    lake.refs += 1
+    return cur
+
+
+def _borrow(lake: _Lake, key: str, *, write: bool) -> duckdb.DuckDBPyConnection:
+    with lake.mu:
+        return _ensure_locked(lake, key, write=write)
 
 
 def _leave_queue(lake: _Lake, ticket: int) -> None:
@@ -786,13 +885,7 @@ def _acquire_serving(lake: _Lake, key: str) -> duckdb.DuckDBPyConnection:
                 head = bool(lake.queue) and lake.queue[0] == ticket
                 if head and lake.refs < cap and lake.rw.try_acquire_read(ticket):
                     try:
-                        if lake.conn is not None and lake.mode != "read":
-                            raise RuntimeError(f"lake is open {lake.mode}, refused read")
-                        if lake.conn is None:
-                            lake.conn = _open_parent(key, write=False)
-                            lake.mode = "read"
-                        cur = lake.conn.cursor()
-                        lake.refs += 1
+                        cur = _ensure_locked(lake, key, write=False)
                     except BaseException:
                         lake.rw.release_read(True)
                         raise
@@ -812,24 +905,33 @@ def _acquire_serving(lake: _Lake, key: str) -> duckdb.DuckDBPyConnection:
             lake.rw.unmark_serving(ticket)
 
 
-def _give_back(lake: _Lake, cur: duckdb.DuckDBPyConnection) -> None:
+def _give_back(
+    lake: _Lake, cur: duckdb.DuckDBPyConnection, *, reuse: bool = True
+) -> None:
     with lake.mu:
-        try:
-            cur.close()
-        except Exception:  # noqa: BLE001 - parent may already be shut down
-            pass
+        keep = (
+            reuse
+            and lake.conn is not None
+            and lake.mode == "read"
+            and len(lake.idle) < _IDLE_CURSORS
+        )
+        if keep:
+            lake.idle.append(cur)
+        else:
+            try:
+                cur.close()
+            except Exception:  # noqa: BLE001 - parent may already be shut down
+                pass
         if lake.conn is None:
             lake.mu.notify_all()
             return
         if lake.refs > 0:
             lake.refs -= 1
-        if lake.refs == 0:
-            try:
-                lake.conn.close()
-            except Exception:  # noqa: BLE001
-                pass
-            lake.conn = None
-            lake.mode = None
+        # The read parent stays open so the next ask reuses it. A write
+        # parent closes when its last cursor returns, which is what lets
+        # the following read open.
+        if lake.refs == 0 and lake.mode == "write":
+            _shutdown_locked(lake)
         lake.mu.notify_all()
 
 
@@ -838,8 +940,8 @@ def open_lake(path: Path | str, *, write: bool = False) -> _Lease:
 
     ``write=False`` is the serving connection: DuckDB opened it read-only.
     ``write=True`` is ingest. It waits, bounded by ``DMS_LAKE_INGEST_WAIT_S``,
-    until in-flight serving cursors are back and the read-only parent is
-    closed, then opens a read-write connection. Once that wait has started,
+    until in-flight serving cursors are back, then closes the idle read-only
+    parent and opens a read-write connection. Once that wait has started,
     new serving reads wait behind it. The two parents are never open together.
     """
     key = _key(path)
@@ -930,23 +1032,59 @@ def serving_read_holds(path: Path | str) -> int:
         return lake.rw._readers
 
 
+def parent_open_count(path: Path | str) -> int:
+    """How many times this process has opened ``path``. Zero if never."""
+    lake = _lake_if(path)
+    if lake is None:
+        return 0
+    return lake.opens
+
+
+def release_idle_parent(path: Path | str) -> None:
+    """Close a read parent nobody is using, so a read-write connect can open the file.
+
+    DuckDB refuses a read-write connect while this process still holds the
+    read-only parent. A serving cursor that is still out is left alone.
+    """
+    text = str(path)
+    if text in {":memory:", ""}:
+        return
+    lake = _lake_if(path)
+    if lake is None:
+        return
+    with lake.mu:
+        if lake.refs == 0 and lake.mode == "read":
+            _shutdown_locked(lake)
+
+
 def close_lakes() -> None:
     """Drop every parent connection. In-flight leases release their own holds.
 
-    Process shutdown (``Executor.close``). A replaced lake file is picked up
-    on the next ``open_lake`` after the last lease has closed, because the
-    parent is not kept once ``refs`` hits 0.
+    Process shutdown (``Executor.close``). The read parent is kept between
+    asks, so this is what releases the file for a replaced lake.
     """
     with _GUARD:
         lakes = list(_LAKES.values())
     for lake in lakes:
         with lake.mu:
-            if lake.conn is not None:
-                try:
-                    lake.conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                lake.conn = None
-            lake.mode = None
+            _shutdown_locked(lake)
             lake.refs = 0
             lake.mu.notify_all()
+
+
+_REAL_CONNECT = duckdb.connect
+
+
+def _connect_releasing_idle_parent(*args: Any, **kwargs: Any) -> Any:
+    """``duckdb.connect`` that drops an idle read parent on the same file first."""
+    if not getattr(_OPENING, "on", False):
+        database = args[0] if args else kwargs.get("database", ":memory:")
+        if isinstance(database, (str, Path)) and str(database) not in {":memory:", ""}:
+            try:
+                release_idle_parent(database)
+            except Exception:  # noqa: BLE001 - a bad path still reaches DuckDB
+                pass
+    return _REAL_CONNECT(*args, **kwargs)
+
+
+duckdb.connect = _connect_releasing_idle_parent  # type: ignore[method-assign]

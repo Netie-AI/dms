@@ -34,9 +34,9 @@ from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload
 from cortex_client.ask_clock import (
     deadline_adaptive_enabled,
     deadline_already_passed,
-    generate_budget_left_s,
     give_up,
     http_timeout,
+    model_leg_budget_s,
     model_slot,
     note_generate_leg,
     note_prompt_body,
@@ -920,7 +920,7 @@ def _insights_ontology_get(
             "params": {"q": question},
             "headers": headers,
         }
-        left = generate_budget_left_s()
+        left = model_leg_budget_s()
         if left is not None:
             get_kwargs["timeout"] = left
         res = get(f"{root}{INSIGHTS_PATH}/ontology", **get_kwargs)
@@ -996,7 +996,7 @@ def _insights_generate_post(
         with model_slot(voting=cloop_b_enabled()):
             while True:
                 post_kwargs: dict[str, Any] = {"json": body, "headers": hdr}
-                left = generate_budget_left_s()
+                left = model_leg_budget_s()
                 if left is not None:
                     post_kwargs["timeout"] = left
                 res = http.post(f"{root}{INSIGHTS_PATH}", **post_kwargs)
@@ -1438,9 +1438,9 @@ def _run_insights_legs(
     def _generate(body: dict[str, Any], leg: str) -> dict[str, Any] | None:
         if recorded_model_calls() - calls_before >= cap:
             raise _BudgetStop(f"{INSIGHTS_FAIL_CALL_CAP}:{cap}", legs)
-        left = generate_budget_left_s()
+        left = model_leg_budget_s()
         if left is not None and left <= 0:
-            # The reserve is for the ask-back. Do not start another leg.
+            # The ask budget is spent. Do not start another leg.
             legs.append({"returned": "timeout"})
             raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:{leg}", legs)
         try:
@@ -1457,7 +1457,7 @@ def _run_insights_legs(
         out["generate_legs"] = {"count": len(legs), "legs": legs}
         return out
     if not _has_ranked_metrics(insights_payload):
-        onto_left = generate_budget_left_s()
+        onto_left = model_leg_budget_s()
         if onto_left is not None and onto_left <= 0:
             legs.append({"returned": "timeout"})
             raise _BudgetStop(f"{INSIGHTS_FAIL_TIMEOUT}:ontology", legs)
@@ -1579,7 +1579,7 @@ def compute_query(
         give_up("deadline")
         return insights_fail_payload(INSIGHTS_FAIL_TIMEOUT, None)
     timeout = http_timeout(float(timeout))
-    left = generate_budget_left_s()
+    left = model_leg_budget_s()
     if left is not None:
         if left <= 0:
             give_up("deadline")

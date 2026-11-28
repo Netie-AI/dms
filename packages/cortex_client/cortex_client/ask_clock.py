@@ -271,6 +271,50 @@ def generate_budget_left_s() -> float | None:
     return max(0.0, clock.deadline - time.monotonic() - ASKBACK_RESERVE_S)
 
 
+# SCALE-01. Off unless the digit 1. On, a model leg uses the time left on the
+# ask deadline, and a suggestion call does not start once that time is gone.
+SCALE_BUDGET_ENV = "DMS_SCALE_BUDGET"
+
+
+def scale_budget_enabled() -> bool:
+    """True only when ``DMS_SCALE_BUDGET`` is the digit 1. Unset is off."""
+    return os.environ.get(SCALE_BUDGET_ENV, "0").strip() == "1"
+
+
+def scale_budget_left_s() -> float | None:
+    """Seconds left on the ask deadline, or None when the flag is off.
+
+    Zero means the budget is spent. No clock, or a clock with no deadline,
+    is None: the caller keeps its own timeout. This does not subtract the
+    ask-back reserve.
+    """
+    if not scale_budget_enabled():
+        return None
+    clock = _clock.get()
+    if clock is None or clock.deadline is None:
+        return None
+    return max(0.0, clock.deadline - time.monotonic())
+
+
+def model_leg_budget_s() -> float | None:
+    """Seconds a model leg may still run. None keeps the caller timeout.
+
+    ``DMS_SCALE_BUDGET`` contributes the time left on the ask deadline.
+    ``DMS_DEADLINE_ASKBACK`` contributes that time minus its reserve.
+    Both on: the leg gets the smaller one. Neither on: None.
+    """
+    parts: list[float] = []
+    scale = scale_budget_left_s()
+    if scale is not None:
+        parts.append(scale)
+    askback = generate_budget_left_s()
+    if askback is not None:
+        parts.append(askback)
+    if not parts:
+        return None
+    return min(parts)
+
+
 def askback_window_open() -> bool:
     """True when the flag is on and only the reserved ask-back time remains.
 
@@ -480,10 +524,12 @@ def unregister_inflight(client: Any) -> None:
 
 
 def give_up(reason: str) -> None:
-    """Close clients still open for this ask. Cancel POST only when that cut is on.
+    """Close clients still open for this ask.
 
-    An empty in-flight list on ``ask_returned`` records nothing: the ask
-    ended cleanly. A timeout always records an abandoned call.
+    The cancel POST runs when the cancel cut is on, or when
+    ``DMS_SCALE_BUDGET`` is the digit 1. An empty in-flight list on
+    ``ask_returned`` records nothing: the ask ended cleanly. A timeout
+    always records an abandoned call.
     """
     clock = _clock.get()
     items = list(clock.inflight) if clock is not None else []
@@ -493,7 +539,7 @@ def give_up(reason: str) -> None:
         return
     if clock is not None:
         clock.note_abandoned("insights_generate", reason)
-    if not ask_lean_cancel():
+    if not ask_lean_cancel() and not scale_budget_enabled():
         return
     for item in items:
         try:
