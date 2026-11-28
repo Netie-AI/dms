@@ -80,7 +80,9 @@ def load_manifest() -> list[dict[str, Any]]:
     return list(data)
 
 
-def validate_database(con: Any, db: dict[str, Any]) -> dict[str, Any]:
+def validate_database(con: Any, db: dict[str, Any], *, root: Path | None = None) -> dict[str, Any]:
+    # ``root`` lets a field kit point at one engagement lake. Default stays the repo lake.
+    base = ROOT if root is None else Path(root)
     name = str(db["database"])
     tables = {f"{t['schema']}.{t['table']}": t for t in db.get("tables", [])}
     pks: dict[str, list[str]] = dict(db.get("primary_keys") or {})
@@ -93,7 +95,7 @@ def validate_database(con: Any, db: dict[str, Any]) -> dict[str, Any]:
 
     # -- row_count -------------------------------------------------------
     for key, t in tables.items():
-        path = ROOT / str(t["path"])
+        path = base / str(t["path"])
         if not path.is_file():
             fail("row_count", key, f"parquet missing at {path}")
             continue
@@ -114,7 +116,7 @@ def validate_database(con: Any, db: dict[str, Any]) -> dict[str, Any]:
         if t is None:
             fail("pk_unique", key, "declared a primary key but was never extracted")
             continue
-        path = ROOT / str(t["path"])
+        path = base / str(t["path"])
         if not path.is_file():
             continue
         col_list = ", ".join(_col(c) for c in cols)
@@ -145,7 +147,7 @@ def validate_database(con: Any, db: dict[str, Any]) -> dict[str, Any]:
             fail("fk_intact", cname,
                  f"{child_key} -> {parent_key}: an end of this link was not extracted")
             continue
-        cpath, ppath = ROOT / str(child["path"]), ROOT / str(parent["path"])
+        cpath, ppath = base / str(child["path"]), base / str(parent["path"])
         if not (cpath.is_file() and ppath.is_file()):
             continue
 

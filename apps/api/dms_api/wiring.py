@@ -2126,3 +2126,48 @@ def run_benchmark_job(store: Any, run_id: str, items: list[dict[str, Any]], ask_
     except Exception:
         logger.warning("bench_run_failed")
         store.finish_run(run_id, status="failed", tally={})
+
+
+def load_sign_pems(tenant_id: str) -> tuple[str, str]:
+    """OpenVault PEM for one tenant. The error code never includes the secret.
+
+    Refs are ``signkey/{tenant}`` and ``signcert/{tenant}`` on the existing
+    ``GET /api/keys/{id}/secret`` path. Swap: another secrets port with the
+    same two refs.
+    """
+    from dms_core.control_plane.connect_secrets import ConnectCredentialError
+    from dms_core.signing.errors import SignError
+
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    mint = dms_executor.ManifestMinter(openvault_url=settings.openvault_url)
+    try:
+        try:
+            key = mint.resolve_credential(f"signkey/{tenant_id}")
+            cert = mint.resolve_credential(f"signcert/{tenant_id}")
+        except ConnectCredentialError:
+            raise SignError("signing_key_unavailable", 503) from None
+    finally:
+        mint.close()
+    if not isinstance(key, str) or not isinstance(cert, str):
+        raise SignError("signing_key_rejected", 503)
+    return key, cert
+
+
+def sign_ledger_callback(client: Any) -> Any:
+    """Pointer into the Cortex ledger. Off unless DMS_SIGN_LEDGER is the digit 1.
+
+    The payload is the audit hashes and the signer identity. It never carries
+    a key, a one-time token, or a signature image.
+    """
+    if os.environ.get("DMS_SIGN_LEDGER", "").strip() != "1" or client is None:
+        return None
+
+    def record(event_type: str, payload: dict[str, Any], actor: str) -> str:
+        response = append_event(
+            client, event_type=event_type, payload=payload, actor=actor
+        )
+        return response.entry_id
+
+    return record
