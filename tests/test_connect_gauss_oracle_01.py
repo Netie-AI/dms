@@ -351,6 +351,9 @@ def test_gauss_accepts_pg_and_a_modes(monkeypatch: pytest.MonkeyPatch) -> None:
     a_mode = _Connection(version="PostgreSQL 9.2.4 (GaussDB Kernel V500)", mode="A")
     assert gauss.inspect(a_mode)["dialect"] == "postgres"
     assert gauss.inspect(a_mode)["mode"] == "A"
+    # psycopg 3 can hand this GUC back as bytes. b'A' is A mode, not unknown.
+    byte_mode = _Connection(version="(openGauss 5.0.0 build abc)", mode=b"A")
+    assert gauss.inspect(byte_mode)["mode"] == "A"
 
 
 def test_gauss_refuses_plain_postgres(monkeypatch: pytest.MonkeyPatch) -> None:

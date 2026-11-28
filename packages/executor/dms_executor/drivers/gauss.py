@@ -239,6 +239,12 @@ def _close(con: Any) -> None:
         return
 
 
+def _text(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    return value
+
+
 def _scalar(con: Any, sql: str) -> str:
     cur = con.cursor()
     try:
@@ -248,7 +254,7 @@ def _scalar(con: Any, sql: str) -> str:
         cur.close()
     if not row or row[0] is None:
         return ""
-    return str(row[0])
+    return str(_text(row[0]))
 
 
 def _rows(con: Any, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
@@ -258,7 +264,7 @@ def _rows(con: Any, sql: str, params: tuple[Any, ...]) -> list[tuple[Any, ...]]:
             cur.execute(sql, params)
         else:
             cur.execute(sql)
-        return [tuple(row) for row in cur.fetchall()]
+        return [tuple(_text(cell) for cell in row) for row in cur.fetchall()]
     finally:
         cur.close()
 
