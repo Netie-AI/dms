@@ -298,8 +298,11 @@ def explain_sql(_statement: str) -> str:
 
 
 def page_sql(statement: str, page_size: int, offset: int) -> str:
+    # An unquoted Oracle identifier has to start with a letter. `_dms_page`
+    # is ORA-00904 and the ask comes back bad_request.
     return (
-        f"SELECT * FROM ({statement}) _dms_page "
+        f"SELECT * FROM ({statement}) dms_page "
+        f"ORDER BY 1 "
         f"OFFSET {int(offset)} ROWS FETCH NEXT {int(page_size) + 1} ROWS ONLY"
     )
 

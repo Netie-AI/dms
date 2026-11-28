@@ -720,15 +720,17 @@ jobs:
           print(text[-12000:])
           PY
           }
-          if ! timeout 180 docker pull minio/minio:latest; then
-            echo "MinIO image pull failed"
+          # Docker Hub removed minio/minio. Silo is the maintained MinIO server
+          # fork: same MINIO_ROOT_USER and the same path-style S3 API.
+          if ! timeout 180 docker pull pgsty/silo:RELEASE.2026-11-12T00-00-00Z; then
+            echo "S3 image pull failed"
             exit 1
           fi
           docker rm -f dms-minio >/dev/null 2>&1 || true
           docker run -d --name dms-minio -p 9000:9000 \
             -e MINIO_ROOT_USER="$CONNECT_S3_ACCESS" \
             -e MINIO_ROOT_PASSWORD="$CONNECT_S3_SECRET" \
-            minio/minio:latest server /data
+            pgsty/silo:RELEASE.2026-11-12T00-00-00Z server /data
           ready=0
           for _ in $(seq 1 30); do
             if python -c 'import socket; s=socket.create_connection(("127.0.0.1",9000),2); s.close()'; then
