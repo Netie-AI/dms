@@ -40,7 +40,7 @@ def test_failed_attempt_sql_and_exact_error_reach_the_next_prompt(lake) -> None:
         return next(replies)
 
     out = fl.run_direct("total amount?", db=fl.Db(lake), chat=chat, max_attempts=3)
-    assert out["abstained"] is False and out["row_list"] == [[22.0]]
+    assert out["stopped"] is False and out["row_list"] == [[22.0]]
     assert len(seen) == 2
     assert "select amout from orders" in seen[1]
     assert "amout" in seen[1] and "Binder" in seen[1]
@@ -50,7 +50,7 @@ def test_failed_attempt_sql_and_exact_error_reach_the_next_prompt(lake) -> None:
 def test_abstain_keeps_the_first_reason(lake) -> None:
     replies = iter([_reply("select nope from orders"), _reply("no sql here"), _reply("still none")])
     out = fl.run_direct("x?", db=fl.Db(lake), chat=lambda r, m, **k: next(replies), max_attempts=3)
-    assert out["abstained"] is True
+    assert out["stopped"] is True
     assert "nope" in str(out["reason"])
 
 
@@ -66,7 +66,7 @@ def test_destructive_and_ungranted_sql_never_run(lake) -> None:
             chat=lambda r, m, **k: _reply(bad),
             max_attempts=1,
         )
-        assert out["abstained"] is True and str(out["reason"]).startswith(head), out["reason"]
+        assert out["stopped"] is True and str(out["reason"]).startswith(head), out["reason"]
     con = duckdb.connect(str(lake), read_only=True)
     assert con.execute("select count(*) from orders").fetchone()[0] == 3
 
@@ -94,6 +94,6 @@ def test_model_can_decline_or_ask_instead_of_forcing_sql(lake) -> None:
     ):
         reply = {"choices": [{"message": {"content": text}}], "model": "fake-model", "usage": {}}
         out = fl.run_direct("x?", db=fl.Db(lake), chat=lambda r, m, **k: reply, max_attempts=3)
-        assert out["abstained"] is True and out["reason"].startswith(head)
+        assert out["stopped"] is True and out["reason"].startswith(head)
         assert len([a for a in out["attempts"] if a.get("source") == "model"]) == 1
     assert out["ask"] == "this month or last month?"

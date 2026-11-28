@@ -29,6 +29,8 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
+
 DIRECT_ENV = "DMS_AI_FLOOR_DIRECT"
 ATTEMPTS_ENV = "DMS_AI_FLOOR_ATTEMPTS"
 TIMEOUT_ENV = "DMS_AI_FLOOR_CALL_TIMEOUT_S"
@@ -63,7 +65,7 @@ class Db:
     def __init__(self, path: Path | str, dialect: str | None = None) -> None:
         self.path = Path(path)
         self.dialect = dialect or (
-            "sqlite" if self.path.suffix in {".sqlite", ".db", ".sqlite3"} else "duckdb"
+            "sqlite" if self.path.suffix in {".sqlite", ".db", ".sqlite3"} else SERVING_DIALECT
         )
         self.con: Any
         if self.dialect == "sqlite":
@@ -475,18 +477,16 @@ def run_direct(
             # The model says no SQL can answer it. Keep its words; do not force SQL.
             kind, why = decline.group(1).upper(), decline.group(2).strip()[:400]
             rec["error"] = ("model_asks: " if kind == "ASK" else "model_cannot: ") + why
-            out = {
-                "abstained": True,
-                "reason": rec["error"],
-                "last_reason": rec["error"],
-                "rows": [],
-                "sql": None,
-                "attempts": attempts,
-                "stages": _stages(stages, attempts, started),
-                "tables_given": chosen,
-                "tables_total": n_tables,
-                "schema_chars": len(schema),
-            }
+            out = _trace(
+                stopped=True,
+                reason=rec["error"],
+                last_reason=rec["error"],
+                attempts=attempts,
+                stages=_stages(stages, attempts, started),
+                tables_given=chosen,
+                tables_total=n_tables,
+                schema_chars=len(schema),
+            )
             if kind == "ASK":
                 out["ask"] = why
             return out
@@ -501,18 +501,16 @@ def run_direct(
         if any(str(rec.get("error", "")).startswith(s) for s in _DIRECT_STOP):
             break
     first = next((a["error"] for a in attempts if a.get("error")), "no_attempt")
-    return {
-        "abstained": True,
-        "reason": first,
-        "last_reason": attempts[-1].get("error") if attempts else None,
-        "rows": [],
-        "sql": None,
-        "attempts": attempts,
-        "stages": _stages(stages, attempts, started),
-        "tables_given": chosen,
-        "tables_total": n_tables,
-        "schema_chars": len(schema),
-    }
+    return _trace(
+        stopped=True,
+        reason=first,
+        last_reason=attempts[-1].get("error") if attempts else None,
+        attempts=attempts,
+        stages=_stages(stages, attempts, started),
+        tables_given=chosen,
+        tables_total=n_tables,
+        schema_chars=len(schema),
+    )
 
 
 def _stages(
@@ -534,18 +532,26 @@ def _done(
         dict(zip(cols, [v.isoformat() if hasattr(v, "isoformat") else v for v in r]))
         for r in res["rows"]
     ]
-    return {
-        "abstained": False,
-        "rows": rows,
-        "row_list": [list(r) for r in res["rows"]],
-        "truncated": res["truncated"],
-        "sql": sql,
-        "attempts": attempts,
-        "stages": _stages(stages, attempts, started),
-        "tables_given": chosen,
-        "tables_total": n_tables,
-        "schema_chars": len(schema),
-    }
+    return _trace(
+        stopped=False,
+        rows=rows,
+        row_list=[list(r) for r in res["rows"]],
+        truncated=res["truncated"],
+        sql=sql,
+        attempts=attempts,
+        stages=_stages(stages, attempts, started),
+        tables_given=chosen,
+        tables_total=n_tables,
+        schema_chars=len(schema),
+    )
+
+
+def _trace(*, stopped: bool, **fields: Any) -> dict[str, Any]:
+    """Internal harness record. Not a served envelope, so it has no abstain mark."""
+    fields["stopped"] = stopped
+    fields.setdefault("rows", [])
+    fields.setdefault("sql", None)
+    return fields
 
 
 def floor_compute(
@@ -553,7 +559,7 @@ def floor_compute(
     *,
     db_path: str | Path,
     grantable: set[str] | None,
-    dialect: str = "duckdb",
+    dialect: str = SERVING_DIALECT,
     today: str | None = None,
     chat: Callable[..., dict[str, Any]] = ov_chat,
 ) -> Callable[[Any], dict[str, Any]]:
@@ -567,7 +573,10 @@ def floor_compute(
     kept: list[dict[str, Any]] = []
 
     def compute(_catalog: Any) -> dict[str, Any]:
-        db = Db(db_path, "sqlite" if str(dialect).lower() == "sqlite" else "duckdb")
+        db = Db(
+            db_path,
+            "sqlite" if str(dialect).lower() == "sqlite" else SERVING_DIALECT,
+        )
         try:
             out = run_direct(
                 question,
@@ -583,7 +592,7 @@ def floor_compute(
         fresh = [a for a in out["attempts"] if a.get("source") == "model"]
         kept.extend(fresh)
         model = next((a.get("model") for a in reversed(fresh) if a.get("model")), None)
-        if out.get("abstained") or not out.get("sql"):
+        if out.get("stopped") or not out.get("sql"):
             return {"error": str(out.get("reason") or "no accepted SQL"), "served_model": model}
         return {"query_sql": out["sql"], "served_model": model, "ai_floor_direct": True}
 

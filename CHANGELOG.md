@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - AI-FLOOR-01: direct floor record is not an envelope
+
+- **Record.** `run_direct` returns `stopped`, not a served abstain dict. The dialect string is `SERVING_DIALECT`.
+
 ## 2026-11-28 - AI-FLOOR-01: seed a missing warehouse again
 
 - **Seed.** `ensure_demo_warehouse` is the shared path again. A missing caller path, including a missing `DMS_WAREHOUSE_DB`, is seeded. The first call in a process still thin-reseeds. Library can open that file read-only.
