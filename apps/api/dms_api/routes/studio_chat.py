@@ -69,6 +69,12 @@ def studio_chat_plan(body: PlanBody, cortex: CortexDep) -> Any:
         client=cortex,
     )
     enforce(decision, mutation=False)
+    from dms_api.gov_guard import guard_feature, guard_text
+    from dms_api.settings import get_settings
+
+    plan_settings = get_settings()
+    guard_feature(plan_settings, "ask")
+    question = guard_text(plan_settings, question, source="ask")
     try:
         raw = cortex.insights_ontology(question)
     except InsightsError as exc:
@@ -95,9 +101,7 @@ def studio_chat_confirm(body: ConfirmBody, cortex: CortexDep) -> dict[str, Any]:
     return {
         "execute": True,
         "sql_ran": False,
-        "question": question_to_execute(
-            body.question, body.clarify_reply, blocks=blocks
-        ),
+        "question": question_to_execute(body.question, body.clarify_reply, blocks=blocks),
     }
 
 

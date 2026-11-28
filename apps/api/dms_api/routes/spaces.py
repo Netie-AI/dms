@@ -67,6 +67,9 @@ def create_space(
         client=cortex,
     )
     enforce(decision)
+    from dms_api.gov_guard import guard_feature
+
+    guard_feature(settings, "create")
 
     try:
         record = store.create(body.name.strip())

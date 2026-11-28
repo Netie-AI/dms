@@ -13,6 +13,7 @@ from dms_core.control_plane.ask_audit import (
     InMemoryAskAuditStore,
     PostgresAskAuditStore,
 )
+from dms_core.governance import enabled as gov_enabled
 from dms_core.signing.flag import enabled as sign_enabled
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -269,6 +270,14 @@ def create_app() -> FastAPI:
     # Doc and slides stay unmounted until the digit 1. Status is mounted when
     # the package imports, so the UI can see enabled:false without Cortex.
     _mount_create_docs(app)
+    # Off, this import and the routes stay out of the app. A mounted no-op
+    # would still be a new URL.
+    if gov_enabled():
+        from dms_api.gov_guard import bind_store
+        from dms_api.routes import gov
+
+        bind_store(settings)
+        app.include_router(gov.router)
     return app
 
 
