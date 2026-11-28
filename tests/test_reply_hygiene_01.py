@@ -255,15 +255,16 @@ def test_capacity_reason_is_not_the_answer_text(monkeypatch: pytest.MonkeyPatch)
     )
     env = _gap(leaked)
     env["assumptions"] = ["serving_lease_cap"]
-    stamp_capacity(env, "serving_lease_cap")
+    same = stamp_capacity(env, "serving_lease_cap")
+    assert same is env
     assert "serving_lease_cap" in env["text"]
     monkeypatch.setenv("DMS_REPLY_HYGIENE", "1")
-    stamp_capacity(env, "serving_lease_cap")
-    assert env["text"] == USER_SENTENCE
-    assert env["reason_code"] == "serving_lease_cap"
-    assert env["retry"]["retryable"] is True
-    assert_envelope_valid(env)
-    assert_user_visible_clean(env)
+    stamped = stamp_capacity(env, "serving_lease_cap", question=_QUESTION)
+    assert stamped["text"] == USER_SENTENCE
+    assert stamped["reason_code"] == "serving_lease_cap"
+    assert stamped["retry"]["retryable"] is True
+    assert_envelope_valid(stamped)
+    assert_user_visible_clean(stamped)
 
 
 def test_empty_closest_question_has_no_yes_token(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -225,17 +225,15 @@ def stamp_capacity(
                 session_id=session_id,
                 tables=tables if tables else granted,
             )
-    from dms_executor.envelope import assert_envelope_valid
-
-    _log_exhausted(code, question or str(env.get("question") or ""))
-    env["text"] = USER_SENTENCE
-    env["abstain_reason"] = USER_SENTENCE
-    env["reason_code"] = code
-    env["retry"] = {"retryable": True, "after_s": RETRY_AFTER_S}
-    env["assumptions"] = ["retry"]
-    env.pop("reconfirm", None)
-    assert_envelope_valid(env)
-    return env
+    asked = question or str(env.get("question") or "")
+    _log_exhausted(code, asked)
+    return transport_envelope(
+        env,
+        code,
+        question=asked,
+        space_id=space_id if space_id is not None else env.get("space_id"),
+        session_id=session_id if session_id is not None else env.get("session_id"),
+    )
 
 
 def _usable(payload: Any) -> bool:
