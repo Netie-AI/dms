@@ -66,8 +66,13 @@ def compile_ontology_data(
     settings: SettingsDep,
     cortex: CortexDep,
     space_id: str | None = None,
+    tenant_wide: bool = False,
 ) -> dict[str, Any]:
-    """Store a ``compile_source`` proposal as proposed items. Never served."""
+    """Store a ``compile_source`` proposal as proposed items. Never served.
+
+    ``tenant_wide`` marks a version with no Space as shared. It is ignored
+    when ``space_id`` is set. The read flag still defaults off.
+    """
     _require_steward(settings)
     decision = compliance_gate(
         action="ontology.compile",
@@ -82,6 +87,7 @@ def compile_ontology_data(
         actor=settings.dms_actor_user_id,
         tenant_id=settings.dms_tenant_id,
         space_id=space_id,
+        tenant_wide=tenant_wide,
     )
 
 
@@ -90,17 +96,27 @@ def diff_ontology_data(
     settings: SettingsDep,
     cortex: CortexDep,
     version_id: str | None = None,
+    space_id: str | None = None,
 ) -> dict[str, Any]:
-    """Proposed items in one version against every approved item."""
+    """Proposed items in one version against approved items.
+
+    ``DMS_ONTO_SPACE_SCOPE`` off ignores ``space_id``. On, the diff is that
+    Space plus steward-marked tenant-wide rows.
+    """
     _require_steward(settings)
+    from dms_core.control_plane.onto_data import onto_space_scope_enabled
+
+    metadata: dict[str, Any] = {"task_id": "ontology.diff"}
+    if onto_space_scope_enabled():
+        metadata["space_id"] = space_id or ""
     decision = compliance_gate(
         action="ontology.diff",
         actor=settings.dms_actor_user_id,
-        metadata={"task_id": "ontology.diff"},
+        metadata=metadata,
         client=cortex,
     )
     enforce(decision, mutation=False)
-    return ontology_data_store().diff(version_id)
+    return ontology_data_store().diff(version_id, space_id=space_id)
 
 
 @router.post("/data/items/{item_id}/approve")
