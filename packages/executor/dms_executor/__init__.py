@@ -1335,7 +1335,7 @@ class Executor:
                         session_id=session_id,
                         event_type="ask.generated_ontology",
                     ),
-                    warehouse=self._warehouse,
+                    warehouse=ensure_demo_warehouse(self._warehouse),
                     grantable=set(granted),
                     dialect=self.dialect or SERVING_DIALECT,
                     space_id=space_id,
