@@ -1,6 +1,5 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
-  AsyncBoundary,
   DependencyNotice,
   Page,
   PageHeader,
@@ -10,7 +9,7 @@ import {
 } from "@/components/PageShell";
 import { useApp } from "@/context/AppContext";
 import { fetchOntology } from "@/lib/api";
-import { ontologyHonestCard } from "@/lib/ontologyRead";
+import { ontologyCountsMeasured, ontologyHeldView, ontologyHonestCard } from "@/lib/ontologyRead";
 import { useAsync } from "@/lib/useAsync";
 import type {
   OntologyBundle,
@@ -299,30 +298,40 @@ export function OntologyPage() {
     (signal) => fetchOntology(activeSpaceId, signal),
     [activeSpaceId],
   );
+  const held = useRef<OntologyBundle | null>(null);
+  const heldSpace = useRef(activeSpaceId);
+  if (heldSpace.current !== activeSpaceId) {
+    heldSpace.current = activeSpaceId;
+    held.current = null;
+  }
+  const view = ontologyHeldView(data, held.current, loading);
+  if (data?.summary.ok) held.current = data;
   const [tab, setTab] = useState<Tab>("objects");
   const [query, setQuery] = useState("");
   const [openObject, setOpenObject] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
-  const counts = data?.summary.counts;
+  const counts = ontologyCountsMeasured(view?.summary) ? view?.summary.counts : undefined;
   const honest = ontologyHonestCard(data?.summary);
+  const unread = data?.summary.reason === "store_unreadable" || Boolean(error);
+  const listsOk = view?.summary.ok === true;
 
   const q = query.trim().toLowerCase();
-  const objects = (data?.objects ?? []).filter(
+  const objects = (view?.objects ?? []).filter(
     (o) =>
       !q ||
       o.id.includes(q) ||
       o.description.toLowerCase().includes(q) ||
       o.properties.some((p) => p.name.includes(q)),
   );
-  const metrics = (data?.metrics ?? []).filter(
+  const metrics = (view?.metrics ?? []).filter(
     (m) =>
       !q ||
       m.id.includes(q) ||
       m.object_types.some((o) => o.includes(q)) ||
       m.synonyms.some((s) => s.toLowerCase().includes(q)),
   );
-  const actions = data?.actions ?? [];
+  const actions = view?.actions ?? [];
   const tools = actions.filter((a) => a.kind === "tool");
   const events = actions.filter((a) => a.kind !== "tool");
 
@@ -343,7 +352,32 @@ export function OntologyPage() {
         }
       />
 
-      <AsyncBoundary loading={loading} error={error} onRetry={reload}>
+      {loading && !view ? (
+        <p
+          data-testid="ontology-loading"
+          className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/50 px-3 py-6 text-sm text-[var(--color-ink-muted)]"
+        >
+          Loading…
+        </p>
+      ) : error && !view ? (
+        <div className="mt-6 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-4">
+          <p className="text-sm text-[var(--color-danger)]">{error}</p>
+          <button
+            type="button"
+            data-testid="ontology-retry"
+            onClick={reload}
+            className="mt-2 border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+      <>
+      {loading && view ? (
+        <p data-testid="ontology-loading" className="mt-6 text-sm text-[var(--color-ink-muted)]">
+          Loading…
+        </p>
+      ) : null}
       {counts ? (
       <div
         data-testid="ontology-counts"
@@ -376,13 +410,23 @@ export function OntologyPage() {
           hint={honest.hint}
         />
       )}
+      {unread && (
+        <button
+          type="button"
+          data-testid="ontology-retry"
+          onClick={reload}
+          className="mt-3 border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]"
+        >
+          Try again
+        </button>
+      )}
 
-      {!honest && (
+      {listsOk && (
       <>
-      {data?.summary.objects_without_metrics?.length ? (
+      {view?.summary.objects_without_metrics?.length ? (
         <DependencyNotice
-          title={`${data.summary.objects_without_metrics.length} object type(s) have no governed metric`}
-          hint={`${data.summary.objects_without_metrics.join(", ")} — questions about these fall through L1 to generation or abstain. Add a metric in the pack's semantic layer to make them answerable under a governed badge.`}
+          title={`${view.summary.objects_without_metrics.length} object type(s) have no governed metric`}
+          hint={`${view.summary.objects_without_metrics.join(", ")} — questions about these fall through L1 to generation or abstain. Add a metric in the pack's semantic layer to make them answerable under a governed badge.`}
         />
       ) : null}
 
@@ -440,13 +484,13 @@ export function OntologyPage() {
             description="Click an object to reveal the join keys and cardinality on its links."
           >
             <OntologyMap
-              nodes={data?.graph.nodes ?? []}
-              edges={data?.graph.edges ?? []}
+              nodes={view?.graph.nodes ?? []}
+              edges={view?.graph.edges ?? []}
               selected={selectedNode}
               onSelect={setSelectedNode}
             />
             <ul className="mt-3 divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
-              {(data?.links ?? []).map((l) => (
+              {(view?.links ?? []).map((l) => (
                 <li key={l.id} className="flex flex-wrap justify-between gap-2 px-3 py-2">
                   <span className="font-mono text-xs">
                     {l.from_object}.{l.from_property} → {l.to_object}.{l.to_property}
@@ -534,11 +578,11 @@ export function OntologyPage() {
         {tab === "functions" && (
           <Section
             title="Functions"
-            count={data?.functions.length ?? 0}
+            count={view?.functions.length ?? 0}
             description="Business logic an agent or pipeline may call. Registered so capability is discoverable without reading the pack source."
           >
             <ul className="divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60">
-              {(data?.functions ?? []).map((f) => (
+              {(view?.functions ?? []).map((f) => (
                 <li key={f.id} className="px-3.5 py-2.5">
                   <p className="font-mono text-sm">{f.id}</p>
                   <p className="mt-0.5 text-sm text-[var(--color-ink-muted)]">{f.description}</p>
@@ -552,7 +596,8 @@ export function OntologyPage() {
         )}
       </>
       )}
-      </AsyncBoundary>
+      </>
+      )}
     </Page>
   );
 }

@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ontologyBundle, ontologyHonestCard, ontologyReadPath } from "./ontologyRead";
+import {
+  ontologyBundle,
+  ontologyCountsMeasured,
+  ontologyHeldView,
+  ontologyHonestCard,
+  ontologyReadPath,
+} from "./ontologyRead";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc";
@@ -38,6 +44,10 @@ describe("ontology reads name the active Space", () => {
     expect(page).toContain("fetchOntology(activeSpaceId, signal)");
     expect(page).toContain('data-testid="ontology-honest-card"');
     expect(page).toContain('data-testid="ontology-counts"');
+    expect(page).toContain('data-testid="ontology-loading"');
+    expect(page).toContain('data-testid="ontology-retry"');
+    expect(page).toContain("ontologyHeldView(");
+    expect(page).toContain("ontologyCountsMeasured(");
     expect(api).toContain("ontologyReadPath(");
     expect(api).toContain("ontologyBundle(");
     expect(api).not.toContain('getJson<OntologySummary>("/v1/ontology", signal)');
@@ -66,5 +76,27 @@ describe("ontology reads name the active Space", () => {
     expect(bundle.summary.counts?.functions).toBe(4);
     expect(bundle.objects).toEqual([]);
     expect(bundle.graph.nodes).toEqual([]);
+  });
+
+  it("a connect failure keeps the last lists and does not count them as zero", () => {
+    const good = {
+      summary: { ok: true, reason: "", counts: { object_types: 3 } },
+      objects: [{ id: "sale" }],
+    };
+    const down = {
+      summary: { ok: false, reason: "store_unreadable", counts: { object_types: 0 } },
+      objects: [] as { id: string }[],
+    };
+    expect(ontologyCountsMeasured(down.summary)).toBe(false);
+    expect(ontologyCountsMeasured({ ok: false, reason: "empty_store" })).toBe(true);
+    expect(ontologyCountsMeasured(good.summary)).toBe(true);
+    const kept = ontologyHeldView(down, good, false);
+    expect(kept?.objects).toEqual([{ id: "sale" }]);
+    expect(kept?.summary.counts?.object_types).toBe(3);
+    const loading = ontologyHeldView(null, good, true);
+    expect(loading?.objects).toEqual([{ id: "sale" }]);
+    const firstFail = ontologyHeldView(down, null, false);
+    expect(firstFail).toBe(down);
+    expect(ontologyCountsMeasured(firstFail?.summary)).toBe(false);
   });
 });

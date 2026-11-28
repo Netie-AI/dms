@@ -60,6 +60,8 @@ def test_no_artifact_is_an_empty_state_not_raw_json(
     assert "grade52.py" in body["how_to_run"]
     assert body["claim"]["supported"] is False
     assert "confidently_wrong" not in body["claim"]
+    assert body["claim"]["statement"] == "Not measured yet"
+    assert "0" not in body["claim"]["statement"]
     blob = json.dumps(body)
     assert '{"detail"' not in blob
     assert "Not Found" not in blob
@@ -124,6 +126,25 @@ def test_a_file_without_counts_does_not_become_a_run(
     assert body["runs"] == {}
 
 
+def test_missing_wrong_is_not_reported_as_zero(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A file that never stored WRONG must not become a clean zero."""
+    _isolate(monkeypatch, tmp_path)
+    _fail_engine(monkeypatch)
+    (tmp_path / "grade52.json").write_text(
+        json.dumps({"mode": "stub", "correct": 2, "n": 4, "abstain": 1}),
+        encoding="utf-8",
+    )
+    body = _client(monkeypatch).get("/v1/trust/summary").json()
+    totals = body["runs"]["corpus"]["totals"]
+    assert "wrong" not in totals
+    assert "confidently_wrong" not in body["claim"]
+    assert body["claim"]["statement"] == "Not measured yet"
+    assert "0" not in body["claim"]["statement"]
+    assert "0 wrong" not in json.dumps(body["claim"])
+
+
 def test_flag_off_events_and_adjust_status_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,8 +205,17 @@ def test_ui_empty_states_are_in_the_pages() -> None:
     onto = (root / "apps/ui/src/pages/OntologyPage.tsx").read_text(encoding="utf-8")
     api = (root / "apps/ui/src/lib/api.ts").read_text(encoding="utf-8")
     assert 'data-testid="trust-empty"' in trust
+    assert 'data-testid="trust-unmeasured"' in trust
     assert "No benchmark run yet" in trust
+    assert "Not measured yet" in trust
+    assert "wrongCountLabel(" in trust
+    assert "0 wrong" not in trust
+    assert "totals.wrong ?? 0" not in trust
     assert "publicTrustHint(" in trust
     assert 'data-testid="ontology-counts"' in onto
+    assert 'data-testid="ontology-loading"' in onto
+    assert 'data-testid="ontology-retry"' in onto
+    assert "ontologyHeldView(" in onto
+    assert "ontologyCountsMeasured(" in onto
     assert "ontologyBundle(" in api
     assert 'ontologyReadPath("objects"' not in api

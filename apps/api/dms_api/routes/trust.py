@@ -175,7 +175,7 @@ def local_benchmark_runs() -> dict[str, dict[str, Any]]:
 def _claim_from_runs(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """The tile numbers. ``supported`` stays false: a file is not a claim verdict."""
     claim: dict[str, Any] = {
-        "statement": "0 confidently wrong",
+        "statement": "Not measured yet",
         "supported": False,
         "blockers": [],
     }
@@ -185,6 +185,7 @@ def _claim_from_runs(runs: dict[str, dict[str, Any]]) -> dict[str, Any]:
     totals = source.get("totals") or {}
     if "wrong" in totals:
         claim["confidently_wrong"] = totals["wrong"]
+        claim["statement"] = "0 confidently wrong"
     if "total" in totals:
         claim["corpus_n"] = totals["total"]
     return claim
@@ -275,7 +276,7 @@ def _engine_failure(result: dict[str, Any], extra: dict[str, Any]) -> dict[str, 
             "error": result.get("error"),
             "hint": _public_hint(result.get("hint")),
             "claim": {
-                "statement": "0 confidently wrong",
+                "statement": "Not measured yet",
                 "supported": False,
                 "blockers": ["evidence unavailable. Cortex did not answer"],
             },
@@ -299,7 +300,7 @@ def _engine_failure(result: dict[str, Any], extra: dict[str, Any]) -> dict[str, 
         "how_to_run": HOW_TO_RUN,
         "source": "none",
         "claim": {
-            "statement": "0 confidently wrong",
+            "statement": "Not measured yet",
             "supported": False,
             "blockers": [],
         },

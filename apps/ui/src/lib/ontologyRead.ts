@@ -48,6 +48,27 @@ export function ontologyReadPath(section: string, spaceId?: string | null): stri
   return `${base}?space_id=${encodeURIComponent(id)}`;
 }
 
+/** A failed read is not a count of zero. An empty_store zero is a real read. */
+export function ontologyCountsMeasured(
+  summary: { ok?: boolean; reason?: string } | null | undefined,
+): boolean {
+  return Boolean(summary) && summary?.reason !== "store_unreadable";
+}
+
+/**
+ * Keep the last good lists while a read is in flight or the store timed out.
+ * A 3s connect failure must not replace objects that were already on screen.
+ */
+export function ontologyHeldView<T extends { summary: { ok?: boolean; reason?: string } }>(
+  incoming: T | null,
+  held: T | null,
+  loading: boolean,
+): T | null {
+  const failed = incoming?.summary.reason === "store_unreadable";
+  if ((failed || loading || incoming == null) && held?.summary.ok) return held;
+  return incoming;
+}
+
 /** Card for ok:false. A store payload (ok true) is not a card. */
 export function ontologyHonestCard(
   summary: { ok?: boolean; reason?: string; hint?: string } | null | undefined,
