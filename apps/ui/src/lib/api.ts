@@ -130,6 +130,25 @@ export function describeApiError(body: string, secret?: string): string {
   return cleaned || "The write was refused. No error detail was returned.";
 }
 
+export async function fetchFeatures(
+  signal?: AbortSignal,
+): Promise<Record<string, boolean>> {
+  try {
+    const res = await fetch("/api/v1/features", { signal });
+    if (!res.ok) return {};
+    const body = (await res.json()) as unknown;
+    if (!body || typeof body !== "object") return {};
+    const out: Record<string, boolean> = {};
+    for (const [key, value] of Object.entries(body)) out[key] = value === true;
+    return out;
+  } catch (err) {
+    if (signal?.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+      throw err;
+    }
+    return {};
+  }
+}
+
 export async function fetchHealth(signal?: AbortSignal): Promise<HealthBody | null> {
   try {
     const res = await fetch("/api/health", { signal });

@@ -66,6 +66,20 @@ async function install(page: Page, health: Record<string, unknown>) {
       });
       return;
     }
+    if (url.includes("/v1/features")) {
+      await route.fulfill({
+        json: { ready_guide: false, sign: false, insight_proof: false },
+      });
+      return;
+    }
+    if (
+      url.includes("/v1/ready/guide") ||
+      url.includes("/v1/sign/status") ||
+      url.includes("/v1/insight-proof/")
+    ) {
+      await route.fulfill({ status: 404, json: { detail: "Not Found" } });
+      return;
+    }
     if (url.includes("/library/tree")) {
       await route.fulfill({
         json: {
@@ -107,6 +121,18 @@ const LIVE_DOWN = {
   },
 };
 
+function watchClean(page: Page): string[] {
+  const problems: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.type() === "error") problems.push(msg.text());
+  });
+  page.on("pageerror", (err) => problems.push(err.message));
+  page.on("response", (res) => {
+    if (res.status() >= 400) problems.push(`${res.status()} ${res.url()}`);
+  });
+  return problems;
+}
+
 test.describe("Studio sell walk", () => {
   test("ask, chart, insights, and exports use the answer on screen", async ({ page }) => {
     const errors: string[] = [];
@@ -125,6 +151,8 @@ test.describe("Studio sell walk", () => {
     await expect(page.getByText("Stock").first()).toBeVisible();
     await page.getByTestId("answer-insights-button").click();
     await expect(page.getByText("The row is the only figure.").first()).toBeVisible();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.locator('a[href="/insights"]')).toHaveCount(0);
     const word = page.waitForEvent("download");
     await page.getByTestId("answer-word").click();
     expect((await word).suggestedFilename()).toMatch(/\.docx$/);
@@ -141,9 +169,11 @@ test.describe("Studio sell walk", () => {
     expect(errors).toEqual([]);
   });
 
-  test("new menu creates an app and reaches connector and settings", async ({ page }) => {
+  test("flag-off walk has no console error, 4xx, or insights entry", async ({ page }) => {
+    const problems = watchClean(page);
     await install(page, { ...LIVE_DOWN, ask_mode: "demo" });
     await page.goto("/");
+    await expect(page.locator('a[href="/insights"]')).toHaveCount(0);
     await page.getByRole("button", { name: "Switch to operator mode" }).click();
     await page.getByRole("button", { name: "+ New" }).click();
     await page.getByRole("button", { name: "Create app" }).click();
@@ -159,6 +189,11 @@ test.describe("Studio sell walk", () => {
       await page.goto(item.path);
       await expect(page.getByRole("heading", { name: item.heading, level: 1 })).toBeVisible();
     }
+    await expect(page.locator('a[href="/insights"]')).toHaveCount(0);
+    await page.goto("/insights");
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("heading", { name: "Proven insights" })).toHaveCount(0);
+    expect(problems).toEqual([]);
   });
 
   test("a closed plan is a sentence, not a transport dump", async ({ page }) => {

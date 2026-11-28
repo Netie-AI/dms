@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type PointerEvent } from "react";
+import { useFeature } from "@/lib/features";
 import { SIGN_INTENT, strokesToSvg, type Stroke } from "@/lib/signCapture";
 
 type Kind = "typed" | "drawn" | "upload";
 
 /**
- * Shown only after GET /v1/sign/status returns ok. Flag off renders nothing,
- * so the audit page markup stays as it was.
+ * Shown only when GET /v1/features says sign is on and /v1/sign/status is ok.
+ * Flag off skips that status call and renders nothing.
  */
 export function SignPanel({ enabled }: { enabled: boolean }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -217,12 +218,23 @@ export function SignPanel({ enabled }: { enabled: boolean }) {
 
 export function SignGate() {
   const [on, setOn] = useState(false);
+  const signOn = useFeature("sign");
   useEffect(() => {
+    if (!signOn) {
+      setOn(false);
+      return;
+    }
+    let cancelled = false;
     void fetch("/api/v1/sign/status")
       .then((res) => {
-        setOn(res.ok);
+        if (!cancelled) setOn(res.ok);
       })
-      .catch(() => setOn(false));
-  }, []);
+      .catch(() => {
+        if (!cancelled) setOn(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [signOn]);
   return <SignPanel enabled={on} />;
 }

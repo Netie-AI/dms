@@ -8,7 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/api";
+import { fetchFeatures, fetchHealth, fetchLibrarySources, fetchSpaces, postAsk } from "@/lib/api";
+import { publishFeatures } from "@/lib/features";
 import { useAskStages, type AskStageEvent } from "@/components/studio/AskStages";
 import { sourcesForPanel } from "@/lib/sourcePanel";
 import { FIXTURE_SPACES, SUGGESTED_QUESTIONS } from "@/lib/fixtures";
@@ -247,6 +248,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (err instanceof DOMException && err.name === "AbortError") return;
           setApiOnline(false);
         });
+      void fetchFeatures(ctrl.signal)
+        .then((body) => {
+          if (!ctrl.signal.aborted) publishFeatures(body);
+        })
+        .catch(() => undefined);
     };
     tick();
     const id = window.setInterval(tick, 8000);
