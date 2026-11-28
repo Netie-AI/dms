@@ -145,8 +145,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cortex = cortex
     ask = build_ask_service(cortex)
     app.state.ask_service = ask
+    mcp_life = getattr(app.state, "mcp_v2_lifespan", None)
     try:
-        yield
+        if mcp_life is not None:
+            async with mcp_life:
+                yield
+        else:
+            yield
     finally:
         ask.close()
         cortex.close()
@@ -204,6 +209,11 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     if settings.dms_mcp:
         app.include_router(mcp.router)
+    app.state.mcp_v2_lifespan = None
+    if settings.dms_mcp_v2:
+        from dms_api.mcp_server.transport import mount_mcp
+
+        app.state.mcp_v2_lifespan = mount_mcp(app)
     if insight_proof.enabled():
         app.include_router(insight_proof.router)
     if studio_adjust.enabled():
