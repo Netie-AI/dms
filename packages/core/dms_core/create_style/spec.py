@@ -28,6 +28,13 @@ _REQUIRED = {
     "table": ("columns", "rows"),
     "chart_page": ("charts",),
 }
+# Optional keys the model may send. Empty means the field is omitted.
+_OPTIONAL = {
+    "image_side": ("label",),
+    "image_below": ("label",),
+    "two_column": ("left_label", "right_label"),
+}
+_KINDS = frozenset({"app", "doc", "slides"})
 _MAX_BLOCKS = 40
 _MAX_TEXT = 20_000
 _MAX_ROWS = 5_000
@@ -41,8 +48,29 @@ def catalog() -> list[dict[str, Any]]:
     """Block types and the fields each one requires. No sample sentences."""
     rows = []
     for name in BLOCK_TYPES:
-        rows.append({"type": name, "fields": list(_REQUIRED[name])})
+        row: dict[str, Any] = {"type": name, "fields": list(_REQUIRED[name])}
+        optional = _OPTIONAL.get(name)
+        if optional:
+            row["optional"] = list(optional)
+        rows.append(row)
     return rows
+
+
+def layout_blocks(kind: str) -> list[dict[str, Any]]:
+    """Blocks one Create kind can place.
+
+    ``dms_executor.create_context.layout_blocks`` (DMS-CREATE-CONTEXT-01, still
+    open) stays empty until that branch lands. It should return this list.
+    ``app``, ``doc``, and ``slides`` share one schema. The flag off returns
+    nothing, so Create's style dict is unchanged.
+    """
+    if kind not in _KINDS:
+        return []
+    from dms_core.create_style.flag import enabled
+
+    if not enabled():
+        return []
+    return catalog()
 
 
 def normalize(document: dict[str, Any]) -> dict[str, Any]:
@@ -65,17 +93,22 @@ def _block(item: object) -> dict[str, Any]:
     if kind not in BLOCK_TYPES:
         raise CreateError("bad_block")
     if kind in ("image_side", "image_below"):
-        return {
+        block = {
             "type": kind,
             "image": _image(item.get("image_b64")),
             "caption": _text(item.get("caption"), "caption_required"),
         }
+        _keep(block, "label", _optional(item, "label"))
+        return block
     if kind == "two_column":
-        return {
+        block = {
             "type": kind,
             "left": _text(item.get("left"), "text_required"),
             "right": _text(item.get("right"), "text_required"),
         }
+        _keep(block, "left_label", _optional(item, "left_label"))
+        _keep(block, "right_label", _optional(item, "right_label"))
+        return block
     if kind == "kpi_strip":
         return {"type": kind, "items": _items(item.get("items"))}
     if kind == "chart_commentary":
@@ -94,6 +127,17 @@ def _block(item: object) -> dict[str, Any]:
     if not isinstance(charts, list) or len(charts) != 4:
         raise CreateError("chart_page_needs_four")
     return {"type": kind, "charts": [_chart(chart) for chart in charts]}
+
+
+def _optional(item: dict[str, Any], key: str) -> str:
+    if key not in item or item.get(key) in ("", None):
+        return ""
+    return _text(item.get(key), "bad_label")
+
+
+def _keep(block: dict[str, Any], key: str, value: str) -> None:
+    if value:
+        block[key] = value
 
 
 def _text(value: object, code: str, *, allow_empty: bool = False) -> str:

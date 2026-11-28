@@ -13,13 +13,13 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
+from dms_core.create_style.adopt import document_from_artifact
 from dms_core.create_style.errors import CreateError
 from dms_core.create_style.flag import enabled
 from dms_core.create_style.layout import layout_pages
-from dms_core.create_style.model import bind_transport, propose, request_body, reset_transport
 from dms_core.create_style.paint import page_png, png_size
 from dms_core.create_style.render import render_document, snapshot
-from dms_core.create_style.spec import normalize
+from dms_core.create_style.spec import layout_blocks, normalize
 from dms_core.create_style.theme import default_theme_path, load_theme
 from dms_core.create_style.xlsx_out import plain_rows
 from PIL import Image
@@ -275,110 +275,107 @@ def test_refuses_a_short_chart_page_and_a_kpi_without_a_source() -> None:
     assert side["blocks"][0]["caption"] == CAPTION
 
 
-def test_model_copies_the_reply_and_does_not_invent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DMS_CREATE_STYLE", "1")
-    seen: dict[str, object] = {}
-
-    def transport(body: dict[str, object]) -> dict[str, object]:
-        seen["body"] = body
-        return {
-            "title": TITLE,
-            "blocks": [{"type": "two_column", "left": LEFT, "right": RIGHT}],
-        }
-
-    token = bind_transport(transport)
-    try:
-        document = propose("facts from the lake")
-    finally:
-        reset_transport(token)
-    assert document["blocks"][0]["left"] == LEFT
-    body = seen["body"]
-    assert isinstance(body, dict)
-    assert body["role"] == "create"
-    assert "model" not in body
-    system = body["messages"][0]["content"]
-    assert isinstance(system, str)
-    assert LEFT not in system
-    html = render_document(document, load_theme(), "html")[0].decode("utf-8")
-    assert LEFT in html
+def test_layout_blocks_hook_is_empty_until_the_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DMS_CREATE_STYLE", raising=False)
-    with pytest.raises(CreateError) as off:
-        propose("facts")
-    assert off.value.code == "create_style_disabled"
-
-
-def test_bad_model_reply_is_not_replaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert layout_blocks("doc") == []
+    assert layout_blocks("slides") == []
     monkeypatch.setenv("DMS_CREATE_STYLE", "1")
-    token = bind_transport(lambda _body: "not a document")
-    try:
-        with pytest.raises(CreateError) as exc:
-            propose("facts from the lake")
-    finally:
-        reset_transport(token)
-    assert exc.value.code == "model_output_invalid"
+    listed = layout_blocks("doc")
+    assert [item["type"] for item in listed] == [
+        "image_side",
+        "image_below",
+        "two_column",
+        "kpi_strip",
+        "chart_commentary",
+        "table",
+        "chart_page",
+    ]
+    side = next(item for item in listed if item["type"] == "image_side")
+    assert side["fields"] == ["image_b64", "caption"]
+    assert side["optional"] == ["label"]
+    assert layout_blocks("other") == []
+
+
+def test_parts_keep_the_model_words_and_every_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = f"{LEFT} {RIGHT}"
+    rows = [{"Region": "North", "Orders": index} for index in range(12)]
+    rows.append({"Region": "East", "Orders": LONG_CELL})
+    artifact = {
+        "title": TITLE,
+        "parts": [
+            {
+                "id": "a",
+                "title": HEADLINE,
+                "body": body,
+                "rows": rows,
+                "charts": [
+                    {
+                        "label": "Weekly orders",
+                        "type": "line",
+                        "rows": [
+                            {"week": "Mon", "orders": 4},
+                            {"week": "Tue", "orders": 9},
+                            {"week": "Wed", "orders": 6},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    document = document_from_artifact(artifact)
+    commentary = next(item for item in document["blocks"] if item["type"] == "chart_commentary")
+    assert commentary["commentary"] == body
+    table = next(item for item in document["blocks"] if item["type"] == "table")
+    assert len(table["rows"]) == 13
+    assert table["rows"][-1] == ["East", LONG_CELL]
     package = ROOT / "packages" / "core" / "dms_core" / "create_style"
     blob = "\n".join(path.read_text(encoding="utf-8") for path in package.rglob("*.py"))
     assert HEADLINE not in blob
     assert "\u2014" not in blob
     assert "\u2013" not in blob
-    body = request_body("facts from the lake")
-    assert "model" not in body
+    monkeypatch.setenv("DMS_CREATE_STYLE", "1")
+    from dms_executor.create_files import render_artifact
+
+    names = render_artifact(
+        tmp_path, artifact, kind="doc", one_page=False, brand={"colours": "#112233"}
+    )
+    assert "doc.docx" in names
+    assert "doc.xlsx" in names
+    assert "doc.pdf" not in names
+    html = (tmp_path / "doc.html").read_text(encoding="utf-8")
+    assert body in html
+    assert "#112233" in html
+    data = plain_rows((tmp_path / "doc.xlsx").read_bytes(), "Data")
+    assert len(data) == 14
+    assert ["East", LONG_CELL] in data
 
 
-def test_flag_off_route_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flag_off_keeps_the_create_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DMS_CREATE_STYLE", raising=False)
+    from dms_executor.create_files import render_artifact
+
+    artifact = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [{"id": "a", "title": "Body", "body": "Opened."}],
+    }
+    names = render_artifact(tmp_path, artifact, kind="doc", one_page=False)
+    assert "doc.pdf" in names
+    assert "doc.docx" not in names
+    assert (tmp_path / "doc.pdf").read_bytes().startswith(b"%PDF")
+    html = (tmp_path / "doc.html").read_text(encoding="utf-8")
+    assert "data-name" not in html
     from dms_api.app import create_app
     from dms_api.settings import get_settings
     from fastapi.testclient import TestClient
 
+    monkeypatch.setenv("DMS_CREATE_STYLE", "1")
     get_settings.cache_clear()
     client = TestClient(create_app())
     assert client.get("/v1/create/layouts").status_code == 404
-    assert (
-        client.post("/v1/create/render", json={"format": "html", "blocks": []}).status_code == 404
-    )
-
-
-def test_route_renders_when_the_flag_is_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("DMS_CREATE_STYLE", "1")
-    from cortex_client.gate import ComplianceDecision
-    from dms_api.app import create_app
-    from dms_api.settings import get_settings
-    from fastapi.testclient import TestClient
-
-    get_settings.cache_clear()
-
-    def allow(*, action: str, actor: str | None = None, **_kwargs: object) -> ComplianceDecision:
-        del actor
-        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
-
-    app = create_app()
-    monkeypatch.setattr("dms_api.routes.create_style.compliance_gate", allow)
-    client = TestClient(app)
-    catalog = client.get("/v1/create/layouts")
-    assert catalog.status_code == 200
-    types = [item["type"] for item in catalog.json()["blocks"]]
-    assert "image_side" in types
-    assert "chart_page" in types
-    refused = client.post("/v1/create/render", json={"format": "html", "title": TITLE})
-    assert refused.status_code == 400
-    assert refused.json()["detail"] == "blocks_or_facts"
-    token = bind_transport(
-        lambda _body: {
-            "title": TITLE,
-            "blocks": [{"type": "two_column", "left": LEFT, "right": RIGHT}],
-        }
-    )
-    try:
-        made = client.post(
-            "/v1/create/render", json={"format": "html", "facts": "facts from the lake"}
-        )
-    finally:
-        reset_transport(token)
-    assert made.status_code == 200, made.text
-    assert made.headers["content-type"].startswith("text/html")
-    assert LEFT in made.text
-    assert "create.html" in made.headers["content-disposition"]
+    assert client.post("/v1/create/render", json={"format": "html"}).status_code == 404
 
 
 def test_preview_pages_match_the_boxes() -> None:

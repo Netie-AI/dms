@@ -2,11 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
-## 2026-11-28 - CREATE-STYLE-V2: theme file and layout blocks for Create exports
+## 2026-11-28 - CREATE-STYLE-V2: theme file inside Create
 
-- **Flag.** `DMS_CREATE_STYLE` is off unless the value is the digit 1. Off, `/v1/create` is not mounted. On, `POST /v1/create/render` writes docx, pptx, xlsx, or HTML from layout blocks, or from one OpenVault call with role `create`.
-- **Theme.** `packages/core/dms_core/create_style/themes/pitch.json` holds colours, fonts, logo, and the 8px spacing grid. A brand file overrides those keys.
-- **Blocks.** image beside a caption, image above a caption, two columns, a KPI strip, chart plus commentary, a full-width table, and a four-chart page. Text is stored whole. Excel keeps every row on Data and a formatted Summary sheet.
+- **Flag.** `DMS_CREATE_STYLE` is off unless the value is the digit 1. Off, `render_artifact` is unchanged. There is no second `/v1/create` route.
+- **On.** Create's `render_artifact` writes docx, pptx, xlsx, and HTML from `themes/pitch.json` and the layout blocks. A brand colour overrides the accent. The model's parts are copied. Sentences stay with the existing OpenVault Create call.
+- **Hook.** `layout_blocks(kind)` is the list `create_context.layout_blocks` should return once DMS-CREATE-CONTEXT-01 lands. Off, that list is empty.
+- **Blocks.** image beside a caption, image above a caption, two columns, a KPI strip, chart plus commentary, a full-width table, and a four-chart page. Excel keeps every row on Data and a formatted Summary sheet.
 - **Tests.** `tests/test_create_style_v2.py` plus `tests/fixtures/create_style/golden.json`. Not PASS.
 
 ## 2026-11-28 - DMS-CREATE-CONTEXT-01: chats, a questionnaire, or a project

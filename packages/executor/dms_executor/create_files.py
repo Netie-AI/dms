@@ -170,6 +170,13 @@ def render_artifact(
         json.dumps(artifact, indent=2, default=str), encoding="utf-8"
     )
     names = ["artifact.json"]
+    from dms_core.create_style.flag import enabled as style_enabled
+
+    if style_enabled():
+        from dms_core.create_style.adopt import styled_names
+
+        names.extend(styled_names(folder, artifact, kind=kind, brand=brand))
+        return names
     kit, pages = _prepare(
         artifact, kind=kind, one_page=one_page, page_budget=page_budget, brand=brand, ask=ask
     )
