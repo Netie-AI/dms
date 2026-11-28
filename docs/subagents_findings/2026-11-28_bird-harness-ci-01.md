@@ -1,6 +1,6 @@
 # BIRD-HARNESS-CI-01
 
-**Status:** Not PASS. `tests/test_bird_bench.py` 12 passed with `--noconftest`. `python scripts/bench/bird/__main__.py self-check` passed. Full suite not run. The 2024-06 corpus was not downloaded. grade52 armed and pack H not run.
+**Status:** Not PASS. `tests/test_bird_bench.py` 12 passed with `--noconftest`. `python scripts/bench/bird/__main__.py self-check` passed. Full suite not run. The 2024-06 corpus was not downloaded. Stub grade52 at `8683ea24`, flag off and `DMS_BIRD_HARNESS=1`: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Armed and pack H not run.
 
 ## What
 
