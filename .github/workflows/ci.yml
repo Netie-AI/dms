@@ -494,28 +494,56 @@ jobs:
           # Entrypoint initdb prints "ready for start up", then execs gaussdb.
           # gs_ctl "server is running" is the signal after that. 240 * 2s covers
           # a cold init on a GitHub runner. The loop returns as soon as it is up.
+          # opengauss/opengauss:5.0.0 runs gs_ctl from /usr/local/opengauss/bin.
+          # The DB login in its entrypoint is opengauss, not omm. su - omm
+          # never sees "server is running" on this image.
           ready=0
+          last_ctl=""
           for _ in $(seq 1 240); do
-            status="$(docker exec opengauss su - omm -c 'gs_ctl status -D /var/lib/opengauss/data' 2>/dev/null || true)"
-            case "$status" in
+            last_ctl="$(docker exec \
+              -e PATH="/usr/local/opengauss/bin:/usr/bin:/bin" \
+              -e LD_LIBRARY_PATH="/usr/local/opengauss/lib" \
+              -e GAUSSHOME="/usr/local/opengauss" \
+              opengauss gs_ctl status -D /var/lib/opengauss/data 2>&1 || true)"
+            case "$last_ctl" in
               *"server is running"*) ready=1; break ;;
             esac
             running="$(docker inspect -f '{{.State.Running}}' opengauss 2>/dev/null || echo false)"
             if [ "$running" != "true" ]; then
+              echo "last gs_ctl: ${last_ctl}"
               fail_gauss "container exited before gs_ctl reported the server running"
             fi
             sleep 2
           done
           if [ "$ready" != 1 ]; then
+            echo "last gs_ctl: ${last_ctl}"
             fail_gauss "gs_ctl did not report server is running within 8 minutes"
           fi
-          if ! docker exec opengauss su - omm -c "gsql -d postgres -v ON_ERROR_STOP=1 -c 'CREATE TABLE public.dms_probe (n int); INSERT INTO public.dms_probe (n) VALUES (1); GRANT SELECT ON public.dms_probe TO gaussdb;'"; then
+          # Published port must accept a connection after gs_ctl is green.
+          port_ready=0
+          for _ in $(seq 1 30); do
+            if python -c 'import socket; s=socket.create_connection(("127.0.0.1",15432),2); s.close()'; then
+              port_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$port_ready" != 1 ]; then
+            fail_gauss "gs_ctl is running but host port 15432 is closed"
+          fi
+          # Password goes in the exec environment, not on the gsql command line.
+          if ! docker exec \
+            -e PGPASSWORD="$GS_PASSWORD" \
+            -e PATH="/usr/local/opengauss/bin:/usr/bin:/bin" \
+            -e LD_LIBRARY_PATH="/usr/local/opengauss/lib" \
+            opengauss gsql -d postgres -U opengauss -v ON_ERROR_STOP=1 \
+            -c "CREATE TABLE public.dms_probe (n int); INSERT INTO public.dms_probe (n) VALUES (1);"; then
             fail_gauss "could not create the probe table"
           fi
           export DMS_CONNECT_GAUSS_LIVE=1
           export CONNECT_GAUSS_HOST=127.0.0.1
           export CONNECT_GAUSS_PORT=15432
-          export CONNECT_GAUSS_USER=gaussdb
+          export CONNECT_GAUSS_USER=opengauss
           export CONNECT_GAUSS_DB=postgres
           export CONNECT_GAUSS_PASSWORD="$GS_PASSWORD"
           oracle=0
