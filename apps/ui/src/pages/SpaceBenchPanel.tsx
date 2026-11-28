@@ -9,9 +9,23 @@ import {
 } from "@/lib/api";
 import { useAsync } from "@/lib/useAsync";
 
-function coverageText(value: number | null | undefined): string {
-  if (value == null) return "none";
-  return `${(value * 100).toFixed(1)}%`;
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function coverageLine(tally: {
+  coverage?: number | null;
+  correct?: number;
+  graded?: number;
+}): string {
+  const head = isCount(tally.coverage) ? `${(tally.coverage * 100).toFixed(1)}%` : "none";
+  const fraction =
+    isCount(tally.correct) && isCount(tally.graded) ? ` (${tally.correct}/${tally.graded})` : "";
+  return `coverage ${head}${fraction}`;
+}
+
+function namedCount(value: unknown, label: string): string | null {
+  return isCount(value) ? `${value} ${label}` : null;
 }
 
 export function SpaceBenchView({
@@ -35,30 +49,52 @@ export function SpaceBenchView({
 }) {
   const run = body.latest_run;
   const tally = run?.tally;
-  const wrong = Number(tally?.WRONG ?? 0);
+  const score = tally != null && isCount(tally.WRONG) ? tally : null;
   const running = run?.status === "running" || run?.status === "queued";
+  const progress =
+    run && isCount(run.progress_done) && isCount(run.progress_total)
+      ? `${run.progress_done}/${run.progress_total} ${run.status}`
+      : "";
+  const parts = score
+    ? [
+        namedCount(score.clarify, "clarify"),
+        namedCount(score.reconfirm, "reconfirm"),
+        namedCount(score.abstain, "abstain"),
+      ].filter((part): part is string => part != null)
+    : [];
   const [question, setQuestion] = useState("");
   const [goldSql, setGoldSql] = useState("");
 
   return (
     <section className="mt-4" data-testid="trust-bench-panel">
       <div className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4">
-        <p
-          data-testid="trust-bench-wrong"
-          className={`font-[family-name:var(--font-display)] text-3xl font-semibold ${
-            wrong > 0 ? "text-[var(--color-danger)]" : ""
-          }`}
-        >
-          WRONG {wrong}
-        </p>
-        <p className="mt-1 text-sm text-[var(--color-ink-muted)]" data-testid="trust-bench-coverage">
-          coverage {coverageText(tally?.coverage)} ({tally?.correct ?? 0}/{tally?.graded ?? 0})
-        </p>
-        <p className="mt-1 text-xs text-[var(--color-ink-muted)]">
-          {tally?.clarify ?? 0} clarify, {tally?.reconfirm ?? 0} reconfirm, {tally?.abstain ?? 0}{" "}
-          abstain
-          {run ? `, ${run.progress_done}/${run.progress_total} ${run.status}` : ""}
-        </p>
+        {score ? (
+          <>
+            <p
+              data-testid="trust-bench-wrong"
+              className={`font-[family-name:var(--font-display)] text-3xl font-semibold ${
+                score.WRONG > 0 ? "text-[var(--color-danger)]" : ""
+              }`}
+            >
+              WRONG {score.WRONG}
+            </p>
+            <p
+              className="mt-1 text-sm text-[var(--color-ink-muted)]"
+              data-testid="trust-bench-coverage"
+            >
+              {coverageLine(score)}
+            </p>
+            {(parts.length > 0 || progress) && (
+              <p className="mt-1 text-xs text-[var(--color-ink-muted)]">
+                {[parts.join(", "), progress].filter(Boolean).join(", ")}
+              </p>
+            )}
+          </>
+        ) : (
+          <p data-testid="trust-bench-unmeasured" className="text-sm">
+            Not measured yet{progress ? `, ${progress}` : ""}
+          </p>
+        )}
         <div className="mt-3 flex flex-wrap gap-2">
           <button
             type="button"
