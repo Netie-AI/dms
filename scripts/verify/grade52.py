@@ -2459,6 +2459,7 @@ def _prepare_flag_off() -> None:
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
     os.environ.pop("DMS_AI_FIRST", None)
+    os.environ.pop("DMS_AI_FLOOR", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     _scrub_credentials()
 
@@ -2504,16 +2505,19 @@ def _resolve_mode(mode: str | None) -> str:
     return str(mode)
 
 
-def replay_executing(*, ai_first: bool = False) -> list[dict[str, Any]]:
+def replay_executing(*, ai_first: bool = False, ai_floor: bool = False) -> list[dict[str, Any]]:
     """Same capture, but submit executes the SQL it is given.
 
-    ``ai_first`` sets ``DMS_AI_FIRST`` after the flag-off scrub. The default
-    stays off, which is the number of record. The flag is cleared before
-    return so a later in-process grade stays off.
+    ``ai_first`` sets ``DMS_AI_FIRST`` after the flag-off scrub. ``ai_floor``
+    sets ``DMS_AI_FLOOR`` to the digit 1. The default stays off, which is the
+    number of record. The flag is cleared before return so a later in-process
+    grade stays off.
     """
     _prepare_flag_off()
     if ai_first:
         os.environ["DMS_AI_FIRST"] = "1"
+    if ai_floor:
+        os.environ["DMS_AI_FLOOR"] = "1"
     from cortex_client.models import (
         AskRequest,
         AskResponse,
@@ -2645,6 +2649,8 @@ def replay_executing(*, ai_first: bool = False) -> list[dict[str, Any]]:
         raise SystemExit(f"replay size {len(rows)} != 52")
     if ai_first:
         os.environ.pop("DMS_AI_FIRST", None)
+    if ai_floor:
+        os.environ.pop("DMS_AI_FLOOR", None)
     return rows
 
 
@@ -3820,17 +3826,48 @@ def grade_loaded(
     return _finish(report, mode, _commit_sha(dms_sha), layout, cortex_sha=cortex_sha, **finish)
 
 
-def grade_main(mode: str | None = None, *, ai_first: bool = False) -> dict[str, Any]:
+def _print_floor_latency(rows: Sequence[Mapping[str, Any]]) -> None:
+    """Per-answer milliseconds stamped by the floor. Stub time, not a live model."""
+    samples: list[float] = []
+    calls: list[int] = []
+    for row in rows:
+        env = row.get("env") if isinstance(row, Mapping) else None
+        block = env.get("ai_floor") if isinstance(env, Mapping) else None
+        if not isinstance(block, Mapping):
+            continue
+        ms = block.get("ms")
+        if isinstance(ms, (int, float)) and not isinstance(ms, bool):
+            samples.append(float(ms))
+        n = block.get("calls")
+        if isinstance(n, int) and not isinstance(n, bool):
+            calls.append(n)
+    if not samples:
+        print("ai_floor latency: not stamped")
+        return
+    samples.sort()
+    mid = samples[len(samples) // 2]
+    call_max = max(calls) if calls else 0
+    print(
+        f"ai_floor n={len(samples)} median_ms={mid:.1f} "
+        f"max_ms={samples[-1]:.1f} calls_max={call_max}"
+    )
+
+
+def grade_main(
+    mode: str | None = None, *, ai_first: bool = False, ai_floor: bool = False
+) -> dict[str, Any]:
     """In-repo proof: exec-SQL stub. Default flags off.
 
     ``ai_first`` turns ``DMS_AI_FIRST`` on for this replay only.
+    ``ai_floor`` turns ``DMS_AI_FLOOR`` on for this replay only.
     """
     chosen = MODE_STUB_EXEC if mode is None else _resolve_mode(mode)
     if chosen != MODE_STUB_EXEC:
         raise SystemExit("grade52: --main grades the exec-SQL stub as stub-exec")
-    return grade_loaded(
-        replay_executing(ai_first=ai_first), mode=MODE_STUB_EXEC, dms_sha=product_sha()
-    )
+    rows = replay_executing(ai_first=ai_first, ai_floor=ai_floor)
+    if ai_floor:
+        _print_floor_latency(rows)
+    return grade_loaded(rows, mode=MODE_STUB_EXEC, dms_sha=product_sha())
 
 
 _STAGE_ORDER = (
@@ -4834,6 +4871,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--ai-floor",
+        action="store_true",
+        help="with --main, set DMS_AI_FLOOR=1 for the stub replay",
+    )
+    parser.add_argument(
         "--ai-first-also",
         action="append",
         choices=AI_FIRST_HELD_FLAGS,
@@ -4886,6 +4928,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("grade52: --layout is for --armed; a capture carries its own layout")
     if args.all_flags and not args.armed:
         raise SystemExit("grade52: --all-flags is for --armed")
+    if args.ai_floor and not args.main:
+        raise SystemExit("grade52: --ai-floor is the stub switch for --main")
+    if args.ai_floor and args.ai_first:
+        raise SystemExit("grade52: --ai-floor does not combine with --ai-first")
     if args.ai_first and not (args.main or args.armed):
         raise SystemExit(
             "grade52: --ai-first is the stub switch for --main or the profile for --armed; "
@@ -4923,7 +4969,7 @@ def main(argv: list[str] | None = None) -> int:
             args.layout or "copy-only", all_flags=bool(args.all_flags), baseline=baseline
         )
     elif args.main:
-        grade_main(ai_first=bool(args.ai_first))
+        grade_main(ai_first=bool(args.ai_first), ai_floor=bool(args.ai_floor))
     if args.gate and report is not None and _yes_pass(report):
         return ai_first_gate(report)
     if args.gate and report is not None:

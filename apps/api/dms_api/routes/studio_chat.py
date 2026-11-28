@@ -13,7 +13,7 @@ from typing import Any
 
 from cortex_client import compliance_gate
 from cortex_client.insights import InsightsError, honest_envelope, redact_secrets
-from dms_core.ask_stream import stream_enabled, valid_ask_id, wait_events
+from dms_core.ask_stream import public_event, stream_enabled, valid_ask_id, wait_events
 from dms_core.studio_chat_turn import (
     confirm_allowed,
     project_studio_turn,
@@ -102,16 +102,8 @@ def studio_chat_confirm(body: ConfirmBody, cortex: CortexDep) -> dict[str, Any]:
 
 
 def _frame(event: dict[str, Any]) -> bytes:
-    """One SSE data line. Only the three public fields."""
-    body = json.dumps(
-        {
-            "stage": event.get("stage"),
-            "t_ms": event.get("t_ms"),
-            "status": event.get("status"),
-        },
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    """One SSE data line. Stage, time, status, and a catalog table when one was read."""
+    body = json.dumps(public_event(event), separators=(",", ":"), sort_keys=True)
     return f"data: {body}\n\n".encode()
 
 

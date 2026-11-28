@@ -5,6 +5,7 @@ export type AskStageEvent = {
   stage: string;
   t_ms: number;
   status: string;
+  table?: string;
 };
 
 const LABELS: Record<string, string> = {
@@ -15,7 +16,20 @@ const LABELS: Record<string, string> = {
   retry: "Retry",
   vote: "Vote",
   reconfirm: "Reconfirm",
+  understand: "Understanding your question",
+  find: "Finding tables",
+  fetch: "Fetching",
+  write: "Writing SQL",
+  run: "Running",
+  check: "Checking result",
+  escalate: "Retrying with stronger model",
 };
+
+function tableName(value: string | undefined): string | null {
+  if (!value || value.length > 64) return null;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) return null;
+  return value;
+}
 
 function rungNumber(status: string): string | null {
   if (status.length !== 5 || !status.startsWith("rung")) return null;
@@ -27,6 +41,10 @@ function rungNumber(status: string): string | null {
 export function stageLabel(event: AskStageEvent): string {
   const rung = event.stage === "retry" ? rungNumber(event.status) : null;
   if (rung) return `Retry rung ${rung}`;
+  if (event.stage === "fetch") {
+    const table = tableName(event.table);
+    return table ? `Fetching ${table}` : "Fetching";
+  }
   return LABELS[event.stage] ?? event.stage;
 }
 
@@ -72,16 +90,27 @@ export function AskStages({ stages, onCancel }: Props) {
       <ol className="mt-2 grid gap-1">
         {stages.map((event, index) => {
           const base = Math.max(0, Math.floor(event.t_ms / 1000));
-          const seconds = index === stages.length - 1 && event.status === "started" ? base + tick : base;
+          const live = index === stages.length - 1 && event.status === "started";
+          const seconds = live ? base + tick : base;
           return (
             <li
-              key={`${event.stage}-${event.status}-${event.t_ms}-${index}`}
+              key={`${event.stage}-${event.status}-${event.t_ms}-${event.table ?? ""}-${index}`}
               data-testid="ask-stage"
               data-stage={event.stage}
               data-status={event.status}
-              className="flex items-baseline justify-between gap-3 text-sm text-[var(--color-ink)]"
+              className="flex items-baseline justify-between gap-3 text-sm text-[var(--color-ink)] transition-opacity duration-300"
             >
-              <span>{stageLabel(event)}</span>
+              <span className="flex items-center gap-2">
+                {live ? (
+                  <span
+                    data-testid="ask-breath"
+                    className="inline-block h-2 w-2 shrink-0 rounded-full bg-[var(--color-accent)] animate-pulse"
+                  />
+                ) : (
+                  <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-[var(--color-line)]" />
+                )}
+                {stageLabel(event)}
+              </span>
               <span className="text-xs text-[var(--color-ink-muted)]">{seconds}s</span>
             </li>
           );
@@ -123,7 +152,8 @@ export function useAskStages(askId: string | null): AskStageEvent[] {
         return;
       }
       if (typeof body.stage !== "string" || typeof body.t_ms !== "number") return;
-      const event = { stage: body.stage, t_ms: body.t_ms, status: String(body.status ?? "") };
+      const table = typeof body.table === "string" ? body.table : undefined;
+      const event = { stage: body.stage, t_ms: body.t_ms, status: String(body.status ?? ""), table };
       setStages((prev) => [...prev, event]);
     };
     source.onerror = () => {
