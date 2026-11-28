@@ -4,6 +4,7 @@ import { SimpleChart } from "@/components/SimpleChart";
 import { copyText } from "@/lib/copilotPrompts";
 import { postAskConfirm } from "@/lib/api";
 import { splitInsights } from "@/lib/splitInsights";
+import { plainShownReason, visibleReason } from "@/lib/reasonCopy";
 import { isAbstain, namedAbstainReason, type AbstainFields } from "./abstainReason";
 import { AskStages, type AskStageEvent } from "./AskStages";
 import { chartFromRows } from "./chartShape";
@@ -160,7 +161,7 @@ export function ResultView({ envelope, stages, onCancel, question, spaceId, role
             Reconfirm
           </p>
           <p data-testid="studio-reconfirm-reason" className="mt-2 text-sm text-[var(--color-ink)]">
-            {offer.reason_text || offer.reason_code}
+            {visibleReason(offer.reason_text, offer.reason_code)}
           </p>
           <p data-testid="studio-reconfirm-suggestion" className="mt-2 text-sm font-medium text-[var(--color-ink)]">
             {offer.suggested_question}
@@ -203,10 +204,10 @@ export function ResultView({ envelope, stages, onCancel, question, spaceId, role
           className="mt-3 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-3"
         >
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
-            Abstained
+            No answer
           </p>
           <p data-testid="studio-abstain-reason" className="mt-2 text-sm font-medium text-[var(--color-ink)]">
-            {namedAbstainReason(shown)}
+            {plainShownReason(namedAbstainReason(shown))}
           </p>
         </div>
       ) : null}

@@ -1,12 +1,15 @@
-import { readStamp, stampSlotsFor } from "./stamps";
+import { NOT_STAMPED, readStamp, stampSlotsFor } from "./stamps";
 
 type Props = {
   envelope: object;
 };
 
-/** Read-only stamps. Absent keys say "not stamped". No provider picker. */
+/** Read-only stamps that the envelope actually carries. No provider picker. */
 export function StampsPanel({ envelope }: Props) {
-  const slots = stampSlotsFor(envelope);
+  const rows = stampSlotsFor(envelope)
+    .map((slot) => ({ slot, value: readStamp(envelope, slot) }))
+    .filter((row) => row.value !== NOT_STAMPED);
+  if (rows.length === 0) return null;
   return (
     <section
       data-testid="studio-stamps"
@@ -16,11 +19,11 @@ export function StampsPanel({ envelope }: Props) {
         Stamps
       </p>
       <dl className="mt-2 grid gap-1 text-xs">
-        {slots.map((slot) => (
+        {rows.map(({ slot, value }) => (
           <div key={slot.id} className="grid grid-cols-[11rem_1fr] gap-2">
             <dt className="text-[var(--color-ink-muted)]">{slot.label}</dt>
             <dd data-stamp={slot.id} className="break-all font-mono text-[var(--color-ink)]">
-              {readStamp(envelope, slot)}
+              {value}
             </dd>
           </div>
         ))}
