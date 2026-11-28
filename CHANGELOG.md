@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - AI-FLOOR-01: checked model SQL and live ask steps
+
+- **Flag.** `DMS_AI_FLOOR` is off unless the value is the digit 1. Off, the ask is unchanged. On, fixed lanes are skipped. The model SQL is served only after grant, one read-only SELECT, EXPLAIN, and a column shape. One error is fed back, then `route_hint` escalate. No model id.
+- **Stub 52.** `grade52 --main` at `ce1cabd`. Off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On: correct=0 wrong=0 reconfirm=52 ai=0 rule=0. `ai_floor` n=52 median_ms=61 max_ms=66 calls_max=3. The stub insights have no `query_sql`, so nothing is served. The median is that stub, not the live 15-18s. Not PASS.
+- **Studio.** The existing ask SSE emits understand, find, fetch of a granted table, write, run, check, and escalate when that rung runs. The open step breathes. No timer advances a step.
+
 ## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto a7c0ce4f
 
 - **Base.** Rebased onto `a7c0ce4f` (#627, #600). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the tie-projection row and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
