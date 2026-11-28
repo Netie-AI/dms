@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - GENERALITY-HARNESS-01: one scoreboard, recorded slice in CI
+
+- **Harness.** `scripts/verify/generality.py` grades by executing gold SQL through `scripts/fde/eval_pack.py`. The control row is one shot from `scripts/bench/bird/baseline.py` (role `sql`, same schema, no DMS). No second grader. Stored answer numbers are not read.
+- **Rows.** DMS under each digit-1 flag profile, plus `control`. Live cannot flip a remote server's flags, so those profile rows are `not_run` and the one real DMS row is `dms:server`.
+- **Columns.** correct, wrong, abstain, unsafe, rule-served (a failure), p50, p95, cost. `correct_alt` is stored and is not a pass.
+- **CI.** Every PR runs the recorded offline slice and uploads `generality.json` and `generality.md`. The full packs are a `workflow_dispatch` job with a hard budget cap. `DMS_GENERALITY` defaults off. The slice is not a DMS measurement. Not PASS.
+
 ## 2026-11-27 - SCALE-MISS-01: rename the SQL check, use the serving dialect
 
 - **Boundary.** The nested helper is `_sql_checks`. The names gate, policy, authorize, and check_compliance stay reserved for cortex_client. The invariant file is unchanged.

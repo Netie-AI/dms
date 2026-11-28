@@ -1,7 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, SCALE-MISS-01
+**Last updated:** 2026-11-28, GENERALITY-HARNESS-01
 **Remote:** https://github.com/Netie-AI/dms
+**Generality:** `DMS_GENERALITY` default off. CI grades a recorded slice (not a measurement). Live packs are workflow_dispatch under a hard budget. Not PASS.
 **Tip:** `DMS_SCALE_MISS` default off (`363b1aa`, base `d4e414c`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, the same stub stays correct=43 wrong=0 reconfirm=5 ai=0 rule=43: the stub returns no SQL, so compile is not replaced. That stays above `DMS_RULES_OFF` 23/0/18. Armed and pack H unmeasured. Not PASS.
 
 ## Direction

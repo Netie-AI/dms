@@ -1,8 +1,10 @@
+PREFLIGHT for GENERALITY-HARNESS-01: PARTIAL. r1-eval-01 and bench-matrix-01 are on file. No prior generality scoreboard.
 PREFLIGHT for this goal: MISS. No prior finding for ident_safe, CJK headers, or source_name.
 PREFLIGHT for ADJUST-SQL-VQ-01: HIT. DEF-VALIDATE-01 was on file. GRADE-AO-01 is on main `6bbc372e`.
 
 | Date | Topic | Keywords | Main idea | Path |
 |------|-------|----------|-----------|------|
+| 2026-11-28 | generality-harness-01 | GENERALITY-HARNESS-01, DMS_GENERALITY, eval_pack, baseline, rule-served, budget, offline slice | One harness. Gold SQL is executed. CI grades a recorded slice. Live packs are workflow_dispatch under a hard cap. Flag default off. Not a measurement. Not PASS. | `2026-11-28_generality-harness-01.md` |
 | 2026-11-28 | ux-plain-01 | UX-PLAIN-01, reasonCopy, badge sentence, stamps, served_model, audit receipt | Chat maps every emitted reason code and badge token to one sentence. Raw tokens, recorded model ids, and real stamps sit in Details. Missing stamps are omitted. No serving change. Stub 52 not remeasured. Not PASS. | `2026-11-28_ux-plain-01.md` |
 | 2026-11-28 | rules-off-type-01 | RULES-OFF-TYPE-01, DMS_RULES_OFF, answer_demo_question, rules_off, ask-back | Flag default off. Off, the router envelope is unchanged and stub 52 is correct=43 wrong=0 reconfirm=5 abstain=0 ai=0 rule=43. On, the router returns a rules_off ask-back instead of None. A model client takes the live path. Stub 52 on is correct=23 wrong=0 reconfirm=18 abstain=3 ai=0 rule=23. Not a word rule. Not PASS. | `2026-11-28_rules-off-type-01.md` |
 | 2026-11-27 | catalog-schema-01 | CATALOG-SCHEMA-01, read_catalog, bronze, DMS_SCHEMA_CONTEXT, join_unconfirmed, sql_relation_not_granted | Grants name the schema. A row matches only its own schema, so bronze.orders does not list main.orders. A granted join with no ontology does not abstain. The schema-context flag, off by default, returns a confirm card with catalog keys and the SQL. Yes files a proposed link and does not approve it. An ungranted name stays sql_relation_not_granted. Not PASS. | `2026-11-27_catalog-schema-01.md` |
