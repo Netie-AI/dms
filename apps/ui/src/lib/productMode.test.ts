@@ -15,11 +15,12 @@ describe("product modes", () => {
     expect(navIdsForMode("graphite")).toBeNull();
   });
 
-  it("CEO empty-state pack has a live-curated spend ask and a typo trap", async () => {
+  it("CEO empty-state pack spells category and keeps the spend ask", async () => {
     const { SUGGESTED_QUESTIONS } = await import("./fixtures");
     expect(SUGGESTED_QUESTIONS.some((q) => q.includes("spend by supplier country"))).toBe(true);
     expect(SUGGESTED_QUESTIONS.some((q) => q.includes("Top 5 selling SKUs"))).toBe(true);
-    expect(SUGGESTED_QUESTIONS.some((q) => q.includes("categoty"))).toBe(true);
+    expect(SUGGESTED_QUESTIONS).toContain("Show top 3 category sales");
+    expect(SUGGESTED_QUESTIONS.some((q) => q.includes("categoty"))).toBe(false);
   });
 
   it("Ask mode rewrites operator routes to Library or Trust", () => {

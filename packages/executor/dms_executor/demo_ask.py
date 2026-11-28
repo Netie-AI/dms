@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import re
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any
 
 from dms_executor.abstain import build_abstain
 from dms_executor.demo_grants import is_demo_space
@@ -99,6 +99,57 @@ _PREDICTIVE = re.compile(
 def _rules_off() -> bool:
     """Digit 1 only. Unset, ``0``, and ``true`` leave the regex router in place."""
     return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+
+
+RULES_OFF_CODE = "rules_off"
+
+
+def is_rules_off_envelope(env: dict[str, Any] | None) -> bool:
+    """True when this envelope is the router hold, not a served answer."""
+    if not isinstance(env, dict):
+        return False
+    if env.get("reason_code") == RULES_OFF_CODE:
+        return True
+    block = env.get("reconfirm")
+    return isinstance(block, dict) and block.get("reason_code") == RULES_OFF_CODE
+
+
+def rules_off_envelope(question: str, *, space_id: str | None) -> dict[str, Any]:
+    """The question-word router did not decide. Ask back. Do not serve a number.
+
+    A caller that still has a model client takes the AI path instead of
+    serving this card.
+    """
+    text = (
+        "I am not answering that from the question-word router. "
+        "Ask again so the model can write the query."
+    )
+    env = build_abstain(
+        reason=RULES_OFF_CODE,
+        question=question,
+        stage="demo",
+        abstain_reason=RULES_OFF_CODE,
+        answer_id="ans_rules_off",
+        text=text,
+        values=[],
+        assumptions=["rules_off: the question-word router did not decide"],
+        space_id=space_id,
+        contributing_sources=[],
+        rows=[],
+        ask_mode="live",
+        as_of=_as_of(),
+        route="abstain",
+    )
+    env["reason_code"] = RULES_OFF_CODE
+    env["reconfirm"] = {
+        "reason_code": RULES_OFF_CODE,
+        "why": RULES_OFF_CODE,
+        "suggested_question": question,
+        "closest_question": question,
+    }
+    stamp_engine_clock(env)
+    assert_envelope_valid(env)
+    return env
 
 
 def _is_predictive(question: str) -> bool:
@@ -290,18 +341,23 @@ def _rank_window(question: str) -> tuple[int, int] | None:
     return start, end
 
 
-def answer_demo_question(question: str, *, space_id: str | None = None) -> dict[str, Any]:
-    """Return UI answer envelope from DuckDB. Badge is always L2 or ABSTAIN.
+def answer_demo_question(
+    question: str, *, space_id: str | None = None
+) -> dict[str, Any] | None:
+    """Return a UI answer envelope from DuckDB. Badge is L2 or ABSTAIN.
 
-    ``DMS_RULES_OFF=1`` returns None. The regex router does not decide, and
-    the ask falls through to the AI lane. Callers still type a dict.
+    ``DMS_RULES_OFF=1`` on a demo Space returns the rules_off ask-back. The
+    regex router does not decide. A caller with a model client takes the AI
+    path instead of serving that card.
 
-    A customer Space also returns None. Demo SQL is not its data. The caller
+    A customer Space returns None. Demo SQL is not its data. The caller
     continues on that Space's own granted sources, and asks back only when
     nothing is granted.
     """
-    if _rules_off() or not is_demo_space(space_id):
-        return cast(dict[str, Any], None)
+    if not is_demo_space(space_id):
+        return None
+    if _rules_off():
+        return rules_off_envelope(question, space_id=space_id)
     q = question.lower().strip()
 
     # Mirror Cortex live path, ahead of every keyword match: a predictive ask must
