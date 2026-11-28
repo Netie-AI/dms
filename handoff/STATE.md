@@ -124,23 +124,24 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-29 02:08 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-29 03:02 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
 main: `12dcd1e2` fix(studio): clickable demo walk for Ask, exports, and settings (#680)
 
-open PRs: 52 (cap 60)
+open PRs: 53 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #688 | y | `e2882e02` | - | 9 ok, 1 FAIL, 1 running | DMS-ML-01: flag-gated modelling studio |
-| #687 | y | `189d7ed3` | - | 8 ok, 3 running | DMS-SKILLS-01: skills library and Google AI Overview |
-| #686 | y | `4926dbbc` | - | 8 ok, 1 FAIL, 3 running | DMS-CONNECT-03: Oracle, S3, Azure, and Salesforce connectors |
+| #689 | y | `ffddd12a` | - | 8 ok, 1 FAIL, 2 running | SCALE-01: one ask budget, one parse, bounded lake scans |
+| #688 | y | `7396a43e` | - | 12 ok | DMS-ML-01: flag-gated modelling studio |
+| #687 | y | `189d7ed3` | - | 12 ok | DMS-SKILLS-01: skills library and Google AI Overview |
+| #686 | y | `1226369e` | - | 13 ok | DMS-CONNECT-03: Oracle, S3, Azure, and Salesforce connectors |
 | #685 | y | `fd12ab1c` | - | no checks | DMS-ACC-HELDOUT-01: held-out tally, memory context, 500-call compare |
 | #684 | y | `4e672afd` | - | 12 ok | DMS-CREATE-APP-01: runnable data apps with actions and chained Create |
 | #683 | y | `8106c8b2` | - | 12 ok | docs: DEPLOYMENT.md and HANDOFF.md (deploy guide, Claude handoff) |
-| #682 | y | `34198cd1` | - | 12 ok | CREATE-STYLE-V2: theme, font stacks, and an open chart registry |
+| #682 | y | `503e04af` | - | 12 ok | CREATE-STYLE-V2: theme, font stacks, and an open chart registry |
 | #672 | y | `0c177d5b` | - | 12 ok | SCIM-01: SCIM 2.0 user and group provisioning behind DMS_SCIM |
 | #671 | y | `f218e709` | - | 12 ok | DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE |
 | #668 | y | `568d0ee9` | - | 12 ok | Generality harness: one scoreboard, recorded slice in CI |
@@ -160,7 +161,7 @@ open PRs: 52 (cap 60)
 | #603 | y | `a4c02ce9` | - | 11 ok | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
 | #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
 | #596 | y | `8e548ab6` | - | 11 ok | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
-| #581 | n | `7764c201` | tier:fast | 12 ok | handoff: state refresh |
+| #581 | n | `4116bec7` | tier:fast | 12 ok | handoff: state refresh |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
 | #542 | y | `6195feb3` | - | 11 ok | T5 install hardening: #388 env sentinel, #387 IPv4 + numeric-host guard, #377 at |
