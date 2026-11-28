@@ -2,7 +2,7 @@
 
 ``DMS_CREATE`` is on only when it is the digit 1. The shared adapter is
 ``dms_core.create_generator``. This module runs tools, budgets, versions,
-and the judge. It does not build slides, documents, or charts.
+and the judge. Confirm writes the pptx, pdf, and html. It does not invent the words.
 """
 
 from __future__ import annotations
@@ -210,11 +210,17 @@ def confirm_final(*, session_id: str, actor: str) -> dict[str, Any]:
         raise CreateProblem("nothing_to_confirm")
     artifact = session.get("artifact") or {}
     folder = _store_dir() / session_id
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / "artifact.json").write_text(
-        json.dumps(artifact, indent=2, default=str), encoding="utf-8"
+    from dms_executor.create_files import one_page_requested, render_artifact
+
+    asked = " ".join(
+        [str(session.get("goal") or ""), str(session.get("style_prompt") or "")]
     )
-    session["files"] = ["artifact.json"]
+    session["files"] = render_artifact(
+        folder,
+        artifact,
+        kind=str(session.get("kind") or ""),
+        one_page=one_page_requested(asked),
+    )
     session["final"] = True
     session["step"] = "ready"
     _save(session)
@@ -549,22 +555,35 @@ def _trace(
         if not isinstance(part, dict):
             continue
         sql = part.get("sql")
-        if not isinstance(sql, str) or not sql.strip():
-            continue
-        rows, sql_issues, abstain = _execute(session, sql)
-        if abstain is not None:
-            session["abstain"] = abstain
-            return artifact, [str(abstain.get("abstain_reason") or "ungranted")]
-        if sql_issues:
-            issues.extend(sql_issues)
-            continue
-        part["rows"] = rows
-        part["citations"] = [
-            {"value": str(value), "sql": sql, "source_row": row}
-            for row in rows
-            for value in row.values()
-            if value not in (None, "")
-        ]
+        if isinstance(sql, str) and sql.strip():
+            rows, sql_issues, abstain = _guard_sql(session, sql)
+            if abstain is not None:
+                session["abstain"] = abstain
+                return artifact, [str(abstain.get("abstain_reason") or "ungranted")]
+            if sql_issues:
+                issues.extend(sql_issues)
+            else:
+                part["rows"] = rows
+                part["citations"] = [
+                    {"value": str(value), "sql": sql, "source_row": row}
+                    for row in rows
+                    for value in row.values()
+                    if value not in (None, "")
+                ]
+        for chart in part.get("charts") or []:
+            if not isinstance(chart, dict):
+                continue
+            chart_sql = chart.get("sql")
+            if not isinstance(chart_sql, str) or not chart_sql.strip():
+                continue
+            rows, sql_issues, abstain = _guard_sql(session, chart_sql)
+            if abstain is not None:
+                session["abstain"] = abstain
+                return artifact, [str(abstain.get("abstain_reason") or "ungranted")]
+            if sql_issues:
+                issues.extend(sql_issues)
+                continue
+            chart["rows"] = rows
     return artifact, issues
 
 
@@ -599,16 +618,17 @@ def _score_pair(session: dict[str, Any], artifact: Mapping[str, Any]) -> dict[st
 def _cited_rows(artifact: Mapping[str, Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for part in artifact.get("parts") or []:
-        if isinstance(part, dict):
-            rows.extend(item for item in part.get("rows") or [] if isinstance(item, dict))
+        if not isinstance(part, dict):
+            continue
+        rows.extend(item for item in part.get("rows") or [] if isinstance(item, dict))
+        for chart in part.get("charts") or []:
+            if isinstance(chart, dict):
+                rows.extend(item for item in chart.get("rows") or [] if isinstance(item, dict))
     return rows
 
 
 def _allowed(session: dict[str, Any], artifact: Mapping[str, Any]) -> set[str]:
-    rows: list[dict[str, Any]] = []
-    for part in artifact.get("parts") or []:
-        if isinstance(part, dict):
-            rows.extend(item for item in part.get("rows") or [] if isinstance(item, dict))
+    rows = _cited_rows(artifact)
     overview_raw = session.get("overview")
     overview: dict[str, Any] = overview_raw if isinstance(overview_raw, dict) else {}
     return allowed_from(rows, overview)
@@ -762,6 +782,13 @@ def _tool_sql(session: dict[str, Any], sql: str) -> dict[str, Any]:
     return {"rows": rows}
 
 
+def _guard_sql(
+    session: dict[str, Any], sql: str
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
+    """Read-only guard. A write abstains. A read-only multi-statement is a format miss."""
+    return _execute(session, sql)
+
+
 def _execute(
     session: dict[str, Any], sql: str
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
@@ -773,9 +800,11 @@ def _execute(
     grantable = _grantable(session["space_id"], warehouse)
     gap = serve_gap(text, grantable=grantable, dialect=SERVING_DIALECT)
     if gap:
-        kind = _abstain_kind(gap)
+        kind = _abstain_kind(gap, text)
         if kind:
             return [], [], _abstain(session, kind, text)
+        if gap == "multi_statement":
+            return [], ["sql_format:multi_statement"], None
         return [], [f"sql_refused:{gap}"], None
     first, err = run_readonly(text, warehouse)
     if err or first is None:
@@ -786,8 +815,12 @@ def _execute(
     return [_json_row(row) for row in first[:_ROW_CAP]], [], None
 
 
-def _abstain_kind(gap: str) -> str | None:
-    if gap in {"statement_not_allowed", "multi_statement"} or gap.startswith("hostile_sql"):
+def _abstain_kind(gap: str, sql: str = "") -> str | None:
+    if gap == "multi_statement":
+        if _reads_only(sql):
+            return None
+        return "destructive"
+    if gap == "statement_not_allowed" or gap.startswith("hostile_sql"):
         return "destructive"
     if gap == "ungranted:unparsed":
         return None
@@ -800,6 +833,19 @@ def _abstain_kind(gap: str) -> str | None:
     if gap.startswith("sql_relation_unresolved"):
         return "ungranted"
     return None
+
+
+def _reads_only(sql: str) -> bool:
+    """True when every statement is a query. A write in the batch is not."""
+    from sqlglot import exp, parse
+
+    try:
+        trees = [tree for tree in parse(sql, read=SERVING_DIALECT) if tree is not None]
+    except Exception:
+        return False
+    if len(trees) < 2:
+        return False
+    return all(isinstance(tree, (exp.Query, exp.Values)) for tree in trees)
 
 
 def _abstain(session: dict[str, Any], kind: str, sql: str) -> dict[str, Any]:

@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: plain OpenVault contract and real files
+
+- **Contract.** OpenVault rejects `tools` and ignores a top-level `system`. The default body is a system message, a user message, and `max_tokens` (default 8000). `DMS_CREATE_OV_TOOLS` is the digit 1 only, and it is off. The timeout is 240 seconds. Spend reads top-level `est_cost_usd`.
+- **Judge.** Thousands separators, currency, and percents trace as one number. A read-only multi-statement is repaired. A write still abstains. Each chart SQL is read-only, and a chart number must be in that chart's rows. A share claim has to match the computed shares.
+- **Files.** Confirm writes pptx, pdf, and html. A doc whose request says one page is one page.
+
 ## 2026-11-28 - DMS-CREATE-01: OpenVault role is reason, slides skill is a deck
 
 - **Role.** Prove-box OpenVault allows `sql`, `tool`, `reason`, `summarize`, `grain`, and `ontology`. Create sends `DMS_CREATE_OV_ROLE` (default `reason`). It does not send `create_generate`, `create_improve`, or `create_cursor_key`.

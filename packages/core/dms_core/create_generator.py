@@ -54,7 +54,19 @@ _TEMPLATES = frozenset({"plain", "brief", "bold"})
 # Prove-box OpenVault allowlist. A name outside this set is not sent.
 _OV_ROLES = frozenset({"sql", "tool", "reason", "summarize", "grain", "ontology"})
 _secret_store: Any = None
-_NUM = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)(?![\w]|\.\d)")
+# Thousands groups, a leading currency mark, and a trailing percent are one number.
+_NUM = re.compile(
+    r"(?<![\w.])"
+    r"(?:[$£€¥]|RM)?"
+    r"-?"
+    r"(?P<body>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?P<pct>%)?"
+    r"(?![\w%]|\.\d)"
+)
+_PERCENT_WORD = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s+percent\b", re.I)
+# A dominant share plus one of these is a concentration miss. Not an ask-path word rule.
+_DISPERSED = ("a few", "several", "evenly", "spread across")
+_OV_TIMEOUT_S = 240.0
 _MODEL_KEYS = frozenset(
     {"model", "model_id", "model_name", "provider", "served_model", "served_provider", "strict"}
 )
@@ -112,6 +124,28 @@ def bind_secret_store(store: Any) -> None:
     """Install the secrets port used when ``CURSOR_API_KEY`` is unset."""
     global _secret_store
     _secret_store = store
+
+
+def ov_tools_enabled() -> bool:
+    """Anthropic tools passthrough. Off unless the value is the digit 1."""
+    return os.environ.get("DMS_CREATE_OV_TOOLS", "0").strip() == "1"
+
+
+def request_max_tokens() -> int:
+    """Tokens sent on the OpenVault body. Default 8000. This does not stop a run."""
+    raw = os.environ.get("DMS_CREATE_MAX_TOKENS", "8000").strip() or "8000"
+    try:
+        value = int(raw)
+    except ValueError:
+        return 8000
+    if value < 1:
+        return 8000
+    return value
+
+
+def transport_timeout() -> float:
+    """OpenVault HTTP timeout. Live calls ran 18 to 24 seconds under the old 30."""
+    return _OV_TIMEOUT_S
 
 
 def selected_provider() -> str:
@@ -230,34 +264,50 @@ def request_body(
         }
         _reject_model_keys(body)
         return body, xml
-    tools = client_tools(enabled)
-    messages: list[dict[str, Any]] = [{"role": "user", "content": xml}]
-    prefill = str(library.get("prefill") or "")
-    if prefill:
-        messages.append({"role": "assistant", "content": prefill})
-    kind = str(spec.get("kind") or "")
-    picked = skills_for(kind, workbook=bool(spec.get("workbook")))
     # Caller ``role`` is the task name. The wire role is the OpenVault allowlist.
     role = ov_role()
-    body = {
-        "role": role,
-        "system": system,
-        "messages": messages,
-        "tools": tools,
-        "tool_choice": {"type": "auto"},
-        "thinking": {"type": "adaptive"},
-    }
-    if picked["anthropic"]:
-        body["container"] = {
-            "skills": [
-                {"type": "anthropic", "skill_id": item, "version": "latest"}
-                for item in picked["anthropic"]
-            ]
+    cap = request_max_tokens()
+    prefill = str(library.get("prefill") or "")
+    if ov_tools_enabled():
+        tools = client_tools(enabled)
+        messages = [{"role": "user", "content": xml}]
+        if prefill:
+            messages.append({"role": "assistant", "content": prefill})
+        kind = str(spec.get("kind") or "")
+        picked = skills_for(kind, workbook=bool(spec.get("workbook")))
+        body = {
+            "role": role,
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": {"type": "auto"},
+            "thinking": {"type": "adaptive"},
+            "max_tokens": cap,
         }
-        body["tools"] = [
-            *tools,
-            {"type": "code_execution_20250825", "name": "code_execution"},
-        ]
+        if picked["anthropic"]:
+            body["container"] = {
+                "skills": [
+                    {"type": "anthropic", "skill_id": item, "version": "latest"}
+                    for item in picked["anthropic"]
+                ]
+            }
+            body["tools"] = [
+                *tools,
+                {"type": "code_execution_20250825", "name": "code_execution"},
+            ]
+        _reject_model_keys(body)
+        return body, xml
+    # Plain contract. OpenVault rejects ``tools`` and ignores a top-level system.
+    messages = [
+        {
+            "role": "system",
+            "content": system + "\nReply with one JSON object and no other text.",
+        },
+        {"role": "user", "content": xml},
+    ]
+    if prefill:
+        messages.append({"role": "assistant", "content": prefill})
+    body = {"role": role, "messages": messages, "max_tokens": cap}
     _reject_model_keys(body)
     return body, xml
 
@@ -276,6 +326,7 @@ def complete(
 ) -> ProviderTurn:
     """One provider call. The model plans. DMS does not."""
     provider = selected_provider()
+    cursor_key = _cursor_key() if provider == "cursor_api" else ""
     body, prompt = request_body(
         provider=provider,
         role=role,
@@ -286,14 +337,13 @@ def complete(
         prompt_version=prompt_version,
     )
     if provider == "cursor_api":
-        key = _cursor_key()
-        if key in prompt:
+        if cursor_key in prompt:
             raise GeneratorError("cursor_key_leaked")
-        raw = (cursor_transport or default_cursor)(body, key)
+        raw = (cursor_transport or default_cursor)(body, cursor_key)
     else:
         raw = (transport or default_transport)(body, api_key)
     artifact, calls, usage = _parse(raw)
-    cost = _num(usage.get("cost"))
+    cost = _cost(raw, usage)
     tokens = _int(usage.get("total_tokens"))
     estimate = None
     if isinstance(artifact, dict):
@@ -379,8 +429,10 @@ def judge_artifact(
         if wanted and str(style.get(key) or "") != wanted:
             issues.append(f"brand_{key}")
     prose = _prose(artifact)
-    if _unsupported(prose, allowed_numbers):
+    if _unsupported(prose, allowed_numbers) or _chart_untraced(artifact):
         issues.append("unsupported_claim")
+    if _share_mismatch(artifact):
+        issues.append("share_mismatch")
     if redact_text(prose) != prose:
         issues.append("secret_present")
     masked = mask_payload(text=prose).get("text") or ""
@@ -477,7 +529,7 @@ def default_transport(body: dict[str, Any], api_key: str) -> Any:
             base + "/v1/chat/completions",
             headers=headers,
             json=body,
-            timeout=30.0,
+            timeout=transport_timeout(),
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -695,8 +747,8 @@ def _prose(artifact: Mapping[str, Any]) -> str:
 
 
 def _unsupported(prose: str, allowed: set[str]) -> bool:
-    for token in _NUM.findall(prose):
-        if token not in allowed and _bare(token) not in allowed:
+    for forms in _trace_forms(prose):
+        if forms.isdisjoint(allowed):
             return True
     return False
 
@@ -707,7 +759,173 @@ def _number_tokens(value: Any) -> set[str]:
     if isinstance(value, (int, float)):
         text = str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
         return {text, str(value)}
-    return set(_NUM.findall(str(value)))
+    return set().union(*_trace_forms(str(value))) if _NUM.search(str(value)) else set()
+
+
+def _trace_forms(text: str) -> list[set[str]]:
+    found: list[set[str]] = []
+    for match in _NUM.finditer(text):
+        found.append(_match_forms(match.group("body"), bool(match.group("pct"))))
+    return found
+
+
+def _match_forms(body: str, percent: bool) -> set[str]:
+    plain = body.replace(",", "")
+    forms = {plain, _bare(plain)}
+    if not percent:
+        return forms
+    try:
+        frac = float(plain) / 100.0
+    except ValueError:
+        return forms
+    shown = _num_text(frac)
+    forms.update({shown, _bare(shown)})
+    return forms
+
+
+def _num_text(value: float) -> str:
+    if value.is_integer():
+        return str(int(value))
+    return format(value, "f").rstrip("0").rstrip(".")
+
+
+def _chart_untraced(artifact: Mapping[str, Any]) -> bool:
+    """A number in a chart label must appear in that chart's own rows."""
+    for part in artifact.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        for chart in part.get("charts") or []:
+            if not isinstance(chart, dict):
+                continue
+            allowed: set[str] = set()
+            for row in chart.get("rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                for value in row.values():
+                    allowed.update(_number_tokens(value))
+            if _unsupported(str(chart.get("label") or ""), allowed):
+                return True
+    return False
+
+
+def _share_mismatch(artifact: Mapping[str, Any]) -> bool:
+    """A stated share, or a 'spread out' claim, has to match the computed shares."""
+    shares = _computed_shares(artifact)
+    if not shares:
+        return False
+    prose = _prose(artifact)
+    claimed = _claimed_percents(prose)
+    for claim in claimed:
+        if not any(abs(claim - (share * 100.0)) <= 1.0 for share in shares):
+            return True
+    top = max(shares)
+    folded = prose.casefold()
+    return top >= 0.75 and any(phrase in folded for phrase in _DISPERSED)
+
+
+def _computed_shares(artifact: Mapping[str, Any]) -> list[float]:
+    shares: list[float] = []
+    for part in artifact.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        shares.extend(_shares_of(part.get("rows")))
+        for chart in part.get("charts") or []:
+            if isinstance(chart, dict):
+                shares.extend(_shares_of(chart.get("rows")))
+    return shares
+
+
+def _shares_of(rows: Any) -> list[float]:
+    if not isinstance(rows, list) or not rows:
+        return []
+    totals: dict[str, float] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for key, value in row.items():
+            number = _as_float(value)
+            if number is None or number < 0:
+                continue
+            totals[str(key)] = totals.get(str(key), 0.0) + number
+    if not totals:
+        return []
+    key = _measure_key(rows, totals)
+    if key is None:
+        return []
+    whole = totals[key]
+    if whole <= 0:
+        return []
+    parts: list[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        number = _as_float(row.get(key))
+        if number is None or number < 0:
+            continue
+        parts.append(number / whole)
+    return parts
+
+
+def _measure_key(rows: list[Any], totals: dict[str, float]) -> str | None:
+    """The numeric column that is the measure. A year column is not a share."""
+    best: tuple[float, str] | None = None
+    for key, total in totals.items():
+        numbers: list[float] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            number = _as_float(row.get(key))
+            if number is not None and number >= 0:
+                numbers.append(number)
+        if not numbers:
+            continue
+        if all(1900 <= number <= 2100 and number.is_integer() for number in numbers):
+            continue
+        if best is None or total > best[0]:
+            best = (total, key)
+    return None if best is None else best[1]
+
+
+def _claimed_percents(prose: str) -> list[float]:
+    claimed: list[float] = []
+    for match in _NUM.finditer(prose):
+        if not match.group("pct"):
+            continue
+        try:
+            claimed.append(float(match.group("body").replace(",", "")))
+        except ValueError:
+            continue
+    for match in _PERCENT_WORD.finditer(prose):
+        try:
+            claimed.append(float(match.group(1).replace(",", "")))
+        except ValueError:
+            continue
+    return claimed
+
+
+def _as_float(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        match = next(_NUM.finditer(value), None)
+        if match is None:
+            return None
+        try:
+            return float(match.group("body").replace(",", ""))
+        except ValueError:
+            return None
+    return None
+
+
+def _cost(raw: Any, usage: Mapping[str, Any]) -> float | None:
+    """OpenVault sends ``est_cost_usd`` on the top level. ``usage.cost`` still counts."""
+    if isinstance(raw, dict):
+        top = _num(raw.get("est_cost_usd"))
+        if top is not None:
+            return top
+    return _num(usage.get("cost"))
 
 
 def _bare(token: str) -> str:

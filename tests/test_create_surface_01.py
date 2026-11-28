@@ -18,14 +18,17 @@ from dms_api.settings import get_settings
 from dms_core.create_generator import (
     GeneratorError,
     bind_secret_store,
+    default_transport,
     direct_prompt,
     generate,
     holds_direct_bar,
     judge_artifact,
     local_skill,
     request_body,
+    request_max_tokens,
     score_artifact,
     skills_for,
+    transport_timeout,
     validate_call,
 )
 from dms_executor.create_surface import (
@@ -100,6 +103,8 @@ def _env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flag: str | None) -> P
     monkeypatch.setenv("DMS_CREATE_STORE", str(tmp_path / "store"))
     monkeypatch.setenv("DMS_CREATE_GENERATOR", "claude_api")
     monkeypatch.delenv("DMS_CREATE_OV_ROLE", raising=False)
+    monkeypatch.delenv("DMS_CREATE_OV_TOOLS", raising=False)
+    monkeypatch.delenv("DMS_CREATE_MAX_TOKENS", raising=False)
     monkeypatch.delenv("OPENVAULT_API_KEY", raising=False)
     monkeypatch.delenv("CORTEX_API_KEY", raising=False)
     _clear_settings()
@@ -248,12 +253,12 @@ def test_request_is_provider_context_without_a_model(
     assert generated.status_code == 200, generated.text
     body = stub.bodies[0]
     assert body["role"] == "reason"
-    assert body["thinking"] == {"type": "adaptive"}
-    assert body["tool_choice"] == {"type": "auto"}
-    names = [item["name"] for item in body["tools"]]
-    assert "return_artifact" in names
-    assert "run_sql" in names
-    text = body["messages"][0]["content"]
+    assert "tools" not in body
+    assert "system" not in body
+    assert "thinking" not in body
+    assert body["max_tokens"] == 8000
+    assert body["messages"][0]["role"] == "system"
+    text = body["messages"][1]["content"]
     for tag in ("<schema>", "<data>", "<choices>", "<style>", "<examples>", "<skills>"):
         assert tag in text
     assert "sample" not in text
@@ -274,10 +279,10 @@ def test_slides_request_uses_the_pptx_skill(
     )
     assert generated.status_code == 200, generated.text
     body = stub.bodies[0]
-    skills = body["container"]["skills"]
-    assert {"type": "anthropic", "skill_id": "pptx", "version": "latest"} in skills
-    assert any(item.get("name") == "code_execution" for item in body["tools"])
-    assert "create-slides" in body["messages"][0]["content"]
+    assert "tools" not in body
+    assert "container" not in body
+    assert "create-slides" in body["messages"][1]["content"]
+    assert "pptx" in body["messages"][1]["content"]
     assert generated.json()["artifact"]["title"] == "Orders deck"
 
 
@@ -831,7 +836,7 @@ def test_claude_body_is_the_direct_ask_plus_tools() -> None:
     }
     style = {"prompt": "Quiet", "template": "Plain layout.", "brand": {}, "guide": "One screen."}
     text = direct_prompt(spec, context, style)
-    body, _xml = request_body(
+    body, xml = request_body(
         provider="claude_api",
         role="create_generate",
         spec=spec,
@@ -840,8 +845,11 @@ def test_claude_body_is_the_direct_ask_plus_tools() -> None:
         enabled=None,
         prompt_version="1",
     )
-    assert body["system"] + "\n" + body["messages"][0]["content"] == text
-    assert body["tools"]
+    assert "tools" not in body
+    assert "system" not in body
+    assert body["messages"][0]["role"] == "system"
+    assert body["messages"][1]["content"] == xml
+    assert text == body["messages"][0]["content"].split("\nReply with one JSON", 1)[0] + "\n" + xml
 
 
 def test_shown_app_scores_at_least_the_direct_ask(
@@ -869,6 +877,365 @@ def test_shown_app_scores_at_least_the_direct_ask(
     plain = score_artifact(invented, kind="app", brand={}, allowed_numbers=set())
     assert holds_direct_bar(view["score"]["create"], plain["points"])
     assert view["score"]["create"] > plain["points"]
+
+
+def _plain_spec() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    spec = {"kind": "slides", "goal": "See order trend", "audience": "Founder"}
+    context = {
+        "schema": [],
+        "data": [],
+        "examples": [],
+        "skills": skills_for("slides"),
+        "choices": {},
+    }
+    style = {"prompt": "", "template": "", "brand": {}, "guide": ""}
+    return spec, context, style
+
+
+def test_plain_contract_omits_tools_until_the_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DMS_CREATE_OV_TOOLS", raising=False)
+    spec, context, style = _plain_spec()
+    body, _xml = request_body(
+        provider="claude_api",
+        role="generate",
+        spec=spec,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert "tools" not in body
+    assert "system" not in body
+    assert body["messages"][0]["role"] == "system"
+    assert "one JSON object" in body["messages"][0]["content"]
+    monkeypatch.setenv("DMS_CREATE_OV_TOOLS", "true")
+    still, _xml = request_body(
+        provider="claude_api",
+        role="generate",
+        spec=spec,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert "tools" not in still
+    monkeypatch.setenv("DMS_CREATE_OV_TOOLS", "1")
+    armed, _xml = request_body(
+        provider="claude_api",
+        role="generate",
+        spec=spec,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert armed["tools"]
+    assert armed["system"]
+    assert armed["thinking"] == {"type": "adaptive"}
+    skills = armed["container"]["skills"]
+    assert {"type": "anthropic", "skill_id": "pptx", "version": "latest"} in skills
+
+
+def test_thousands_currency_and_percent_trace() -> None:
+    def issues(body: str, allowed: set[str]) -> list[str]:
+        artifact = {
+            "kind": "app",
+            "title": "Orders",
+            "parts": [{"id": "a", "title": "Total", "body": body}],
+        }
+        return judge_artifact(artifact, kind="app", brand={}, allowed_numbers=allowed)
+
+    assert "unsupported_claim" not in issues("Total is $1,606,773.", {"1606773"})
+    assert "unsupported_claim" not in issues("Total is 1,606,773.", {"1606773"})
+    assert "unsupported_claim" not in issues("Share is 75%.", {"75"})
+    assert "unsupported_claim" in issues("Total is 1.", {"1606773"})
+
+
+def test_max_tokens_defaults_to_8000(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DMS_CREATE_MAX_TOKENS", raising=False)
+    assert request_max_tokens() == 8000
+    spec, context, style = _plain_spec()
+    body, _xml = request_body(
+        provider="claude_api",
+        role="generate",
+        spec=spec,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert body["max_tokens"] == 8000
+    monkeypatch.setenv("DMS_CREATE_MAX_TOKENS", "4000")
+    assert request_max_tokens() == 4000
+
+
+def test_read_only_multi_select_is_repaired(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    bad = {
+        "kind": "app",
+        "title": "Orders",
+        "parts": [
+            {
+                "id": "by_month",
+                "title": "Orders by month",
+                "body": "The chart follows the granted table.",
+                "sql": (
+                    "SELECT month, amount FROM orders ORDER BY month; "
+                    "SELECT month, amount FROM orders ORDER BY month"
+                ),
+            }
+        ],
+    }
+    write = {
+        "kind": "app",
+        "title": "Orders",
+        "parts": [
+            {
+                "id": "by_month",
+                "title": "Orders by month",
+                "body": "The chart follows the granted table.",
+                "sql": "DELETE FROM orders",
+            }
+        ],
+    }
+    stub = _patch(monkeypatch, [bad, _app()])
+    session_id = _open(client)
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is True
+    assert view["abstain"] is None
+    assert len(stub.bodies) == 2
+    stub_write = _patch(monkeypatch, [write, _app()])
+    again = _open(client)
+    refused = client.post(
+        f"/v1/studio/create/sessions/{again}/generate", headers=HEADERS
+    ).json()
+    assert refused["shown"] is False
+    assert refused["abstain"]["abstain_reason"] == "destructive"
+    assert len(stub_write.bodies) == 1
+
+
+def test_est_cost_usd_feeds_the_spend_cap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    monkeypatch.setenv("DMS_CREATE_MAX_USD", "0.05")
+    stub = _patch(monkeypatch, [{"content": _app(), "est_cost_usd": 0.2}])
+    session_id = _open(client)
+    first = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["spend"]["usd"] == pytest.approx(0.2)
+    second = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["stopped"] == "runaway_usd"
+    assert len(stub.bodies) == 1
+
+
+def test_chart_number_must_be_in_its_own_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    bad = {
+        "kind": "slides",
+        "title": "Orders",
+        "parts": [
+            {
+                "id": "s1",
+                "title": "Trend",
+                "body": "The chart compares the months.",
+                "sql": "SELECT month, amount FROM orders ORDER BY month",
+                "charts": [
+                    {
+                        "label": "February is 18",
+                        "sql": "SELECT month, amount FROM orders WHERE amount = 30",
+                    }
+                ],
+            }
+        ],
+    }
+    _patch(monkeypatch, [bad, bad])
+    session_id = _open(client, "slides")
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is False
+    assert "unsupported_claim" in view["issues"]
+
+
+def test_ov_timeout_is_240(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setenv("OPENVAULT_URL", "http://127.0.0.1:9")
+    seen: dict[str, Any] = {}
+
+    def post(*_args: Any, **kwargs: Any) -> Any:
+        seen["timeout"] = kwargs.get("timeout")
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(GeneratorError) as exc:
+        default_transport({"role": "reason", "messages": []}, "ov_test_key_xx")
+    assert exc.value.code == "ov_unreachable"
+    assert seen["timeout"] == 240.0
+    assert transport_timeout() == 240.0
+
+
+def test_cursor_missing_key_is_reported_before_the_repo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _env(monkeypatch, tmp_path, "1")
+    monkeypatch.setenv("DMS_CREATE_GENERATOR", "cursor_api")
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.delenv("DMS_CREATE_CURSOR_REPO", raising=False)
+    bind_secret_store(None)
+    spec, context, style = _plain_spec()
+    with pytest.raises(GeneratorError) as exc:
+        generate(spec, context, style, api_key=OV_KEY)
+    assert exc.value.code == "cursor_key_missing"
+
+
+def test_confirm_writes_pptx_pdf_and_a_one_page_doc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from pptx import Presentation
+
+    client = _client(monkeypatch, tmp_path, "1")
+    deck = _deck()
+    deck["parts"][0]["charts"] = [
+        {
+            "label": "Amount by month",
+            "sql": "SELECT month, amount FROM orders ORDER BY month",
+        }
+    ]
+    _patch(monkeypatch, [deck])
+    session_id = _open(client, "slides")
+    client.post(f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS)
+    close_lakes()
+    confirmed = client.post(
+        f"/v1/studio/create/sessions/{session_id}/confirm", headers=HEADERS
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    folder = tmp_path / "store" / session_id
+    assert (folder / "slides.pptx").is_file()
+    assert (folder / "slides.pdf").read_bytes().startswith(b"%PDF")
+    html = (folder / "slides.html").read_text(encoding="utf-8")
+    assert "Orders deck" in html
+    assert "Amount by month" in html
+    deck_file = Presentation(str(folder / "slides.pptx"))
+    assert len(deck_file.slides) == 1
+    assert any(shape.has_chart for slide in deck_file.slides for shape in slide.shapes)
+    doc = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [
+            {"id": "a", "title": "First", "body": "Opened."},
+            {"id": "b", "title": "Second", "body": "Closed."},
+        ],
+    }
+    _patch(monkeypatch, [doc])
+    one = client.post(
+        "/v1/studio/create/sessions",
+        json={
+            "space_id": SPACE,
+            "kind": "doc",
+            "goal": "Write a one page note",
+            "audience": "Founder",
+        },
+        headers=HEADERS,
+    )
+    assert one.status_code == 200, one.text
+    one_id = one.json()["session_id"]
+    client.post(f"/v1/studio/create/sessions/{one_id}/generate", headers=HEADERS)
+    close_lakes()
+    client.post(f"/v1/studio/create/sessions/{one_id}/confirm", headers=HEADERS)
+    one_pdf = (tmp_path / "store" / one_id / "doc.pdf").read_bytes()
+    assert one_pdf.count(b"/Type /Page ") == 1
+    one_html = (tmp_path / "store" / one_id / "doc.html").read_text(encoding="utf-8")
+    assert "page-break-before" not in one_html
+    _patch(monkeypatch, [doc])
+    many = client.post(
+        "/v1/studio/create/sessions",
+        json={
+            "space_id": SPACE,
+            "kind": "doc",
+            "goal": "Write the note",
+            "audience": "Founder",
+        },
+        headers=HEADERS,
+    )
+    many_id = many.json()["session_id"]
+    client.post(f"/v1/studio/create/sessions/{many_id}/generate", headers=HEADERS)
+    close_lakes()
+    client.post(f"/v1/studio/create/sessions/{many_id}/confirm", headers=HEADERS)
+    many_pdf = (tmp_path / "store" / many_id / "doc.pdf").read_bytes()
+    assert many_pdf.count(b"/Type /Page ") == 3
+
+
+def test_share_claim_must_match_the_computed_shares() -> None:
+    rows = [{"region": "North", "amount": 75}, {"region": "South", "amount": 25}]
+
+    def art(body: str, data: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        return {
+            "kind": "slides",
+            "title": "Regions",
+            "parts": [
+                {
+                    "id": "s1",
+                    "title": "Where sales sit",
+                    "body": body,
+                    "charts": [
+                        {
+                            "label": "Regions",
+                            "sql": "SELECT region, amount FROM sales",
+                            "rows": data or rows,
+                        }
+                    ],
+                }
+            ],
+        }
+
+    spread = judge_artifact(
+        art("Sales sit in a few regions."),
+        kind="slides",
+        brand={},
+        allowed_numbers={"75", "25"},
+    )
+    assert "share_mismatch" in spread
+    honest = judge_artifact(
+        art("North is 75%."),
+        kind="slides",
+        brand={},
+        allowed_numbers={"75", "25"},
+    )
+    assert "share_mismatch" not in honest
+    wrong = judge_artifact(
+        art("North is 10%."),
+        kind="slides",
+        brand={},
+        allowed_numbers={"75", "25", "10"},
+    )
+    assert "share_mismatch" in wrong
+    balanced = judge_artifact(
+        art(
+            "Sales sit in a few regions.",
+            [
+                {"region": "North", "amount": 40},
+                {"region": "South", "amount": 30},
+                {"region": "East", "amount": 30},
+            ],
+        ),
+        kind="slides",
+        brand={},
+        allowed_numbers={"40", "30"},
+    )
+    assert "share_mismatch" not in balanced
 
 
 def test_unknown_template_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
