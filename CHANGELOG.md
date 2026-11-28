@@ -13,6 +13,14 @@ Append-only. Never edited, only added to. Newest first.
 - **Destructive.** A typed non-SELECT statement, or a destructive verdict from role `reason`, refuses before compile. No keyword list. An unknown verdict is not a destructive abstain.
 - **Stub 52.** `grade52 --main` at `12326dd`, base `3752fb4`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed grade52 and pack H were not run. Not PASS.
 
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: a missing measure reaches the AI SQL leg
+
+- **Flag.** `DMS_MEASURE_FROM_SCHEMA` defaults off. Only the digit 1 turns it on. Off, the ask prompt, the envelope, and the served route stay as they were.
+- **Compile gap.** On, `unknown_measure` and `missing_metric` ask the model for SQL. The call carries the granted schema and retrieved verified examples. The example is not executed. Existing gates stay, including ungranted and destructive SQL.
+- **Join.** `no_path` and `missing_join` propose the model SQL on the existing join confirm card. A single-table reply asks back. It is not served.
+- **Qualifier.** A dropped qualifier is one model check with role `reason`, then the same gates. A second miss asks back with the question. It is not a bare refusal.
+- **Stub 52.** `grade52 --main` at `517fe0e`, base `515f7a5`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
 ## 2026-11-27 - SCALE-MISS-01: rename the SQL check, use the serving dialect
 
 - **Boundary.** The nested helper is `_sql_checks`. The names gate, policy, authorize, and check_compliance stay reserved for cortex_client. The invariant file is unchanged.
