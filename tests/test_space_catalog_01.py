@@ -341,6 +341,29 @@ def _wire(req: Any) -> dict[str, Any]:
     return _to_gen_manifest(req.manifest).to_dict()
 
 
+def test_null_catalog_fields_stay_off_the_wire() -> None:
+    """A 1.12 dump of unset catalog keys must not reach the wire."""
+    minted = Manifest(
+        session_id="ses_null",
+        org_id="tenant_demo",
+        space_id=_SPACE_B,
+        pool_id="default",
+        issuer_key_id="test-kid",
+        allowed_paths=[],
+        row_predicates={_B_FILL: "TRUE"},
+        issued_at="2026-11-28T00:00:00+00:00",
+        expires_at="2026-11-28T01:00:00+00:00",
+        signature="dGVzdHNpZw",
+    )
+    dumped = minted.model_dump(mode="json")
+    dumped["space_catalog"] = None
+    dumped["space_catalog_sig"] = None
+    object.__setattr__(minted, "model_dump", lambda mode="json": dict(dumped))
+    wire = _to_gen_manifest(minted).to_dict()
+    assert "space_catalog" not in wire
+    assert "space_catalog_sig" not in wire
+
+
 def test_flag_off_manifest_matches_the_unsigned_bind(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DMS_SPACE_CATALOG", raising=False)
     monkeypatch.setattr(

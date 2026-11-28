@@ -113,10 +113,17 @@ def _bool_mask_flags(payload: Any) -> Any:
 
 
 def _to_gen_manifest(m: ContractManifest) -> GenManifest:
-    gen = GenManifest.from_dict(m.model_dump(mode="json"))
+    dumped = m.model_dump(mode="json")
+    # Contract 1.12 dumps these as null when unset. The generated client
+    # keeps unknown keys, so a null would appear on a flag-off wire.
+    if dumped.get("space_catalog") is None:
+        dumped.pop("space_catalog", None)
+    if not dumped.get("space_catalog_sig"):
+        dumped.pop("space_catalog_sig", None)
+    gen = GenManifest.from_dict(dumped)
     # FDE-CORTEX-SPACE-CATALOG-01. Catalog and signature are not signed
-    # manifest fields. Flag off never sets the attrs, so the wire dict stays
-    # the model dump. An unsigned catalog is not sent.
+    # manifest fields. Flag off never sets the attrs. An unsigned catalog
+    # is not sent.
     catalog = getattr(m, "_dms_space_catalog", None)
     signature = getattr(m, "_dms_space_catalog_sig", None)
     if isinstance(catalog, dict) and isinstance(signature, str) and signature:
