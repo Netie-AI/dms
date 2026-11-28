@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-28, NL19-COMPILE-WRONG
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_COMPILE_HONOUR_CHECK` default off (`36a3450`, base `f5b9517`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, no reason model, so compile is not served: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_COMPILE_HONOUR_CHECK` default off (`1a7e599`, base `515f7a5`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, no reason model, so compile is not served: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed and pack H unmeasured. Not PASS.
 
 ## Direction
 
@@ -12,7 +12,7 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `36a3450`, `grade52 --main`, base `f5b9517`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `1a7e599`, `grade52 --main`, base `515f7a5`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
