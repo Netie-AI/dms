@@ -347,6 +347,7 @@ def _context(
             grantable=grantable,
             dialect=dialect,
             force=True,
+            seed=False,
         )
         examples = examples_text(rows).strip()
     except Exception as exc:

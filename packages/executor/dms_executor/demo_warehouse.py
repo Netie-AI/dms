@@ -235,43 +235,26 @@ def connect_serving(path: Path) -> duckdb.DuckDBPyConnection:
 
 
 def ensure_demo_warehouse(path: Path | None = None) -> Path:
-    """Create the demo fixture only when the file is absent.
+    """Thin-reseed the DMS local demo file. Idempotent within one process.
 
-    An existing file is returned as it is. Nothing is dropped. A missing
-    file is seeded when the caller passed ``path`` (they asked for a fixture
-    there) or when the resolved path is the repo demo file. A missing
-    ``DMS_WAREHOUSE_DB`` that is not that file is left absent. A real lake
-    is never reseeded.
+    First call this process always ``_seed``s (DROP the six demo tables, write
+    the small fixture). That is by design: the rich founder lake lives on the
+    Cortex path, not here. Do not point ``DMS_WAREHOUSE_DB`` at the Cortex file.
+    A missing path, including a missing ``DMS_WAREHOUSE_DB``, is created.
+    The ask path does not use this for a real lake. It uses ``ask_lake``.
     """
-    if path is None:
-        db = warehouse_path()
-        if db.is_file():
-            return db
-        try:
-            fixture = db.resolve() == demo_fixture_path().resolve()
-        except OSError:
-            fixture = False
-        if not fixture:
-            return db
-    else:
-        db = Path(path)
-        if db.is_file():
-            return db
+    db = path or warehouse_path()
+    key = str(db.resolve())
+    if key in _SEEDED and db.is_file():
+        return db
     db.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive lease so a concurrent reader does not see a half-seeded file.
     con = connect_file(db, write=True)
     try:
-        present = con.execute(
-            """
-            SELECT 1 FROM information_schema.tables
-             WHERE table_schema = 'main' AND table_name = 'suppliers'
-            """
-        ).fetchone()
-        if present:
-            _SEEDED.add(str(db.resolve()))
+        if key in _SEEDED and db.is_file():
             return db
         _seed(con)
-        _SEEDED.add(str(db.resolve()))
+        _SEEDED.add(key)
         return db
     finally:
         con.close()

@@ -355,6 +355,22 @@ def test_floor_off_does_not_open_a_stream(monkeypatch: pytest.MonkeyPatch) -> No
     assert done is False
 
 
+def test_ask_lake_does_not_seed_a_missing_operator_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The floor does not create a custom lake. The shared seed still does."""
+    from dms_executor.warehouse_identity import ask_lake
+
+    missing = tmp_path / "not_the_fixture.duckdb"
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(missing))
+    monkeypatch.delenv("CORTEX_WAREHOUSE_DB", raising=False)
+    monkeypatch.delenv("DMS_ORACLE_WAREHOUSE", raising=False)
+    monkeypatch.delenv("CORTEX_HOME", raising=False)
+    got = ask_lake(None)
+    assert not missing.is_file()
+    assert got is None or got.resolve() != missing.resolve()
+
+
 def test_default_wiring_uses_the_existing_lake(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

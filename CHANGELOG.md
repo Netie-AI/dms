@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - AI-FLOOR-01: seed a missing warehouse again
+
+- **Seed.** `ensure_demo_warehouse` is the shared path again. A missing caller path, including a missing `DMS_WAREHOUSE_DB`, is seeded. The first call in a process still thin-reseeds. Library can open that file read-only.
+- **Floor.** The ask uses `ask_lake`. An existing executing file is not reseeded. A missing custom path is not created by the floor.
+
 ## 2026-11-28 - AI-FLOOR-01: one run_sql call on the executing lake
 
 - **Lake.** Schema and EXPLAIN use the file the query runs on. `ensure_demo_warehouse` creates a missing demo fixture and does not reseed an existing lake.
