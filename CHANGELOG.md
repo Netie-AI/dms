@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-SKILLS-01: skills library and Google AI Overview
+
+- **Flag.** `DMS_SKILLS` defaults off. Only the digit 1 turns it on. Off, `/v1/studio/skills` is not mounted, Ask and Create keep the same bytes, and the store is not opened.
+- **Library.** A public https skill is checked out at a commit SHA, scanned for secrets and dangerous scripts, and stored with its licence. Install does not grant. Ask, Create, and agents see a skill only after a steward grant. The provider runs it. DMS records the audit and does not echo a secret.
+- **Documents.** PDF, DOCX, and Markdown are chunked. Embeddings come from OpenVault or stay unavailable. Citations are short excerpts.
+- **Overview.** `DMS_WEB_INSIGHT` defaults off, digit 1 only. The tool `google_ai_overview` posts the question to a configured headless-browser endpoint. CI replays a fixture. No overview, no endpoint, or a rate limit is an honest empty citation. The query is the question only. The citation is not a measured figure.
+- **Store.** JSON under `DMS_SKILLS_DIR`. No Alembic migration.
+
 ## 2026-11-28 - DMS-CREATE-CONTEXT-01: chats, a questionnaire, or a project
 
 - **Flag.** `DMS_CREATE_CONTEXT` defaults off. Only the digit 1 turns it on. Off, Create status stays `{"enabled": true}` when Create itself is on, and `/v1/studio/create/context` is not found.

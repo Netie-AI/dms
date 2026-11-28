@@ -356,6 +356,7 @@ def _insights_compute_seam(
     examples = ""
     defs = ""
     knowledge = ""
+    skill = ""
     ai_rows: list[dict[str, Any]] = []
     # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
     # stays quiet because the key is removed before the POST.
@@ -369,6 +370,7 @@ def _insights_compute_seam(
         "vq_examples",
         "governed_definitions",
         "space_knowledge",
+        "skill_context",
         "route_hint",
         "floor_timeout_s",
         "floor_cache",
@@ -403,6 +405,9 @@ def _insights_compute_seam(
             raw_knowledge = lifted.get("space_knowledge")
             if isinstance(raw_knowledge, str) and raw_knowledge.strip():
                 knowledge = raw_knowledge
+            raw_skill = lifted.get("skill_context")
+            if isinstance(raw_skill, str) and raw_skill.strip():
+                skill = raw_skill
             onto = {k: v for k, v in lifted.items() if k not in _hidden}
         else:
             onto = lifted
@@ -424,6 +429,8 @@ def _insights_compute_seam(
         # After the question, the examples, and any AI-first rewrite. The
         # posted ontology does not carry this key.
         asked = f"{asked.rstrip()}{knowledge}"
+    if skill:
+        asked = f"{asked.rstrip()}{skill}"
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,

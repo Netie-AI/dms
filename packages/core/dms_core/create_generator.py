@@ -194,15 +194,34 @@ def skills_for(kind: str, *, workbook: bool = False) -> dict[str, Any]:
     if workbook and "xlsx" not in anthropic:
         anthropic.append("xlsx")
     local = [{"name": item, "text": local_skill(item)} for item in picked["local"]]
-    return {"anthropic": anthropic, "local": local}
+    result = {"anthropic": anthropic, "local": local}
+    # DMS_SKILLS off: the dict above is what Create already sent.
+    from dms_core.skills.flag import enabled as skills_enabled
+
+    if not skills_enabled():
+        return result
+    from dms_core.skills.context import with_granted_library
+
+    return with_granted_library(result, surface="create")
 
 
 def validate_call(name: str, arguments: Mapping[str, Any]) -> list[str]:
+    from dms_core.skills.web_insight import TOOL_NAME, tool_spec
+    from dms_core.skills.web_insight import enabled as web_insight_on
+
+    if name == TOOL_NAME:
+        if not web_insight_on():
+            return ["tool_unknown"]
+        spec = tool_spec()
+        schema = spec.get("input_schema")
+        if not isinstance(schema, dict):
+            return ["tool_unknown"]
+        return _check(schema, arguments, name)
     registry = tool_registry()
-    spec = registry.get(name)
-    if not isinstance(spec, dict):
+    found = registry.get(name)
+    if not isinstance(found, dict):
         return ["tool_unknown"]
-    schema = spec.get("input_schema")
+    schema = found.get("input_schema")
     if not isinstance(schema, dict):
         return ["tool_unknown"]
     return _check(schema, arguments, name)
@@ -222,6 +241,11 @@ def client_tools(enabled: Mapping[str, bool] | None) -> list[dict[str, Any]]:
         if allowed.get(name, True) is False:
             continue
         out.append(spec)
+    from dms_core.skills.web_insight import enabled as web_insight_on
+    from dms_core.skills.web_insight import tool_spec
+
+    if web_insight_on():
+        out.append(tool_spec())
     return out
 
 
