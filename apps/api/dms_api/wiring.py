@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from typing import Any
 
 import dms_executor
@@ -1234,6 +1236,20 @@ def health_pack_name() -> str:
     return health_pack_fields()["pack"]
 
 
+def _compile_deadline() -> float | None:
+    """Monotonic deadline from ``DMS_AO_COMPILE_DEADLINE_S``. Unset means no cap."""
+    raw = os.environ.get("DMS_AO_COMPILE_DEADLINE_S", "").strip()
+    if not raw:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    if seconds <= 0:
+        return time.monotonic()
+    return time.monotonic() + seconds
+
+
 def compile_ontology_proposal(
     *,
     actor: str,
@@ -1243,17 +1259,48 @@ def compile_ontology_proposal(
     """Run AO-VENDOR-01 ``compile_source`` and store the proposal as proposed.
 
     Flag off returns status ``off`` and writes nothing. A proposal is never
-    stored with ``served`` true.
+    stored with ``served`` true. ``DMS_AO_COMPILE_RESILIENT`` off keeps that
+    call. On, only the Space's granted tables are compiled, a gap is stored
+    with whatever succeeded, and a failure is 200 or a typed 4xx/503.
     """
     import duckdb
     from dms_core.control_plane.onto_data import store_proposal
 
+    resilient = dms_executor.ao_compile_resilient()
     path = dms_executor.warehouse_path()
     conn = dms_executor.connect_serving(path) if path.is_file() else duckdb.connect()
     try:
-        proposal = dms_executor.compile_source(conn)
+        if not resilient:
+            proposal = dms_executor.compile_source(conn)
+        else:
+            space = (space_id or "").strip()
+            if not space:
+                raise HTTPException(status_code=400, detail="space_id_required")
+            proposal = dms_executor.compile_source(
+                conn,
+                tables=dms_executor.space_compile_tables(space),
+                deadline=_compile_deadline(),
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if not resilient:
+            raise
+        code = getattr(exc, "code", None)
+        if type(exc).__name__ == "AoCompileRefused" and isinstance(code, str):
+            raise HTTPException(status_code=503, detail=code) from None
+        logger.error("ontology compile failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="ao_compile_failed") from None
     finally:
         conn.close()
+    if proposal.status == "refused":
+        return {
+            "status": "refused",
+            "served": False,
+            "version_id": None,
+            "items": [],
+            "gaps": [dict(row) for row in proposal.gaps],
+        }
     return store_proposal(
         proposal.to_json(),
         created_by=actor,

@@ -1,5 +1,5 @@
 /**
- * Stamp slots the ask envelope can carry. A missing key renders "not stamped".
+ * Stamp slots the ask envelope can carry. A missing key is omitted.
  * This module never fills a value the object does not already hold.
  *
  * served_provider, served_model, served_local, learn_enabled, learn_source,

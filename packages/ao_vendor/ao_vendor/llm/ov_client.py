@@ -19,8 +19,11 @@ Credential: an OpenVault API key (``ov_...``) from ``OPENVAULT_API_KEY``, else
 key is minted by OpenVault's human Grant flow. DMS never mints one.
 Base URL: ``OPENVAULT_URL``. Nothing here is read at import time.
 
-A failed call is a named refusal, never a quiet ``None``. ``compile_catalog``
-turns any recorded failure into :class:`AoCompileRefused` so nothing is stored.
+A failed call is a named refusal, never a quiet ``None``. With
+``DMS_AO_COMPILE_RESILIENT`` off (the default), ``compile_catalog`` turns any
+recorded failure into :class:`AoCompileRefused` so nothing is stored. On, a
+429 or other transient error is retried, a validation error is sent back
+once, and a caller deadline replaces the fixed client timeout.
 """
 
 from __future__ import annotations
@@ -28,8 +31,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from contextvars import ContextVar, Token
+from email.utils import parsedate_to_datetime
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -47,10 +52,27 @@ URL_ENV = "OPENVAULT_URL"
 REFUSE_KEY_MISSING = "ao_ov_api_key_missing"
 REFUSE_UNAUTHORIZED = "ao_ov_unauthorized"
 REFUSE_UNREACHABLE = "ao_ov_unreachable"
+REFUSE_TIMEOUT = "ao_ov_timeout"
 REFUSE_OUTPUT_INVALID = "ao_model_output_invalid"
 REFUSE_NO_CALLS = "ao_no_model_calls"
 #: ``1`` adds ``response_format`` and one fenced-JSON retry. Anything else is off.
 RESPONSE_FORMAT_FLAG = "DMS_AO_RESPONSE_FORMAT"
+#: ``1`` retries transient calls, repairs one validation miss, and uses the
+#: caller deadline instead of a fixed timeout. Anything else is off.
+RESILIENT_FLAG = "DMS_AO_COMPILE_RESILIENT"
+# ponytail: three sends, then the table is a gap. Upgrade: a caller budget.
+_TRANSPORT_TRIES = 3
+_RETRYABLE = frozenset(
+    {
+        "ao_ov_http_408",
+        "ao_ov_http_429",
+        "ao_ov_http_502",
+        "ao_ov_http_503",
+        "ao_ov_http_504",
+        REFUSE_TIMEOUT,
+        REFUSE_UNREACHABLE,
+    }
+)
 _FENCE = "```"
 #: A failure that no later call can cure. The client stops sending after one.
 _FATAL = frozenset(
@@ -79,13 +101,16 @@ _MODEL_KEYS = frozenset(
 T = TypeVar("T", bound=BaseModel)
 Transport = Callable[[str, dict[str, str], dict[str, Any]], Any]
 _BOUND: ContextVar[OpenVaultOntologyClient | None] = ContextVar("ao_ov_client", default=None)
+#: Monotonic deadline the caller passed. None means the caller set no cap.
+_DEADLINE: ContextVar[float | None] = ContextVar("ao_compile_deadline", default=None)
 
 
 class AoLlmError(RuntimeError):
     """FreeRoute call could not be sent. The message never includes a token."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, retry_after: float | None = None) -> None:
         self.code = code
+        self.retry_after = retry_after
         super().__init__(code)
 
 
@@ -102,13 +127,17 @@ class OpenVaultOntologyClient:
 
     ``failures`` holds the code of every call that did not return a valid
     object, and ``calls_ok`` counts the ones that did. A fatal failure (no key,
-    401/403, unreachable) is sticky: later calls raise it without sending.
+    401/403, and, when the resilient flag is off, unreachable) is sticky:
+    later calls raise it without sending.
     """
 
     def __init__(self, transport: Transport | None = None) -> None:
         self._transport = transport
         self.bodies: list[dict[str, Any]] = []
         self.failures: list[str] = []
+        self.failure_steps: list[str] = []
+        self.failure_fields: list[tuple[str, ...]] = []
+        self.invalid_fields: list[str] = []
         self.calls_ok = 0
         self._fatal: str | None = None
 
@@ -117,6 +146,8 @@ class OpenVaultOntologyClient:
         messages: list[SystemMessage | HumanMessage],
         schema: type[T],
     ) -> T:
+        if resilient_enabled():
+            return self._complete_resilient(messages, schema)
         if self._fatal is not None:
             raise AoLlmError(self._fatal)
         try:
@@ -138,15 +169,107 @@ class OpenVaultOntologyClient:
         except AoLlmError as exc:
             self._record(exc.code)
             raise
-        except (ValidationError, ValueError):
+        except (ValidationError, ValueError) as exc:
+            if isinstance(exc, ValidationError):
+                _log_validation(schema.__name__, _field_paths(exc))
             self._record(REFUSE_OUTPUT_INVALID)
             raise
         self.calls_ok += 1
         return parsed
 
-    def _record(self, code: str) -> None:
+    def _complete_resilient(
+        self,
+        messages: list[SystemMessage | HumanMessage],
+        schema: type[T],
+    ) -> T:
+        """Retry transport errors, then send a validation miss back once."""
+        if self._fatal is not None:
+            raise AoLlmError(self._fatal)
+        payload = self._send_with_retry(messages, schema)
+        try:
+            parsed = _coerce(schema, payload)
+        except ValidationError as exc:
+            fields = _field_paths(exc)
+            _log_validation(schema.__name__, fields)
+            self.invalid_fields = fields
+            follow = [*messages, HumanMessage(content=_repair_text(fields))]
+            payload2 = self._send_with_retry(follow, schema)
+            try:
+                parsed = _coerce(schema, payload2)
+            except ValidationError as exc2:
+                fields2 = _field_paths(exc2)
+                _log_validation(schema.__name__, fields2)
+                self.invalid_fields = fields2
+                self._record(
+                    REFUSE_OUTPUT_INVALID,
+                    step=schema.__name__,
+                    fields=tuple(fields2),
+                )
+                raise
+            except ValueError:
+                self._record(REFUSE_OUTPUT_INVALID, step=schema.__name__)
+                raise
+        except ValueError:
+            self._record(REFUSE_OUTPUT_INVALID, step=schema.__name__)
+            raise
+        self.calls_ok += 1
+        return parsed
+
+    def _send_with_retry(
+        self,
+        messages: list[SystemMessage | HumanMessage],
+        schema: type[BaseModel],
+    ) -> Any:
+        """Send once, and again on 429 or a transient error, up to the cap."""
+        step = schema.__name__
+        last: AoLlmError | None = None
+        for attempt in range(_TRANSPORT_TRIES):
+            try:
+                _ensure_deadline()
+                body = build_request_body(messages, schema)
+                url = endpoint_url()
+                key = load_api_key()
+                if not key:
+                    raise AoLlmError(REFUSE_KEY_MISSING)
+                headers = {
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                }
+                self.bodies.append(body)
+                transport = self._transport or default_transport
+                payload = transport(url, headers, body)
+                _ensure_deadline()
+                return payload
+            except AoLlmError as exc:
+                last = exc
+                retry = exc.code in _RETRYABLE and attempt + 1 < _TRANSPORT_TRIES
+                if retry and exc.code == REFUSE_TIMEOUT and not _deadline_open():
+                    retry = False
+                if not retry:
+                    self._record(exc.code, step=step)
+                    raise
+                _pause(_wait_seconds(attempt, exc.retry_after))
+        if last is not None:
+            self._record(last.code, step=step)
+            raise last
+        raise AoLlmError(REFUSE_UNREACHABLE)
+
+    def _record(
+        self,
+        code: str,
+        *,
+        step: str = "",
+        fields: tuple[str, ...] = (),
+    ) -> None:
         self.failures.append(code)
-        if code in _FATAL:
+        self.failure_steps.append(step)
+        self.failure_fields.append(fields)
+        if fields:
+            self.invalid_fields = list(fields)
+        sticky = code in _FATAL
+        if resilient_enabled() and code in _RETRYABLE:
+            sticky = False
+        if sticky:
             self._fatal = code
 
 
@@ -221,6 +344,20 @@ def response_format_enabled() -> bool:
     return os.environ.get(RESPONSE_FORMAT_FLAG, "0").strip() == "1"
 
 
+def resilient_enabled() -> bool:
+    """True only when the flag is the digit 1. Unset and every other value are off."""
+    return os.environ.get(RESILIENT_FLAG, "0").strip() == "1"
+
+
+def bind_deadline(deadline: float | None) -> Token[float | None]:
+    """Install the caller deadline. ``None`` means the caller set no cap."""
+    return _DEADLINE.set(deadline)
+
+
+def reset_deadline(token: Token[float | None]) -> None:
+    _DEADLINE.reset(token)
+
+
 def build_request_body(
     messages: list[SystemMessage | HumanMessage],
     schema: type[BaseModel],
@@ -259,17 +396,34 @@ def _reject_model_keys(value: Any) -> None:
 
 
 def default_transport(url: str, headers: dict[str, str], body: dict[str, Any]) -> Any:
-    """POST the body. Chat-completion envelopes are unwrapped to the JSON object."""
+    """POST the body. Chat-completion envelopes are unwrapped to the JSON object.
+
+    Flag off keeps the fixed 60 second cap, and a timeout stays
+    ``ao_ov_unreachable``. Flag on uses the deadline the caller passed
+    (no fixed cap) and a timeout is ``ao_ov_timeout``.
+    """
     import httpx
 
+    timeout: float | None = 60.0
+    if resilient_enabled():
+        timeout = _httpx_timeout()
     try:
-        response = httpx.post(url, headers=headers, json=body, timeout=60.0)
+        response = httpx.post(url, headers=headers, json=body, timeout=timeout)
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
         if status in (401, 403):
             raise AoLlmError(REFUSE_UNAUTHORIZED) from None
+        if resilient_enabled():
+            raise AoLlmError(
+                f"ao_ov_http_{status}",
+                retry_after=_retry_after_seconds(exc.response),
+            ) from None
         raise AoLlmError(f"ao_ov_http_{status}") from None
+    except httpx.TimeoutException:
+        if resilient_enabled():
+            raise AoLlmError(REFUSE_TIMEOUT) from None
+        raise AoLlmError(REFUSE_UNREACHABLE) from None
     except httpx.HTTPError:
         raise AoLlmError(REFUSE_UNREACHABLE) from None
     data = response.json()
@@ -298,6 +452,99 @@ def _loads_model_json(content: str) -> Any:
         if stripped == content:
             raise
         return json.loads(stripped)
+
+
+def _httpx_timeout() -> float | None:
+    """Seconds left on the caller deadline. None when the caller set no cap."""
+    deadline = _DEADLINE.get()
+    if deadline is None:
+        return None
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise AoLlmError(REFUSE_TIMEOUT)
+    return remaining
+
+
+def _deadline_open() -> bool:
+    deadline = _DEADLINE.get()
+    if deadline is None:
+        return True
+    return time.monotonic() <= deadline
+
+
+def _ensure_deadline() -> None:
+    if not _deadline_open():
+        raise AoLlmError(REFUSE_TIMEOUT)
+
+
+def _wait_seconds(attempt: int, retry_after: float | None) -> float:
+    """Honour Retry-After. Otherwise a short backoff that stops at the deadline."""
+    if retry_after is not None:
+        wait = max(0.0, float(retry_after))
+    else:
+        wait = 0.05 * (2**attempt)
+    deadline = _DEADLINE.get()
+    if deadline is None:
+        return wait
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return 0.0
+    return min(wait, remaining)
+
+
+def _pause(seconds: float) -> None:
+    if seconds > 0:
+        time.sleep(seconds)
+
+
+def _retry_after_seconds(response: Any) -> float | None:
+    """Seconds from a Retry-After header. A delay or an HTTP date. No value is None."""
+    headers = getattr(response, "headers", None)
+    raw = ""
+    if headers is not None:
+        raw = str(headers.get("Retry-After") or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if when.tzinfo is None:
+        return None
+    return max(0.0, when.timestamp() - time.time())
+
+
+def _field_paths(exc: ValidationError) -> list[str]:
+    """Location names from a validation error. The input value is not included."""
+    paths: list[str] = []
+    for err in exc.errors():
+        loc = err.get("loc") or ()
+        path = ".".join(str(part) for part in loc)
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _log_validation(schema_name: str, fields: list[str]) -> None:
+    logger.error("ao validation %s fields=%s", schema_name, ",".join(fields))
+
+
+def _repair_text(fields: list[str]) -> str:
+    listed = ", ".join(fields) if fields else "unknown"
+    return (
+        "The previous JSON failed schema validation at these field paths: "
+        f"{listed}. Return one JSON object that matches the schema."
+    )
+
+
+def _coerce(schema: type[T], payload: Any) -> T:
+    if isinstance(payload, str):
+        payload = _loads_model_json(payload)
+    return schema.model_validate(payload)
 
 
 def _strip_one_fence(text: str) -> str:

@@ -54,3 +54,4 @@ The prompt still names the same evidence. No new word list was added.
 ## DMS entry
 
 - `packages/executor/dms_executor/ao_compile.py` is new, not vendored. `compile_source` imports `ao_vendor` only when `DMS_AO_COMPILE=1`. Off returns `status=off` and does not touch the connection. `OntologyProposal.served` cannot be true.
+- `DMS_AO_COMPILE_RESILIENT` defaults to off. Off, `default_transport` keeps its 60 second cap and any failure still refuses the whole compile. On, the caller passes the deadline (no fixed cap; a timeout is `ao_ov_timeout`), a 429 or transient error is retried (Retry-After is honoured), one validation miss is sent back with field paths only, and a failed table is a gap. A proposal is `partial` when some tables compiled and `refused` only when none did. `compile_ontology_proposal` then compiles the Space's granted tables and the route does not answer 500.

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import Any
 
 _FLAG = "DMS_AO_COMPILE"
+_RESILIENT = "DMS_AO_COMPILE_RESILIENT"
+_STATUSES = frozenset({"proposed", "off", "partial", "refused"})
 _FK_KEYS = ("source_table", "source_column", "target_table", "target_column")
 _JOIN_KEYS = ("left_table", "left_column", "right_table", "right_column")
 _TERM_KEYS = ("name", "table", "description")
@@ -65,6 +67,18 @@ def ao_compile_enabled() -> bool:
     return os.environ.get(_FLAG, "0").strip() == "1"
 
 
+def ao_compile_resilient() -> bool:
+    """True only when the flag is the digit 1. Anything else, including unset, is off."""
+    return os.environ.get(_RESILIENT, "0").strip() == "1"
+
+
+def space_compile_tables(space_id: str) -> tuple[str, ...]:
+    """Tables this Space may compile: the demo seed plus the connect grant book."""
+    from dms_executor.demo_grants import DemoSessionStore
+
+    return DemoSessionStore()._tables_for(space_id)
+
+
 @dataclass(frozen=True)
 class OntologyProposal:
     """JSON-serialisable proposal. ``status`` is ``proposed`` or ``off``."""
@@ -80,12 +94,16 @@ class OntologyProposal:
     unkeyed: tuple[str, ...] = ()
     #: Successful OpenVault calls behind this proposal. Not part of ``to_json``.
     model_calls: int = 0
+    #: Per-table misses. Empty on a clean proposal, and omitted from ``to_json``.
+    gaps: tuple[dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.served:
             raise ValueError("an ontology proposal is never served")
-        if self.status not in {"proposed", "off"}:
+        if self.status not in _STATUSES:
             raise ValueError("proposal status must be proposed or off")
+        if self.status in {"partial", "refused"} and not self.gaps:
+            raise ValueError("proposal gaps")
 
     @classmethod
     def off(cls) -> OntologyProposal:
@@ -106,10 +124,11 @@ class OntologyProposal:
     def from_payload(cls, payload: dict[str, Any]) -> OntologyProposal:
         if payload.get("served"):
             raise ValueError("an ontology proposal is never served")
-        if payload.get("status") != "proposed":
+        status = str(payload.get("status") or "")
+        if status not in {"proposed", "partial", "refused"}:
             raise ValueError("compiled proposal status must be proposed")
         proposal = cls(
-            status="proposed",
+            status=status,
             vendor_sha=str(payload.get("vendor_sha") or ""),
             terms=_rows(payload.get("terms")),
             attributes=_rows(payload.get("attributes")),
@@ -119,12 +138,14 @@ class OntologyProposal:
             served=False,
             unkeyed=_names(payload.get("unkeyed")),
             model_calls=int(payload.get("model_calls") or 0),
+            gaps=_gap_rows(payload.get("gaps")),
         )
-        check_proposal_schema(proposal.to_json())
+        if status == "proposed":
+            check_proposal_schema(proposal.to_json())
         return proposal
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        body = {
             "status": self.status,
             "vendor_sha": self.vendor_sha,
             "served": self.served,
@@ -135,16 +156,59 @@ class OntologyProposal:
             "joins": [dict(row) for row in self.joins],
             "unkeyed": list(self.unkeyed),
         }
+        if self.gaps:
+            body["gaps"] = [dict(row) for row in self.gaps]
+        return body
 
 
-def compile_source(conn: Any, *, transport: Any = None) -> OntologyProposal:
-    """Propose an ontology for ``conn``. Off: return without touching ``conn``."""
+def compile_source(
+    conn: Any,
+    *,
+    transport: Any = None,
+    tables: tuple[str, ...] | None = None,
+    deadline: float | None = None,
+) -> OntologyProposal:
+    """Propose an ontology for ``conn``. Off: return without touching ``conn``.
+
+    The resilient flag passes ``tables`` and ``deadline`` through. Off, both
+    are ignored and the call is the one this function has always made.
+    """
     if not ao_compile_enabled():
         return OntologyProposal.off()
     from ao_vendor.compile_run import compile_catalog
 
-    payload: dict[str, Any] = compile_catalog(conn, transport=transport)
+    if ao_compile_resilient():
+        payload: dict[str, Any] = compile_catalog(
+            conn, transport=transport, tables=tables, deadline=deadline
+        )
+    else:
+        payload = compile_catalog(conn, transport=transport)
     return OntologyProposal.from_payload(payload)
+
+
+def _gap_rows(value: Any) -> tuple[dict[str, Any], ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise ValueError("proposal gaps")
+    rows: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("proposal gaps")
+        table = item.get("table")
+        code = item.get("code")
+        step = item.get("step")
+        fields = item.get("fields")
+        if not isinstance(table, str) or not isinstance(code, str) or not code:
+            raise ValueError("proposal gaps")
+        if not isinstance(step, str):
+            raise ValueError("proposal gaps")
+        if not isinstance(fields, list) or any(not isinstance(name, str) for name in fields):
+            raise ValueError("proposal gaps")
+        rows.append(
+            {"table": table, "code": code, "step": step, "fields": list(fields)}
+        )
+    return tuple(rows)
 
 
 def check_proposal_schema(data: dict[str, Any]) -> None:
