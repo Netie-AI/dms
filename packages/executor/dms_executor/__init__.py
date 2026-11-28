@@ -50,6 +50,33 @@ from dms_executor.bronze_sheet_ask import (
 )
 from dms_executor.connectors import connector_tables
 from dms_executor.contract_infer import infer_contract
+from dms_executor.create_surface import (
+    confirm_final as create_confirm_final,
+)
+from dms_executor.create_surface import (
+    draft_events as create_draft_events,
+)
+from dms_executor.create_surface import (
+    generate_artifact as create_generate_artifact,
+)
+from dms_executor.create_surface import (
+    improve_artifact as create_improve_artifact,
+)
+from dms_executor.create_surface import (
+    read_artifact as create_read_artifact,
+)
+from dms_executor.create_surface import (
+    read_guide as create_read_guide,
+)
+from dms_executor.create_surface import (
+    restore_version as create_restore_version,
+)
+from dms_executor.create_surface import (
+    save_guide as create_save_guide,
+)
+from dms_executor.create_surface import (
+    start_session as create_start_session,
+)
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
     SourceConfig,
@@ -2860,6 +2887,15 @@ __all__ = [
     "list_warehouse_tables",
     "list_verified_queries",
     "ask_failed_envelope",
+    "create_confirm_final",
+    "create_draft_events",
+    "create_generate_artifact",
+    "create_improve_artifact",
+    "create_read_artifact",
+    "create_read_guide",
+    "create_restore_version",
+    "create_save_guide",
+    "create_start_session",
     "check_gold_sql",
     "execute_gold",
     "guard_benchmark_write",

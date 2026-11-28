@@ -2178,54 +2178,54 @@ def create_caller_key(header: str | None) -> str:
 
 
 def create_start(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import start_session
+    import dms_executor
 
-    return start_session(**kwargs)
+    return dms_executor.create_start_session(**kwargs)
 
 
 def create_generate(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import generate_artifact
+    import dms_executor
 
-    return generate_artifact(**kwargs)
+    return dms_executor.create_generate_artifact(**kwargs)
 
 
 def create_improve(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import improve_artifact
+    import dms_executor
 
-    return improve_artifact(**kwargs)
+    return dms_executor.create_improve_artifact(**kwargs)
 
 
 def create_read(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import read_artifact
+    import dms_executor
 
-    return read_artifact(**kwargs)
+    return dms_executor.create_read_artifact(**kwargs)
 
 
 def create_restore(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import restore_version
+    import dms_executor
 
-    return restore_version(**kwargs)
+    return dms_executor.create_restore_version(**kwargs)
 
 
 def create_guide_read(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import read_guide
+    import dms_executor
 
-    return read_guide(**kwargs)
+    return dms_executor.create_read_guide(**kwargs)
 
 
 def create_guide_save(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import save_guide
+    import dms_executor
 
-    return save_guide(**kwargs)
+    return dms_executor.create_save_guide(**kwargs)
 
 
 def create_events(**kwargs: Any) -> Any:
-    from dms_executor.create_surface import draft_events
+    import dms_executor
 
-    return draft_events(**kwargs)
+    return dms_executor.create_draft_events(**kwargs)
 
 
 def create_confirm_final(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import confirm_final
+    import dms_executor
 
-    return confirm_final(**kwargs)
+    return dms_executor.create_confirm_final(**kwargs)
