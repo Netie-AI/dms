@@ -236,7 +236,8 @@ def test_pack_keeps_a_small_result_and_the_questionnaire(
     assert "m0" in text
     assert "m8" not in text
     assert "payroll" not in text
-    assert "999" not in text
+    # Quoted, so a hex id that happens to contain 999 is not a leak.
+    assert '"999"' not in text
     assert "<sources>" in text
 
 
