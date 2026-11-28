@@ -258,6 +258,12 @@ class SchemaLadder:
         if schema_slice is not None:
             parts.append(format_slice_block(schema_slice))
         self.prompt_suffix = "\n".join(parts)
+        from dms_executor.generate_retry import append_granted_schema, enabled
+
+        if enabled():
+            block = append_granted_schema("", self.warehouse, self.grantable, self.dialect)
+            if block.strip():
+                self.prompt_suffix = f"{self.prompt_suffix}\n{block.strip()}"
         self.pending_rung = rung
         return RungPlan(
             rung=rung,

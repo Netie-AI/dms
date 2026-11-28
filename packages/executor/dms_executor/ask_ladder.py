@@ -384,8 +384,8 @@ class ClimbSession:
         previous = _clean(sql or "")
         tail = f"\n\nprevious_sql:\n{previous}\n\nfeedback:\n{feedback}"
         if rung == "plan":
-            return plan_prompt(self.question, ontology_json(self.ctx))
-        if rung == "context":
+            text = plan_prompt(self.question, ontology_json(self.ctx))
+        elif rung == "context":
             extra = richer_context_block(
                 self.question,
                 sql,
@@ -395,9 +395,13 @@ class ClimbSession:
                 ontology=self.ontology,
                 space_id=self.space_id,
             )
-            return _ended(_CONTEXT + tail + ("\n" + extra if extra else ""), self.question)
-        instruction = _ESCALATE if rung == "escalate" else _REPAIR
-        return _ended(instruction + tail, self.question)
+            text = _ended(_CONTEXT + tail + ("\n" + extra if extra else ""), self.question)
+        else:
+            instruction = _ESCALATE if rung == "escalate" else _REPAIR
+            text = _ended(instruction + tail, self.question)
+        from dms_executor.generate_retry import append_granted_schema
+
+        return append_granted_schema(text, self.warehouse, self.grantable, self.dialect)
 
     def _record(
         self,

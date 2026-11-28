@@ -1025,6 +1025,17 @@ def _abstain(
     log_ticket = not (
         session is not None and session.climbing and not session.finalizing
     )
+    if log_ticket:
+        from dms_executor.generate_retry import recover_give_up
+
+        swapped = recover_give_up(
+            reason,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+        if isinstance(swapped, dict):
+            return swapped
     env = build_abstain(
         reason=reason,
         ticket_reason=ticket_reason,
@@ -2231,12 +2242,22 @@ def _run_extract_loop(
                 str(reason).startswith("schema_repair_exhausted:")
                 or reason == "sql_dialect_unknown"
             ):
-                env["reconfirm"] = {
-                    "reason_code": str(reason),
-                    "why": str(reason),
-                    "closest_question": "",
-                }
-                note_stage("reconfirm", "done")
+                from dms_executor.generate_retry import enabled as generate_retry_on
+
+                offer = env.get("reconfirm") if isinstance(env, dict) else None
+                kept = (
+                    generate_retry_on()
+                    and isinstance(offer, dict)
+                    and str(offer.get("suggested_question") or "").strip()
+                )
+                served = isinstance(env, dict) and env.get("abstained") is not True
+                if not (generate_retry_on() and (kept or served)):
+                    env["reconfirm"] = {
+                        "reason_code": str(reason),
+                        "why": str(reason),
+                        "closest_question": "",
+                    }
+                    note_stage("reconfirm", "done")
         prov = held.get("provenance")
         if isinstance(prov, dict) and isinstance(env, dict):
             env["ontology_provenance"] = dict(prov)
@@ -3060,6 +3081,21 @@ def _maybe_generative_ask_impl(
             note_stage("insights_generate", "done")
 
     compute = _timed_compute
+    from dms_executor.generate_retry import arm_scope
+
+    arm_scope(
+        compute=compute,
+        ctx=insights_ctx,
+        question=q,
+        warehouse=lake,
+        dialect=dialect,
+        grantable=set(allowed),
+        ontology=onto,
+        space_id=space_id,
+        session_id=session_id,
+        submit=submit,
+        ledger_append=ledger_append,
+    )
     vote_budget: AskCallBudget | None = None
     ladder_on = ask_ladder_enabled() and not ontology_ranked_lane_enabled()
     if not ontology_ranked_lane_enabled() and (cloop_b_enabled() or ladder_on):
@@ -3183,6 +3219,11 @@ def _maybe_generative_ask_impl(
         prov = gate_state.get("provenance")
         if isinstance(prov, dict) and isinstance(stamped, dict):
             stamped["ontology_provenance"] = dict(prov)
+        from dms_executor.generate_retry import current_audit
+
+        audit = current_audit()
+        if audit is not None and isinstance(stamped, dict):
+            stamped["generate_audit"] = audit
         return freeze_route(stamped)
 
     def _after_miss() -> dict[str, Any] | None:
@@ -3296,6 +3337,14 @@ def _maybe_generative_ask_impl(
                 stage="ai_call",
             )
         )
+    if kind == "miss":
+        from dms_executor.generate_retry import opening_reason, recover_empty_generate
+
+        recovered = recover_empty_generate(
+            opening_reason(payload if isinstance(payload, dict) else None)
+        )
+        if isinstance(recovered, dict):
+            return _stamp(recovered)
     if (
         cloop_b_enabled()
         and not ontology_ranked_lane_enabled()
@@ -4080,17 +4129,20 @@ def maybe_generative_ask(
 ) -> dict[str, Any] | None:
     """Bind the ask clock, then stamp ``timings`` on the envelope."""
     from dms_executor.ask_ladder import bind_climb, reset_climb
+    from dms_executor.generate_retry import Scope, bind_scope, reset_scope
     from dms_executor.scale_miss import bind_turn, reset_turn
 
     token = ensure_clock()
     climb = bind_climb(None)
     turn_token = bind_turn(None)
+    scope_token = bind_scope(Scope())
     try:
         env = _maybe_generative_ask_impl(*args, **kwargs)
         if isinstance(env, dict):
             attach_timings(env)
         return env
     finally:
+        reset_scope(scope_token)
         reset_turn(turn_token)
         reset_climb(climb)
         release_clock(token)
