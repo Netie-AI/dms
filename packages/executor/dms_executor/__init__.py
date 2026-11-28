@@ -50,6 +50,36 @@ from dms_executor.bronze_sheet_ask import (
 )
 from dms_executor.connectors import connector_tables
 from dms_executor.contract_infer import infer_contract
+from dms_executor.create_app_run import (
+    app_preview as create_app_preview_html,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    chain_answer as create_app_chain_answer_run,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    chain_app as create_app_chain_run,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    confirm_app as create_app_confirm_run,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    contract_body as create_app_contract_body,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    dry_run_app as create_app_dry_run_run,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    generate_app as create_app_generate_run,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    publish_app as create_app_publish_run,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    query_app as create_app_query_run,  # noqa: F401 - re-exported
+)
+from dms_executor.create_app_run import (
+    read_app as create_app_read_run,  # noqa: F401 - re-exported
+)
 from dms_executor.create_context import (
     context_enabled as create_context_enabled,
 )
@@ -2911,6 +2941,16 @@ __all__ = [
     "create_restore_version",
     "create_save_guide",
     "create_start_session",
+    "create_app_preview_html",
+    "create_app_chain_answer_run",
+    "create_app_chain_run",
+    "create_app_confirm_run",
+    "create_app_contract_body",
+    "create_app_dry_run_run",
+    "create_app_generate_run",
+    "create_app_publish_run",
+    "create_app_query_run",
+    "create_app_read_run",
     "create_context_enabled",
     "create_context_list",
     "create_context_save_chat",

@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-APP-01: runnable data apps
+
+- **Flag.** `DMS_CREATE_APP` defaults off. Only the digit 1 turns the app routes on. `DMS_CREATE_APP_SALESFORCE` is a separate digit-1 flag.
+- **Contract.** The provider returns a `dms.app/1` bundle. The backend reads through a generated DMS data client. Grants, schema names, and column types go to the model. Cell values and raw credentials do not.
+- **Actions.** Confirm is a user route. Dry-run does not apply. Writeback uses the existing action framework when `DMS_ACTIONS=1`. Salesforce credentials come from the secrets port. The ontology connector is an unwired slot.
+- **Chain.** A next step starts a doc, slides, or a Cursor research prompt. Context is a reference. A wider grant is refused. When `DMS_CREATE_CONTEXT` is on, the app uses `pack_sources` and `layout_blocks` from that hook.
+- **Run.** The backend is a subprocess with a host allowlist. The judge checks boot, queries, and dry-run, then repairs through the provider. Live cost is summed. There is no per-run USD stop.
+
 ## 2026-11-28 - DMS-CREATE-CONTEXT-01: chats, a questionnaire, or a project
 
 - **Flag.** `DMS_CREATE_CONTEXT` defaults off. Only the digit 1 turns it on. Off, Create status stays `{"enabled": true}` when Create itself is on, and `/v1/studio/create/context` is not found.
