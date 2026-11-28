@@ -230,6 +230,13 @@ def serving_deadline_deliver_s() -> float:
     return _env_float(_DEADLINE_DELIVER_ENV, DEFAULT_SERVING_DEADLINE_DELIVER_S)
 
 
+def _adaptive_on() -> bool:
+    """True when ``DMS_DEADLINE_ADAPTIVE`` is on. The fixed reserve does not stop."""
+    from cortex_client.ask_clock import deadline_adaptive_enabled
+
+    return deadline_adaptive_enabled()
+
+
 def serving_lease_wait_s() -> float:
     """How long this acquire may block.
 
@@ -238,8 +245,12 @@ def serving_lease_wait_s() -> float:
     before that ask times out, minus ``DMS_LAKE_SERVING_LEASE_RESERVE_S``.
     If that budget is already gone, the wait is 0 and the acquire abstains
     with ``serving_deadline_reserve`` without taking a slot.
+    ``DMS_DEADLINE_ADAPTIVE`` keeps the configured wait. The clock does not
+    shrink it, and a late ask is not ``serving_deadline_reserve``.
     """
     configured = _env_float(_LEASE_WAIT_ENV, DEFAULT_SERVING_LEASE_WAIT_S)
+    if _adaptive_on():
+        return configured
     deadline = _ask_deadline.get()
     if deadline is None:
         return configured
@@ -270,7 +281,12 @@ def note_serving_lease_granted() -> None:
 
 
 def serving_deadline_missed() -> bool:
-    """True when this ask took a lease and is now past its deadline."""
+    """True when this ask took a lease and is now past its deadline.
+
+    ``DMS_DEADLINE_ADAPTIVE`` does not end the ask on that clock.
+    """
+    if _adaptive_on():
+        return False
     deadline = _ask_deadline.get()
     if deadline is None or _leases_this_ask.get() < 1:
         return False
@@ -332,6 +348,8 @@ class AskControl:
     def _interrupt_due(self) -> bool:
         if self.disconnected.is_set():
             return True
+        if _adaptive_on():
+            return False
         deadline = self.deadline
         if deadline is None:
             return False

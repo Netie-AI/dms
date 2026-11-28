@@ -32,6 +32,7 @@ import sqlglot
 from cortex_client.ask_clock import (
     attach_timings,
     ensure_clock,
+    note_progress,
     note_prompt_ctx,
     release_clock,
     span,
@@ -813,6 +814,7 @@ def validate_compiled_sql(
         )
     finally:
         note_stage("validate_explain", "done")
+        note_progress("gate")
 
 
 def _validate_compiled_sql(
@@ -2494,7 +2496,14 @@ def _run_extract_loop(
     def model_sql(body: dict[str, Any] | None) -> str | None:
         if not isinstance(body, dict):
             return None
-        return query_sql_from_payload(body) or insights_query_sql(body)
+        sql = query_sql_from_payload(body) or insights_query_sql(body)
+        from cortex_client.compute import tie_projection_enabled
+
+        if not tie_projection_enabled():
+            return sql
+        from dms_executor.tie_projection import note_model_payload
+
+        return note_model_payload(body, sql)
 
     def check(sql: str) -> str | None:
         return ai_lane_sql_check(

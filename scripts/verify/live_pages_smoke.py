@@ -37,12 +37,6 @@ def page_load_paths() -> list[tuple[str, str]]:
         ("/v1/library/sources", "/v1/library/sources"),
         ("/v1/library/tree", "/v1/library/tree"),
         (f"/v1/ontology?space_id={finance}", "fetchOntology(activeSpaceId"),
-        (f"/v1/ontology/objects?space_id={finance}", 'ontologyReadPath("objects"'),
-        (f"/v1/ontology/links?space_id={finance}", 'ontologyReadPath("links"'),
-        (f"/v1/ontology/actions?space_id={finance}", 'ontologyReadPath("actions"'),
-        (f"/v1/ontology/functions?space_id={finance}", 'ontologyReadPath("functions"'),
-        (f"/v1/ontology/metrics?space_id={finance}", 'ontologyReadPath("metrics"'),
-        (f"/v1/ontology/graph?space_id={finance}", 'ontologyReadPath("graph"'),
         ("/v1/trust/summary", "/v1/trust/summary"),
         ("/v1/runs", "/v1/runs"),
         ("/v1/amend/proposals", "/v1/amend/proposals"),
@@ -87,7 +81,56 @@ def ontology_lie(path: str, body: object) -> str | None:
         "space_required",
     }:
         return "unnamed-reason"
+    return _ontology_lists_problem(body)
+
+
+_ONTOLOGY_LISTS = ("object_types", "link_types", "action_types", "functions", "metrics")
+
+
+def _ontology_lists_problem(body: dict[str, Any]) -> str | None:
+    """The one GET carries every list the page renders, and the count matches it.
+
+    A missing list, or a count that is not the list length, is a dropped read.
+    """
+    counts = body.get("counts")
+    if not isinstance(counts, dict):
+        return "counts-missing"
+    for key in _ONTOLOGY_LISTS:
+        rows = body.get(key)
+        if not isinstance(rows, list):
+            return f"{key}-missing"
+        if counts.get(key) != len(rows):
+            return f"{key}-count-mismatch"
+    if not isinstance(body.get("nodes"), list) or not isinstance(body.get("edges"), list):
+        return "graph-missing"
     return None
+
+
+def ontology_page_problems() -> list[str]:
+    """The page reads object_types off the one body and renders each object."""
+    root = ROOT / "apps/ui/src"
+    text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (
+            root / "lib/api.ts",
+            root / "lib/ontologyRead.ts",
+            root / "pages/OntologyPage.tsx",
+        )
+    )
+    problems: list[str] = []
+    for needle in (
+        "fetchOntology(activeSpaceId",
+        "ontologyBundle(",
+        "objects: body.object_types",
+        "ontologyWindow(objects, shown).rows.map((o)",
+    ):
+        if needle not in text:
+            problems.append(needle)
+    for section in ("objects", "links", "actions", "functions", "metrics", "graph"):
+        call = f'ontologyReadPath("{section}"'
+        if call in text:
+            problems.append(call)
+    return problems
 
 
 def _sources_space_id(path: str) -> str | None:
@@ -160,6 +203,40 @@ def _checker_problems() -> list[str]:
     return problems
 
 
+def _empty_ontology_body(space: str) -> dict[str, Any]:
+    counts = {key: 0 for key in _ONTOLOGY_LISTS}
+    body: dict[str, Any] = {
+        "ok": False,
+        "source": "none",
+        "reason": "empty_store",
+        "space_id": space,
+        "counts": counts,
+        "nodes": [],
+        "edges": [],
+    }
+    for key in _ONTOLOGY_LISTS:
+        body[key] = []
+    return body
+
+
+def _ontology_checker_problems() -> list[str]:
+    space = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+    path = f"/v1/ontology?space_id={space}"
+    empty = _empty_ontology_body(space)
+    problems: list[str] = []
+    if ontology_lie(path, empty) is not None:
+        problems.append("empty-ontology")
+    hidden = _empty_ontology_body(space)
+    hidden["object_types"] = [{"id": "x"}]
+    if ontology_lie(path, hidden) != "object_types-count-mismatch":
+        problems.append("object-count")
+    dropped = _empty_ontology_body(space)
+    del dropped["object_types"]
+    if ontology_lie(path, dropped) != "object_types-missing":
+        problems.append("objects-missing")
+    return problems
+
+
 def source_scope_failures(fetch: Callable[[str], tuple[int, object]]) -> list[str]:
     """Finance and Ops stay apart, and a missing Space is 404. No row text."""
     from dms_core.control_plane.seed import SPACE_MARGIN, SPACE_Q3
@@ -223,13 +300,16 @@ def _ui_text() -> str:
 def self_check() -> int:
     text = _ui_text()
     missing = sorted({needle for _path, needle in page_load_paths() if needle not in text})
-    checker = _checker_problems()
-    if missing or checker:
+    checker = _checker_problems() + _ontology_checker_problems()
+    render = ontology_page_problems()
+    if missing or checker or render:
         print("live_pages_smoke self-check failed")
         for needle in missing:
             print(needle)
         for problem in checker:
             print(f"checker {problem}")
+        for problem in render:
+            print(f"ontology {problem}")
         return 1
     if not page_load_paths():
         print("live_pages_smoke self-check: empty path list")

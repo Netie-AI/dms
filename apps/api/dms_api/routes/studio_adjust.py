@@ -1,8 +1,8 @@
 """Steward Adjust SQL (ADJUST-SQL-VQ-01).
 
-``DMS_STUDIO_ADJUST`` defaults to off. While it is not the digit 1, ``app.py``
-does not mount this router, so every path here is a 404 and the OpenAPI
-document is main's.
+``DMS_STUDIO_ADJUST`` defaults to off. Status is always mounted and answers
+``enabled: false`` while the flag is off. Run and save stay unmounted, so
+those paths are still 404.
 
 Run and save both call the same validate, grant, and read-only checks as
 model SQL (``validate_compiled_sql`` then ``run_readonly``), then the answer
@@ -27,6 +27,7 @@ from dms_api.wiring import preview_adjusted_sql, save_steward_adjusted
 FLAG = "DMS_STUDIO_ADJUST"
 
 router = APIRouter(prefix="/v1/studio/adjust", tags=["studio"])
+status_router = APIRouter(prefix="/v1/studio/adjust", tags=["studio"])
 
 
 def enabled() -> bool:
@@ -65,8 +66,11 @@ def _http(exc: BaseException) -> HTTPException:
     raise exc
 
 
-@router.get("/status")
+@status_router.get("/status")
 def adjust_status(cortex: CortexDep, settings: SettingsDep) -> dict[str, bool]:
+    """Flag off is ``enabled: false`` and does not call the gate. Run and save stay unmounted."""
+    if not enabled():
+        return {"enabled": False}
     _steward(settings)
     decision = compliance_gate(
         action="studio.adjust_status",

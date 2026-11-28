@@ -1,19 +1,11 @@
 /** DMS API client — browser talks only to DMS (proxied /api). Never Cortex. */
 
-import { ontologyReadPath } from "./ontologyRead";
+import { ontologyBundle, ontologyReadPath, type OntologyReadBody } from "./ontologyRead";
 import type {
   AdminOverview,
   AnswerEnvelope,
   LibrarySource,
-  OntologyAction,
   OntologyBundle,
-  OntologyFunction,
-  OntologyGraphEdge,
-  OntologyGraphNode,
-  OntologyLink,
-  OntologyMetric,
-  OntologyObject,
-  OntologySummary,
   RunsBody,
   SpaceSummary,
   TrustRunDetailItem,
@@ -281,50 +273,13 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 /* ── Ontology ───────────────────────────────────────────────────────────── */
 
-type SectionBody<K extends string, T> = { ok: boolean; hint?: string; error?: string } & {
-  [P in K]?: T[];
-};
-
-function section<K extends string, T>(body: SectionBody<K, T>, key: K): T[] {
-  return (body[key] as T[] | undefined) ?? [];
-}
-
-/** One page, one round of fetches. The active Space id is on every request. */
+/** One GET. Counts and the lists are on that body, so a slow section cannot hold the tiles. */
 export async function fetchOntology(
   spaceId?: string | null,
   signal?: AbortSignal,
 ): Promise<OntologyBundle> {
-  const [summary, objects, links, actions, functions, metrics, graph] = await Promise.all([
-    getJson<OntologySummary>(ontologyReadPath("", spaceId), signal),
-    getJson<SectionBody<"object_types", OntologyObject>>(
-      ontologyReadPath("objects", spaceId),
-      signal,
-    ),
-    getJson<SectionBody<"link_types", OntologyLink>>(ontologyReadPath("links", spaceId), signal),
-    getJson<SectionBody<"action_types", OntologyAction>>(
-      ontologyReadPath("actions", spaceId),
-      signal,
-    ),
-    getJson<SectionBody<"functions", OntologyFunction>>(
-      ontologyReadPath("functions", spaceId),
-      signal,
-    ),
-    getJson<SectionBody<"metrics", OntologyMetric>>(ontologyReadPath("metrics", spaceId), signal),
-    getJson<{
-      ok: boolean;
-      nodes?: OntologyGraphNode[];
-      edges?: OntologyGraphEdge[];
-    }>(ontologyReadPath("graph", spaceId), signal),
-  ]);
-  return {
-    summary,
-    objects: section(objects, "object_types"),
-    links: section(links, "link_types"),
-    actions: section(actions, "action_types"),
-    functions: section(functions, "functions"),
-    metrics: section(metrics, "metrics"),
-    graph: { nodes: graph.nodes ?? [], edges: graph.edges ?? [] },
-  };
+  const body = await getJson<OntologyReadBody>(ontologyReadPath("", spaceId), signal);
+  return ontologyBundle(body);
 }
 
 /* ── Trust ──────────────────────────────────────────────────────────────── */
@@ -340,6 +295,85 @@ export function fetchTrustRun(
 ): Promise<{ ok: boolean; id: string; label?: string; items: TrustRunDetailItem[]; hint?: string }> {
   const qs = outcome ? `?outcome=${encodeURIComponent(outcome)}` : "";
   return getJson(`/v1/trust/runs/${encodeURIComponent(name)}${qs}`, signal);
+}
+
+export type SpaceBenchTally = {
+  n: number;
+  graded: number;
+  coverage: number | null;
+  correct: number;
+  WRONG: number;
+  clarify: number;
+  reconfirm: number;
+  abstain: number;
+  refusal_wrong: number;
+  invalid_gold: number;
+};
+
+export type SpaceBenchResult = {
+  id: string;
+  question: string;
+  served_sql: string;
+  outcome: string;
+  reason: string;
+  gold_n: number;
+  served_n: number;
+  review: string | null;
+  review_note: string;
+};
+
+export type SpaceBenchRun = {
+  id: string;
+  status: string;
+  progress_done: number;
+  progress_total: number;
+  tally: SpaceBenchTally;
+  results: SpaceBenchResult[];
+};
+
+export type SpaceBenchItem = {
+  id: string;
+  question: string;
+  gold_sql: string;
+  status: string;
+  invalid_reason: string;
+  source: string;
+};
+
+export type SpaceBenchBody = {
+  enabled: boolean;
+  space_id: string;
+  items: SpaceBenchItem[];
+  latest_run: SpaceBenchRun | null;
+};
+
+export function spaceBenchPath(spaceId: string): string {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/benchmarks`;
+}
+
+export function fetchSpaceBench(spaceId: string, signal?: AbortSignal): Promise<SpaceBenchBody> {
+  return getJson<SpaceBenchBody>(spaceBenchPath(spaceId), signal);
+}
+
+export async function postSpaceBench(
+  path: string,
+  body?: unknown,
+): Promise<void> {
+  const res = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? "{}" : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = String(res.status);
+    try {
+      const payload = (await res.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string" && payload.detail) detail = payload.detail;
+    } catch {
+      detail = String(res.status);
+    }
+    throw new Error(detail);
+  }
 }
 
 /* ── Runs · Admin · Library · Spaces ────────────────────────────────────── */

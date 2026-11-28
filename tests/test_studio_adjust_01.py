@@ -224,16 +224,17 @@ def test_flag_off_examples_stay_empty(
     assert examples_text(before) == examples_text(after) == ""
 
 
-def test_flag_off_route_is_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flag_off_status_is_disabled_and_run_save_stay_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _flag(monkeypatch, False)
     monkeypatch.delenv("DMS_INSIGHT_PROOF", raising=False)
     client = TestClient(create_app())
-    for path in (
-        "/v1/studio/adjust/status",
-        "/v1/studio/adjust/run",
-        "/v1/studio/adjust/save",
-    ):
-        res = client.post(path, json={}) if path.endswith(("run", "save")) else client.get(path)
+    status = client.get("/v1/studio/adjust/status")
+    assert status.status_code == 200
+    assert status.json() == {"enabled": False}
+    for path in ("/v1/studio/adjust/run", "/v1/studio/adjust/save"):
+        res = client.post(path, json={})
         assert res.status_code == 404
         assert res.json() == {"detail": "Not Found"}
 
@@ -252,8 +253,9 @@ def test_flag_off_openapi_is_flag_on_minus_the_adjust_paths(
         "/v1/studio/adjust/run",
         "/v1/studio/adjust/save",
     }
+    assert "/v1/studio/adjust/status" in off["paths"]
     stripped = copy.deepcopy(on)
-    for path in new_paths:
+    for path in ("/v1/studio/adjust/run", "/v1/studio/adjust/save"):
         del stripped["paths"][path]
     for name in ("AdjustRunIn", "AdjustSaveIn"):
         del stripped["components"]["schemas"][name]

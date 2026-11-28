@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { AskStages, stageLabel, type AskStageEvent } from "./AskStages";
+import { AskStages, isDisabledStreamEvent, stageLabel, type AskStageEvent } from "./AskStages";
 
 const stages: AskStageEvent[] = [
   { stage: "retrieve", t_ms: 400, status: "done" },
@@ -37,5 +37,11 @@ describe("AskStages", () => {
     expect(done).not.toContain("ask-stages-cancel");
     const empty = renderToStaticMarkup(createElement(AskStages, { stages: [] }));
     expect(empty).toBe("");
+  });
+
+  it("treats a flag-off end event as disabled, not a stage", () => {
+    expect(isDisabledStreamEvent({ enabled: false })).toBe(true);
+    expect(isDisabledStreamEvent({ stage: "plan", t_ms: 1, status: "done" })).toBe(false);
+    expect(isDisabledStreamEvent(null)).toBe(false);
   });
 });

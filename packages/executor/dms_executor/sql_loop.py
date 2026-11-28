@@ -25,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from cortex_client.ask_clock import note_progress
 from cortex_client.compute import (
     cloop_b_enabled,
     generate_model_called,
@@ -1009,6 +1010,7 @@ def run_model_loop(
                 current = _call(compute, ctx, prompt, reason, sql)
                 continue
 
+        note_progress("sql")
         why = check(sql)
         if why and os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1":
             from dms_executor.join_flags import join_repair_stop

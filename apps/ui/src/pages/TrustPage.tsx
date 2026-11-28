@@ -9,11 +9,21 @@ import {
   StatTile,
 } from "@/components/PageShell";
 import { fetchTrustRun, fetchTrustSummary } from "@/lib/api";
+import {
+  claimHeadline,
+  measuredText,
+  publicTrustHint,
+  recordedCount,
+  trustCorpusRun,
+  trustIsEmpty,
+  wrongCountLabel,
+} from "@/lib/trustEmpty";
 import { useAsync } from "@/lib/useAsync";
 import type { TrustRun, TrustRunDetailItem, TrustSummary } from "@/lib/types";
+import { SpaceBenchPanel } from "@/pages/SpaceBenchPanel";
 
 function pct(value: number | null | undefined): string {
-  if (value == null) return "—";
+  if (typeof value !== "number" || !Number.isFinite(value)) return "Not measured yet";
   return `${(value * 100).toFixed(1)}%`;
 }
 
@@ -73,22 +83,21 @@ function RunCard({
   onInspect: (id: string, outcome?: string) => void;
 }) {
   const totals = run.totals ?? {};
-  const wrong = Number(totals.wrong ?? 0);
-  const failed = Number(totals.fail ?? 0);
-  const tone = wrong || failed ? "danger" : run.passed === false ? "warn" : "ok";
+  const wrong = recordedCount(totals.wrong);
+  const failed = recordedCount(totals.fail);
+  const tone = wrong !== null && wrong > 0 ? "danger" : wrong === null ? "warn" : "ok";
 
   return (
     <li className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-3.5 py-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="font-medium">{run.label}</p>
         {!run.present ? (
-          <Pill tone="warn">not run</Pill>
+          <Pill tone="warn">Not measured yet</Pill>
         ) : (
           <span className="flex flex-wrap gap-1.5">
             {run.mode && <Pill>{run.mode}</Pill>}
-            <Pill tone={tone === "ok" ? "ok" : tone}>
-              {wrong || failed ? `${wrong || failed} wrong` : "0 wrong"}
-            </Pill>
+            <Pill tone={tone === "ok" ? "ok" : tone}>{wrongCountLabel(wrong)}</Pill>
+            {failed !== null && failed > 0 && <Pill tone="danger">{failed} failed</Pill>}
             {run.passed != null && (
               <Pill tone={run.passed ? "ok" : "danger"}>{run.passed ? "pass" : "fail"}</Pill>
             )}
@@ -101,7 +110,10 @@ function RunCard({
         <>
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-xs text-[var(--color-ink-muted)]">
             <span>
-              n <strong className="text-[var(--color-ink)]">{totals.total ?? totals.pass ?? "—"}</strong>
+              n{" "}
+              <strong className="text-[var(--color-ink)]">
+                {measuredText(recordedCount(totals.total) ?? recordedCount(totals.pass))}
+              </strong>
             </span>
             {totals.correct != null && (
               <span>
@@ -140,7 +152,7 @@ function RunCard({
             >
               Inspect cases
             </button>
-            {wrong > 0 && (
+            {wrong !== null && wrong > 0 && (
               <button
                 type="button"
                 onClick={() => onInspect(run.id, "wrong")}
@@ -178,22 +190,25 @@ function CategoryTable({ run }: { run: TrustRun }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(([name, t]) => (
+          {rows.map(([name, t]) => {
+            const wrong = recordedCount(t.wrong);
+            return (
             <tr key={name} className="border-t border-[var(--color-line)]/60">
               <td className="px-3 py-1.5 font-mono text-xs">{name}</td>
-              <td className="px-3 py-1.5 text-xs">{t.total ?? "—"}</td>
-              <td className="px-3 py-1.5 text-xs">{t.correct ?? "—"}</td>
+              <td className="px-3 py-1.5 text-xs">{measuredText(t.total)}</td>
+              <td className="px-3 py-1.5 text-xs">{measuredText(t.correct)}</td>
               <td
                 className={`px-3 py-1.5 text-xs ${
-                  Number(t.wrong ?? 0) > 0 ? "font-semibold text-[var(--color-danger)]" : ""
+                  wrong !== null && wrong > 0 ? "font-semibold text-[var(--color-danger)]" : ""
                 }`}
               >
-                {t.wrong ?? "—"}
+                {measuredText(wrong)}
               </td>
-              <td className="px-3 py-1.5 text-xs">{t.abstain ?? "—"}</td>
-              <td className="px-3 py-1.5 text-xs">{t.error ?? "—"}</td>
+              <td className="px-3 py-1.5 text-xs">{measuredText(t.abstain)}</td>
+              <td className="px-3 py-1.5 text-xs">{measuredText(t.error)}</td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -253,6 +268,7 @@ export function TrustPage() {
   const { data, error, loading, reload } = useAsync<TrustSummary>((signal) =>
     fetchTrustSummary(signal),
   );
+  const [tab, setTab] = useState<"evidence" | "benchmarks">("evidence");
   const [inspect, setInspect] = useState<{ id: string; outcome?: string } | null>(null);
   const detail = useAsync(
     (signal) =>
@@ -263,8 +279,13 @@ export function TrustPage() {
   );
 
   const claim = data?.claim;
+  const empty = trustIsEmpty(data);
   const runs = Object.values(data?.runs ?? {});
-  const corpusRun = data?.runs?.corpus;
+  const corpusRun = trustCorpusRun(data?.runs);
+  const wrongN = recordedCount(claim?.confidently_wrong);
+  const corpusN = recordedCount(claim?.corpus_n);
+  const expandedN = recordedCount(claim?.corpus_expanded_n);
+  const unverifiedN = recordedCount(claim?.corpus_unverified_n);
   const thresholds = (data?.thresholds ?? {}) as Record<string, unknown>;
 
   return (
@@ -284,11 +305,50 @@ export function TrustPage() {
         }
       />
 
-      {data?.ok === false && (
+      <div className="mt-4 flex gap-2" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "evidence"}
+          onClick={() => setTab("evidence")}
+          className="border border-[var(--color-line)] px-2.5 py-1 text-xs"
+        >
+          Evidence
+        </button>
+        <button
+          type="button"
+          role="tab"
+          data-testid="trust-bench-tab"
+          aria-selected={tab === "benchmarks"}
+          onClick={() => setTab("benchmarks")}
+          className="border border-[var(--color-line)] px-2.5 py-1 text-xs"
+        >
+          Benchmarks
+        </button>
+      </div>
+
+      {tab === "benchmarks" ? (
+        <SpaceBenchPanel />
+      ) : (
+        <>
+      {empty && (
+        <div
+          data-testid="trust-empty"
+          className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4"
+        >
+          <p className="font-medium" data-testid="trust-unmeasured">
+            Not measured yet
+          </p>
+          <p className="mt-1 font-medium">{data?.empty_title || "No benchmark run yet"}</p>
+          <p className="mt-2 text-sm text-[var(--color-ink-muted)]">{data?.how_to_run}</p>
+        </div>
+      )}
+
+      {data?.ok === false && !empty && (
         <DependencyNotice
           tone="danger"
           title="Evidence is unavailable"
-          hint={data.hint ?? "The answer engine did not respond. Refresh to try again."}
+          hint={publicTrustHint(data.hint)}
         />
       )}
 
@@ -305,8 +365,16 @@ export function TrustPage() {
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-medium">{row.pack}</p>
-                  <Pill tone={row.wrong === 0 && row.passed ? "ok" : "danger"}>
-                    {row.wrong === 0 ? "no wrong answers" : `${row.wrong} wrong answers`}
+                  <Pill
+                    tone={
+                      recordedCount(row.wrong) === null
+                        ? "warn"
+                        : recordedCount(row.wrong) === 0 && row.passed
+                          ? "ok"
+                          : "danger"
+                    }
+                  >
+                    {wrongCountLabel(row.wrong)}
                   </Pill>
                   <Pill>
                     precision {row.precision_on_answered.toFixed(2)}% ({row.correct}/
@@ -323,7 +391,7 @@ export function TrustPage() {
       )}
 
       <AsyncBoundary loading={loading} error={error} onRetry={reload}>
-        {claim && (
+        {!empty && claim && (
           <div
             className={`mt-6 border px-4 py-4 ${
               claim.supported
@@ -333,66 +401,79 @@ export function TrustPage() {
           >
             <div className="flex flex-wrap items-center gap-2">
               <p className="font-[family-name:var(--font-display)] text-xl font-semibold">
-                “{claim.statement}”
+                “{claimHeadline(claim)}”
               </p>
               <Pill tone={claim.supported ? "ok" : "warn"}>
                 {claim.supported ? "supported by evidence" : "not yet claimable"}
               </Pill>
               {claim.phase && <Pill>phase {claim.phase}</Pill>}
             </div>
-            {claim.blockers?.length ? (
+            {claim.supported ? (
+              <p className="mt-2 text-sm">
+                Every recorded run is green and the corpus has reached its target size.
+              </p>
+            ) : claim.blockers?.length ? (
               <ul className="mt-2 list-inside list-disc text-sm text-[var(--color-ink)]">
                 {claim.blockers.map((b) => (
                   <li key={b}>{b}</li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-2 text-sm">
-                Every recorded run is green and the corpus has reached its target size.
+              <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
+                The files on disk do not mark this claim supported.
               </p>
             )}
-            {claim.corpus_target ? (
+            {claim.corpus_target != null && corpusN !== null ? (
               <VerificationBar
-                verified={claim.corpus_n ?? 0}
-                scored={claim.corpus_expanded_n ?? claim.corpus_n ?? 0}
+                verified={corpusN}
+                scored={expandedN ?? corpusN}
                 target={claim.corpus_target}
               />
             ) : null}
           </div>
         )}
 
+        {!empty && (
+        <>
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <StatTile
             label="Confidently wrong"
-            value={claim?.confidently_wrong ?? "—"}
-            tone={claim?.confidently_wrong ? "danger" : "ok"}
+            value={measuredText(wrongN)}
+            tone={wrongN === null ? "neutral" : wrongN > 0 ? "danger" : "ok"}
             hint="A confident wrong number is not allowed."
           />
           <StatTile
             label="Verified corpus"
             value={
-              claim?.corpus_target
-                ? `${claim.corpus_n ?? 0} / ${claim.corpus_target}`
-                : (claim?.corpus_n ?? "—")
+              claim?.corpus_target != null && corpusN !== null
+                ? `${corpusN} / ${claim.corpus_target}`
+                : measuredText(corpusN)
             }
             tone={
-              claim?.corpus_target && (claim.corpus_n ?? 0) < claim.corpus_target ? "warn" : "ok"
+              corpusN === null
+                ? "neutral"
+                : claim?.corpus_target != null && corpusN < claim.corpus_target
+                  ? "warn"
+                  : "ok"
             }
             hint={
-              claim?.corpus_expanded_n && claim.corpus_expanded_n > (claim.corpus_n ?? 0)
-                ? `${claim.corpus_expanded_n} scored, ${claim.corpus_unverified_n ?? 0} unreviewed`
+              expandedN !== null &&
+              corpusN !== null &&
+              unverifiedN !== null &&
+              expandedN > corpusN
+                ? `${expandedN} scored, ${unverifiedN} unreviewed`
                 : "human-reviewed cases behind the claim"
             }
           />
           <StatTile
             label="Correct rate"
             value={pct(corpusRun?.rates?.correct)}
-            hint={`floor ${String(thresholds.correct_rate_floor ?? "—")}`}
+            hint={`floor ${measuredText(thresholds.correct_rate_floor)}`}
           />
           <StatTile
             label="Abstain rate"
             value={pct(corpusRun?.rates?.abstain)}
-            hint={`ceiling ${String(thresholds.abstain_rate_ceiling ?? "—")}`}
+            hint={`ceiling ${measuredText(thresholds.abstain_rate_ceiling)}`}
           />
         </div>
 
@@ -420,8 +501,10 @@ export function TrustPage() {
             <CategoryTable run={corpusRun} />
           </Section>
         )}
+        </>
+        )}
 
-        {inspect && (
+        {!empty && inspect && (
           <Section
             title={`Cases · ${inspect.id}${inspect.outcome ? ` · ${inspect.outcome}` : ""}`}
             actions={
@@ -440,6 +523,8 @@ export function TrustPage() {
           </Section>
         )}
       </AsyncBoundary>
+        </>
+      )}
     </Page>
   );
 }

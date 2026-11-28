@@ -21,6 +21,7 @@ membership read.
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 from collections.abc import Iterator, Mapping
@@ -45,12 +46,40 @@ IMPORT_FORMATS = ("snowflake", "osi", "genie", "dbt", "wren")
 _LOCK = threading.Lock()
 #: Same default as ``Settings.dms_tenant_id``. Used only when the flag is on.
 _DEFAULT_TENANT = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-_CONNECT_TIMEOUT_S = 3
+#: Same knob as ``cortex_client.compute.insights_timeout_s``. Core cannot import
+#: that module. Unset is 8s. Above 60 clamps to 60. Not a fixed 3s connect.
+_INSIGHTS_TIMEOUT_ENV = "DMS_INSIGHTS_TIMEOUT_S"
+_INSIGHTS_TIMEOUT_DEFAULT_S = 8.0
+_INSIGHTS_TIMEOUT_CEILING_S = 60.0
 
 _ITEM_COLUMNS = (
     "id::text, tenant_id::text, version_id::text, kind, payload, status, "
     "source, provenance, created_by::text, approved_by, approval_ref, ts"
 )
+
+
+def store_connect_timeout_s(env: Mapping[str, str] | None = None) -> int:
+    """Seconds for a Postgres connect. ``DMS_INSIGHTS_TIMEOUT_S``, whole seconds.
+
+    A down or slow database raises. The ontology page names that
+    ``store_unreadable`` instead of an empty ontology.
+    """
+    src = os.environ if env is None else env
+    raw = str(src.get(_INSIGHTS_TIMEOUT_ENV) or "").strip()
+    if not raw:
+        seconds = _INSIGHTS_TIMEOUT_DEFAULT_S
+    else:
+        try:
+            val = float(raw)
+        except ValueError:
+            val = math.nan
+        if not math.isfinite(val) or val <= 0:
+            seconds = _INSIGHTS_TIMEOUT_DEFAULT_S
+        elif val > _INSIGHTS_TIMEOUT_CEILING_S:
+            seconds = _INSIGHTS_TIMEOUT_CEILING_S
+        else:
+            seconds = val
+    return max(1, math.ceil(seconds))
 
 
 def _now() -> str:
@@ -605,7 +634,7 @@ class PostgresOntologyDataStore:
         return actor_id not in self._denied
 
     def _connect(self) -> psycopg.Connection:
-        return psycopg.connect(self._conninfo, connect_timeout=_CONNECT_TIMEOUT_S)
+        return psycopg.connect(self._conninfo, connect_timeout=store_connect_timeout_s())
 
     def _tenant(self, tenant_id: str | None) -> str:
         return _uuid_text(tenant_id) or self._tenant_id

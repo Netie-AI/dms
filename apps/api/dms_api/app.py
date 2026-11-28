@@ -36,6 +36,7 @@ from dms_api.routes import (
     pipelines,
     runs,
     semantic_import,
+    space_bench,
     spaces,
     studio,
     studio_adjust,
@@ -202,9 +203,7 @@ def create_app() -> FastAPI:
     app.include_router(connect.router)
     app.include_router(studio.router)
     app.include_router(studio_chat.router)
-    events = studio_chat.events_router()
-    if events is not None:
-        app.include_router(events)
+    app.include_router(studio_chat.events_router())
     app.include_router(pipelines.router)
     app.include_router(amend.router)
     app.include_router(audit.router)
@@ -224,6 +223,7 @@ def create_app() -> FastAPI:
         app.state.mcp_v2_lifespan = mount_mcp(app)
     if insight_proof.enabled():
         app.include_router(insight_proof.router)
+    app.include_router(studio_adjust.status_router)
     if studio_adjust.enabled():
         app.include_router(studio_adjust.router)
     if studio_sql_bind.enabled():
@@ -232,6 +232,8 @@ def create_app() -> FastAPI:
         app.include_router(semantic_import.router)
     if studio_knowledge.enabled():
         app.include_router(studio_knowledge.router)
+    if space_bench.enabled():
+        app.include_router(space_bench.router)
     return app
 
 
