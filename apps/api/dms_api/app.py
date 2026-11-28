@@ -40,6 +40,7 @@ from dms_api.routes import (
     studio_adjust,
     studio_chat,
     trust,
+    webhooks,
 )
 from dms_api.settings import get_settings
 from dms_api.store.binding import StoreBinding
@@ -137,6 +138,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         bind_ontology_store(settings.database_url, str(settings.dms_tenant_id))
     app.state.ask_audit_store = _build_ask_audit_store(settings, binding)
+    if webhooks.enabled():
+        # Flag on only. Flag off does not open the webhook tables.
+        if binding.persistent and settings.database_url:
+            from dms_core.control_plane.webhook_store import PostgresWebhookStore
+
+            app.state.webhook_store = PostgresWebhookStore(
+                settings.database_url, tenant_id=settings.dms_tenant_id
+            )
+        else:
+            from dms_core.control_plane.webhook_store import InMemoryWebhookStore
+
+            app.state.webhook_store = InMemoryWebhookStore()
     cortex = CortexClient(
         settings.cortex_url,
         timeout=settings.cortex_timeout_seconds,
@@ -208,6 +221,8 @@ def create_app() -> FastAPI:
         app.include_router(insight_proof.router)
     if studio_adjust.enabled():
         app.include_router(studio_adjust.router)
+    if webhooks.enabled():
+        app.include_router(webhooks.router)
     return app
 
 

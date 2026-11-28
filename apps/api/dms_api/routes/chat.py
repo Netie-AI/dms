@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -386,10 +387,25 @@ def chat_ask(
             envelope=env,
             executed=take_executed(ask),
         )
+        _pipeline_notify(request, env if isinstance(env, dict) else None, body.space_id)
         return env
     finally:
         finish_ask(stream_token)
         release_clock(clock_token)
+
+
+def _pipeline_notify(request: Request, env: dict[str, Any] | None, space_id: str | None) -> None:
+    """Flag off returns before any webhook import. The envelope is not edited."""
+    if os.environ.get("DMS_PIPELINE_HOOKS", "0").strip() != "1":
+        return
+    if not isinstance(env, dict):
+        return
+    try:
+        from dms_api.routes.webhooks import notify_envelope
+
+        notify_envelope(request.app, env, space_id=space_id)
+    except Exception:
+        logger.warning("pipeline webhook notify skipped")
 
 
 def _choice_yes(value: bool | str) -> bool:
@@ -597,6 +613,7 @@ def chat_clarify_pick(
     body: ClarifyPickBody,
     cortex: CortexDep,
     ask: AskServiceDep,
+    request: Request,
 ) -> dict[str, Any]:
     """Run the chosen reading. The preview SQL is not the answer."""
     decision = compliance_gate(
@@ -629,6 +646,8 @@ def chat_clarify_pick(
             status_code=400,
             detail={"code": "clarify_pick", "message": "empty clarify pick"},
         )
+    space = env.get("space_id") if isinstance(env.get("space_id"), str) else None
+    _pipeline_notify(request, env, space)
     return env
 
 
