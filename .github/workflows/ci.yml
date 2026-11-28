@@ -500,6 +500,19 @@ jobs:
           last_ctl=""
           owner=""
           for _ in $(seq 1 240); do
+            running="$(docker inspect -f '{{.State.Running}}' opengauss 2>/dev/null || echo false)"
+            if [ "$running" != "true" ]; then
+              echo "data owner: ${owner:-unknown}"
+              echo "last gs_ctl: ${last_ctl:-none}"
+              fail_gauss "container exited before gs_ctl reported the server running"
+            fi
+            # The entrypoint's temporary server also reports running, then
+            # it stops. Accept gs_ctl only after init prints this line.
+            init_line="$(docker logs opengauss 2>&1 | grep -F 'ready for start up' || true)"
+            if [ -z "$init_line" ]; then
+              sleep 2
+              continue
+            fi
             owner="$(docker exec opengauss stat -c '%U' /var/lib/opengauss/data 2>/dev/null || true)"
             if [ -n "$owner" ] && [ "$owner" != "root" ]; then
               last_ctl="$(docker exec -u "$owner" \
@@ -510,12 +523,6 @@ jobs:
               case "$last_ctl" in
                 *"server is running"*) ready=1; break ;;
               esac
-            fi
-            running="$(docker inspect -f '{{.State.Running}}' opengauss 2>/dev/null || echo false)"
-            if [ "$running" != "true" ]; then
-              echo "data owner: ${owner:-unknown}"
-              echo "last gs_ctl: ${last_ctl:-none}"
-              fail_gauss "container exited before gs_ctl reported the server running"
             fi
             sleep 2
           done
@@ -536,17 +543,40 @@ jobs:
           if [ "$port_ready" != 1 ]; then
             fail_gauss "gs_ctl is running but host port 15432 is closed"
           fi
-          # No -h makes gsql try "Unknown:5432". Password stays in the
-          # exec environment, not on the command line.
-          gsql_out="$(docker exec -u "$owner" \
-            -e PGPASSWORD="$GS_PASSWORD" \
-            -e PATH="/usr/local/opengauss/bin:/usr/bin:/bin" \
-            -e LD_LIBRARY_PATH="/usr/local/opengauss/lib" \
-            opengauss gsql -d postgres -U opengauss -h 127.0.0.1 -p 5432 -v ON_ERROR_STOP=1 \
-            -c "CREATE TABLE public.dms_probe (n int); INSERT INTO public.dms_probe (n) VALUES (1);" 2>&1)" || gsql_rc=$?
-          gsql_rc="${gsql_rc:-0}"
-          if [ "$gsql_rc" != 0 ]; then
-            echo "gsql failed: ${gsql_out//$GS_PASSWORD/[redacted]}"
+          # gsql to 127.0.0.1 returns "Operation now in progress" on this
+          # image. Seed the one fixture row through the published port.
+          seed_rc=0
+          seed_out="$(python - << 'PY'
+          import os
+          import time
+          import psycopg
+          password = os.environ["GS_PASSWORD"]
+          last = "no attempt"
+          ok = False
+          for _ in range(15):
+              try:
+                  with psycopg.connect(
+                      host="127.0.0.1",
+                      port=15432,
+                      user="opengauss",
+                      password=password,
+                      dbname="postgres",
+                      connect_timeout=10,
+                  ) as con:
+                      con.execute("CREATE TABLE public.dms_probe (n int)")
+                      con.execute("INSERT INTO public.dms_probe (n) VALUES (1)")
+                      con.commit()
+                  ok = True
+                  break
+              except Exception as exc:
+                  last = str(exc).replace(password, "[redacted]")
+                  time.sleep(2)
+          if not ok:
+              raise SystemExit(last)
+          PY
+          )" || seed_rc=$?
+          if [ "$seed_rc" != 0 ]; then
+            echo "seed failed: ${seed_out//$GS_PASSWORD/[redacted]}"
             fail_gauss "could not create the probe table"
           fi
           export DMS_CONNECT_GAUSS_LIVE=1
