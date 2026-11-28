@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
+import { ReadyGuide } from "@/components/studio/ReadyGuide";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { useApp } from "@/context/AppContext";
 import {
@@ -434,6 +435,8 @@ export function StudioPage() {
           </button>
         </div>
       )}
+
+      <ReadyGuide />
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[22rem_1fr]">
         <div className={sourcesDrawerClass}>

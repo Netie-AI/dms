@@ -84,5 +84,25 @@ describe("SqlSourceReceiptView", () => {
     expect(html).toContain("no foreign keys");
     expect(html).not.toContain("sql-source-failed-links");
     expect(html).not.toContain("truncated");
+    expect(html).not.toContain("sql-grant-proposal");
+  });
+
+  it("shows the read-only confirm list only when a proposal is present", () => {
+    const html = renderToStaticMarkup(
+      createElement(SqlSourceReceiptView, {
+        receipt: {
+          ...receipt,
+          grant_proposal: {
+            privilege: "read",
+            tables: ["bronze.dbo_orders"],
+            confirmed: false,
+            source_id: "src-1",
+          },
+        },
+      }),
+    );
+    expect(html).toContain('data-testid="sql-grant-proposal"');
+    expect(html).toContain("Nothing is granted until you save this list.");
+    expect(html).toContain("bronze.dbo_orders");
   });
 });
