@@ -20,7 +20,7 @@ import duckdb
 import pytest
 from cortex_client.gate import ComplianceDecision
 from dms_api.app import create_app
-from dms_api.routes.space_bench import enabled, wait_bench_run
+from dms_api.routes.space_bench import enabled, product_ask, wait_bench_run
 from dms_api.settings import get_settings
 from dms_core.control_plane.bench_store import reset_memory_bench
 from dms_executor.envelope import build_answer_envelope
@@ -562,3 +562,23 @@ def test_non_steward_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
     res = client.get(f"/v1/spaces/{SPACE}/benchmarks")
     assert res.status_code == 403
     assert res.json()["detail"] == "steward_grant_required"
+
+
+def test_nondict_ask_uses_the_abstain_builder() -> None:
+    class Ask:
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+        def live_ask(self, question: str, **_k: Any) -> Any:
+            return self.value
+
+    for value in (None, ["not-an-envelope"]):
+        env = product_ask(Ask(value), "bench synth", SPACE)
+        assert env["badge"] == "ABSTAIN"
+        assert env["route"] == "ask_failed"
+        assert env["served_route"] == "abstain:ask"
+    route = Path(__file__).resolve().parents[1] / "apps/api/dms_api/routes/space_bench.py"
+    tree = ast.parse(route.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "product_ask":
+            assert not any(isinstance(inner, ast.Dict) for inner in ast.walk(node))

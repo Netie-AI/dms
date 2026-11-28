@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 from dms_api.wiring import (
+    bench_ask_failed,
     bench_example_rows,
     classify_benchmark_sql,
     run_benchmark_job,
@@ -74,13 +75,7 @@ def product_ask(ask: Any, question: str, space_id: str) -> dict[str, Any]:
     env = ask.live_ask(question, space_id=space_id)
     if isinstance(env, dict):
         return env
-    return {
-        "badge": "ABSTAIN",
-        "abstained": True,
-        "rows": [],
-        "route": "ask_failed",
-        "text": "",
-    }
+    return bench_ask_failed()
 
 
 def wait_bench_run(run_id: str, timeout: float = 5.0) -> bool:

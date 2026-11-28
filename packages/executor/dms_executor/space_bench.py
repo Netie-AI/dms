@@ -45,8 +45,8 @@ def _grader() -> Any:
     return grade52
 
 
-def _ask_failed() -> dict[str, Any]:
-    """Ask raised. Abstain through the builder. Do not guess a number."""
+def ask_failed_envelope() -> dict[str, Any]:
+    """Ask did not return an envelope. Abstain through the builder. Do not guess."""
     from dms_executor.abstain import build_abstain
 
     return build_abstain(
@@ -209,9 +209,9 @@ def run_items(
             try:
                 env = ask(str(item.get("question") or ""))
             except Exception:
-                env = _ask_failed()
+                env = ask_failed_envelope()
             if not isinstance(env, Mapping):
-                env = _ask_failed()
+                env = ask_failed_envelope()
             gold_rows, err = execute(str(item.get("gold_sql") or ""))
             if err or gold_rows is None:
                 row = _invalid(item, err or "gold_failed")

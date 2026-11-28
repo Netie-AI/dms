@@ -2002,6 +2002,13 @@ def connect_v2_set_granted(
     return body
 
 
+def bench_ask_failed() -> dict[str, Any]:
+    """Non-envelope ask result. The builder abstains. The route does not."""
+    import dms_executor
+
+    return dms_executor.ask_failed_envelope()
+
+
 def bench_grantable(space_id: str) -> set[str]:
     """Tables the Space may read. Tests replace this."""
     import dms_executor
