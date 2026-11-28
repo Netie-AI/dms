@@ -297,6 +297,85 @@ export function fetchTrustRun(
   return getJson(`/v1/trust/runs/${encodeURIComponent(name)}${qs}`, signal);
 }
 
+export type SpaceBenchTally = {
+  n: number;
+  graded: number;
+  coverage: number | null;
+  correct: number;
+  WRONG: number;
+  clarify: number;
+  reconfirm: number;
+  abstain: number;
+  refusal_wrong: number;
+  invalid_gold: number;
+};
+
+export type SpaceBenchResult = {
+  id: string;
+  question: string;
+  served_sql: string;
+  outcome: string;
+  reason: string;
+  gold_n: number;
+  served_n: number;
+  review: string | null;
+  review_note: string;
+};
+
+export type SpaceBenchRun = {
+  id: string;
+  status: string;
+  progress_done: number;
+  progress_total: number;
+  tally: SpaceBenchTally;
+  results: SpaceBenchResult[];
+};
+
+export type SpaceBenchItem = {
+  id: string;
+  question: string;
+  gold_sql: string;
+  status: string;
+  invalid_reason: string;
+  source: string;
+};
+
+export type SpaceBenchBody = {
+  enabled: boolean;
+  space_id: string;
+  items: SpaceBenchItem[];
+  latest_run: SpaceBenchRun | null;
+};
+
+export function spaceBenchPath(spaceId: string): string {
+  return `/v1/spaces/${encodeURIComponent(spaceId)}/benchmarks`;
+}
+
+export function fetchSpaceBench(spaceId: string, signal?: AbortSignal): Promise<SpaceBenchBody> {
+  return getJson<SpaceBenchBody>(spaceBenchPath(spaceId), signal);
+}
+
+export async function postSpaceBench(
+  path: string,
+  body?: unknown,
+): Promise<void> {
+  const res = await fetch(`/api${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: body === undefined ? "{}" : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = String(res.status);
+    try {
+      const payload = (await res.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string" && payload.detail) detail = payload.detail;
+    } catch {
+      detail = String(res.status);
+    }
+    throw new Error(detail);
+  }
+}
+
 /* ── Runs · Admin · Library · Spaces ────────────────────────────────────── */
 
 /** Path for the runs feed. When the UI has an active Space, space_id must travel —
