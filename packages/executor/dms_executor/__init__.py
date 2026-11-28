@@ -2531,4 +2531,51 @@ __all__ = [
     "replay_pin",
     "revoke_pin",
     "token_space",
+    "import_semantic_file",
+    "export_semantic_space",
+    "approve_semantic_examples",
 ]
+
+
+def import_semantic_file(
+    raw: bytes,
+    *,
+    space_id: str,
+    dry_run: bool = True,
+    actor: str,
+    warehouse: Path | None = None,
+    grantable: set[str] | None = None,
+    dialect: str | None = None,
+) -> dict[str, Any]:
+    from dms_executor.semantic_import.service import import_file
+
+    return import_file(
+        raw,
+        space_id=space_id,
+        dry_run=dry_run,
+        actor=actor,
+        warehouse=warehouse,
+        grantable=grantable,
+        dialect=dialect,
+    )
+
+
+def export_semantic_space(
+    *,
+    space_id: str,
+    export_format: str = "osi",
+    warehouse: Path | None = None,
+) -> dict[str, Any]:
+    from dms_executor.semantic_import.service import export_space
+
+    return export_space(
+        space_id=space_id, export_format=export_format, warehouse=warehouse
+    )
+
+
+def approve_semantic_examples(
+    *, space_id: str, actor: str, warehouse: Path | None = None
+) -> int:
+    from dms_executor.semantic_import.service import approve_import_examples
+
+    return approve_import_examples(space_id=space_id, actor=actor, warehouse=warehouse)

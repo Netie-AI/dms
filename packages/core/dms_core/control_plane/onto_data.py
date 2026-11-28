@@ -38,6 +38,9 @@ from dms_core.control_plane.session import set_tenant_context
 KINDS = ("object", "link", "measure", "grain", "pii")
 STATUSES = ("proposed", "approved", "revoked")
 SCOPE_FLAG = "DMS_ONTO_SPACE_SCOPE"
+#: FEAT-SEMANTIC-IMPORT-01. A file import uses ``import:<format>`` and the
+#: existing kinds. It does not add a kind.
+IMPORT_FORMATS = ("snowflake", "osi", "genie", "dbt", "wren")
 
 _LOCK = threading.Lock()
 #: Same default as ``Settings.dms_tenant_id``. Used only when the flag is on.
@@ -141,7 +144,24 @@ def items_from_proposal(body: Mapping[str, Any]) -> list[tuple[str, dict[str, An
             for row in raw:
                 if isinstance(row, dict):
                     rows.append((kind, dict(row)))
+    extra = body.get("import_items")
+    if isinstance(extra, list):
+        for item in extra:
+            if not isinstance(item, dict):
+                continue
+            item_kind = item.get("kind")
+            payload = item.get("payload")
+            if item_kind in KINDS and isinstance(payload, dict):
+                rows.append((str(item_kind), dict(payload)))
     return rows
+
+
+def import_source(fmt: str) -> str:
+    """``import:<format>`` for a semantic-model file. Other sources stay put."""
+    name = str(fmt or "").strip().lower()
+    if name not in IMPORT_FORMATS:
+        raise ValueError("import_format")
+    return f"import:{name}"
 
 
 @dataclass
