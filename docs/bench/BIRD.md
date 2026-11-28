@@ -90,10 +90,11 @@ question string is the dataset question. `--evidence on` appends the dataset
 `/v1/chat/ask/confirm` when the reconfirm block has a token and a non-empty
 suggested question.
 
-`run --arm baseline` is the raw model control. One OpenVault call, role
-string `sql`, schema text plus 3 sample rows, single shot. No provider and
-no model id are sent. The returned SQL is executed on the source file and
-graded by the same function as the dms arm.
+`run --arm baseline` is the raw model control. The first call uses role
+string `sql`, schema text plus 3 sample rows. No provider and no model id
+are sent. A 402 or 429 sends role `escalate` before one retry of that first
+call. The returned SQL is executed on the source file and graded by the same
+function as the dms arm.
 
 ## Score
 
@@ -111,11 +112,23 @@ that suggestion is ABSTAIN. A destructive statement is ABSTAIN. Anything else
 that does not run is ERROR.
 
 AI versus rule uses `path_group` in `scripts/verify/grade52.py`. p50 and p95
-are nearest-rank seconds over scored rows.
+are nearest-rank seconds over every attempted id.
+
+EX is correct / n_total. n_total is every attempted id. A 402 or 429 that is
+still unresolved after the ladder below is infra_unscored. It stays in
+n_total. It is not a CORRECT. ex_scored_only is correct / n_scored and is
+printed on its own line labelled secondary. A run with infra_unscored above
+0 is INCOMPLETE. That run is not a headline EX. Quote INCOMPLETE, not the
+secondary line.
 
 A record whose HTTP status is 402 or 429, or whose error code contains those
-tokens, is contaminated. It is kept in the JSONL so the next run retries it,
-and it is not in the denominator. Finished ids are skipped.
+tokens, is not answered by posting the same body again. The next call sends
+role `escalate` to OpenVault (schema plus the question, no provider and no
+model id). OpenVault routes that role; on 402 or 429 the route is the Claude
+route. One retry of the original POST is the last rung, and only while the
+failure is still 402 or 429. Set `OPENVAULT_URL` on the dms arm as well so
+that role can be sent. An id that is still 402 or 429 is infra_unscored. A
+later run climbs it again, escalate role first. Finished ids are skipped.
 
 The JSONL stores ids, outcomes, and codes. It does not store row values, SQL,
 question text, or keys.

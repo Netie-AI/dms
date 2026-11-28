@@ -149,6 +149,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         if not found:
             return _config("an ov_ OpenVault key is required for the baseline arm.")
         headers = found
+    if args.arm == "dms":
+        found = _ov_headers()
+        if found:
+            headers = found
     spaces = read_spaces(Path(args.spaces)) if args.spaces else {}
     out = Path(args.out)
     prior = load_jsonl(out)
@@ -203,6 +207,8 @@ def cmd_nightly(args: argparse.Namespace) -> int:
         if not found:
             return _config("nightly baseline arm needs an ov_ key. No download and no score.")
         headers = found
+    elif _ov_headers():
+        headers = _ov_headers() or {}
     dest = Path(args.dest)
     questions_path, db_root = fetch_release(dest)
     print(f"questions={questions_path}")

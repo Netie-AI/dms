@@ -1,4 +1,8 @@
-"""Score one Mini-Dev record. Contaminated rows are not in the denominator.
+"""Score one Mini-Dev record. Every attempted id stays in the EX denominator.
+
+EX is correct / n_total. A 402 or 429 that never resolved is infra_unscored.
+It is not dropped. ex_scored_only is secondary. Any infra_unscored above 0
+marks the run INCOMPLETE, so that run is not a headline EX.
 
 Outcomes are CORRECT, WRONG, ASKBACK, ABSTAIN, ERROR. CORRECT is official EX
 only. AI versus rule uses ``scripts/verify/grade52.py`` ``path_group``.
@@ -171,11 +175,13 @@ def latest_by_id(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 def report(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Official EX over scored rows. Contaminated ids are listed for retry."""
+    """EX is correct / n_total. Unresolved 402 and 429 stay in that denominator."""
     latest = latest_by_id(records)
+    infra = [row for row in latest if row.get("contaminated")]
     scored = [row for row in latest if not row.get("contaminated")]
     counts: Counter[str] = Counter(str(row.get("outcome") or "") for row in scored)
-    n = len(scored)
+    n_total = len(latest)
+    n_scored = len(scored)
     correct = counts["CORRECT"]
     norm_correct = sum(1 for row in scored if row.get("ex_norm") == 1)
     paths: Counter[str] = Counter(
@@ -183,16 +189,23 @@ def report(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     )
     durations = [
         float(row["seconds"])
-        for row in scored
+        for row in latest
         if isinstance(row.get("seconds"), (int, float)) and not isinstance(row.get("seconds"), bool)
     ]
-    retry = [str(row.get("id")) for row in latest if row.get("contaminated")]
+    retry = [str(row.get("id")) for row in infra]
+    incomplete = len(retry) > 0
     return {
-        "n_scored": n,
+        "n_total": n_total,
+        "n_scored": n_scored,
         "n_contaminated": len(retry),
+        "infra_unscored": len(retry),
+        "status": "INCOMPLETE" if incomplete else "COMPLETE",
+        "headline": "INCOMPLETE" if incomplete else "EX",
         "outcomes": {name: int(counts.get(name, 0)) for name in OUTCOMES},
-        "ex": None if n == 0 else correct / n,
-        "ex_normalised": None if n == 0 else norm_correct / n,
+        "ex": None if n_total == 0 else correct / n_total,
+        "ex_normalised": None if n_total == 0 else norm_correct / n_total,
+        "ex_scored_only": None if n_scored == 0 else correct / n_scored,
+        "ex_scored_only_label": "secondary",
         "paths": {
             "ai": int(paths.get("ai", 0)),
             "rule": int(paths.get("rule", 0)),
@@ -211,17 +224,22 @@ def format_report(summary: Mapping[str, Any]) -> str:
     paths = summary.get("paths") or {}
     ex = summary.get("ex")
     norm = summary.get("ex_normalised")
+    only = summary.get("ex_scored_only")
     ex_s = "n/a" if ex is None else f"{ex:.4f}"
     norm_s = "n/a" if norm is None else f"{norm:.4f}"
+    only_s = "n/a" if only is None else f"{only:.4f}"
     p50 = summary.get("p50")
     p95 = summary.get("p95")
     p50_s = "n/a" if p50 is None else f"{p50:.3f}"
     p95_s = "n/a" if p95 is None else f"{p95:.3f}"
-    return (
-        f"n={summary.get('n_scored')} ex={ex_s} ex_norm={norm_s} "
+    status = str(summary.get("status") or "COMPLETE")
+    primary = (
+        f"{status} n_total={summary.get('n_total')} "
+        f"infra_unscored={summary.get('infra_unscored')} ex={ex_s} ex_norm={norm_s} "
         f"CORRECT={outcomes.get('CORRECT', 0)} WRONG={outcomes.get('WRONG', 0)} "
         f"ASKBACK={outcomes.get('ASKBACK', 0)} ABSTAIN={outcomes.get('ABSTAIN', 0)} "
-        f"ERROR={outcomes.get('ERROR', 0)} contaminated={summary.get('n_contaminated')} "
+        f"ERROR={outcomes.get('ERROR', 0)} "
         f"ai={paths.get('ai', 0)} rule={paths.get('rule', 0)} "
         f"unattributed={paths.get('unattributed', 0)} p50={p50_s} p95={p95_s}"
     )
+    return primary + "\n" + f"ex_scored_only={only_s} secondary"

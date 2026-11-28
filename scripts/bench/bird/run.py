@@ -5,8 +5,11 @@ prompt, envelope, and served route untouched. On, ``dms`` posts
 ``/v1/chat/ask`` (and ``/v1/chat/ask/confirm`` when simulating Yes).
 ``baseline`` is one OpenVault call with role ``sql``.
 
-Records that contain 402 or 429 are contaminated. They are written so a later
-run can retry them, and they are never scored. Finished ids are skipped.
+A 402 or 429 is not a later copy of the same POST. The next call sends role
+``escalate`` so OpenVault can route it. One retry of the original POST is the
+last rung. A 402 or 429 that is still there after that rung stays in the
+denominator as infra_unscored. Finished ids are skipped. An unresolved id is
+climbed again on a later run, escalate role first.
 """
 
 from __future__ import annotations
@@ -22,10 +25,17 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
-from bench.bird.baseline import baseline_body, copied_model, sql_from_reply
+from bench.bird.baseline import baseline_body, copied_model, escalate_body, sql_from_reply
 from bench.bird.corpus import asked_text, db_id_of, gold_sql_of, question_id
 from bench.bird.gold import execute_readonly, locate_db, schema_block
-from bench.bird.score import attribute, classify, confirm_token, is_askback, latest_by_id
+from bench.bird.score import (
+    attribute,
+    classify,
+    confirm_token,
+    contaminated,
+    is_askback,
+    latest_by_id,
+)
 
 FLAG = "DMS_BIRD_HARNESS"
 EXIT_PASS = 0
@@ -33,6 +43,10 @@ EXIT_FAIL = 1
 EXIT_CONFIG = 2
 EMPTY_SURFACE = {"prompt": None, "envelope": None, "route": None}
 ARMS = ("dms", "baseline")
+# ponytail: one same-POST retry after the escalate role. A 402 that survives
+# that single retry stays infra_unscored. Raise this only with a test that the
+# extra call still comes after the role.
+LAST_RUNG_RETRIES = 1
 
 PostJson = Callable[[str, dict[str, Any], dict[str, str]], tuple[int, Any]]
 _WRITE = threading.Lock()
@@ -103,6 +117,48 @@ def _stamp_from_baseline(payload: Any) -> dict[str, Any]:
     return env
 
 
+def _call_contaminated(status: int | None, payload: Any) -> bool:
+    """402 or 429 on this response. A 200 envelope is not read for those tokens."""
+    error = None
+    if isinstance(payload, dict) and payload.get("error") == "transport":
+        error = "transport"
+    if contaminated(status, error):
+        return True
+    if status == 200:
+        return False
+    return contaminated(None, detail_code(payload))
+
+
+def climb_post(
+    post: PostJson,
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    escalate: Callable[[], tuple[int, Any] | None],
+) -> tuple[int, Any, str]:
+    """Original POST, then role ``escalate``, then one retry of the original POST.
+
+    ``escalate`` returns None when there is no OpenVault URL to send the role to.
+    The same-POST retry is only the last rung, and only while the failure is
+    still 402 or 429.
+    """
+    status, payload = post(url, body, headers)
+    if not _call_contaminated(status, payload):
+        return status, payload, "first"
+    escalated = escalate()
+    if escalated is not None:
+        status, payload = escalated
+        if not _call_contaminated(status, payload):
+            return status, payload, "escalate"
+    last_status, last_payload = status, payload
+    for _ in range(LAST_RUNG_RETRIES):
+        last_status, last_payload = post(url, body, headers)
+        if not _call_contaminated(last_status, last_payload):
+            return last_status, last_payload, "retry"
+    return last_status, last_payload, "unresolved"
+
+
 def grade_item(
     question: Mapping[str, Any],
     *,
@@ -147,83 +203,136 @@ def grade_item(
         return _public(record)
     gold_sql = gold_sql_of(question)
     text = asked_text(question, evidence=evidence)
-    http_status = 200
-    error: str | None = None
-    code: str | None = None
-    envelope: dict[str, Any] | None = None
-    predicted: list[Any] | None = None
-    pred_error: str | None = None
-    model_sql: str | None = None
-    if arm == "baseline":
-        schema = schema_block(path)
-        body = baseline_body(text, schema)
-        http_status, payload = post(ov_url.rstrip("/") + "/v1/chat/completions", body, ov_headers)
-        code = detail_code(payload) if http_status != 200 else None
+    held: dict[str, Any] = {
+        "http_status": 200,
+        "error": None,
+        "code": None,
+        "envelope": None,
+        "predicted": None,
+        "pred_error": None,
+        "model_sql": None,
+        "rung": "first",
+    }
+
+    def note(status: int, payload: Any) -> None:
+        held["http_status"] = status
+        held["code"] = detail_code(payload) if status != 200 else None
+        held["error"] = None
         if isinstance(payload, dict) and payload.get("error") == "transport":
-            error = "transport"
-        if not _status_bad(http_status, error, code):
-            sql = sql_from_reply(payload)
-            model_sql = sql or None
-            envelope = _stamp_from_baseline(payload)
-            if sql:
-                predicted, pred_error = execute_readonly(path, sql)
-            else:
-                pred_error = "empty_sql"
-    else:
-        if not space_id:
-            pred_error = "space_missing"
-            http_status = 200
+            held["error"] = "transport"
+
+    def blocked() -> bool:
+        return _status_bad(held["http_status"], held["error"], held["code"])
+
+    def take_completion(payload: Any) -> None:
+        sql = sql_from_reply(payload)
+        held["model_sql"] = sql or None
+        held["envelope"] = _stamp_from_baseline(payload)
+        if sql:
+            held["predicted"], held["pred_error"] = execute_readonly(path, sql)
         else:
-            ask_body = {"question": text, "space_id": space_id}
-            http_status, payload = post(api_base.rstrip("/") + "/v1/chat/ask", ask_body, {})
-            code = detail_code(payload) if http_status != 200 else None
-            if isinstance(payload, dict) and payload.get("error") == "transport":
-                error = "transport"
-                envelope = None
-            elif (
-                isinstance(payload, dict)
-                and "detail" not in payload
-                and payload.get("error") != "not_json"
-            ):
-                envelope = payload
-            else:
-                envelope = None
+            held["predicted"] = None
+            held["pred_error"] = "empty_sql"
+
+    def take_envelope(payload: Any) -> None:
+        ok = (
+            isinstance(payload, dict)
+            and "detail" not in payload
+            and payload.get("error") not in {"not_json", "transport"}
+        )
+        held["envelope"] = payload if ok else None
+        env = held["envelope"]
+        if not isinstance(env, dict):
+            return
+        used = env.get("sql_used")
+        if isinstance(used, str) and used.strip():
+            held["model_sql"] = used
+            held["predicted"], held["pred_error"] = execute_readonly(path, used)
+            return
+        if is_askback(env) or env.get("abstained") is True:
+            return
+        rows = env.get("rows")
+        if isinstance(rows, list):
+            held["predicted"] = rows
+            held["pred_error"] = None
+
+    def send_role() -> tuple[int, Any] | None:
+        """Role ``escalate`` on OpenVault. No provider and no model id."""
+        if not ov_url:
+            return None
+        prompt = escalate_body(baseline_body(text, schema_block(path)))
+        return post(ov_url.rstrip("/") + "/v1/chat/completions", prompt, ov_headers)
+
+    if arm == "baseline":
+        body = baseline_body(text, schema_block(path))
+
+        def escalate_same() -> tuple[int, Any] | None:
+            if not ov_url:
+                return None
+            return post(
+                ov_url.rstrip("/") + "/v1/chat/completions",
+                escalate_body(body),
+                ov_headers,
+            )
+
+        status, payload, rung = climb_post(
+            post,
+            ov_url.rstrip("/") + "/v1/chat/completions",
+            body,
+            ov_headers,
+            escalate=escalate_same,
+        )
+        held["rung"] = rung
+        note(status, payload)
+        if not blocked():
+            take_completion(payload)
+    elif not space_id:
+        held["pred_error"] = "space_missing"
+    else:
+        ask_body = {"question": text, "space_id": space_id}
+        status, payload, rung = climb_post(
+            post,
+            api_base.rstrip("/") + "/v1/chat/ask",
+            ask_body,
+            {},
+            escalate=send_role,
+        )
+        held["rung"] = rung
+        note(status, payload)
+        if rung == "escalate" and not blocked():
+            take_completion(payload)
+        elif not blocked():
+            env = payload if isinstance(payload, dict) else None
             if (
                 simulate_yes
-                and isinstance(envelope, dict)
-                and is_askback(envelope)
-                and confirm_token(envelope)
-                and not _status_bad(http_status, error, code)
+                and isinstance(env, dict)
+                and is_askback(env)
+                and confirm_token(env)
             ):
-                token = confirm_token(envelope)
-                http_status, payload = post(
+                confirm_body = {"token": confirm_token(env), "yes": True}
+                status, payload, confirm_rung = climb_post(
+                    post,
                     api_base.rstrip("/") + "/v1/chat/ask/confirm",
-                    {"token": token, "yes": True},
+                    confirm_body,
                     {},
+                    escalate=send_role,
                 )
-                record["yes"] = True
-                code = detail_code(payload) if http_status != 200 else None
-                if isinstance(payload, dict) and payload.get("error") == "transport":
-                    error = "transport"
-                    envelope = None
-                elif (
-                    isinstance(payload, dict)
-                    and "detail" not in payload
-                    and payload.get("error") != "not_json"
-                ):
-                    envelope = payload
-                else:
-                    envelope = None
-            if isinstance(envelope, dict):
-                used = envelope.get("sql_used")
-                if isinstance(used, str) and used.strip():
-                    model_sql = used
-                    predicted, pred_error = execute_readonly(path, used)
-                elif not is_askback(envelope) and envelope.get("abstained") is not True:
-                    rows = envelope.get("rows")
-                    if isinstance(rows, list):
-                        predicted = rows
-                        pred_error = None
+                held["rung"] = confirm_rung
+                note(status, payload)
+                if confirm_rung == "escalate" and not blocked():
+                    take_completion(payload)
+                elif not blocked():
+                    record["yes"] = True
+                    take_envelope(payload)
+            else:
+                take_envelope(payload)
+    http_status = held["http_status"]
+    error = held["error"]
+    code = held["code"]
+    envelope = held["envelope"]
+    predicted = held["predicted"]
+    pred_error = held["pred_error"]
+    model_sql = held["model_sql"]
     gold_rows, gold_error = (None, None)
     if not _status_bad(http_status, error, code) and pred_error != "space_missing":
         gold_rows, gold_error = execute_readonly(path, gold_sql)
@@ -239,6 +348,7 @@ def grade_item(
         model_sql=model_sql,
     )
     record.update(graded)
+    record["rung"] = held["rung"]
     if record.get("outcome") in {"CORRECT", "WRONG"} and isinstance(envelope, dict):
         record["path"] = attribute(envelope, model_sql)
     record["http_status"] = http_status
@@ -247,8 +357,6 @@ def grade_item(
 
 
 def _status_bad(status: int | None, error: str | None, code: str | None) -> bool:
-    from bench.bird.score import contaminated
-
     if contaminated(status, error) or contaminated(None, code):
         return True
     if status == 0 or (isinstance(status, int) and status >= 400):
@@ -270,6 +378,7 @@ def _public(record: Mapping[str, Any]) -> dict[str, Any]:
         "ex_norm",
         "reason",
         "path",
+        "rung",
         "http_status",
         "seconds",
     )

@@ -1,8 +1,9 @@
 """BIRD-HARNESS-CI-01. Synthetic two-database fixture. Not the BIRD corpus.
 
-Official EX is a set of row tuples. Column order matters. 402 and 429 are
-not scored. The runner flag defaults off and does not change the product
-prompt, envelope, or served route.
+Official EX is a set of row tuples. Column order matters. EX is correct
+divided by every attempted id. An unresolved 402 or 429 stays in that
+denominator and marks the run INCOMPLETE. The runner flag defaults off and
+does not change the product prompt, envelope, or served route.
 """
 
 from __future__ import annotations
@@ -144,12 +145,43 @@ def test_contamination_is_not_scored_and_is_retried() -> None:
             {"id": "s2", "contaminated": True, "http_status": 402, "seconds": 9.0},
         ]
     )
+    assert summary["n_total"] == 2
     assert summary["n_scored"] == 1
+    assert summary["infra_unscored"] == 1
     assert summary["n_contaminated"] == 1
     assert summary["retry_ids"] == ["s2"]
-    assert summary["ex"] == 1.0
+    assert summary["ex"] == 0.5
+    assert summary["status"] == "INCOMPLETE"
+    assert summary["headline"] == "INCOMPLETE"
+    assert summary["ex_scored_only"] == 1.0
     assert summary["p50"] == 1.0
     assert summary["pass"] is False
+
+
+def test_one_correct_and_one_unresolved_429_is_incomplete() -> None:
+    summary = score.report(
+        [
+            {
+                "id": "s1",
+                "outcome": "CORRECT",
+                "ex": 1,
+                "ex_norm": 1,
+                "contaminated": False,
+                "seconds": 1.0,
+                "path": "ai",
+            },
+            {"id": "s2", "contaminated": True, "http_status": 429, "seconds": 9.0},
+        ]
+    )
+    assert summary["ex"] == 0.5
+    assert summary["status"] == "INCOMPLETE"
+    assert summary["headline"] == "INCOMPLETE"
+    assert summary["infra_unscored"] == 1
+    assert summary["n_total"] == 2
+    text = score.format_report(summary)
+    assert text.startswith("INCOMPLETE")
+    assert "ex_scored_only=1.0000 secondary" in text
+    assert text.splitlines()[0].startswith("INCOMPLETE")
 
 
 def test_attribution_uses_grade52_path_group() -> None:
@@ -293,6 +325,12 @@ def test_baseline_prompt_is_one_role_and_three_rows(tmp_path: Path) -> None:
     assert body["role"] == "sql"
     with pytest.raises(baseline.ModelKeyRefused):
         baseline.reject_model_keys({"role": "sql", "model": "hidden"})
+    escalated = baseline.escalate_body(body)
+    assert escalated["role"] == "escalate"
+    assert escalated["messages"] == body["messages"]
+    assert "model" not in escalated
+    with pytest.raises(baseline.ModelKeyRefused):
+        baseline.escalate_body({"role": "sql", "model": "hidden"})
     sample_line = next(line for line in block.splitlines() if line.startswith("sample "))
     sample = json.loads(sample_line[len("sample ") :])
     assert len(sample["rows"]) == 3
@@ -365,6 +403,9 @@ def test_simulated_yes_and_resume(tmp_path: Path) -> None:
     )
     summary = score.report(run.load_jsonl(out))
     assert summary["n_contaminated"] == 0
+    assert summary["infra_unscored"] == 0
+    assert summary["status"] == "COMPLETE"
+    assert summary["ex"] == 1.0
     assert summary["outcomes"]["CORRECT"] == 2
     assert summary["paths"]["ai"] == 1
     assert summary["paths"]["rule"] == 1
@@ -428,6 +469,82 @@ def test_release_layout_and_full_file_guard(tmp_path: Path) -> None:
     got_q, got_db = corpus.unpack_release(zip_path, unpacked)
     assert got_q.is_file()
     assert (got_db / "shop.sqlite").is_file()
+
+
+def test_402_sends_escalate_role_before_one_same_post_retry(tmp_path: Path) -> None:
+    root = tmp_path / "db"
+    _two_dbs(root)
+    seen: list[tuple[str, object, dict[str, str]]] = []
+
+    def post(url: str, body: dict[str, object], headers: dict[str, str]) -> tuple[int, dict]:
+        seen.append((url, body.get("role"), headers))
+        blob = json.dumps(body).lower()
+        assert "claude" not in blob
+        assert "model" not in body
+        if body.get("role") == "escalate":
+            return 200, {"choices": [{"message": {"content": "SELECT code FROM plots"}}]}
+        return 402, {"detail": {"code": "402"}}
+
+    out = tmp_path / "dms.jsonl"
+    run.run_questions(
+        [_questions()[1]],
+        arm="dms",
+        db_root=root,
+        spaces={"yard": "space-yard"},
+        evidence=False,
+        simulate_yes=True,
+        concurrency=1,
+        out=out,
+        post=post,
+        api_base="http://api.example",
+        ov_url="http://ov.example",
+        ov_headers={"Authorization": "Bearer ov_test"},
+    )
+    assert [item[0] for item in seen] == [
+        "http://api.example/v1/chat/ask",
+        "http://ov.example/v1/chat/completions",
+    ]
+    assert seen[0][2] == {}
+    assert seen[1][1] == "escalate"
+    assert "Authorization" in seen[1][2]
+    row = run.load_jsonl(out)[0]
+    assert row["outcome"] == "CORRECT"
+    assert row["rung"] == "escalate"
+    assert row["contaminated"] is False
+    blob = out.read_text(encoding="utf-8")
+    assert "ov_test" not in blob
+    assert "Alpha" not in blob
+    assert "SELECT" not in blob
+
+    seen.clear()
+
+    def post_again(
+        url: str, body: dict[str, object], headers: dict[str, str]
+    ) -> tuple[int, dict]:
+        seen.append((url, body.get("role"), headers))
+        return 429, {"detail": {"code": "429"}}
+
+    base_out = tmp_path / "base.jsonl"
+    run.run_questions(
+        [_questions()[0]],
+        arm="baseline",
+        db_root=root,
+        spaces={},
+        evidence=False,
+        simulate_yes=False,
+        concurrency=1,
+        out=base_out,
+        post=post_again,
+        ov_url="http://ov.example",
+    )
+    assert [item[1] for item in seen] == ["sql", "escalate", "sql"]
+    unresolved = run.load_jsonl(base_out)[0]
+    assert unresolved["contaminated"] is True
+    assert unresolved["rung"] == "unresolved"
+    summary = score.report(run.load_jsonl(base_out))
+    assert summary["ex"] == 0.0
+    assert summary["infra_unscored"] == 1
+    assert summary["status"] == "INCOMPLETE"
 
 
 def test_nightly_workflow_is_off_until_the_variable() -> None:

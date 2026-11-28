@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 ROLE = "sql"
+ESCALATE_ROLE = "escalate"
 _FORBIDDEN = frozenset(
     {"model", "provider", "served_model", "served_provider", "strict", "temperature"}
 )
@@ -52,6 +53,14 @@ def baseline_body(question: str, schema_text: str) -> dict[str, Any]:
     }
     reject_model_keys(body)
     return body
+
+
+def escalate_body(body: dict[str, Any]) -> dict[str, Any]:
+    """Same prompt, role ``escalate``. OpenVault picks the route. No model id."""
+    nxt = dict(body)
+    nxt["role"] = ESCALATE_ROLE
+    reject_model_keys(nxt)
+    return nxt
 
 
 def sql_from_reply(payload: Any) -> str:
