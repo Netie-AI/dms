@@ -510,7 +510,7 @@ def sql_source_ingest(
     ontology = _derive_space_ontology(
         extract.manifest_entry, kind=kind, host=host, database=database, space_id=space_id
     )
-    return {
+    receipt = {
         "source": extract.source,
         "tables": [
             {
@@ -542,6 +542,109 @@ def sql_source_ingest(
         "links": links,
         "ontology": ontology,
     }
+    bound = _bind_sql_source(
+        extract, kind=kind, host=host, database=database, port=port, space_id=space_id
+    )
+    if bound is not None:
+        receipt["source_id"] = bound["source_id"]
+        receipt["exposed_tables"] = bound["exposed_tables"]
+        receipt["granted_tables"] = bound["granted_tables"]
+    return receipt
+
+
+def _bind_sql_source(
+    extract: Any,
+    *,
+    kind: str,
+    host: str,
+    database: str,
+    port: int | None,
+    space_id: str | None,
+) -> dict[str, Any] | None:
+    """Register a landed SQL source on its Space. Tables stay proposed, not granted.
+
+    Off unless ``DMS_SQL_SOURCE_BIND`` is on. No password is stored. The row
+    matches ``register_source`` (source, space, connector, exposed). Postgres
+    ``dms.data_sources`` gets the same facts when ``DATABASE_URL`` is set.
+    """
+    from uuid import uuid4
+
+    from dms_core.control_plane.connect_grants import (
+        register_source,
+        sql_source_bind_enabled,
+    )
+
+    if not sql_source_bind_enabled() or not space_id or not extract.pulls:
+        return None
+    sid = dms_executor.canonical_space_id(space_id)
+    names = [p.bronze_table for p in extract.pulls if p.bronze_table]
+    if not names:
+        return None
+    label = sql_source_describe(kind=kind, host=host, database=database, port=port)
+    source_id = str(uuid4())
+    actor = os.environ.get("DMS_ACTOR_USER_ID", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    try:
+        register_source(
+            source_id=source_id,
+            space_id=sid,
+            connector_id=label,
+            exposed=names,
+            actor=actor,
+            token_id="studio",
+        )
+    except ValueError:
+        logger.warning("sql source bind skipped: source_exists")
+        return None
+    _persist_sql_data_source(
+        source_id=source_id,
+        space_id=sid,
+        ref=label,
+        exposed=names,
+    )
+    return {"source_id": source_id, "exposed_tables": names, "granted_tables": []}
+
+
+def _persist_sql_data_source(
+    *,
+    source_id: str,
+    space_id: str,
+    ref: str,
+    exposed: list[str],
+) -> None:
+    """Insert ``dms.data_sources`` when Postgres is configured. Never stores a secret."""
+    import json
+    from uuid import UUID
+
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if not url:
+        return
+    tenant = os.environ.get("DMS_TENANT_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    try:
+        UUID(source_id)
+        UUID(space_id)
+        UUID(tenant)
+    except ValueError:
+        return
+    meta = json.dumps(
+        {"connector_id": ref, "exposed_tables": exposed, "granted": False}
+    )
+    try:
+        import psycopg
+        from dms_core.control_plane.session import set_tenant_context
+
+        with psycopg.connect(url) as conn:
+            set_tenant_context(conn, tenant, role="steward")
+            conn.execute(
+                """
+                INSERT INTO dms.data_sources
+                  (id, tenant_id, space_id, kind, ref, scope, meta)
+                VALUES (%s, %s, %s, 'sql', %s, 'team', %s::jsonb)
+                """,
+                (source_id, tenant, space_id, ref, meta),
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 - the land stands; the receipt names the miss
+        logger.warning("sql source data_sources insert failed: %s", type(exc).__name__)
 
 
 def _derive_space_ontology(
