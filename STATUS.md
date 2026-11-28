@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-28, NL19-COMPILE-WRONG
+**Last updated:** 2026-11-28, BIRD-ASKBACK-GENERIC-01 on main 05bcd414
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_COMPILE_HONOUR_CHECK` default off (`12326dd`, base `3752fb4`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, no reason model, so compile is not served: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_COMPILE_HONOUR_CHECK` default off on main `05bcd414`. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, no reason model, so compile is not served: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. `DMS_JOIN_DECLARED_FK` and `DMS_FK_ORPHAN_DISCLOSE` default off. Orphan ratio stays 0 until a steward sets it. `DMS_TENANT_PROVISION` default off: the operator CLI refuses and writes nothing until it is on, then it inserts a tenant row and a default pool as steward, a rerun is a no-op, and it creates no key, grant, or credential. A write route does not provision. A missing tenant is HTTP 409 `tenant_not_provisioned`. `DMS_ONTO_SPACE_SCOPE` stays default off: approved items follow the asking Space, plus a steward `tenant_wide` mark. `DMS_SQL_SOURCE_BIND` stays default off. `DMS_ASKBACK_SPECIFIC` default off. Its stub 52 flag off and on is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Armed and pack H unmeasured. Not PASS.
 
 ## Direction
 
