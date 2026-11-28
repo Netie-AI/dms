@@ -124,17 +124,29 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-28 11:07 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-28 12:03 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `77fcad37` SCALE-MISS-01: generate first, repair EXPLAIN, ask back (#592)
+main: `f5b9517e` RULES-OFF-TYPE-01: return an ask-back envelope when the router is off (#595)
 
-open PRs: 36 (cap 60)
+open PRs: 48 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #581 | n | `b55e152e` | tier:fast | 11 ok | handoff: state refresh |
+| #607 | y | `ff2b8066` | - | 7 ok, 3 running | FEAT-METRIC-CUBE-01: Governed metric cubes the model plans against |
+| #606 | y | `408d33e8` | - | no checks | UX-GRANT-DATA-01: ask back when a measure is outside the Space grant |
+| #605 | y | `cd620c54` | - | no checks | UX-CHART-01: one sentence and a chart of the served rows |
+| #604 | y | `b9c36920` | - | no checks | UX-FEEDBACK-01: Yes, Fix it, and Request review |
+| #603 | y | `a4c02ce9` | - | 7 ok, 3 running | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
+| #602 | y | `94376e97` | - | 12 ok, 3 running | FEAT-CONNECT-GAUSS-01: GaussDB / openGauss and Oracle as live read-only source k |
+| #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
+| #600 | y | `17a0d272` | - | 5 ok, 5 running | FEAT-BENCH-SPACE-01: Benchmarks inside each Space |
+| #599 | y | `33e7ad96` | - | 9 ok, 1 running | UX-TRUST-01: show benchmark files and quiet studio polls |
+| #598 | y | `b76c8980` | - | 8 ok, 2 running | UX-PLAIN-01: plain sentences for chat codes |
+| #597 | y | `11a89ee3` | - | 5 ok, 5 running | FEAT-SEMANTIC-IMPORT-01: import a semantic model as a steward proposal |
+| #596 | y | `8e548ab6` | - | 7 ok, 3 running | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
+| #581 | n | `57137572` | tier:fast | 11 ok | handoff: state refresh |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
