@@ -1179,9 +1179,14 @@ def validated_sql_reason(
     numeric. None means those gates passed. Coverage and the compile-only
     hold stay with the caller.
     """
-    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
-        question, sql, warehouse, grantable=grantable
-    )
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        from dms_executor.qualifier_ai import deciding_qualifier_reason
+
+        gap = deciding_qualifier_reason(question, sql, warehouse, grantable)
+    else:
+        gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
+            question, sql, warehouse, grantable=grantable
+        )
     if gap:
         return gap
     ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
@@ -1211,6 +1216,8 @@ def _submit_validated(
     lead: str = "",
     served_route: str = "",
     grantable: set[str] | None = None,
+    hint: str = "",
+    qualifier_notes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     def _sql_checks(statement: str) -> dict[str, Any] | None:
         """Qualifier, currency, and numeric checks. None means the SQL may be served."""
@@ -1283,6 +1290,42 @@ def _submit_validated(
             plan_origin = PLAN_ORIGIN_GENERATE_SQL
             notes = (*tuple(notes), "scale_miss:ai_over_compile")
             # Same checks as the first SQL. A failed replacement is not served.
+            stopped = _sql_checks(sql)
+            if stopped is not None:
+                return stopped
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        from dms_executor.qualifier_ai import review_candidate
+
+        reviewed = review_candidate(
+            question,
+            sql,
+            hint=hint,
+            warehouse=warehouse,
+            grantable=grantable,
+            space_id=space_id,
+            session_id=session_id,
+            served_route=served_route,
+            extra_notes=qualifier_notes,
+        )
+        if reviewed["action"] == "reconfirm" and isinstance(reviewed.get("envelope"), dict):
+            return reviewed["envelope"]
+        if reviewed["action"] == "abstain":
+            return _abstain(
+                question,
+                str(reviewed.get("reason") or "qualifier_ai"),
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+                sql=sql,
+            )
+        rewritten = reviewed.get("sql")
+        if reviewed.get("repaired") and isinstance(rewritten, str) and rewritten.strip():
+            sql = rewritten.strip()
+            if served_route in {ROUTE_COMPILE, ROUTE_LADDER}:
+                served_route = ROUTE_MODEL
+                if not plan_origin:
+                    plan_origin = PLAN_ORIGIN_GENERATE_SQL
             stopped = _sql_checks(sql)
             if stopped is not None:
                 return stopped
@@ -1686,6 +1729,8 @@ def rank_window_ask(
     win = parse_rank_window(q)
     shape = rank_window_shape_reason(q)
     if shape:
+        if _qualifier_note_only(shape):
+            return None
         return _no(shape)
     if win is None:
         return None
@@ -1693,12 +1738,18 @@ def rank_window_ask(
         return None
     pair = rank_window_group(win)
     if pair is None:
+        if _qualifier_note_only("rank_window_unhandled_terms:no_entity"):
+            return None
         return _no("rank_window_unhandled_terms:no_entity")
     specs = {name: m.description or "" for name, m in onto.measures.items()}
     measure, why, reading = rank_window_measure(q, specs)
     if why or measure is None:
+        if why and _qualifier_note_only(why):
+            return None
         return _no(why or "unknown_measure")
     if win.limit is None:
+        if _qualifier_note_only("rank_window_open_ended"):
+            return None
         return _no("rank_window_open_ended")
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
@@ -3789,9 +3840,17 @@ def _maybe_generative_ask_impl(
             )
         )
     raw_plan = payload.get("query_plan")
-    gap = unhonored_qualifier_reason(
-        q, plan=raw_plan if isinstance(raw_plan, dict) else None
-    )
+    plan_body = raw_plan if isinstance(raw_plan, dict) else None
+    plan_notes: tuple[str, ...] = ()
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        from dms_executor.qualifier_ai import NOTE_KINDS, is_candidate_note
+
+        full = unhonored_qualifier_reason(q, plan=plan_body)
+        gap = unhonored_qualifier_reason(q, plan=plan_body, skip_kinds=NOTE_KINDS)
+        if is_candidate_note(full):
+            plan_notes = (str(full),)
+    else:
+        gap = unhonored_qualifier_reason(q, plan=plan_body)
     if gap:
         return _stamp(
             _abstain(
@@ -3981,6 +4040,7 @@ def _maybe_generative_ask_impl(
             grantable=allowed,
             plan_origin=origin,
             served_route=ROUTE_COMPILE,
+            qualifier_notes=plan_notes,
         )
     )
 
@@ -4078,6 +4138,15 @@ def _climb_after_silent_verdict(
     return env
 
 
+def _qualifier_note_only(reason: str | None) -> bool:
+    """Flag on: this lexical reason is a note, so the rank compiler does not serve it."""
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() != "1":
+        return False
+    from dms_executor.qualifier_ai import is_candidate_note
+
+    return is_candidate_note(reason)
+
+
 def maybe_generative_ask(
     *args: Any, **kwargs: Any
 ) -> dict[str, Any] | None:
@@ -4092,6 +4161,19 @@ def maybe_generative_ask(
     token = ensure_clock()
     climb = bind_climb(None)
     turn_token = bind_turn(None)
+    repair_token = None
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        asked = kwargs.get("question")
+        if not isinstance(asked, str) and args:
+            asked = args[0]
+        compute = kwargs.get("compute")
+        if isinstance(asked, str) and callable(compute):
+            from dms_executor.qualifier_ai import (
+                bind_qualifier_repair,
+                repair_from_compute,
+            )
+
+            repair_token = bind_qualifier_repair(repair_from_compute(compute, asked))
     try:
         with use_ask_space(space_id):
             env = _maybe_generative_ask_impl(*args, **kwargs)
@@ -4099,6 +4181,10 @@ def maybe_generative_ask(
             attach_timings(env)
         return env
     finally:
+        if repair_token is not None:
+            from dms_executor.qualifier_ai import reset_qualifier_repair
+
+            reset_qualifier_repair(repair_token)
         reset_turn(turn_token)
         reset_climb(climb)
         release_clock(token)
