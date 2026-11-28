@@ -12,3 +12,6 @@ dependencies = ["pydantic>=2.6", "psycopg[binary]>=3.1"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["dms_core*"]
+
+[tool.setuptools.package-data]
+dms_core = ["create_style/themes/*.json"]

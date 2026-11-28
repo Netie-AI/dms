@@ -1,0 +1,12 @@
+{
+  "name": "huawei-red",
+  "colours": {
+    "ink": "#1D1D1F",
+    "paper": "#FFFFFF",
+    "accent": "#C7000B",
+    "card": "#F6F6F7",
+    "muted": "#5E6670",
+    "line": "#E6E6E6"
+  },
+  "card_alpha": 1
+}

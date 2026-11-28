@@ -213,6 +213,7 @@ jobs:
           # no compose service yet; skip is an explicit decision, not a silent green.
           # Add a postgres service job before flipping this off.
           DMS_SKIP_CONTROL_PLANE_TESTS: "1"
+          DMS_STYLE_RENDERS: ${{ runner.temp }}/style-renders
         run: |
           set -euo pipefail
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor:${PWD}/packages/create_docs"
@@ -221,6 +222,14 @@ jobs:
           bash scripts/ci_pytest_shard.sh files ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard_files.txt"
           echo "shard ${{ matrix.shard }} of 3: $(wc -l < "$RUNNER_TEMP/shard_files.txt") test files"
           xargs -a "$RUNNER_TEMP/shard_files.txt" python -m pytest -q --tb=short
+
+      - name: Style layout renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: create-style-renders-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/style-renders
+          if-no-files-found: ignore
 
   # R1-LIVE-FIX-01. Boots the API on the seeded Postgres and GETs every
   # page-load path. A 4xx or 5xx fails the job. lint-type-test waits on it.
