@@ -47,6 +47,8 @@ IDs are never reused. Full law: `D:\Netie\Internal\Rules\DOCUMENT_SYSTEM.md`.
 
 <!-- NETIE:END -->
 
+Taking over operations: read [docs/HANDOFF.md](docs/HANDOFF.md).
+
 **Repo:** `netie/dms` (private). Consumer app. Not the Cortex engine.
 
 Read this before any edit. Violations fail CI via `.importlinter` and `tests/invariants/`.
