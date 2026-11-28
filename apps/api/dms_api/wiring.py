@@ -2259,3 +2259,63 @@ def create_context_share(**kwargs: Any) -> dict[str, Any]:
     import dms_executor
 
     return dms_executor.create_context_share(**kwargs)
+
+
+def create_app_contract() -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_contract_body()
+
+
+def create_app_generate(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_generate_run(**kwargs)
+
+
+def create_app_read(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_read_run(**kwargs)
+
+
+def create_app_preview(**kwargs: Any) -> str:
+    import dms_executor
+
+    return dms_executor.create_app_preview_html(**kwargs)
+
+
+def create_app_publish(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_publish_run(**kwargs)
+
+
+def create_app_query(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_query_run(**kwargs)
+
+
+def create_app_dry_run(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_dry_run_run(**kwargs)
+
+
+def create_app_confirm(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_confirm_run(**kwargs)
+
+
+def create_app_chain(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_chain_run(**kwargs)
+
+
+def create_app_chain_answer(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_app_chain_answer_run(**kwargs)
