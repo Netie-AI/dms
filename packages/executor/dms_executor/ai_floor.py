@@ -134,6 +134,7 @@ def _context(
     grantable: set[str],
     dialect: str,
     space_id: str | None,
+    asker: str | None = None,
 ) -> tuple[str, list[str]]:
     """Schema, ontology, and verified examples. A lookup miss is an empty block."""
     from dms_core.ask_stream import note_fetch, note_stage
@@ -190,7 +191,125 @@ def _context(
 
         if isinstance(exc, SERVING_ERRORS):
             raise
-    return "\n\n".join(blocks), tables
+    return _with_levers(
+        "\n\n".join(blocks),
+        question=question,
+        warehouse=warehouse,
+        grantable=grantable,
+        dialect=dialect,
+        space_id=space_id,
+        asker=asker,
+    ), tables
+
+
+def _with_levers(
+    text: str,
+    *,
+    question: str,
+    warehouse: Path | None,
+    grantable: set[str],
+    dialect: str,
+    space_id: str | None,
+    asker: str | None,
+) -> str:
+    """Value and example blocks. Both flags off leave ``text`` unchanged."""
+    from dms_executor.lake_registry import SERVING_ERRORS
+
+    parts = [text] if text else []
+    try:
+        from dms_executor.value_link import values_context
+
+        block = values_context(
+            question,
+            warehouse=warehouse,
+            grantable=set(grantable),
+            dialect=dialect,
+        )
+        if block:
+            parts.append(block)
+    except SERVING_ERRORS:
+        raise
+    except Exception:
+        pass
+    try:
+        from dms_executor.learned_memory import examples_context
+
+        block = examples_context(question, space_id=space_id, asker=asker)
+        if block:
+            parts.append(block)
+    except SERVING_ERRORS:
+        raise
+    except Exception:
+        pass
+    return "\n\n".join(parts)
+
+
+def _who(asker: str | None, session_id: str | None) -> str:
+    return (asker or session_id or "").strip()
+
+
+def _remember(
+    env: dict[str, Any],
+    *,
+    question: str,
+    sql: str,
+    asker: str,
+    space_id: str | None,
+    dialect: str,
+) -> dict[str, Any]:
+    from dms_executor.learned_memory import note_served
+
+    note_served(
+        env,
+        question=question,
+        sql=sql,
+        asker=asker,
+        space_id=space_id,
+        dialect=dialect,
+    )
+    return env
+
+
+def _clarify(
+    question: str,
+    readings: list[dict[str, str]],
+    *,
+    space_id: str | None,
+    session_id: str | None,
+    started: float,
+    calls: int,
+    executes: int,
+    stage: str,
+    temperatures: tuple[float, ...] = (),
+) -> dict[str, Any]:
+    import uuid
+
+    from dms_executor.envelope import assert_envelope_valid, attach_clarify_block
+
+    env = _abstain(
+        question,
+        "clarify_ambiguous",
+        space_id=space_id,
+        session_id=session_id,
+        started=started,
+        calls=calls,
+        executes=executes,
+        stage=stage,
+    )
+    attach_clarify_block(
+        env,
+        question=question,
+        readings=readings,
+        clarify_id="clr_" + uuid.uuid4().hex[:16],
+    )
+    if temperatures:
+        env["self_consistency"] = {
+            "n": len(temperatures),
+            "temperatures": list(temperatures),
+            "agreed": False,
+        }
+    assert_envelope_valid(env)
+    return env
 
 
 def _catalog(
@@ -376,8 +495,13 @@ def run_floor(
     dialect: str | None,
     space_id: str | None,
     session_id: str | None,
+    asker: str | None = None,
 ) -> dict[str, Any]:
-    """Generate, execute, check, one retry, then role ``escalate``."""
+    """Generate, execute, check, one retry, then role ``escalate``.
+
+    Self-consistency, value link, and learned memory run only when their
+    own flag is the digit 1. Off, this is the same harness.
+    """
     from dms_core.ask_stream import note_stage
 
     from dms_executor.generative_ask import query_sql_from_payload, validate_compiled_sql
@@ -388,19 +512,178 @@ def run_floor(
 
     started = time.perf_counter()
     spoken = dialect or SERVING_DIALECT
+    who = _who(asker, session_id)
     context, _tables = _context(
         question,
         warehouse=warehouse,
         grantable=set(grantable),
         dialect=spoken,
         space_id=space_id,
+        asker=who,
     )
+    from dms_executor.learned_memory import exact_action
+    from dms_executor.value_link import take_tie
+
+    tied = take_tie()
     feedback: dict[str, str] | None = None
     calls = 0
     executes = 0
     stage = "generate"
     last_reason = "no_sql"
+    action, remembered = exact_action(question, space_id=space_id, asker=who)
+    if action == "clarify":
+        return _clarify(
+            question,
+            [
+                {"id": "r1", "text": "reading 1", "sql_preview": ""},
+                {"id": "r2", "text": "reading 2", "sql_preview": ""},
+            ],
+            space_id=space_id,
+            session_id=session_id,
+            started=started,
+            calls=0,
+            executes=0,
+            stage="memory",
+        )
+    if action == "run" and remembered:
+        why = validate_compiled_sql(
+            remembered,
+            grantable=set(grantable),
+            warehouse=warehouse,
+            dialect=spoken,
+        )
+        if not why:
+            try:
+                result = submit(remembered)
+            except SERVING_ERRORS:
+                raise
+            except OpenVaultTokenError:
+                raise
+            except Exception:
+                result = None
+            if result is not None and getattr(result, "ok", None) is not False:
+                rows = rows_from_submit_result(result)
+                if _shape(rows) is None:
+                    published = _publish(
+                        remembered,
+                        result,
+                        None,
+                        question=question,
+                        space_id=space_id,
+                        session_id=session_id,
+                        ledger_append=ledger_append,
+                    )
+                    if isinstance(published, dict):
+                        _remember(
+                            published,
+                            question=question,
+                            sql=remembered,
+                            asker=who,
+                            space_id=space_id,
+                            dialect=spoken,
+                        )
+                        published["learned_memory_rerun"] = True
+                        return _stamp(
+                            published,
+                            started=started,
+                            calls=0,
+                            executes=1,
+                            stage="memory",
+                            checks=_CHECKS,
+                        )
     # ``stage`` is rebound by the loop. The name stays for the miss stamp.
+    def _voted() -> dict[str, Any] | None:
+        nonlocal calls, executes
+        from dms_executor.self_consistency import clarify_readings, run_vote
+        from dms_executor.self_consistency import enabled as vote_on
+
+        if stage != "generate" or not vote_on():
+            return None
+        outcome = run_vote(
+            question,
+            context,
+            compute=compute,
+            submit=submit,
+            validate=lambda statement: validate_compiled_sql(
+                statement,
+                grantable=set(grantable),
+                warehouse=warehouse,
+                dialect=spoken,
+            ),
+            rows_of=rows_from_submit_result,
+            dialect=spoken,
+            grantable=set(grantable),
+            direct=_direct,
+        )
+        calls += outcome.calls
+        executes += outcome.executes
+        if outcome.status == "serve" and outcome.result is not None:
+            published = _publish(
+                outcome.sql,
+                outcome.result,
+                outcome.payload,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+                ledger_append=ledger_append,
+            )
+            if isinstance(published, dict):
+                _remember(
+                    published,
+                    question=question,
+                    sql=outcome.sql,
+                    asker=who,
+                    space_id=space_id,
+                    dialect=spoken,
+                )
+                published["self_consistency"] = {
+                    "n": len(outcome.temperatures),
+                    "temperatures": list(outcome.temperatures),
+                    "agreed": True,
+                }
+                return _stamp(
+                    published,
+                    started=started,
+                    calls=calls,
+                    executes=executes,
+                    stage="self_consistency",
+                    checks=_CHECKS,
+                )
+            if isinstance(published, str) and _direct(published):
+                return _abstain(
+                    question,
+                    published,
+                    space_id=space_id,
+                    session_id=session_id,
+                    started=started,
+                    calls=calls,
+                    executes=executes,
+                    stage="self_consistency",
+                )
+            return None
+        if outcome.status == "abstain":
+            return _abstain(
+                question,
+                outcome.reason,
+                space_id=space_id,
+                session_id=session_id,
+                started=started,
+                calls=calls,
+                executes=executes,
+                stage="self_consistency",
+            )
+        return _clarify(
+            question,
+            clarify_readings(list(outcome.samples), spoken),
+            space_id=space_id,
+            session_id=session_id,
+            started=started,
+            calls=calls,
+            executes=executes,
+            stage="self_consistency",
+            temperatures=outcome.temperatures,
+        )
+
     for stage in ("generate", "repair", "escalate"):
         calls += 1
         if stage == "escalate":
@@ -426,6 +709,9 @@ def run_floor(
             last_reason = "no_sql"
             feedback = {"previous_sql": "", "reason": "no_sql"}
             note_stage("write", "failed")
+            voted = _voted()
+            if voted is not None:
+                return voted
             continue
         note_stage("write", "done")
         why = validate_compiled_sql(
@@ -452,6 +738,9 @@ def run_floor(
                 "previous_sql": sql,
                 "reason": mask_feedback_text(why),
             }
+            voted = _voted()
+            if voted is not None:
+                return voted
             continue
         note_stage("run", "started")
         try:
@@ -464,12 +753,18 @@ def run_floor(
             last_reason = "submit_failed"
             feedback = {"previous_sql": sql, "reason": "submit_failed"}
             note_stage("run", "failed")
+            voted = _voted()
+            if voted is not None:
+                return voted
             continue
         executes += 1
         if getattr(result, "ok", None) is False:
             last_reason = "submit_failed"
             feedback = {"previous_sql": sql, "reason": "submit_failed"}
             note_stage("run", "failed")
+            voted = _voted()
+            if voted is not None:
+                return voted
             continue
         note_stage("run", "done")
         rows = rows_from_submit_result(result)
@@ -479,8 +774,17 @@ def run_floor(
             last_reason = shape
             feedback = {"previous_sql": sql, "reason": shape}
             note_stage("check", "failed")
+            voted = _voted()
+            if voted is not None:
+                return voted
             continue
         note_stage("check", "done")
+        from dms_executor.self_consistency import flagged_ambiguous
+
+        if stage == "generate" and (tied or flagged_ambiguous(body)):
+            voted = _voted()
+            if voted is not None:
+                return voted
         published = _publish(
             sql,
             result,
@@ -491,6 +795,14 @@ def run_floor(
             ledger_append=ledger_append,
         )
         if isinstance(published, dict):
+            _remember(
+                published,
+                question=question,
+                sql=sql,
+                asker=who,
+                space_id=space_id,
+                dialect=spoken,
+            )
             return _stamp(
                 published,
                 started=started,

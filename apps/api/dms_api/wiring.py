@@ -27,6 +27,7 @@ def build_ask_service(
     settings = get_settings()
     ov_url = openvault_url or settings.openvault_url
     exe = dms_executor.Executor(cortex=cortex, openvault_url=ov_url)
+    exe.learned_asker = str(settings.dms_actor_user_id or "").strip()
     exe.startup()
     return exe
 
@@ -2116,3 +2117,64 @@ def run_benchmark_job(store: Any, run_id: str, items: list[dict[str, Any]], ask_
     except Exception:
         logger.warning("bench_run_failed")
         store.finish_run(run_id, status="failed", tally={})
+
+
+def confirm_learned(
+    *,
+    answer_id: str,
+    question: str,
+    intent: str,
+    confirmer: str,
+) -> dict[str, Any]:
+    """Yes. The library refuses a generic reading and a foreign asker."""
+    from dms_executor.learned_memory import MemoryDisabled, MemoryRefused, confirm
+
+    try:
+        return confirm(
+            answer_id=answer_id,
+            question=question,
+            intent=intent,
+            confirmer=confirmer,
+        )
+    except MemoryDisabled:
+        raise HTTPException(status_code=404, detail="learned_memory_off") from None
+    except MemoryRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+def fix_learned(
+    *,
+    answer_id: str,
+    question: str,
+    intent: str,
+    confirmer: str,
+    sql: str,
+    space_id: str | None,
+    interpretation: str = "",
+) -> dict[str, Any]:
+    """Fix. Re-gates the edited SQL and returns the live rows."""
+    from dms_executor.demo_warehouse import SERVING_DIALECT, warehouse_path
+    from dms_executor.learned_memory import MemoryDisabled, MemoryRefused, apply_fix
+
+    path = warehouse_path()
+    exe = dms_executor.Executor(cortex=None, warehouse_path=path)
+    try:
+        allowed = set(exe.grantable_tables(space_id=space_id))
+    finally:
+        exe.close()
+    try:
+        return apply_fix(
+            answer_id=answer_id,
+            question=question,
+            intent=intent,
+            confirmer=confirmer,
+            sql=sql,
+            warehouse=path,
+            grantable=allowed,
+            dialect=SERVING_DIALECT,
+            interpretation=interpretation,
+        )
+    except MemoryDisabled:
+        raise HTTPException(status_code=404, detail="learned_memory_off") from None
+    except MemoryRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None

@@ -326,6 +326,10 @@ def _insights_compute_seam(
         "governed_definitions",
         "space_knowledge",
         "route_hint",
+        # Sample temperature is a catalog hint. Insights 422s an unknown
+        # body field, so it never rides on the POST. The prompt is the
+        # diversity the model sees.
+        "sample_temperature",
     }
     if isinstance(ontology, dict) and (
         _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
@@ -460,6 +464,8 @@ class Executor:
         self.dialect = dialect
         self._bound_sessions: set[str] = set()
         self._turns: dict[tuple[str, str], dict[str, Any]] = {}
+        # The asker id for learned-memory confirms. Empty until wiring sets it.
+        self.learned_asker = ""
         # The Space boundary reads its facts from here. Defaults to the DR-0002
         # seed so the boundary holds without Postgres; swap for a Postgres-backed
         # store when P-DMS-2 lands, without touching the serving path.
@@ -1340,6 +1346,7 @@ class Executor:
                     dialect=self.dialect or SERVING_DIALECT,
                     space_id=space_id,
                     session_id=session_id,
+                    asker=getattr(self, "learned_asker", None) or session_id,
                 )
                 self._store_turn(session_id, space_id, env)
                 return env

@@ -29,6 +29,7 @@ from dms_api.routes import (
     health,
     insight_proof,
     insights,
+    learned_memory,
     library,
     mcp,
     ontology,
@@ -237,6 +238,8 @@ def create_app() -> FastAPI:
         app.include_router(studio_knowledge.router)
     if space_bench.enabled():
         app.include_router(space_bench.router)
+    if learned_memory.enabled():
+        app.include_router(learned_memory.router)
     return app
 
 
