@@ -135,8 +135,11 @@ _secret_loader: SecretLoader | None = None
 
 
 def enabled() -> bool:
-    """True only when ``DMS_SSO`` is the digit ``1``."""
-    return os.environ.get(FLAG, "0").strip() == "1"
+    """True only when ``DMS_SSO`` is exactly the digit ``1``.
+
+    ``true``, ``yes``, ``on``, and a padded `` 1 `` stay off.
+    """
+    return os.environ.get(FLAG, "0") == "1"
 
 
 def _now() -> float:

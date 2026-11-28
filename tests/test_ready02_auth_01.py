@@ -140,12 +140,13 @@ def test_flag_off_is_byte_identical(monkeypatch: pytest.MonkeyPatch) -> None:
     assert export.status_code == 200
     assert export.headers["X-Audit-Actor-Basis"] == ACTOR_BASIS
 
-    monkeypatch.setenv("DMS_SSO", "true")
-    with TestClient(create_app()) as other:
-        assert other.get("/v1/spaces").content == spaces
-        assert other.get("/openapi.json").content == spec
-        assert other.get("/v1/audit/export").headers["X-Audit-Actor-Basis"] == ACTOR_BASIS
-        assert [m.cls.__name__ for m in other.app.user_middleware] == names
+    for raw in ("true", " 1 ", "1 ", "yes", "on"):
+        monkeypatch.setenv("DMS_SSO", raw)
+        with TestClient(create_app()) as other:
+            assert other.get("/v1/spaces").content == spaces
+            assert other.get("/openapi.json").content == spec
+            assert other.get("/v1/audit/export").headers["X-Audit-Actor-Basis"] == ACTOR_BASIS
+            assert [m.cls.__name__ for m in other.app.user_middleware] == names
 
 
 def test_allowlist_is_explicit_and_every_other_get_is_401(sso: TestClient) -> None:
