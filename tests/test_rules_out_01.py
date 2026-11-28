@@ -96,7 +96,11 @@ def test_flag_on_rule_lanes_do_not_decide(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("DMS_LANE_BRONZE_SHEET", "1")
     assert is_uncertified_paraphrase(HOW_FULL_TRAP_Q) is False
     assert _is_predictive(_FORECAST) is False
-    assert answer_demo_question(_REVENUE) is None
+    held = answer_demo_question(_REVENUE)
+    assert isinstance(held, dict)
+    assert held["reason_code"] == "rules_off"
+    assert held["rows"] == []
+    assert "Total outbound revenue" not in str(held.get("text") or "")
     assert bronze_sheet_lane_enabled() is False
     assert bronze_lane_table(_BRONZE) is None
     assert maybe_bronze_sheet_ask(_BRONZE) is None
