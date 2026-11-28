@@ -3219,21 +3219,20 @@ def _maybe_generative_ask_impl(
         prov = gate_state.get("provenance")
         if isinstance(prov, dict) and isinstance(stamped, dict):
             stamped["ontology_provenance"] = dict(prov)
-        from dms_executor.generate_retry import current_audit
-
-        audit = current_audit()
-        if audit is not None and isinstance(stamped, dict):
-            stamped["generate_audit"] = audit
         return freeze_route(stamped)
 
     def _after_miss() -> dict[str, Any] | None:
         from dms_executor.ask_ladder import current_climb
+        from dms_executor.generate_retry import terminal_askback
 
         session = current_climb()
         if session is not None:
             served = session.finish_miss()
             if isinstance(served, dict) and served.get("abstained") is not True:
                 return _stamp(served)
+        card = terminal_askback()
+        if isinstance(card, dict):
+            return _stamp(card)
         return _stamp(None)
 
     if held_preview is not None:

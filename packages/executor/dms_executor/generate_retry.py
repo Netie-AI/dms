@@ -77,6 +77,7 @@ class Scope:
         self.calls = 0
         self.tried = False
         self.recovering = False
+        self.last_reason = "no_sql"
         self.audit: dict[str, Any] | None = None
 
 
@@ -183,7 +184,12 @@ def opening_reason(payload: dict[str, Any] | None) -> str:
 
 
 def recover_empty_generate(reason: str) -> dict[str, Any] | None:
-    """One retry after an empty generate. None when the flag is off."""
+    """Served envelope when the retry wrote SQL.
+
+    None when the flag is off, the reason is a direct refusal, or the retry
+    is still empty. An empty retry is remembered so the terminal give-up
+    can ask back. Ranking and compile still run in between.
+    """
     if not enabled():
         return None
     from dms_executor.ask_ladder import is_direct_abstain
@@ -200,16 +206,34 @@ def recover_give_up(
     space_id: str | None,
     session_id: str | None,
 ) -> dict[str, Any] | None:
-    """Retry a bare give-up, or an ask-back when the retry already ran."""
+    """Retry a bare give-up, or an ask-back when that retry is still empty."""
     if not enabled() or not is_give_up(reason):
         return None
     scope = _SCOPE.get()
-    if scope is not None:
-        if question:
-            scope.question = question
-        scope.space_id = space_id
-        scope.session_id = session_id
-    return _recover(reason)
+    if scope is None or scope.recovering:
+        return None
+    if question:
+        scope.question = question
+    scope.space_id = space_id
+    scope.session_id = session_id
+    if scope.tried:
+        return _askback(scope, reason)
+    env = _recover(reason)
+    if isinstance(env, dict) and env.get("abstained") is not True:
+        return env
+    if scope.tried:
+        return _askback(scope, reason)
+    return None
+
+
+def terminal_askback() -> dict[str, Any] | None:
+    """Ask-back after an empty retry when nothing else served. None otherwise."""
+    if not enabled():
+        return None
+    scope = _SCOPE.get()
+    if scope is None or not scope.tried or scope.recovering:
+        return None
+    return _askback(scope, scope.last_reason or "no_sql")
 
 
 def granted_schema_block(
@@ -277,6 +301,7 @@ def _recover(reason: str) -> dict[str, Any] | None:
         return _askback(scope, reason)
     scope.tried = True
     scope.recovering = True
+    scope.last_reason = reason or "no_sql"
     try:
         block = granted_schema_block(scope.warehouse, scope.grantable, scope.dialect)
         prompt = _retry_prompt(scope.question, reason, block)
@@ -297,7 +322,7 @@ def _recover(reason: str) -> dict[str, Any] | None:
         sql = query_sql_from_payload(payload if isinstance(payload, dict) else None)
         _remember(scope, "generate_retry", reason)
         if not sql:
-            return _askback(scope, reason)
+            return None
         from dms_executor.generative_ask import validate_compiled_sql
 
         why = validate_compiled_sql(
