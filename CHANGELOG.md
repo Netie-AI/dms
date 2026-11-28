@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 05bcd414
+
+- **Base.** Rebased onto `05bcd414` (#618, #619). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the compile-honour row, the join-gate row, and this row. The ask wrapper keeps the honour reset and the schema session. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `a3b47aa`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
 ## 2026-11-28 - NL19-COMPILE-WRONG: rename the destructive refuse helper
 
 - The helper is `_refuse_destructive`. A name containing `gate` is reserved for `packages/cortex_client`. The invariant `test_no_local_gate_policy_functions` failed on `_destructive_gate`. Behaviour is unchanged.
