@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     dms_demo_fallback: bool = False
     # EPIC-014 MCP-01. Swap: IDE MCP client on /v1/mcp/*. Off = no extra surface.
     dms_mcp: bool = False
+    # FEAT-MCP-SERVER-01. Swap: a standards MCP host (Claude, Cursor, Cortex
+    # Agents, Genie) on /mcp. Off = that route is not mounted. DMS_MCP is unchanged.
+    dms_mcp_v2: bool = False
     # CONNECT-GRANT-01. On only for 1/true/yes/on. Grants are process memory
     # unless DMS_CONNECT_V2 is also on.
     dms_connect_api: bool = False

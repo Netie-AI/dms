@@ -54,8 +54,18 @@ sources = [
 llm = [
   "anthropic>=1.0",
 ]
+# FEAT-MCP-SERVER-01. Official MCP Python SDK (MIT), pin 2.3.0.
+# https://github.com/modelcontextprotocol/python-sdk
+# Optional: a deploy that leaves DMS_MCP_V2 off does not import it.
+# CI installs the dev extra, which repeats this pin so the MCP tests run.
+mcp = [
+  "mcp==2.3.0",
+]
 dev = [
   "pytest>=8.0",
+  # Same pin as the mcp extra. The suite imports it; a deploy without the
+  # extra still boots with DMS_MCP_V2 off.
+  "mcp==2.3.0",
   "mypy>=1.8",
   "ruff>=0.3",
   "import-linter>=2.0",

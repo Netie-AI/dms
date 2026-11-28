@@ -102,6 +102,20 @@ def _evidence(
     return "", (), len(rows), False
 
 
+def _recorded_actor(settings: Settings) -> str:
+    """The deployment actor, unless this call is an MCP tool for a mapped key.
+
+    The context var is unset on every HTTP route, so those rows stay the
+    deployment actor. It is set only for the duration of one /mcp call.
+    """
+    from dms_api.mcp_server.auth import current_mcp_actor
+
+    found = current_mcp_actor()
+    if found:
+        return found
+    return settings.dms_actor_user_id
+
+
 def record_ask(
     store: AskAuditStorePort,
     settings: Settings,
@@ -128,7 +142,7 @@ def record_ask(
             rec = record_from_envelope(
                 envelope,
                 question=question,
-                actor=settings.dms_actor_user_id,
+                actor=_recorded_actor(settings),
                 actor_kind=DEPLOYMENT_ACTOR_KIND,
                 space_id=space_id,
                 executed_sql=executed_sql,
@@ -142,7 +156,7 @@ def record_ask(
             rec = record_from_error(
                 question=question,
                 reason=_error_reason(error) if error is not None else "error:unknown",
-                actor=settings.dms_actor_user_id,
+                actor=_recorded_actor(settings),
                 actor_kind=DEPLOYMENT_ACTOR_KIND,
                 space_id=space_id,
                 executed_sql=executed_sql,
