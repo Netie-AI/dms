@@ -1,0 +1,588 @@
+{
+  "as_of": "2025-12-31",
+  "currency": "USD",
+  "dataset": "harborline",
+  "questions": [
+    {
+      "answer": "Top customers by 2025 recognized revenue:\n1. Pinnacle Industrial Supply (CUST-PINNACLE): 64,369,376.00 USD\n2. Juniper Supply 127 (CUST-00127): 817,881.30 USD\n3. Quartz Industrial 153 (CUST-00153): 810,629.55 USD\n4. West Trading 239 (CUST-00239): 806,612.03 USD\n5. Quartz Industrial 033 (CUST-00033): 806,567.22 USD\n6. Juniper MRO 167 (CUST-00167): 805,072.41 USD\n7. Quartz MRO 053 (CUST-00053): 801,301.86 USD\n8. River Supply 014 (CUST-00014): 797,416.97 USD\n9. Bright Industrial 260 (CUST-00260): 795,803.29 USD\n10. Juniper MRO 047 (CUST-00047): 791,307.77 USD",
+      "buyer": "Who were our ten largest customers by revenue in 2025?",
+      "direction": "Ask it in those words. Read the top three names and figures.",
+      "id": "q01",
+      "minute": "0:40",
+      "rows": [
+        {
+          "customer_code": "CUST-PINNACLE",
+          "customer_name": "Pinnacle Industrial Supply",
+          "revenue_usd": 64369376
+        },
+        {
+          "customer_code": "CUST-00127",
+          "customer_name": "Juniper Supply 127",
+          "revenue_usd": "817881.30"
+        },
+        {
+          "customer_code": "CUST-00153",
+          "customer_name": "Quartz Industrial 153",
+          "revenue_usd": "810629.55"
+        },
+        {
+          "customer_code": "CUST-00239",
+          "customer_name": "West Trading 239",
+          "revenue_usd": "806612.03"
+        },
+        {
+          "customer_code": "CUST-00033",
+          "customer_name": "Quartz Industrial 033",
+          "revenue_usd": "806567.22"
+        },
+        {
+          "customer_code": "CUST-00167",
+          "customer_name": "Juniper MRO 167",
+          "revenue_usd": "805072.41"
+        },
+        {
+          "customer_code": "CUST-00053",
+          "customer_name": "Quartz MRO 053",
+          "revenue_usd": "801301.86"
+        },
+        {
+          "customer_code": "CUST-00014",
+          "customer_name": "River Supply 014",
+          "revenue_usd": "797416.97"
+        },
+        {
+          "customer_code": "CUST-00260",
+          "customer_name": "Bright Industrial 260",
+          "revenue_usd": "795803.29"
+        },
+        {
+          "customer_code": "CUST-00047",
+          "customer_name": "Juniper MRO 047",
+          "revenue_usd": "791307.77"
+        }
+      ],
+      "sql": "SELECT c.customer_code, c.customer_name,\n  ROUND(CAST(SUM(ol.line_amount) AS NUMERIC), 2) AS revenue_usd\nFROM harborline.order_lines ol\nJOIN harborline.orders o ON o.order_id = ol.order_id\nJOIN harborline.customers c ON c.customer_id = o.customer_id\nWHERE o.order_date >= DATE '2025-01-01'\n  AND o.order_date < DATE '2026-01-01'\nGROUP BY c.customer_code, c.customer_name\nORDER BY revenue_usd DESC, c.customer_code\nLIMIT 10"
+    },
+    {
+      "answer": "Top SKUs by 2025 recognized revenue:\n1. junction box 058 case (SKU-0058-CS): 9,595,871.20 USD\n2. safety glasses 056 case (SKU-0056-CS): 9,529,767.20 USD\n3. stretch wrap 050 case (SKU-0050-CS): 8,883,606.24 USD\n4. air filter 054 case (SKU-0054-CS): 8,739,437.56 USD\n5. shop towel 052 case (SKU-0052-CS): 8,602,277.28 USD\n6. hex bolt 048 case (SKU-0048-CS): 7,979,062.48 USD\n7. wire nut 046 case (SKU-0046-CS): 7,885,463.88 USD\n8. torque bit 044 case (SKU-0044-CS): 7,462,948.36 USD\n9. junction box 042 case (SKU-0042-CS): 7,222,786.40 USD\n10. safety glasses 040 case (SKU-0040-CS): 6,642,780.24 USD",
+      "buyer": "Which ten SKUs brought in the most revenue in 2025?",
+      "direction": "Same definition of revenue. Read the top SKU code and the figure.",
+      "id": "q02",
+      "minute": "1:20",
+      "rows": [
+        {
+          "revenue_usd": "9595871.20",
+          "sku_code": "SKU-0058-CS",
+          "sku_name": "junction box 058 case"
+        },
+        {
+          "revenue_usd": "9529767.20",
+          "sku_code": "SKU-0056-CS",
+          "sku_name": "safety glasses 056 case"
+        },
+        {
+          "revenue_usd": "8883606.24",
+          "sku_code": "SKU-0050-CS",
+          "sku_name": "stretch wrap 050 case"
+        },
+        {
+          "revenue_usd": "8739437.56",
+          "sku_code": "SKU-0054-CS",
+          "sku_name": "air filter 054 case"
+        },
+        {
+          "revenue_usd": "8602277.28",
+          "sku_code": "SKU-0052-CS",
+          "sku_name": "shop towel 052 case"
+        },
+        {
+          "revenue_usd": "7979062.48",
+          "sku_code": "SKU-0048-CS",
+          "sku_name": "hex bolt 048 case"
+        },
+        {
+          "revenue_usd": "7885463.88",
+          "sku_code": "SKU-0046-CS",
+          "sku_name": "wire nut 046 case"
+        },
+        {
+          "revenue_usd": "7462948.36",
+          "sku_code": "SKU-0044-CS",
+          "sku_name": "torque bit 044 case"
+        },
+        {
+          "revenue_usd": "7222786.40",
+          "sku_code": "SKU-0042-CS",
+          "sku_name": "junction box 042 case"
+        },
+        {
+          "revenue_usd": "6642780.24",
+          "sku_code": "SKU-0040-CS",
+          "sku_name": "safety glasses 040 case"
+        }
+      ],
+      "sql": "SELECT s.sku_code, s.sku_name,\n  ROUND(CAST(SUM(ol.line_amount) AS NUMERIC), 2) AS revenue_usd\nFROM harborline.order_lines ol\nJOIN harborline.orders o ON o.order_id = ol.order_id\nJOIN harborline.skus s ON s.sku_id = ol.sku_id\nWHERE o.order_date >= DATE '2025-01-01'\n  AND o.order_date < DATE '2026-01-01'\nGROUP BY s.sku_code, s.sku_name\nORDER BY revenue_usd DESC, s.sku_code\nLIMIT 10"
+    },
+    {
+      "answer": "2025 recognized revenue by region:\nCoastline: 36,901,308.17 USD\nGulfplain: 36,993,162.88 USD\nHeartland: 36,979,729.50 USD\nHighridge: 36,765,195.67 USD\nLakeshore: 37,238,073.36 USD\nNorthland: 100,381,668.07 USD",
+      "buyer": "How did 2025 revenue break down by region?",
+      "direction": "This is the join across orders, lines, customers, and regions.",
+      "id": "q03",
+      "minute": "2:00",
+      "rows": [
+        {
+          "region_name": "Coastline",
+          "revenue_usd": "36901308.17"
+        },
+        {
+          "region_name": "Gulfplain",
+          "revenue_usd": "36993162.88"
+        },
+        {
+          "region_name": "Heartland",
+          "revenue_usd": "36979729.50"
+        },
+        {
+          "region_name": "Highridge",
+          "revenue_usd": "36765195.67"
+        },
+        {
+          "region_name": "Lakeshore",
+          "revenue_usd": "37238073.36"
+        },
+        {
+          "region_name": "Northland",
+          "revenue_usd": "100381668.07"
+        }
+      ],
+      "sql": "SELECT g.region_name,\n  ROUND(CAST(SUM(ol.line_amount) AS NUMERIC), 2) AS revenue_usd\nFROM harborline.order_lines ol\nJOIN harborline.orders o ON o.order_id = ol.order_id\nJOIN harborline.customers c ON c.customer_id = o.customer_id\nJOIN harborline.regions g ON g.region_id = c.region_id\nWHERE o.order_date >= DATE '2025-01-01'\n  AND o.order_date < DATE '2026-01-01'\nGROUP BY g.region_name\nORDER BY g.region_name"
+    },
+    {
+      "answer": "Highest late-receipt rates in 2025:\n1. Kelso Components (SUP-KELSO): 35.62 percent late (130 of 365 receipts)\n2. Keystone Components 08 (SUP-0008): 8.49 percent late (31 of 365 receipts)\n3. Summit Components 15 (SUP-0015): 8.49 percent late (31 of 365 receipts)\n4. Elm Components 03 (SUP-0003): 8.22 percent late (30 of 365 receipts)\n5. Fair Components 04 (SUP-0004): 8.22 percent late (30 of 365 receipts)\n6. Juniper Components 07 (SUP-0007): 8.22 percent late (30 of 365 receipts)\n7. Oak Components 11 (SUP-0011): 8.22 percent late (30 of 365 receipts)\n8. Twin Components 16 (SUP-0016): 8.22 percent late (30 of 365 receipts)",
+      "buyer": "Which eight suppliers had the highest late-delivery rate in 2025?",
+      "direction": "Late means the receipt arrived after the promised date.",
+      "id": "q04",
+      "minute": "2:40",
+      "rows": [
+        {
+          "late_pct": "35.62",
+          "late_receipts": 130,
+          "receipts": 365,
+          "supplier_code": "SUP-KELSO",
+          "supplier_name": "Kelso Components"
+        },
+        {
+          "late_pct": "8.49",
+          "late_receipts": 31,
+          "receipts": 365,
+          "supplier_code": "SUP-0008",
+          "supplier_name": "Keystone Components 08"
+        },
+        {
+          "late_pct": "8.49",
+          "late_receipts": 31,
+          "receipts": 365,
+          "supplier_code": "SUP-0015",
+          "supplier_name": "Summit Components 15"
+        },
+        {
+          "late_pct": "8.22",
+          "late_receipts": 30,
+          "receipts": 365,
+          "supplier_code": "SUP-0003",
+          "supplier_name": "Elm Components 03"
+        },
+        {
+          "late_pct": "8.22",
+          "late_receipts": 30,
+          "receipts": 365,
+          "supplier_code": "SUP-0004",
+          "supplier_name": "Fair Components 04"
+        },
+        {
+          "late_pct": "8.22",
+          "late_receipts": 30,
+          "receipts": 365,
+          "supplier_code": "SUP-0007",
+          "supplier_name": "Juniper Components 07"
+        },
+        {
+          "late_pct": "8.22",
+          "late_receipts": 30,
+          "receipts": 365,
+          "supplier_code": "SUP-0011",
+          "supplier_name": "Oak Components 11"
+        },
+        {
+          "late_pct": "8.22",
+          "late_receipts": 30,
+          "receipts": 365,
+          "supplier_code": "SUP-0016",
+          "supplier_name": "Twin Components 16"
+        }
+      ],
+      "sql": "SELECT s.supplier_code, s.supplier_name,\n  COUNT(*) AS receipts,\n  SUM(CASE WHEN r.late_days > 0 THEN 1 ELSE 0 END) AS late_receipts,\n  ROUND(\n    100.0 * SUM(CASE WHEN r.late_days > 0 THEN 1 ELSE 0 END) / COUNT(*),\n    2\n  ) AS late_pct\nFROM harborline.inbound_receipts r\nJOIN harborline.suppliers s ON s.supplier_id = r.supplier_id\nWHERE r.promised_date >= DATE '2025-01-01'\n  AND r.promised_date < DATE '2026-01-01'\nGROUP BY s.supplier_code, s.supplier_name\nORDER BY late_pct DESC, s.supplier_code\nLIMIT 8"
+    },
+    {
+      "answer": "Monthly recognized revenue:\n2024-01-01: 22,507,737.42 USD\n2024-02-01: 21,944,752.52 USD\n2024-03-01: 27,138,448.58 USD\n2024-04-01: 28,394,150.09 USD\n2024-05-01: 30,045,675.14 USD\n2024-06-01: 24,997,914.98 USD\n2024-07-01: 26,033,374.01 USD\n2024-08-01: 24,625,330.06 USD\n2024-09-01: 26,546,669.05 USD\n2024-10-01: 30,939,140.83 USD\n2024-11-01: 29,964,516.59 USD\n2024-12-01: 32,282,342.44 USD\n2025-01-01: 22,292,651.86 USD\n2025-02-01: 21,016,729.86 USD\n2025-03-01: 26,920,697.65 USD\n2025-04-01: 28,278,510.19 USD\n2025-05-01: 29,091,517.72 USD\n2025-06-01: 25,831,557.14 USD\n2025-07-01: 25,896,399.86 USD\n2025-08-01: 23,686,952.80 USD\n2025-09-01: 18,891,405.82 USD\n2025-10-01: 20,917,554.75 USD\n2025-11-01: 19,715,557.17 USD\n2025-12-01: 22,719,602.83 USD\nHighest month: 2024-12-01 at 32,282,342.44 USD.\nLowest month: 2025-09-01 at 18,891,405.82 USD.",
+      "buyer": "Show me monthly revenue for the last two years.",
+      "direction": "Point at the winter dip and the late-year rise. Do not smooth it.",
+      "id": "q05",
+      "minute": "3:20",
+      "rows": [
+        {
+          "month_start": "2024-01-01",
+          "revenue_usd": "22507737.42"
+        },
+        {
+          "month_start": "2024-02-01",
+          "revenue_usd": "21944752.52"
+        },
+        {
+          "month_start": "2024-03-01",
+          "revenue_usd": "27138448.58"
+        },
+        {
+          "month_start": "2024-04-01",
+          "revenue_usd": "28394150.09"
+        },
+        {
+          "month_start": "2024-05-01",
+          "revenue_usd": "30045675.14"
+        },
+        {
+          "month_start": "2024-06-01",
+          "revenue_usd": "24997914.98"
+        },
+        {
+          "month_start": "2024-07-01",
+          "revenue_usd": "26033374.01"
+        },
+        {
+          "month_start": "2024-08-01",
+          "revenue_usd": "24625330.06"
+        },
+        {
+          "month_start": "2024-09-01",
+          "revenue_usd": "26546669.05"
+        },
+        {
+          "month_start": "2024-10-01",
+          "revenue_usd": "30939140.83"
+        },
+        {
+          "month_start": "2024-11-01",
+          "revenue_usd": "29964516.59"
+        },
+        {
+          "month_start": "2024-12-01",
+          "revenue_usd": "32282342.44"
+        },
+        {
+          "month_start": "2025-01-01",
+          "revenue_usd": "22292651.86"
+        },
+        {
+          "month_start": "2025-02-01",
+          "revenue_usd": "21016729.86"
+        },
+        {
+          "month_start": "2025-03-01",
+          "revenue_usd": "26920697.65"
+        },
+        {
+          "month_start": "2025-04-01",
+          "revenue_usd": "28278510.19"
+        },
+        {
+          "month_start": "2025-05-01",
+          "revenue_usd": "29091517.72"
+        },
+        {
+          "month_start": "2025-06-01",
+          "revenue_usd": "25831557.14"
+        },
+        {
+          "month_start": "2025-07-01",
+          "revenue_usd": "25896399.86"
+        },
+        {
+          "month_start": "2025-08-01",
+          "revenue_usd": "23686952.80"
+        },
+        {
+          "month_start": "2025-09-01",
+          "revenue_usd": "18891405.82"
+        },
+        {
+          "month_start": "2025-10-01",
+          "revenue_usd": "20917554.75"
+        },
+        {
+          "month_start": "2025-11-01",
+          "revenue_usd": "19715557.17"
+        },
+        {
+          "month_start": "2025-12-01",
+          "revenue_usd": "22719602.83"
+        }
+      ],
+      "sql": "SELECT CAST(date_trunc('month', o.order_date) AS DATE) AS month_start,\n  ROUND(CAST(SUM(ol.line_amount) AS NUMERIC), 2) AS revenue_usd\nFROM harborline.order_lines ol\nJOIN harborline.orders o ON o.order_id = ol.order_id\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "answer": "Second-half recognized revenue by region:\nNorthland: H2 2024 73,609,262.36 USD, H2 2025 35,104,786.05 USD, change -52.31 percent\nGulfplain: H2 2024 19,430,646.93 USD, H2 2025 19,190,010.64 USD, change -1.24 percent\nHeartland: H2 2024 19,263,688.08 USD, H2 2025 19,158,238.16 USD, change -0.55 percent\nLakeshore: H2 2024 19,339,240.60 USD, H2 2025 19,239,327.15 USD, change -0.52 percent\nHighridge: H2 2024 19,368,376.53 USD, H2 2025 19,491,540.75 USD, change 0.64 percent\nCoastline: H2 2024 19,380,158.48 USD, H2 2025 19,643,570.48 USD, change 1.36 percent\nLargest decline: Northland at -52.31 percent.",
+      "buyer": "Did any region fall off in the second half of 2025?",
+      "direction": "Compare July through December with the same months in 2024.",
+      "id": "q06",
+      "minute": "4:00",
+      "rows": [
+        {
+          "change_pct": "-52.31",
+          "h2_2024_usd": "73609262.36",
+          "h2_2025_usd": "35104786.05",
+          "region_name": "Northland"
+        },
+        {
+          "change_pct": "-1.24",
+          "h2_2024_usd": "19430646.93",
+          "h2_2025_usd": "19190010.64",
+          "region_name": "Gulfplain"
+        },
+        {
+          "change_pct": "-0.55",
+          "h2_2024_usd": "19263688.08",
+          "h2_2025_usd": "19158238.16",
+          "region_name": "Heartland"
+        },
+        {
+          "change_pct": "-0.52",
+          "h2_2024_usd": "19339240.60",
+          "h2_2025_usd": "19239327.15",
+          "region_name": "Lakeshore"
+        },
+        {
+          "change_pct": "0.64",
+          "h2_2024_usd": "19368376.53",
+          "h2_2025_usd": "19491540.75",
+          "region_name": "Highridge"
+        },
+        {
+          "change_pct": "1.36",
+          "h2_2024_usd": "19380158.48",
+          "h2_2025_usd": "19643570.48",
+          "region_name": "Coastline"
+        }
+      ],
+      "sql": "SELECT region_name, h2_2024_usd, h2_2025_usd,\n  ROUND(100.0 * (h2_2025_usd - h2_2024_usd) / h2_2024_usd, 2) AS change_pct\nFROM (\n  SELECT g.region_name,\n    ROUND(CAST(SUM(CASE\n      WHEN o.order_date BETWEEN DATE '2024-07-01' AND DATE '2024-12-31'\n      THEN ol.line_amount ELSE 0 END) AS NUMERIC), 2) AS h2_2024_usd,\n    ROUND(CAST(SUM(CASE\n      WHEN o.order_date BETWEEN DATE '2025-07-01' AND DATE '2025-12-31'\n      THEN ol.line_amount ELSE 0 END) AS NUMERIC), 2) AS h2_2025_usd\n  FROM harborline.order_lines ol\n  JOIN harborline.orders o ON o.order_id = ol.order_id\n  JOIN harborline.customers c ON c.customer_id = o.customer_id\n  JOIN harborline.regions g ON g.region_id = c.region_id\n  GROUP BY g.region_name\n) halves\nORDER BY change_pct, region_name"
+    },
+    {
+      "answer": "Largest Northland declines, Sep-Dec versus the prior year:\n1. Pinnacle Industrial Supply (CUST-PINNACLE): Sep-Dec 2024 37,984,425.32 USD, Sep-Dec 2025 0.00 USD, decline 37,984,425.32 USD\n2. Keystone Supply 008 (CUST-00008): Sep-Dec 2024 309,548.45 USD, Sep-Dec 2025 250,457.71 USD, decline 59,090.74 USD\n3. Fair Supply 004 (CUST-00004): Sep-Dec 2024 293,432.94 USD, Sep-Dec 2025 244,936.21 USD, decline 48,496.73 USD\n4. Fair Industrial 024 (CUST-00024): Sep-Dec 2024 295,581.78 USD, Sep-Dec 2025 255,163.02 USD, decline 40,418.76 USD\n5. Delta Supply 002 (CUST-00002): Sep-Dec 2024 286,585.68 USD, Sep-Dec 2025 246,560.42 USD, decline 40,025.26 USD",
+      "buyer": "Why did Northland revenue drop after August 2025?",
+      "direction": "Same four months versus last year, by customer. Read the top decline.",
+      "id": "q07",
+      "minute": "4:40",
+      "rows": [
+        {
+          "customer_code": "CUST-PINNACLE",
+          "customer_name": "Pinnacle Industrial Supply",
+          "decline_usd": "37984425.32",
+          "sep_dec_2024_usd": "37984425.32",
+          "sep_dec_2025_usd": 0
+        },
+        {
+          "customer_code": "CUST-00008",
+          "customer_name": "Keystone Supply 008",
+          "decline_usd": "59090.74",
+          "sep_dec_2024_usd": "309548.45",
+          "sep_dec_2025_usd": "250457.71"
+        },
+        {
+          "customer_code": "CUST-00004",
+          "customer_name": "Fair Supply 004",
+          "decline_usd": "48496.73",
+          "sep_dec_2024_usd": "293432.94",
+          "sep_dec_2025_usd": "244936.21"
+        },
+        {
+          "customer_code": "CUST-00024",
+          "customer_name": "Fair Industrial 024",
+          "decline_usd": "40418.76",
+          "sep_dec_2024_usd": "295581.78",
+          "sep_dec_2025_usd": "255163.02"
+        },
+        {
+          "customer_code": "CUST-00002",
+          "customer_name": "Delta Supply 002",
+          "decline_usd": "40025.26",
+          "sep_dec_2024_usd": "286585.68",
+          "sep_dec_2025_usd": "246560.42"
+        }
+      ],
+      "sql": "SELECT customer_code, customer_name,\n  ROUND(CAST(sep_dec_2024 AS NUMERIC), 2) AS sep_dec_2024_usd,\n  ROUND(CAST(sep_dec_2025 AS NUMERIC), 2) AS sep_dec_2025_usd,\n  ROUND(CAST(sep_dec_2024 - sep_dec_2025 AS NUMERIC), 2) AS decline_usd\nFROM (\n  SELECT c.customer_code, c.customer_name,\n    SUM(CASE\n      WHEN o.order_date BETWEEN DATE '2024-09-01' AND DATE '2024-12-31'\n      THEN ol.line_amount ELSE 0 END) AS sep_dec_2024,\n    SUM(CASE\n      WHEN o.order_date BETWEEN DATE '2025-09-01' AND DATE '2025-12-31'\n      THEN ol.line_amount ELSE 0 END) AS sep_dec_2025\n  FROM harborline.order_lines ol\n  JOIN harborline.orders o ON o.order_id = ol.order_id\n  JOIN harborline.customers c ON c.customer_id = o.customer_id\n  JOIN harborline.regions g ON g.region_id = c.region_id\n  WHERE g.region_code = 'NL'\n  GROUP BY c.customer_code, c.customer_name\n) windows\nORDER BY decline_usd DESC, customer_code\nLIMIT 5"
+    },
+    {
+      "answer": "Suppliers whose late-receipt rate rose the most:\n1. Kelso Components (SUP-KELSO): 2024 H1 9.34 percent, 2025 H2 39.67 percent, change 30.33 points\n2. Keystone Components 08 (SUP-0008): 2024 H1 8.24 percent, 2025 H2 9.24 percent, change 1.00 points\n3. Inland Components 06 (SUP-0006): 2024 H1 7.14 percent, 2025 H2 7.61 percent, change 0.47 points\n4. West Components 19 (SUP-0019): 2024 H1 7.14 percent, 2025 H2 7.61 percent, change 0.47 points\n5. Elm Components 23 (SUP-0023): 2024 H1 7.14 percent, 2025 H2 7.61 percent, change 0.47 points",
+      "buyer": "Which supplier's deliveries have been getting later?",
+      "direction": "Compare the first half of 2024 with the second half of 2025.",
+      "id": "q08",
+      "minute": "5:20",
+      "rows": [
+        {
+          "late_h1_2024": 17,
+          "late_h2_2025": 73,
+          "late_pct_h1_2024": "9.34",
+          "late_pct_h2_2025": "39.67",
+          "late_pct_point_change": "30.33",
+          "receipts_h1_2024": 182,
+          "receipts_h2_2025": 184,
+          "supplier_code": "SUP-KELSO",
+          "supplier_name": "Kelso Components"
+        },
+        {
+          "late_h1_2024": 15,
+          "late_h2_2025": 17,
+          "late_pct_h1_2024": "8.24",
+          "late_pct_h2_2025": "9.24",
+          "late_pct_point_change": "1.00",
+          "receipts_h1_2024": 182,
+          "receipts_h2_2025": 184,
+          "supplier_code": "SUP-0008",
+          "supplier_name": "Keystone Components 08"
+        },
+        {
+          "late_h1_2024": 13,
+          "late_h2_2025": 14,
+          "late_pct_h1_2024": "7.14",
+          "late_pct_h2_2025": "7.61",
+          "late_pct_point_change": "0.47",
+          "receipts_h1_2024": 182,
+          "receipts_h2_2025": 184,
+          "supplier_code": "SUP-0006",
+          "supplier_name": "Inland Components 06"
+        },
+        {
+          "late_h1_2024": 13,
+          "late_h2_2025": 14,
+          "late_pct_h1_2024": "7.14",
+          "late_pct_h2_2025": "7.61",
+          "late_pct_point_change": "0.47",
+          "receipts_h1_2024": 182,
+          "receipts_h2_2025": 184,
+          "supplier_code": "SUP-0019",
+          "supplier_name": "West Components 19"
+        },
+        {
+          "late_h1_2024": 13,
+          "late_h2_2025": 14,
+          "late_pct_h1_2024": "7.14",
+          "late_pct_h2_2025": "7.61",
+          "late_pct_point_change": "0.47",
+          "receipts_h1_2024": 182,
+          "receipts_h2_2025": 184,
+          "supplier_code": "SUP-0023",
+          "supplier_name": "Elm Components 23"
+        }
+      ],
+      "sql": "SELECT supplier_code, supplier_name,\n  receipts_h1_2024, late_h1_2024,\n  ROUND(100.0 * late_h1_2024 / receipts_h1_2024, 2) AS late_pct_h1_2024,\n  receipts_h2_2025, late_h2_2025,\n  ROUND(100.0 * late_h2_2025 / receipts_h2_2025, 2) AS late_pct_h2_2025,\n  ROUND(\n    100.0 * late_h2_2025 / receipts_h2_2025\n    - 100.0 * late_h1_2024 / receipts_h1_2024,\n    2\n  ) AS late_pct_point_change\nFROM (\n  SELECT s.supplier_code, s.supplier_name,\n    SUM(CASE WHEN r.promised_date < DATE '2024-07-01' THEN 1 ELSE 0 END)\n      AS receipts_h1_2024,\n    SUM(CASE\n      WHEN r.promised_date < DATE '2024-07-01' AND r.late_days > 0 THEN 1\n      ELSE 0 END) AS late_h1_2024,\n    SUM(CASE WHEN r.promised_date >= DATE '2025-07-01' THEN 1 ELSE 0 END)\n      AS receipts_h2_2025,\n    SUM(CASE\n      WHEN r.promised_date >= DATE '2025-07-01' AND r.late_days > 0 THEN 1\n      ELSE 0 END) AS late_h2_2025\n  FROM harborline.inbound_receipts r\n  JOIN harborline.suppliers s ON s.supplier_id = r.supplier_id\n  GROUP BY s.supplier_code, s.supplier_name\n) halves\nORDER BY late_pct_point_change DESC, supplier_code\nLIMIT 5"
+    },
+    {
+      "answer": "Longest stockouts:\nHarbor Hose 25mm (HX-440) at DC-NORTH: 77 stockout days, 2025-06-02 through 2025-08-17, unfilled demand 3,778.18 USD",
+      "buyer": "Did we stock out of anything, and what did that cost us?",
+      "direction": "On-hand zero is the stockout. Dollars are units we did not ship.",
+      "id": "q09",
+      "minute": "6:00",
+      "rows": [
+        {
+          "first_day": "2025-06-02",
+          "last_day": "2025-08-17",
+          "missed_usd": "3778.18",
+          "sku_code": "HX-440",
+          "sku_name": "Harbor Hose 25mm",
+          "warehouse_code": "DC-NORTH",
+          "zero_days": 77
+        }
+      ],
+      "sql": "SELECT s.sku_code, s.sku_name, w.warehouse_code,\n  z.zero_days, z.first_day, z.last_day,\n  COALESCE(m.missed_usd, 0) AS missed_usd\nFROM (\n  SELECT sku_id, warehouse_id,\n    COUNT(*) AS zero_days,\n    MIN(snapshot_date) AS first_day,\n    MAX(snapshot_date) AS last_day\n  FROM harborline.inventory_snapshots\n  WHERE qty_on_hand = 0\n  GROUP BY sku_id, warehouse_id\n) z\nJOIN harborline.skus s ON s.sku_id = z.sku_id\nJOIN harborline.warehouses w ON w.warehouse_id = z.warehouse_id\nLEFT JOIN (\n  SELECT o.warehouse_id, ol.sku_id,\n    ROUND(CAST(SUM(\n      (ol.qty - ol.fulfilled_qty) * ol.unit_price\n    ) AS NUMERIC), 2) AS missed_usd\n  FROM harborline.order_lines ol\n  JOIN harborline.orders o ON o.order_id = ol.order_id\n  GROUP BY o.warehouse_id, ol.sku_id\n) m ON m.sku_id = z.sku_id AND m.warehouse_id = z.warehouse_id\nORDER BY z.zero_days DESC, s.sku_code\nLIMIT 5"
+    },
+    {
+      "answer": "January 2026 forecast: 17,247,257.97 USD. January 2025 was 22,292,651.86 USD. July-December 2025 was 131,827,473.23 USD. July-December 2024 was 170,391,372.98 USD.",
+      "buyer": "What should we plan for revenue next month?",
+      "direction": "Say the method before the number. Next month is January 2026. The method is January 2025 times July-December 2025 over July-December 2024.",
+      "id": "q10",
+      "minute": "6:40",
+      "rows": [
+        {
+          "forecast_usd": "17247257.97",
+          "january_2025_usd": "22292651.86",
+          "jul_dec_2024_usd": "170391372.98",
+          "jul_dec_2025_usd": "131827473.23"
+        }
+      ],
+      "sql": "SELECT\n  ROUND(CAST(january_2025 * jul_dec_2025 / jul_dec_2024 AS NUMERIC), 2)\n    AS forecast_usd,\n  ROUND(CAST(january_2025 AS NUMERIC), 2) AS january_2025_usd,\n  ROUND(CAST(jul_dec_2025 AS NUMERIC), 2) AS jul_dec_2025_usd,\n  ROUND(CAST(jul_dec_2024 AS NUMERIC), 2) AS jul_dec_2024_usd\nFROM (\n  SELECT\n    SUM(CASE WHEN month_start = DATE '2025-01-01' THEN revenue ELSE 0 END)\n      AS january_2025,\n    SUM(CASE\n      WHEN month_start BETWEEN DATE '2025-07-01' AND DATE '2025-12-01'\n      THEN revenue ELSE 0 END) AS jul_dec_2025,\n    SUM(CASE\n      WHEN month_start BETWEEN DATE '2024-07-01' AND DATE '2024-12-01'\n      THEN revenue ELSE 0 END) AS jul_dec_2024\n  FROM (\n    SELECT CAST(date_trunc('month', o.order_date) AS DATE) AS month_start,\n      SUM(ol.line_amount) AS revenue\n    FROM harborline.order_lines ol\n    JOIN harborline.orders o ON o.order_id = ol.order_id\n    GROUP BY 1\n  ) monthly\n) parts"
+    },
+    {
+      "answer": "Slide title: Five largest customers in 2025\nSubtitle: Recognized revenue, USD\n- Pinnacle Industrial Supply: 64,369,376.00 USD, 22.57 percent of 2025 revenue\n- Juniper Supply 127: 817,881.30 USD, 0.29 percent of 2025 revenue\n- Quartz Industrial 153: 810,629.55 USD, 0.28 percent of 2025 revenue\n- West Trading 239: 806,612.03 USD, 0.28 percent of 2025 revenue\n- Quartz Industrial 033: 806,567.22 USD, 0.28 percent of 2025 revenue",
+      "buyer": "Create a slide of our five biggest customers this year.",
+      "direction": "Read the title and the five bullets. This year means 2025.",
+      "id": "q11",
+      "minute": "7:20",
+      "rows": [
+        {
+          "customer_name": "Pinnacle Industrial Supply",
+          "revenue_usd": 64369376,
+          "share_pct": "22.57"
+        },
+        {
+          "customer_name": "Juniper Supply 127",
+          "revenue_usd": "817881.30",
+          "share_pct": "0.29"
+        },
+        {
+          "customer_name": "Quartz Industrial 153",
+          "revenue_usd": "810629.55",
+          "share_pct": "0.28"
+        },
+        {
+          "customer_name": "West Trading 239",
+          "revenue_usd": "806612.03",
+          "share_pct": "0.28"
+        },
+        {
+          "customer_name": "Quartz Industrial 033",
+          "revenue_usd": "806567.22",
+          "share_pct": "0.28"
+        }
+      ],
+      "sql": "SELECT customer_name, revenue_usd,\n  ROUND(100.0 * revenue_usd / SUM(revenue_usd) OVER (), 2) AS share_pct\nFROM (\n  SELECT c.customer_name,\n    ROUND(CAST(SUM(ol.line_amount) AS NUMERIC), 2) AS revenue_usd\n  FROM harborline.order_lines ol\n  JOIN harborline.orders o ON o.order_id = ol.order_id\n  JOIN harborline.customers c ON c.customer_id = o.customer_id\n  WHERE o.order_date >= DATE '2025-01-01'\n    AND o.order_date < DATE '2026-01-01'\n  GROUP BY c.customer_name\n) ranked\nORDER BY revenue_usd DESC, customer_name\nLIMIT 5"
+    },
+    {
+      "answer": "Carriers by 2025 delivered shipments:\n1. Redline Freight: 22913 shipments, average transit 2.53 days\n2. Inland Parcel: 22857 shipments, average transit 3.53 days\n3. Harbor Cartage: 22778 shipments, average transit 5.53 days",
+      "buyer": "Which carrier delivered the most 2025 shipments, and how long did they take?",
+      "direction": "Count delivered shipments. Transit is delivered date minus ship date.",
+      "id": "q12",
+      "minute": "8:00",
+      "rows": [
+        {
+          "avg_transit_days": "2.53",
+          "carrier_name": "Redline Freight",
+          "shipments": 22913
+        },
+        {
+          "avg_transit_days": "3.53",
+          "carrier_name": "Inland Parcel",
+          "shipments": 22857
+        },
+        {
+          "avg_transit_days": "5.53",
+          "carrier_name": "Harbor Cartage",
+          "shipments": 22778
+        }
+      ],
+      "sql": "SELECT c.carrier_name,\n  COUNT(*) AS shipments,\n  ROUND(CAST(AVG(s.delivered_date - s.ship_date) AS NUMERIC), 2)\n    AS avg_transit_days\nFROM harborline.shipments s\nJOIN harborline.carriers c ON c.carrier_id = s.carrier_id\nWHERE s.status = 'delivered'\n  AND s.ship_date >= DATE '2025-01-01'\n  AND s.ship_date < DATE '2026-01-01'\nGROUP BY c.carrier_name\nORDER BY shipments DESC, c.carrier_name"
+    }
+  ],
+  "row_count": 2393610,
+  "scale": "full",
+  "seed": 20261128,
+  "table_count": 50
+}
