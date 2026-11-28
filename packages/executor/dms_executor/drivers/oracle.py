@@ -248,6 +248,8 @@ def governed_ask(
     The page path stays a transport window. This is the ask path: the map
     has types, and a result that does not fit says so.
     """
+    import time
+
     from dms_executor.drivers.guard import refuse
     from dms_executor.drivers.limits import ROW_CAP, STATEMENT_TIMEOUT_S, result
 
@@ -269,21 +271,36 @@ def governed_ask(
             con.call_timeout = int(STATEMENT_TIMEOUT_S) * 1000
         except Exception:
             pass
-        mapped = schema_map(con)
         # ROWNUM is the cap Oracle Free accepts on a grouped inline view.
-        # OFFSET/FETCH came back bad_request on that image.
         wrapped = (
             f"SELECT * FROM ({_one_statement(sql)}) dms_cap "
             f"WHERE ROWNUM <= {int(ROW_CAP) + 1}"
         )
-        cur = con.cursor()
-        try:
-            cur.execute(wrapped)
-            description = cur.description or []
-            columns = [str(item[0]) for item in description]
-            fetched = [tuple(row) for row in cur.fetchall()]
-        finally:
-            cur.close()
+        mapped: dict[str, Any] = {}
+        columns: list[str] = []
+        fetched: list[tuple[Any, ...]] = []
+        # ponytail: ORA-01466 is SCN lag in the seconds after DDL. Three
+        # tries, one second apart. A table older than that does not retry.
+        for attempt in range(3):
+            try:
+                mapped = schema_map(con)
+                cur = con.cursor()
+                try:
+                    cur.execute(wrapped)
+                    description = cur.description or []
+                    columns = [str(item[0]) for item in description]
+                    fetched = [tuple(row) for row in cur.fetchall()]
+                finally:
+                    cur.close()
+                break
+            except Exception as exc:
+                if _ora_digits(exc) != "01466" or attempt == 2:
+                    raise
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                time.sleep(1)
     except DriverError:
         raise
     except Exception as exc:
