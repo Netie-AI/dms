@@ -2137,14 +2137,19 @@ def load_sign_pems(tenant_id: str) -> tuple[str, str]:
     """
     from dms_core.control_plane.connect_secrets import ConnectCredentialError
     from dms_core.signing.errors import SignError
-    from dms_executor.manifest import ManifestMinter
 
-    mint = ManifestMinter()
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    mint = dms_executor.ManifestMinter(openvault_url=settings.openvault_url)
     try:
-        key = mint.resolve_credential(f"signkey/{tenant_id}")
-        cert = mint.resolve_credential(f"signcert/{tenant_id}")
-    except ConnectCredentialError:
-        raise SignError("signing_key_unavailable", 503) from None
+        try:
+            key = mint.resolve_credential(f"signkey/{tenant_id}")
+            cert = mint.resolve_credential(f"signcert/{tenant_id}")
+        except ConnectCredentialError:
+            raise SignError("signing_key_unavailable", 503) from None
+    finally:
+        mint.close()
     if not isinstance(key, str) or not isinstance(cert, str):
         raise SignError("signing_key_rejected", 503)
     return key, cert

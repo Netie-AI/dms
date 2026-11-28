@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-SIGN: load the signing key through the executor package
+
+- **Import.** `load_sign_pems` used `dms_executor.manifest` directly. Import-linter only allows `dms_api.wiring` to import the `dms_executor` package. It now uses `dms_executor.ManifestMinter`, the same path as `load_vault_secret`.
+
 ## 2026-11-28 - DMS-SIGN: the single Alembic head is 0012_sign
 
 - **CI.** `test_single_alembic_head` and the action-writeback demo expected `0011_space_bench`. The sign migration is the one head now. The single-head check stays.
