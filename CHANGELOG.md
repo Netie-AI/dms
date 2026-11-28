@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - READY-02: rebase onto b1af74c
+
+- **Base.** Rebased onto `b1af74c` (#622, #627, #600, #623). `STATUS.md` and the findings index keep those rows.
+- **Flag.** `DMS_SSO` is exactly `1`. A padded ` 1 ` stays off.
+- **Stub 52.** `grade52 --main` at `24f7abb`. correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. mode=stub-exec. stamp_contradiction=0. Unchanged. Armed grade52 and pack H were not run. Not PASS.
+
 ## 2026-11-28 - READY-02: login, OIDC, and company scope behind DMS_SSO
 
 - **Flag.** `DMS_SSO` defaults off. Only the exact digit 1 turns it on. A padded value such as ` 1 ` stays off. Off, auth routes are not mounted and the auth middleware is not added. Spaces, OpenAPI, and the audit export actor basis stay as they were.
