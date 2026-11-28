@@ -382,14 +382,6 @@ def test_compute_insights_bodies_stay_inside_the_declared_wire(
     assert 422 not in fake.statuses, fake.details
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "sql_feedback is not in contract 1.9.0 (InsightsAskIn or "
-        "x-cortex-request-extension); Cortex @bcdbb45 would 422 the feedback "
-        "retry. Found by this test, not routed yet, not fixed here."
-    ),
-)
 def test_compute_insights_feedback_retry_stays_inside_the_declared_wire(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

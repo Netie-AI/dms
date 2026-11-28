@@ -280,6 +280,14 @@ def note_serving_lease_granted() -> None:
     _leases_this_ask.set(_leases_this_ask.get() + 1)
 
 
+def serving_time_left_s() -> float | None:
+    """Seconds until this ask's deadline. None when no deadline is bound."""
+    deadline = _ask_deadline.get()
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
+
+
 def serving_deadline_missed() -> bool:
     """True when this ask took a lease and is now past its deadline.
 
