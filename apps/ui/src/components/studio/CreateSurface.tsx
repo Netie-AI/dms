@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useApp, type ChatMessage } from "@/context/AppContext";
 import "./createSurface.css";
 
 const STATUS_PATH = "/api/v1/studio/create/status";
@@ -42,21 +43,36 @@ function meter(spend?: Spend): string {
 
 export function CreateSurface({ spaceId }: { spaceId: string | null }) {
   const [enabled, setEnabled] = useState(false);
+  const [contextOn, setContextOn] = useState(false);
 
   useEffect(() => {
     const ctrl = new AbortController();
     fetch(STATUS_PATH, { signal: ctrl.signal })
       .then((res) => (res.ok ? res.json() : { enabled: false }))
-      .then((body: { enabled?: boolean }) => setEnabled(body.enabled === true))
-      .catch(() => setEnabled(false));
+      .then((body: { enabled?: boolean; context?: boolean }) => {
+        setEnabled(body.enabled === true);
+        setContextOn(body.context === true);
+      })
+      .catch(() => {
+        setEnabled(false);
+        setContextOn(false);
+      });
     return () => ctrl.abort();
   }, []);
 
   if (!enabled) return null;
-  return <CreateStudio spaceId={spaceId} />;
+  return <CreateStudio spaceId={spaceId} contextOn={contextOn} />;
 }
 
-export function CreateStudio({ spaceId }: { spaceId: string | null }) {
+type Listed = { id: string; title: string; summary: string };
+
+export function CreateStudio({
+  spaceId,
+  contextOn = false,
+}: {
+  spaceId: string | null;
+  contextOn?: boolean;
+}) {
   const [kind, setKind] = useState<(typeof FORMATS)[number]>("app");
   const [goal, setGoal] = useState("");
   const [audience, setAudience] = useState("");
@@ -74,6 +90,17 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
   const [instruction, setInstruction] = useState("");
   const [dmsKey, setDmsKey] = useState("");
   const [ovKey, setOvKey] = useState("");
+  const [savedChats, setSavedChats] = useState<Listed[]>([]);
+  const [savedProjects, setSavedProjects] = useState<Listed[]>([]);
+  const [pickedChats, setPickedChats] = useState<string[]>([]);
+  const [pickedProject, setPickedProject] = useState("");
+  const [qTone, setQTone] = useState("");
+  const [qLength, setQLength] = useState("");
+  const [qData, setQData] = useState("");
+  const [shareActor, setShareActor] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [projectSummary, setProjectSummary] = useState("");
+  const { messages } = useApp();
   const [session, setSession] = useState<Session | null>(null);
   const [thinking, setThinking] = useState("");
   const [error, setError] = useState("");
@@ -116,6 +143,58 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
 
   function toggleInput(name: string) {
     setInputs((prev) => (prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name]));
+  }
+
+  function toggleChat(id: string) {
+    setPickedChats((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  }
+
+  async function readJson(path: string, body?: unknown, method = "POST"): Promise<Record<string, unknown>> {
+    const res = await fetch(path, {
+      method,
+      headers: headers(),
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const detail = (await res.json().catch(() => ({}))) as { detail?: string };
+    if (!res.ok) throw new Error(typeof detail.detail === "string" ? detail.detail : "create_failed");
+    return detail as Record<string, unknown>;
+  }
+
+  async function loadContext() {
+    const body = await readJson("/api/v1/studio/create/context", undefined, "GET");
+    setSavedChats((body.chats as Listed[]) ?? []);
+    setSavedProjects((body.projects as Listed[]) ?? []);
+  }
+
+  function sessionChats(): { key: string; title: string; summary: string; sql: string[]; rows: Record<string, unknown>[] }[] {
+    const found = [];
+    for (let i = 0; i < messages.length; i += 1) {
+      const item = messages[i];
+      if (item.role !== "user") continue;
+      const next: ChatMessage | undefined = messages[i + 1];
+      const envelope = next && next.role === "assistant" ? next.envelope : null;
+      found.push({
+        key: item.id,
+        title: item.text.slice(0, 80),
+        summary: (envelope?.text ?? "").slice(0, 400),
+        sql: envelope?.sql_used ? [envelope.sql_used.slice(0, 500)] : [],
+        rows: (envelope?.rows ?? []).slice(0, 8),
+      });
+    }
+    return found;
+  }
+
+  async function saveSessionChat(item: ReturnType<typeof sessionChats>[number]) {
+    const saved = await readJson("/api/v1/studio/create/context/chats", {
+      title: item.title,
+      summary: item.summary,
+      sql: item.sql,
+      results: item.rows.length ? [{ rows: item.rows }] : [],
+      schema_map: [],
+      ontology: [],
+    });
+    if (typeof saved.id === "string") toggleChat(saved.id);
+    await loadContext();
   }
 
   const catalog = session?.catalog ?? [];
@@ -202,6 +281,105 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
           </label>
         ))}
       </fieldset>
+      {contextOn ? (
+        <fieldset className="create-card">
+          <legend>Context</legend>
+          <p className="create-lede">
+            Enter both keys below, then load. You only see your chats and projects, or ones shared to you.
+          </p>
+          <label className="create-field">
+            Tone
+            <input value={qTone} onChange={(event) => setQTone(event.target.value)} />
+          </label>
+          <label className="create-field">
+            Length
+            <input value={qLength} onChange={(event) => setQLength(event.target.value)} />
+          </label>
+          <label className="create-field">
+            Data to include
+            <input value={qData} onChange={(event) => setQData(event.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="create-go"
+            onClick={() => {
+              setError("");
+              void loadContext().catch((exc: unknown) =>
+                setError(exc instanceof Error ? exc.message : "create_failed"),
+              );
+            }}
+          >
+            Load my chats and projects
+          </button>
+          {sessionChats().map((item) => (
+            <label key={item.key}>
+              <input type="checkbox" onChange={() => void saveSessionChat(item)} />
+              {item.title || "Chat"}
+            </label>
+          ))}
+          {savedChats.map((item) => (
+            <label key={item.id}>
+              <input
+                type="checkbox"
+                checked={pickedChats.includes(item.id)}
+                onChange={() => toggleChat(item.id)}
+              />
+              {item.title || "Chat"}
+            </label>
+          ))}
+          <label className="create-field">
+            Project
+            <select value={pickedProject} onChange={(event) => setPickedProject(event.target.value)}>
+              <option value="">None</option>
+              {savedProjects.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.title || "Project"}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="create-field">
+            New project name
+            <input value={projectName} onChange={(event) => setProjectName(event.target.value)} />
+          </label>
+          <label className="create-field">
+            New project summary
+            <input value={projectSummary} onChange={(event) => setProjectSummary(event.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="create-go"
+            onClick={() =>
+              void readJson("/api/v1/studio/create/context/projects", {
+                name: projectName,
+                summary: projectSummary,
+                schema_map: [],
+                ontology: [],
+              }).then(() => loadContext())
+            }
+          >
+            Save project
+          </button>
+          <label className="create-field">
+            Share selected with
+            <input value={shareActor} onChange={(event) => setShareActor(event.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="create-go"
+            onClick={() => {
+              const id = pickedChats[0] || pickedProject;
+              const kind = pickedChats[0] ? "chat" : "project";
+              if (!id || !shareActor.trim()) return;
+              void readJson(`/api/v1/studio/create/context/${kind}/${id}/share`, {
+                share_with: shareActor.trim(),
+              });
+            }}
+          >
+            Share
+          </button>
+        </fieldset>
+      ) : null}
       <label className="create-field">
         DMS key
         <input value={dmsKey} onChange={(event) => setDmsKey(event.target.value)} />
@@ -227,6 +405,22 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
                 throw new Error(typeof detail.detail === "string" ? detail.detail : "create_failed");
               }
             }
+            const context = contextOn
+              ? {
+                  chat_ids: pickedChats,
+                  project_id: pickedProject,
+                  questionnaire: {
+                    audience,
+                    goal,
+                    tone: qTone,
+                    length: qLength,
+                    must_include: qData
+                      .split(",")
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  },
+                }
+              : undefined;
             return post("/api/v1/studio/create/sessions", {
               space_id: spaceId,
               kind,
@@ -241,6 +435,7 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
               inputs,
               examples: example.trim() ? [{ name: "example", body: example }] : [],
               tools,
+              context,
             });
           })
         }

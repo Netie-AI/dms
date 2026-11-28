@@ -24,6 +24,11 @@ from dms_api.mcp_server.auth import bearer_from_headers, lookup_bearer
 from dms_api.wiring import (
     create_caller_key,
     create_confirm_final,
+    create_context_enabled,
+    create_context_list,
+    create_context_save_chat,
+    create_context_save_project,
+    create_context_share,
     create_events,
     create_generate,
     create_guide_read,
@@ -63,6 +68,53 @@ class SessionIn(BaseModel):
     tools: dict[str, bool] | None = None
     workbook: bool = False
     prompt_version: str = Field(default="1", max_length=8)
+    context: ContextIn | None = None
+
+
+class QuestionnaireIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    audience: str = Field(default="", max_length=200)
+    goal: str = Field(default="", max_length=400)
+    tone: str = Field(default="", max_length=80)
+    length: str = Field(default="", max_length=80)
+    must_include: list[str] = Field(default_factory=list, max_length=12)
+
+
+class ContextIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chat_ids: list[str] = Field(default_factory=list, max_length=8)
+    project_id: str = Field(default="", max_length=64)
+    questionnaire: QuestionnaireIn | None = None
+
+
+class ChatIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(default="", max_length=80)
+    summary: str = Field(default="", max_length=400)
+    sql: list[str] = Field(default_factory=list, max_length=4)
+    results: list[dict[str, Any]] = Field(default_factory=list, max_length=4)
+    schema_map: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    ontology: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+
+
+class ProjectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=80)
+    summary: str = Field(default="", max_length=400)
+    sql: list[str] = Field(default_factory=list, max_length=4)
+    results: list[dict[str, Any]] = Field(default_factory=list, max_length=4)
+    schema_map: list[dict[str, Any]] = Field(default_factory=list, max_length=12)
+    ontology: list[dict[str, str]] = Field(default_factory=list, max_length=12)
+
+
+class ShareIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    share_with: str = Field(min_length=1, max_length=128)
 
 
 class GenerateIn(BaseModel):
@@ -121,7 +173,10 @@ def _http(exc: BaseException) -> HTTPException:
     if name == "CreateDisabled":
         return HTTPException(status_code=404, detail="Not Found")
     if name == "CreateProblem" and exc.args and isinstance(exc.args[0], str):
-        return HTTPException(status_code=400, detail=exc.args[0])
+        code = exc.args[0]
+        if code == "context_forbidden":
+            return HTTPException(status_code=403, detail=code)
+        return HTTPException(status_code=400, detail=code)
     raise exc
 
 
@@ -140,6 +195,8 @@ def create_status(cortex: CortexDep, settings: SettingsDep) -> dict[str, bool]:
         mutation=False,
     )
     del settings
+    if create_context_enabled():
+        return {"enabled": True, "context": True}
     return {"enabled": True}
 
 
@@ -183,6 +240,122 @@ def put_guide(
         raise _http(exc) from None
 
 
+def _context_body(body: SessionIn) -> dict[str, Any] | None:
+    if body.context is None or not create_context_enabled():
+        return None
+    return body.context.model_dump()
+
+
+def _require_context() -> None:
+    if not create_context_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _saved_body(body: ChatIn | ProjectIn) -> dict[str, Any]:
+    return {
+        "title": getattr(body, "title", ""),
+        "name": getattr(body, "name", ""),
+        "summary": body.summary,
+        "sql": body.sql,
+        "results": body.results,
+        "schema": body.schema_map,
+        "ontology": body.ontology,
+    }
+
+
+@router.get("/context")
+def list_context(request: Request, cortex: CortexDep, settings: SettingsDep) -> dict[str, Any]:
+    _require_context()
+    actor = _actor(request, settings)
+    _key(request)
+    enforce(
+        compliance_gate(
+            action="studio.create_context",
+            actor=actor,
+            metadata={"task_id": "studio.create_context", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
+    try:
+        return create_context_list(actor=actor)
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from None
+
+
+@router.post("/context/chats")
+def save_chat(
+    body: ChatIn, request: Request, cortex: CortexDep, settings: SettingsDep
+) -> dict[str, Any]:
+    _require_context()
+    actor = _actor(request, settings)
+    _key(request)
+    enforce(
+        compliance_gate(
+            action="studio.create_context",
+            actor=actor,
+            metadata={"task_id": "studio.create_context", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=True,
+    )
+    try:
+        return create_context_save_chat(actor=actor, chat=_saved_body(body))
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from None
+
+
+@router.post("/context/projects")
+def save_project(
+    body: ProjectIn, request: Request, cortex: CortexDep, settings: SettingsDep
+) -> dict[str, Any]:
+    _require_context()
+    actor = _actor(request, settings)
+    _key(request)
+    enforce(
+        compliance_gate(
+            action="studio.create_context",
+            actor=actor,
+            metadata={"task_id": "studio.create_context", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=True,
+    )
+    try:
+        return create_context_save_project(actor=actor, project=_saved_body(body))
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from None
+
+
+@router.post("/context/{kind}/{item_id}/share")
+def share_context(
+    kind: str,
+    item_id: str,
+    body: ShareIn,
+    request: Request,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    _require_context()
+    actor = _actor(request, settings)
+    _key(request)
+    enforce(
+        compliance_gate(
+            action="studio.create_context",
+            actor=actor,
+            metadata={"task_id": "studio.create_context", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=True,
+    )
+    try:
+        return create_context_share(
+            actor=actor, kind=kind, item_id=item_id, with_actor=body.share_with
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from None
+
+
 @router.post("/sessions")
 def open_session(
     body: SessionIn, request: Request, cortex: CortexDep, settings: SettingsDep
@@ -217,6 +390,7 @@ def open_session(
             tools=body.tools,
             workbook=body.workbook,
             prompt_version=body.prompt_version,
+            context=_context_body(body),
         )
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from None

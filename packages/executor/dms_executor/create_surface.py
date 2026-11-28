@@ -96,6 +96,7 @@ def start_session(
     tools: dict[str, bool] | None = None,
     workbook: bool = False,
     prompt_version: str = "1",
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Open a session. No provider call."""
     _require_on()
@@ -113,7 +114,7 @@ def start_session(
         "logo": brand_logo or str((guide.get("brand") or {}).get("logo") or ""),
         "tone": brand_tone or str((guide.get("brand") or {}).get("tone") or ""),
     }
-    session = {
+    session: dict[str, Any] = {
         "session_id": uuid.uuid4().hex,
         "space_id": space_id,
         "tenant_id": tenant_id,
@@ -150,6 +151,18 @@ def start_session(
         session["catalog"] = _catalog(session)
     except CreateProblem:
         raise
+    packed = _source_pack(session, context)
+    if packed:
+        session["sources"] = packed
+        note: list[dict[str, Any]] = list(session["audit"])
+        note.append(
+            {
+                "event": "context",
+                "chats": [item.get("id") for item in packed.get("chats") or []],
+                "project": (packed.get("project") or {}).get("id"),
+            }
+        )
+        session["audit"] = note
     _save(session)
     return _view(session)
 
@@ -662,12 +675,30 @@ def _allowed(session: dict[str, Any], artifact: Mapping[str, Any]) -> set[str]:
     return allowed_from(rows, overview)
 
 
+def _source_pack(session: dict[str, Any], context: dict[str, Any] | None) -> dict[str, Any]:
+    from dms_executor.create_context import context_enabled, pack_sources
+
+    if not context_enabled() or not context:
+        return {}
+    granted = {str(row.get("name") or "") for row in session.get("catalog") or []}
+    return pack_sources(
+        actor=str(session.get("actor") or ""),
+        kind=str(session.get("kind") or ""),
+        granted=granted,
+        chat_ids=list(context.get("chat_ids") or []),
+        project_id=str(context.get("project_id") or ""),
+        questionnaire=context.get("questionnaire")
+        if isinstance(context.get("questionnaire"), dict)
+        else None,
+    )
+
+
 def _context(session: dict[str, Any]) -> dict[str, Any]:
     catalog = _selected(session)
     data = [_overview(row) for row in catalog]
     session["overview"] = {"data": data}
     picked = skills_for(str(session["kind"]), workbook=bool(session.get("workbook")))
-    return {
+    payload: dict[str, Any] = {
         "schema": [
             {"name": row["name"], "columns": row["columns"], "row_count": row["row_count"]}
             for row in catalog
@@ -682,6 +713,10 @@ def _context(session: dict[str, Any]) -> dict[str, Any]:
         "examples": session.get("examples") or [],
         "skills": picked,
     }
+    sources = session.get("sources")
+    if isinstance(sources, dict) and sources:
+        payload["sources"] = sources
+    return payload
 
 
 def _style(session: dict[str, Any]) -> dict[str, Any]:
@@ -698,12 +733,18 @@ def _style(session: dict[str, Any]) -> dict[str, Any]:
         from dms_executor.create_files import budget_text
 
         guide = f"{guide} {budget_text(int(fit['pages']))}".strip()
-    return {
+    style = {
         "prompt": session.get("style_prompt") or "",
         "template": template_text(str(session.get("template") or "plain")),
         "brand": session.get("brand") or {},
         "guide": guide,
     }
+    from dms_executor.create_context import layout_blocks
+
+    blocks = layout_blocks(str(session["kind"]))
+    if blocks:
+        style["layout_blocks"] = blocks
+    return style
 
 
 def _spec(

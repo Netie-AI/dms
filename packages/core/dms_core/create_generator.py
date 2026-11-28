@@ -232,17 +232,19 @@ def render_context(
 ) -> str:
     """XML-tagged context. Long data sits above the task, as the guide says."""
     examples = data_context.get("examples") or []
-    return "\n".join(
-        [
-            _tag("schema", data_context.get("schema")),
-            _tag("data", _shown_numbers(data_context.get("data"))),
-            _tag("choices", {"spec": dict(spec), "choices": data_context.get("choices")}),
-            _tag("style", style),
-            _tag("examples", examples),
-            _tag("skills", data_context.get("skills")),
-            _tag("judge", spec.get("judge")),
-        ]
-    )
+    lines = [
+        _tag("schema", data_context.get("schema")),
+        _tag("data", _shown_numbers(data_context.get("data"))),
+        _tag("choices", {"spec": dict(spec), "choices": data_context.get("choices")}),
+        _tag("style", style),
+        _tag("examples", examples),
+        _tag("skills", data_context.get("skills")),
+        _tag("judge", spec.get("judge")),
+    ]
+    sources = data_context.get("sources")
+    if isinstance(sources, dict) and sources:
+        lines.append(_tag("sources", _shown_numbers(sources)))
+    return "\n".join(lines)
 
 
 def direct_prompt(

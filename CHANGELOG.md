@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-CONTEXT-01: chats, a questionnaire, or a project
+
+- **Flag.** `DMS_CREATE_CONTEXT` defaults off. Only the digit 1 turns it on. Off, Create status stays `{"enabled": true}` when Create itself is on, and `/v1/studio/create/context` is not found.
+- **Context.** The caller picks their own chats, a questionnaire (audience, goal, tone, length, data to include), or a saved project. A share lets another actor read that one item. The provider receives summaries, a schema and ontology map, and at most 8 result rows. An ungranted table is left out. `layout_blocks` stays empty until DMS-STYLE-V2-01 fills it.
+- **Store.** Files under the existing Create store. No migration.
+
 ## 2026-11-28 - DMS-CREATE-01: Cursor v1, live cost
 
 - **Cursor.** `POST /v1/agents` launches. `GET /v1/agents/{id}/runs/{runId}` polls until the run finishes. A repair is `POST /v1/agents/{id}/runs` on that agent. JSON artifacts download from the presigned URL with no API key. Each call waits 240 seconds and retries. No clock stops a run.

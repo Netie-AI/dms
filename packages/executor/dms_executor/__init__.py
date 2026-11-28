@@ -50,6 +50,21 @@ from dms_executor.bronze_sheet_ask import (
 )
 from dms_executor.connectors import connector_tables
 from dms_executor.contract_infer import infer_contract
+from dms_executor.create_context import (
+    context_enabled as create_context_enabled,
+)
+from dms_executor.create_context import (
+    list_visible as create_context_list,
+)
+from dms_executor.create_context import (
+    save_chat as create_context_save_chat,
+)
+from dms_executor.create_context import (
+    save_project as create_context_save_project,
+)
+from dms_executor.create_context import (
+    share as create_context_share,
+)
 from dms_executor.create_surface import (
     confirm_final as create_confirm_final,
 )
@@ -2896,6 +2911,11 @@ __all__ = [
     "create_restore_version",
     "create_save_guide",
     "create_start_session",
+    "create_context_enabled",
+    "create_context_list",
+    "create_context_save_chat",
+    "create_context_save_project",
+    "create_context_share",
     "check_gold_sql",
     "execute_gold",
     "guard_benchmark_write",
