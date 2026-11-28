@@ -50,6 +50,18 @@ def _canon(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, default=str)
 
 
+def _ident_name(value: Any) -> str | None:
+    """One identifier, or None. A mechanical link name is used when this is None."""
+    if not isinstance(value, str) or not value:
+        return None
+    first = value[0]
+    if not first.isascii() or not (first.isalpha() or first == "_"):
+        return None
+    if all(ch.isascii() and (ch.isalnum() or ch == "_") for ch in value):
+        return value
+    return None
+
+
 def item_identity(kind: str, payload: Mapping[str, Any]) -> str:
     name = payload.get("name")
     if isinstance(name, str) and name:
@@ -70,14 +82,26 @@ def _link_payload(
         src_c = str(row.get("source_column") or "")
         dst_t = str(row.get("target_table") or "")
         dst_c = str(row.get("target_column") or "")
-    return {
-        "name": f"{origin}:{src_t}.{src_c}->{dst_t}.{dst_c}",
+    explicit = _ident_name(row.get("name"))
+    payload = {
+        "name": explicit or f"{origin}:{src_t}.{src_c}->{dst_t}.{dst_c}",
         "from_object": by_table.get(src_t, src_t),
         "from_columns": [src_c] if src_c else [],
         "to_object": by_table.get(dst_t, dst_t),
         "to_columns": [dst_c] if dst_c else [],
         "one_to_one": bool(row.get("one_to_one")),
     }
+    if row.get("status") == "unverified":
+        payload["status"] = "unverified"
+    space = row.get("space_id")
+    if isinstance(space, str) and space:
+        payload["space_id"] = space
+    for key in ("coverage", "fanout"):
+        val = row.get(key)
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            continue
+        payload[key] = val
+    return payload
 
 
 def items_from_proposal(body: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
