@@ -124,30 +124,26 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-28 14:04 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-28 15:06 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `43e47247` FDE-TENANT-01: onboarding a new tenant must not 500 (#608)
+main: `6fe86579` BIRD-EVIDENCE-01: steward knowledge the model reads and the gates do not (#619)
 
-open PRs: 60 (cap 60)
+open PRs: 58 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
 | #628 | y | `1c1de82c` | - | no checks | NL19-NO-SQL-GENERATE: retry one empty generate, then ask back |
-| #627 | y | `dda18321` | - | 8 ok, 2 running | BIRD-TIES-PROJECTION-01: return the full tie and only the asked columns |
-| #626 | y | `c567babb` | - | 11 ok | BIRD-QUALIFIER-AI-01: AI verifier for lexical qualifier gates |
-| #625 | y | `44098ce7` | - | 9 ok, 1 running | BIRD-JOIN-GATE-01: declared FKs on key-less tables, join repair, and orphan disc |
-| #624 | y | `ca4f7dcb` | - | 4 ok, 2 running | BIRD-HARNESS-CI-01: score Mini-Dev with official EX |
-| #623 | y | `f1e83cfd` | - | 11 ok | BIRD-SERVING-DEADLINE-01: do not end a progressing ask on the serving reserve |
-| #622 | y | `e3e96047` | - | 8 ok, 2 running | NL19-SCHEMA-ONTO-GAP: hand a missing measure to the AI SQL leg |
+| #627 | y | `aaef46f0` | - | 3 ok, 7 running | BIRD-TIES-PROJECTION-01: return the full tie and only the asked columns |
+| #623 | y | `413c5d3a` | - | 11 ok | BIRD-SERVING-DEADLINE-01: do not end a progressing ask on the serving reserve |
+| #622 | y | `8a69f2ec` | - | 11 ok | NL19-SCHEMA-ONTO-GAP: hand a missing measure to the AI SQL leg |
 | #621 | y | `fec45062` | - | no checks | NL19-EXPLAIN-REPAIR: trace binder failures and repair within the call budget |
-| #620 | y | `7a3e9edb` | - | no checks | BIRD-ASKBACK-GENERIC-01: stop the generic Space ask-back |
-| #619 | y | `61c46c51` | - | 7 ok, 3 running | BIRD-EVIDENCE-01: steward knowledge the model reads and the gates do not |
-| #618 | y | `bf100209` | - | 1 ok, 5 running | NL19-COMPILE-WRONG: honour-check a compiled measure before it is served |
-| #617 | y | `19ddc7d3` | - | 6 ok, 4 running | FDE-REASON-LEAK-01: keep transport errors out of user replies |
+| #620 | y | `be05daf6` | - | 11 ok | BIRD-ASKBACK-GENERIC-01: stop the generic Space ask-back |
+| #618 | y | `5b413e49` | - | 11 ok | NL19-COMPILE-WRONG: honour-check a compiled measure before it is served |
+| #617 | y | `8a6b93d2` | - | 9 ok, 1 running | FDE-REASON-LEAK-01: keep transport errors out of user replies |
 | #616 | y | `d85a4171` | - | no checks | UX-CLARIFY-CARD-01: early clarify card before the SQL loop |
-| #614 | y | `378b3c31` | - | 11 ok | FDE-CORTEX-SPACE-CATALOG-01: send the Space catalog on the session manifest |
+| #614 | y | `60146173` | - | 7 ok, 3 running | FDE-CORTEX-SPACE-CATALOG-01: send the Space catalog on the session manifest |
 | #613 | y | `ee1dd4c0` | - | no checks | FDE-ONTO-LINKS-01: propose undeclared join links for steward confirmation |
 | #612 | y | `73da9eac` | - | 15 ok | FDE-EVAL-PACK-01: steward definitions, tie-aware gold, raw-LLM control |
 | #607 | y | `be67fa52` | - | no checks | FEAT-METRIC-CUBE-01: Governed metric cubes the model plans against |
@@ -155,13 +151,12 @@ open PRs: 60 (cap 60)
 | #605 | y | `cd620c54` | - | no checks | UX-CHART-01: one sentence and a chart of the served rows |
 | #604 | y | `b9c36920` | - | no checks | UX-FEEDBACK-01: Yes, Fix it, and Request review |
 | #603 | y | `a4c02ce9` | - | 11 ok | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
-| #602 | y | `387f50e2` | - | 2 ok, 9 running | FEAT-CONNECT-GAUSS-01: GaussDB / openGauss and Oracle as live read-only source k |
+| #602 | y | `be36d34c` | - | 12 ok, 3 running | FEAT-CONNECT-GAUSS-01: GaussDB / openGauss and Oracle as live read-only source k |
 | #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
 | #600 | y | `e2e7b2e9` | - | 11 ok | FEAT-BENCH-SPACE-01: Benchmarks inside each Space |
-| #599 | y | `c3ecabc4` | - | 11 ok | UX-TRUST-01: show benchmark files and quiet studio polls |
-| #597 | y | `12277dd9` | - | 6 ok, 4 running | FEAT-SEMANTIC-IMPORT-01: import a semantic model as a steward proposal |
+| #599 | y | `65360d58` | - | 9 ok, 1 running | UX-TRUST-01: show benchmark files and quiet studio polls |
 | #596 | y | `8e548ab6` | - | 11 ok | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
-| #581 | n | `05cc4644` | tier:fast | 11 ok | handoff: state refresh |
+| #581 | n | `159f8a5b` | tier:fast | 11 ok | handoff: state refresh |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
@@ -194,6 +189,9 @@ open PRs: 60 (cap 60)
 | #431 | y | `82ddf161` | - | 3 ok | AI-LADDER-PLAN-01: plan, then one higher OpenVault tier |
 | #422 | y | `af271892` | tier:full | 3 ok | GRANT-KEY-01: key grants by source + table |
 | #398 | y | `81090c5a` | tier:fast | 3 ok | ASK-GUIDE-01: guided path for vague abstains behind DMS_ASK_CLARIFY |
+| #397 | y | `305cd768` | tier:full | 3 ok | RUNID-SURFACE-01: surface SQL submit run_id on ask envelopes |
+| #379 | y | `5b79e33a` | tier:full | 3 ok | STUDIO-SELECT-01 (D): Studio table/column selection -> Cortex /ask payload (Refs |
+| #378 | y | `5c1109e1` | tier:full | 2 ok, 1 FAIL | CONNECT-01: read-only connector layer via one interface (Refs #366) |
 
 ### Netie-AI/Cortex
 
