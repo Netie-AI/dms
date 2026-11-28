@@ -14,4 +14,4 @@ Unit file `tests/test_bird_join_gate_01.py`: 12 passed. Word-rule ceiling and bo
 
 The spaces route records the ratio through `dms_core`. It does not import the executor.
 
-Stub 52, `grade52 --main`, rebased onto `05bc1e7`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20 stamp_contradiction=0. Both flags on: the same counts. Rule-served answers did not grow. Armed grade52 was not run. Not PASS.
+Stub 52, `grade52 --main`, rebased onto `43e4724`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20 stamp_contradiction=0. Both flags on: the same counts. Rule-served answers did not grow. Armed grade52 was not run. Not PASS.
