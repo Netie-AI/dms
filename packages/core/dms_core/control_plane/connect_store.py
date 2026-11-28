@@ -28,12 +28,19 @@ def _flag_on(name: str) -> bool:
 
 
 def allowed_kinds() -> frozenset[str]:
-    """Kinds the connect book accepts. Gauss and Oracle stay out unless their flag is on."""
+    """Kinds the connect book accepts. Optional engines stay out unless their flag is on."""
     kinds = set(_KINDS)
     if _flag_on("DMS_CONNECT_GAUSS"):
         kinds.add("gauss")
     if _flag_on("DMS_CONNECT_ORACLE"):
         kinds.add("oracle")
+    if _flag_on("DMS_CONNECT_S3"):
+        kinds.add("s3")
+    if _flag_on("DMS_CONNECT_AZURE"):
+        kinds.add("azure_sql")
+        kinds.add("azure_blob")
+    if _flag_on("DMS_CONNECT_SALESFORCE"):
+        kinds.add("salesforce")
     return frozenset(kinds)
 _MODES = frozenset({"live", "extract"})
 _HOST = re.compile(r"^[A-Za-z0-9._:-]{1,253}$")

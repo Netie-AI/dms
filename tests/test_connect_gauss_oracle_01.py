@@ -23,6 +23,7 @@ from dms_core.control_plane.connect_store import (
 from dms_executor import db_connector as dbc
 from dms_executor.connectors import (
     ConnectQueryError,
+    governed_ask,
     guarded_reason,
     probe_source,
     run_live_select,
@@ -760,3 +761,103 @@ def test_live_oracle_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     assert password not in dumped
     assert probed["dialect"] == "oracle"
     assert probed["prompt"].startswith("DIALECT: oracle")
+
+
+def _evidence(kind: str, rows: list[dict[str, Any]]) -> None:
+    line = "CONNECT-03 " + kind + " ask " + json.dumps(rows, default=str, sort_keys=True)
+    print(line)
+    path = os.environ.get("CONNECT03_EVIDENCE")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+
+
+@pytest.mark.skipif(not _live("DMS_CONNECT_ORACLE_LIVE"), reason="Oracle Free image unavailable")
+def test_live_oracle_ask(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DMS_CONNECT_ORACLE", "1")
+    password = os.environ["CONNECT_ORACLE_PASSWORD"]
+    host = os.environ.get("CONNECT_ORACLE_HOST", "127.0.0.1")
+    port = int(os.environ.get("CONNECT_ORACLE_PORT", "1521"))
+    service = os.environ.get("CONNECT_ORACLE_DB", "FREEPDB1")
+    _seed_oracle(host, port, service, password)
+    body = governed_ask(
+        kind="oracle",
+        host=host,
+        port=port,
+        database=service,
+        user="dmsask",
+        password=password,
+        sql="SELECT category, SUM(amount) AS total FROM dmsask.sales GROUP BY category",
+        grantable={"DMSASK.SALES"},
+    )
+    dumped = json.dumps(body, default=str)
+    assert password not in dumped
+    schema = json.dumps(body["schema_map"])
+    for cell in ("10", "20", "30", "12"):
+        assert cell not in schema
+    totals = {
+        str(row.get("CATEGORY") or row.get("category")): float(
+            row.get("TOTAL") if row.get("TOTAL") is not None else row.get("total")
+        )
+        for row in body["rows"]
+    }
+    assert totals == {"A": 30.0, "B": 12.0}
+    _evidence("oracle", body["rows"])
+
+
+def _seed_oracle(host: str, port: int, service: str, password: str) -> None:
+    import oracledb
+
+    def _redact(exc: BaseException) -> str:
+        return str(exc).replace(password, "[redacted]")
+
+    try:
+        admin = oracledb.connect(
+            user="system",
+            password=password,
+            host=host,
+            port=port,
+            service_name=service,
+            tcp_connect_timeout=20,
+        )
+    except Exception as exc:
+        raise AssertionError(_redact(exc)) from None
+    cur = admin.cursor()
+    try:
+        try:
+            cur.execute(f'CREATE USER dmsask IDENTIFIED BY "{password}"')
+        except Exception as exc:
+            if "ORA-01920" not in _redact(exc):
+                raise AssertionError(_redact(exc)) from None
+        cur.execute("GRANT CREATE SESSION, CREATE TABLE TO dmsask")
+        cur.execute("ALTER USER dmsask QUOTA UNLIMITED ON USERS")
+        admin.commit()
+    finally:
+        cur.close()
+        admin.close()
+    try:
+        con = oracledb.connect(
+            user="dmsask",
+            password=password,
+            host=host,
+            port=port,
+            service_name=service,
+            tcp_connect_timeout=20,
+        )
+    except Exception as exc:
+        raise AssertionError(_redact(exc)) from None
+    cur = con.cursor()
+    try:
+        try:
+            cur.execute("DROP TABLE sales")
+        except Exception:
+            pass
+        cur.execute("CREATE TABLE sales (category VARCHAR2(20), amount NUMBER)")
+        cur.execute("INSERT INTO sales (category, amount) VALUES ('A', 10)")
+        cur.execute("INSERT INTO sales (category, amount) VALUES ('A', 20)")
+        cur.execute("INSERT INTO sales (category, amount) VALUES ('B', 12)")
+        con.commit()
+    finally:
+        cur.close()
+        con.close()

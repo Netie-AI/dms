@@ -1,0 +1,8 @@
+{
+  "totalSize": 2,
+  "done": true,
+  "records": [
+    {"attributes": {"type": "AggregateResult"}, "category": "A", "total": 30},
+    {"attributes": {"type": "AggregateResult"}, "category": "B", "total": 12}
+  ]
+}

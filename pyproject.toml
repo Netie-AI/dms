@@ -60,6 +60,14 @@ gauss = [
 oracle = [
   "oracledb>=2.0",
 ]
+# DMS-CONNECT-03. Azure SQL and Synapse dedicated SQL pool speak TDS.
+# pymssql is the default. Swap: pyodbc with ODBC Driver 18, which the
+# azure_sql driver uses when pymssql is not installed. S3, Blob, and
+# Salesforce use the stdlib HTTP client. DuckDB and pyarrow are already
+# dependencies and do the local aggregation.
+azure = [
+  "pymssql>=2.2.11",
+]
 # CCA-LLM: the ask-path recogniser (packages/executor/dms_executor/cca/proposer.py)
 # when DMS_CCA_PROPOSER=anthropic. Optional because the shipped default is the
 # word list, which needs no credential and no network. The swap scenario is the

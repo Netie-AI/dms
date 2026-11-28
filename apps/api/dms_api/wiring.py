@@ -1673,9 +1673,12 @@ def connect_v2_probe(
     secret = _resolve_connect_secret(ask, cred_ref)
     user = ""
     password = ""
+    fields: dict[str, str] = {}
     code = "network"
     try:
-        user, password = _connect_v2().parse_login(secret)
+        fields = _connect_v2().secret_fields(secret)
+        user = fields["user"]
+        password = fields["password"]
         probed = _connect_v2().probe_source(
             kind=kind,
             host=host,
@@ -1684,6 +1687,9 @@ def connect_v2_probe(
             user=user,
             password=password,
             tls=tls,
+            client_id=fields.get("client_id", ""),
+            client_secret=fields.get("client_secret", ""),
+            token=fields.get("token", ""),
         )
     except _connect_v2().ConnectProbeError as exc:
         code = exc.code
@@ -1704,6 +1710,7 @@ def connect_v2_probe(
         secret = ""
         user = ""
         password = ""
+        fields.clear()
     _note_probe(
         "probe_ok", actor=actor, token_id=token_id, database_url=database_url, tenant_id=tenant_id
     )
@@ -1746,8 +1753,11 @@ def connect_v2_register(
     secret = _resolve_connect_secret(ask, credential_ref)
     user = ""
     password = ""
+    fields: dict[str, str] = {}
     try:
-        user, password = _connect_v2().parse_login(secret)
+        fields = _connect_v2().secret_fields(secret)
+        user = fields["user"]
+        password = fields["password"]
         probed = _connect_v2().probe_source(
             kind=kind,
             host=host,
@@ -1756,6 +1766,9 @@ def connect_v2_register(
             user=user,
             password=password,
             tls=tls,
+            client_id=fields.get("client_id", ""),
+            client_secret=fields.get("client_secret", ""),
+            token=fields.get("token", ""),
         )
     except _connect_v2().ConnectProbeError as exc:
         raise ValueError(exc.code) from None
@@ -1763,6 +1776,7 @@ def connect_v2_register(
         secret = ""
         user = ""
         password = ""
+        fields.clear()
     listed = clean_tables(list(probed.get("tables") or []))
     if grant_tables is None:
         chosen = listed
@@ -1854,9 +1868,12 @@ def connect_v2_schema(
     secret = ""
     user = ""
     password = ""
+    fields: dict[str, str] = {}
     try:
         secret = _resolve_connect_secret(ask, row["cred_ref"])
-        user, password = _connect_v2().parse_login(secret)
+        fields = _connect_v2().secret_fields(secret)
+        user = fields["user"]
+        password = fields["password"]
         probed = _connect_v2().probe_source(
             kind=row["kind"],
             host=row["host"],
@@ -1865,6 +1882,9 @@ def connect_v2_schema(
             user=user,
             password=password,
             tls=False,
+            client_id=fields.get("client_id", ""),
+            client_secret=fields.get("client_secret", ""),
+            token=fields.get("token", ""),
         )
         live = True
     except _connect_v2().ConnectProbeError as exc:
@@ -1877,6 +1897,7 @@ def connect_v2_schema(
         secret = ""
         user = ""
         password = ""
+        fields.clear()
     body: dict[str, Any] = {
         "source_id": source_id,
         "live": live,
@@ -1889,6 +1910,8 @@ def connect_v2_schema(
         body["dialect"] = str(probed.get("dialect") or "")
         body["keys"] = probed.get("keys") or {"primary_keys": {}, "foreign_keys": []}
         body["prompt"] = str(probed.get("prompt") or "")
+    if live and isinstance(probed, dict) and isinstance(probed.get("schema_map"), dict):
+        body["schema_map"] = probed["schema_map"]
     return body
 
 
@@ -1918,13 +1941,31 @@ def connect_v2_query(
     secret = _resolve_connect_secret(ask, row["cred_ref"])
     user = ""
     password = ""
+    fields: dict[str, str] = {}
     try:
-        user, password = _connect_v2().parse_login(secret)
-        return _connect_v2().run_live_select(
+        fields = _connect_v2().secret_fields(secret)
+        user = fields["user"]
+        password = fields["password"]
+        common = dict(
             kind=row["kind"],
             host=row["host"],
             port=int(row["port"]),
             database=row["db"],
+            user=user,
+            password=password,
+            sql=sql,
+            grantable=set(row["granted_tables"]),
+            client_id=fields.get("client_id", ""),
+            client_secret=fields.get("client_secret", ""),
+            token=fields.get("token", ""),
+        )
+        if _connect_v2().http_governed(row["kind"]):
+            return _connect_v2().governed_ask(**common)
+        return _connect_v2().run_live_select(
+            kind=common["kind"],
+            host=common["host"],
+            port=common["port"],
+            database=common["database"],
             user=user,
             password=password,
             sql=sql,
@@ -1941,6 +1982,7 @@ def connect_v2_query(
         secret = ""
         user = ""
         password = ""
+        fields.clear()
 
 
 def connect_v2_export(
@@ -1956,10 +1998,13 @@ def connect_v2_export(
     secret = _resolve_connect_secret(ask, row["cred_ref"])
     user = ""
     password = ""
+    fields: dict[str, str] = {}
     try:
-        user, password = _connect_v2().parse_login(secret)
+        fields = _connect_v2().secret_fields(secret)
+        user = fields["user"]
+        password = fields["password"]
         query_id, event = _connect_v2().open_cancel()
-        iterator = _connect_v2().iter_live_export(
+        common = dict(
             kind=row["kind"],
             host=row["host"],
             port=int(row["port"]),
@@ -1968,14 +2013,31 @@ def connect_v2_export(
             password=password,
             sql=sql,
             grantable=set(row["granted_tables"]),
-            confirm_runaway=confirm_runaway,
-            cancel=event,
+            client_id=fields.get("client_id", ""),
+            client_secret=fields.get("client_secret", ""),
+            token=fields.get("token", ""),
         )
+        if _connect_v2().http_governed(row["kind"]):
+            iterator = _connect_v2().iter_governed_export(**common)
+        else:
+            iterator = _connect_v2().iter_live_export(
+                kind=row["kind"],
+                host=row["host"],
+                port=int(row["port"]),
+                database=row["db"],
+                user=user,
+                password=password,
+                sql=sql,
+                grantable=set(row["granted_tables"]),
+                confirm_runaway=confirm_runaway,
+                cancel=event,
+            )
         return query_id, iterator
     finally:
         secret = ""
         user = ""
         password = ""
+        fields.clear()
 
 
 def connect_v2_close(query_id: str) -> None:

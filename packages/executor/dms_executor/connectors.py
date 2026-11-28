@@ -235,6 +235,16 @@ def classify_query_error(exc: BaseException) -> str:
 
 def parse_login(secret: str) -> tuple[str, str]:
     """``{"user", "password"}`` from the OpenVault value. Failure is ``auth``."""
+    fields = secret_fields(secret)
+    return fields["user"], fields["password"]
+
+
+def secret_fields(secret: str) -> dict[str, str]:
+    """OpenVault JSON. Optional Salesforce fields stay out of errors and logs.
+
+    ``user`` and ``password`` are required. ``token``, ``client_id``, and
+    ``client_secret`` are copied only when they are non-empty strings.
+    """
     try:
         body = json.loads(secret)
     except (TypeError, ValueError):
@@ -245,21 +255,58 @@ def parse_login(secret: str) -> tuple[str, str]:
     password = body.get("password")
     if not isinstance(user, str) or not isinstance(password, str) or user == "":
         raise ConnectProbeError("auth")
-    return user, password
+    out = {"user": user, "password": password}
+    for key in ("token", "client_id", "client_secret"):
+        value = body.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or value == "":
+            raise ConnectProbeError("auth")
+        out[key] = value
+    return out
 
 
 def _extra(kind: str) -> Any | None:
-    """The Gauss or Oracle driver when its flag is on. Otherwise None."""
+    """The driver for ``kind`` when its flag is on. Otherwise None."""
     key = (kind or "").strip().lower()
+    module = _driver(key)
+    if module is None or not module.enabled():
+        return None
+    return module
+
+
+def _driver(key: str) -> Any | None:
     if key == "gauss":
         from dms_executor.drivers import gauss
 
-        return gauss if gauss.enabled() else None
+        return gauss
     if key == "oracle":
         from dms_executor.drivers import oracle
 
-        return oracle if oracle.enabled() else None
+        return oracle
+    if key == "s3":
+        from dms_executor.drivers import s3
+
+        return s3
+    if key == "azure_sql":
+        from dms_executor.drivers import azure_sql
+
+        return azure_sql
+    if key == "azure_blob":
+        from dms_executor.drivers import azure_blob
+
+        return azure_blob
+    if key == "salesforce":
+        from dms_executor.drivers import salesforce
+
+        return salesforce
     return None
+
+
+def http_governed(kind: str) -> bool:
+    """Kinds whose query route is the capped ask, not the uncapped page."""
+    key = (kind or "").strip().lower()
+    return key in {"s3", "azure_sql", "azure_blob", "salesforce"} and _extra(key) is not None
 
 
 def _dialect(kind: str) -> str:
@@ -425,6 +472,9 @@ def probe_source(
     user: str,
     password: str,
     tls: bool = False,
+    client_id: str = "",
+    client_secret: str = "",
+    token: str = "",
 ) -> dict[str, Any]:
     """Connect, read the server version, and count visible base tables.
 
@@ -440,6 +490,9 @@ def probe_source(
                 user=user,
                 password=password,
                 tls=tls,
+                client_id=client_id,
+                client_secret=client_secret,
+                token=token,
             )
         except ConnectProbeError:
             raise
@@ -455,17 +508,26 @@ def probe_source(
             user=user,
             password=password,
             tls=tls,
+            client_id=client_id,
+            client_secret=client_secret,
+            token=token,
         ) as con:
             version = _version(con, kind)
             tables = _tables(con, kind, database)
             extra = _extra(kind)
             extra_fields: dict[str, Any] = {}
             if extra is not None:
+                mapped = None
+                mapper = getattr(extra, "schema_map", None)
+                if mapper is not None:
+                    mapped = mapper(con)
                 extra_fields = {
                     "dialect": extra.DIALECT,
                     "keys": extra.keys_payload(con),
-                    "prompt": extra.prompt(tables),
+                    "prompt": _prompt(extra, tables, mapped),
                 }
+                if mapped is not None:
+                    extra_fields["schema_map"] = mapped
     except ConnectProbeError:
         raise
     except Exception as exc:
@@ -480,6 +542,15 @@ def probe_source(
     }
 
 
+def _prompt(extra: Any, tables: list[str], schema: dict[str, Any] | None) -> str:
+    if schema is None:
+        return str(extra.prompt(tables))
+    try:
+        return str(extra.prompt(tables, schema))
+    except TypeError:
+        return str(extra.prompt(tables))
+
+
 @contextmanager
 def _session(
     *,
@@ -490,6 +561,9 @@ def _session(
     user: str,
     password: str,
     tls: bool,
+    client_id: str = "",
+    client_secret: str = "",
+    token: str = "",
 ) -> Iterator[Any]:
     con = _open(
         kind=kind,
@@ -499,6 +573,9 @@ def _session(
         user=user,
         password=password,
         tls=tls,
+        client_id=client_id,
+        client_secret=client_secret,
+        token=token,
     )
     try:
         _lock_read_only(con, kind)
@@ -522,6 +599,39 @@ def _session(
             pass
 
 
+def _login_kwargs(
+    extra: Any,
+    *,
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    tls: bool,
+    client_id: str,
+    client_secret: str,
+    token: str,
+) -> dict[str, Any]:
+    import inspect
+
+    params = inspect.signature(extra.connect_login).parameters
+    kwargs: dict[str, Any] = {
+        "host": host,
+        "port": int(port),
+        "database": database,
+        "user": user,
+        "password": password,
+        "timeout": CONNECT_HANDSHAKE_S,
+    }
+    if "tls" in params:
+        kwargs["tls"] = tls
+    if "client_id" in params:
+        kwargs["client_id"] = client_id
+        kwargs["client_secret"] = client_secret
+        kwargs["token"] = token
+    return kwargs
+
+
 def _open(
     *,
     kind: str,
@@ -531,6 +641,9 @@ def _open(
     user: str,
     password: str,
     tls: bool,
+    client_id: str = "",
+    client_secret: str = "",
+    token: str = "",
 ) -> Any:
     key = kind.lower()
     try:
@@ -540,12 +653,18 @@ def _open(
 
             try:
                 return extra.connect_login(
-                    host=host,
-                    port=int(port),
-                    database=database,
-                    user=user,
-                    password=password,
-                    timeout=CONNECT_HANDSHAKE_S,
+                    **_login_kwargs(
+                        extra,
+                        host=host,
+                        port=port,
+                        database=database,
+                        user=user,
+                        password=password,
+                        tls=tls,
+                        client_id=client_id,
+                        client_secret=client_secret,
+                        token=token,
+                    )
                 )
             except DriverError as exc:
                 raise ConnectProbeError(exc.code, doc=exc.doc) from None
@@ -779,6 +898,87 @@ def _ready(
     if _blocked(estimate, confirm_runaway):
         return _warning(estimate)
     return statement, estimate
+
+
+def governed_ask(
+    *,
+    kind: str,
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    sql: str,
+    grantable: set[str],
+    tls: bool = False,
+    client_id: str = "",
+    client_secret: str = "",
+    token: str = "",
+) -> dict[str, Any]:
+    """Schema map plus one capped read. The map has no cell values."""
+    extra = _extra(kind)
+    if extra is None or not hasattr(extra, "governed_ask"):
+        raise ConnectQueryError("sql_dialect_unknown")
+    from dms_executor.drivers import DriverError
+
+    try:
+        return extra.governed_ask(
+            host=host,
+            port=port,
+            database=database,
+            user=user,
+            password=password,
+            sql=sql,
+            grantable=set(grantable),
+            tls=tls,
+            client_id=client_id,
+            client_secret=client_secret,
+            token=token,
+        )
+    except DriverError as exc:
+        raise ConnectQueryError(exc.code) from None
+    except ConnectQueryError:
+        raise
+    except Exception:
+        raise ConnectQueryError("bad_request") from None
+
+
+def iter_governed_export(**kwargs: Any) -> Iterator[dict[str, Any]]:
+    """One capped page as an export stream. The uncapped export stays on the old kinds."""
+    try:
+        body = governed_ask(**kwargs)
+    except ConnectQueryError as exc:
+        yield {
+            "event": "error",
+            "error": exc.code,
+            "truncated": False,
+            "bounded": True,
+        }
+        return
+    yield {
+        "event": "header",
+        "ok": body.get("ok") is True,
+        "estimate": body.get("estimate"),
+        "truncated": body.get("truncated") is True,
+        "bounded": body.get("bounded") is True,
+    }
+    if body.get("ok") is not True:
+        yield {
+            "event": "error",
+            "error": str(body.get("error") or "bad_request"),
+            "truncated": False,
+            "bounded": True,
+        }
+        return
+    for row in body.get("rows") or []:
+        yield {"event": "row", "row": row}
+    yield {
+        "event": "end",
+        "complete": body.get("complete") is True,
+        "cancelled": False,
+        "truncated": body.get("truncated") is True,
+        "bounded": body.get("bounded") is True,
+    }
 
 
 def run_live_select(

@@ -116,6 +116,19 @@ def dialect_for_connector(kind: str | None) -> str:
 
         if enabled():
             found = "oracle"
+    if found is None and key in {"s3", "azure_blob", "salesforce"}:
+        from dms_executor.drivers.azure_blob import enabled as azure_on
+        from dms_executor.drivers.s3 import enabled as s3_on
+        from dms_executor.drivers.salesforce import enabled as sf_on
+
+        flags = {"s3": s3_on, "azure_blob": azure_on, "salesforce": sf_on}
+        if flags[key]():
+            found = "postgres"
+    if found is None and key == "azure_sql":
+        from dms_executor.drivers.azure_sql import enabled as azure_sql_on
+
+        if azure_sql_on():
+            found = "tsql"
     if found is None:
         from dms_executor.grant_struct import sql_refusal_envelope
 

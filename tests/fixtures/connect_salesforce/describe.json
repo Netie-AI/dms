@@ -1,0 +1,10 @@
+{
+  "fields": [
+    {
+      "name": "Category",
+      "type": "string",
+      "picklistValues": [{"value": "should-not-copy"}]
+    },
+    {"name": "Amount", "type": "currency"}
+  ]
+}
