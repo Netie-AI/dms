@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dms-airflow"
+version = "0.1.0"
+description = "Airflow operators that call DMS. Secrets stay in the Airflow connection."
+requires-python = ">=3.11"
+dependencies = ["dms-sdk"]
+
+[project.optional-dependencies]
+airflow = ["apache-airflow>=2.8"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["dms_airflow*"]

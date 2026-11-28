@@ -86,6 +86,8 @@ pythonpath = [
   "packages/executor",
   "packages/ledger",
   "packages/ao_vendor",
+  "packages/dms_sdk",
+  "packages/dms_airflow",
 ]
 
 [tool.mypy]
