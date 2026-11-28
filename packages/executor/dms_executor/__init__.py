@@ -1109,7 +1109,7 @@ class Executor:
                 out = apply_on_warehouse(
                     out,
                     warehouse=self._warehouse,
-                    dialect=extract_dialect(self.dialect) or "duckdb",
+                    dialect=extract_dialect(self.dialect) or SERVING_DIALECT,
                     question=question,
                     space_id=space_id,
                     session_id=session_id,

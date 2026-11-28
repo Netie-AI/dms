@@ -36,6 +36,8 @@ from typing import Any
 
 from sqlglot import exp, parse_one
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
+
 ENV = "DMS_TIE_PROJECTION"
 # Same page as connectors.run_live_select. Not a result cap: the next offset
 # continues, and truncated stays false.
@@ -163,13 +165,13 @@ def apply_served(
             question=question,
             space_id=space_id,
             session_id=session_id,
-            dialect=dialect or "duckdb",
+            dialect=dialect or SERVING_DIALECT,
         )
     tied, rewritten = _tie_rows(
         sql,
         rows,
         execute=execute,
-        dialect=dialect or "duckdb",
+        dialect=dialect or SERVING_DIALECT,
     )
     if tied is None:
         return _project_only(
@@ -179,7 +181,7 @@ def apply_served(
             question=question,
             space_id=space_id,
             session_id=session_id,
-            dialect=dialect or "duckdb",
+            dialect=dialect or SERVING_DIALECT,
         )
     return _finish(
         env,
@@ -191,7 +193,7 @@ def apply_served(
         session_id=session_id,
         page_size=page_size,
         tied_note=True,
-        dialect=dialect or "duckdb",
+        dialect=dialect or SERVING_DIALECT,
     )
 
 
@@ -219,7 +221,7 @@ def apply_on_warehouse(
             gap = serve_gap(
                 sql,
                 grantable=set(grantable),
-                dialect=dialect or "duckdb",
+                dialect=dialect or SERVING_DIALECT,
                 warehouse=warehouse,
             )
             if gap:
