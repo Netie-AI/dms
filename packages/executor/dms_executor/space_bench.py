@@ -32,14 +32,6 @@ _OUTCOME = {
     "GOLD_BROKEN": "abstain",
     "EMPTY_GOLD": "abstain",
 }
-_ASK_FAILED: dict[str, Any] = {
-    "badge": "ABSTAIN",
-    "abstained": True,
-    "rows": [],
-    "route": "ask_failed",
-    "text": "",
-    "sql_used": "",
-}
 
 
 def _grader() -> Any:
@@ -51,6 +43,22 @@ def _grader() -> Any:
     import grade52
 
     return grade52
+
+
+def _ask_failed() -> dict[str, Any]:
+    """Ask raised. Abstain through the builder. Do not guess a number."""
+    from dms_executor.abstain import build_abstain
+
+    return build_abstain(
+        reason="ask_failed",
+        stage="ask",
+        answer_id="bench-ask-failed",
+        text="",
+        rows=[],
+        values=[],
+        route="ask_failed",
+        log_ticket=False,
+    )
 
 
 def guard_benchmark_write(*, sql: str) -> None:
@@ -74,13 +82,14 @@ def check_gold_sql(
     warehouse: Path | None,
 ) -> GoldCheck:
     """Read-only and grant gates. A write is refused. A grant miss is invalid."""
+    from dms_executor.demo_warehouse import SERVING_DIALECT
     from dms_executor.generative_ask import validate_compiled_sql
 
     why = validate_compiled_sql(
         sql,
         grantable=grantable,
         warehouse=warehouse,
-        dialect="duckdb",
+        dialect=SERVING_DIALECT,
     )
     if not why:
         return GoldCheck(ok=True, refused=False, reason="")
@@ -200,9 +209,9 @@ def run_items(
             try:
                 env = ask(str(item.get("question") or ""))
             except Exception:
-                env = _ASK_FAILED
+                env = _ask_failed()
             if not isinstance(env, Mapping):
-                env = _ASK_FAILED
+                env = _ask_failed()
             gold_rows, err = execute(str(item.get("gold_sql") or ""))
             if err or gold_rows is None:
                 row = _invalid(item, err or "gold_failed")

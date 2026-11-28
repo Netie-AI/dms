@@ -108,23 +108,6 @@ def _http(exc: BaseException) -> HTTPException:
     raise exc
 
 
-def _gate(
-    cortex: Any,
-    actor: str,
-    action: str,
-    space_id: str,
-    *,
-    mutation: bool,
-) -> None:
-    decision = compliance_gate(
-        action=action,
-        actor=actor,
-        metadata={"task_id": action, "space_id": space_id},
-        client=cortex,
-    )
-    enforce(decision, mutation=mutation)
-
-
 def _public_item(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
@@ -173,7 +156,13 @@ def _public_run(row: dict[str, Any] | None) -> dict[str, Any] | None:
 @router.get("")
 def list_benchmarks(space_id: str, cortex: CortexDep, settings: SettingsDep) -> dict[str, Any]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.list", space_id, mutation=False)
+    decision = compliance_gate(
+        action="space_bench.list",
+        actor=actor,
+        metadata={"task_id": "space_bench.list", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     store = get_bench_store()
     try:
         items = store.list_items(space_id)
@@ -196,7 +185,13 @@ def create_benchmark(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.create", space_id, mutation=True)
+    decision = compliance_gate(
+        action="space_bench.create",
+        actor=actor,
+        metadata={"task_id": "space_bench.create", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
     try:
         saved = save_space_benchmark(
             space_id=space_id,
@@ -217,7 +212,13 @@ def update_benchmark(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.update", space_id, mutation=True)
+    decision = compliance_gate(
+        action="space_bench.update",
+        actor=actor,
+        metadata={"task_id": "space_bench.update", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
     store = get_bench_store()
     try:
         current = store.get_item(space_id, item_id)
@@ -249,7 +250,13 @@ def delete_benchmark(
     settings: SettingsDep,
 ) -> dict[str, bool]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.delete", space_id, mutation=True)
+    decision = compliance_gate(
+        action="space_bench.delete",
+        actor=actor,
+        metadata={"task_id": "space_bench.delete", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
     try:
         found = get_bench_store().delete_item(space_id, item_id)
     except BenchStoreError as exc:
@@ -263,7 +270,13 @@ def delete_benchmark(
 def from_examples(space_id: str, cortex: CortexDep, settings: SettingsDep) -> dict[str, int]:
     """Copy verified examples into this book. A scored row is refused, not stored."""
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.from_examples", space_id, mutation=True)
+    decision = compliance_gate(
+        action="space_bench.from_examples",
+        actor=actor,
+        metadata={"task_id": "space_bench.from_examples", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
     added = 0
     invalid = 0
     refused = 0
@@ -303,7 +316,13 @@ def start_run(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.run", space_id, mutation=True)
+    decision = compliance_gate(
+        action="space_bench.run",
+        actor=actor,
+        metadata={"task_id": "space_bench.run", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
     store = get_bench_store()
     try:
         items = store.list_items(space_id)
@@ -340,7 +359,13 @@ def get_run(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.get_run", space_id, mutation=False)
+    decision = compliance_gate(
+        action="space_bench.get_run",
+        actor=actor,
+        metadata={"task_id": "space_bench.get_run", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=False)
     try:
         run = get_bench_store().get_run(space_id, run_id)
     except BenchStoreError as exc:
@@ -360,7 +385,13 @@ def cancel_run(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.cancel", space_id, mutation=True)
+    decision = compliance_gate(
+        action="space_bench.cancel",
+        actor=actor,
+        metadata={"task_id": "space_bench.cancel", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
     store = get_bench_store()
     try:
         found = store.request_cancel(space_id, run_id)
@@ -384,7 +415,13 @@ def review_result(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     actor = _steward(settings)
-    _gate(cortex, actor, "space_bench.review", space_id, mutation=True)
+    decision = compliance_gate(
+        action="space_bench.review",
+        actor=actor,
+        metadata={"task_id": "space_bench.review", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
     try:
         saved = get_bench_store().set_review(
             space_id,
