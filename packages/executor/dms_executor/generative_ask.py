@@ -3624,6 +3624,8 @@ def _maybe_generative_ask_impl(
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
+    from dms_executor.reply_hygiene import generate_reply
+
     if budget_stop:
         # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
         # Flag on: a partial or an ask-back. Never the timeout abstain.
@@ -3638,6 +3640,15 @@ def _maybe_generative_ask_impl(
                     session_id=session_id,
                 )
             )
+        cleaned = generate_reply(
+            payload if isinstance(payload, dict) else None,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+            reason=budget_stop,
+        )
+        if cleaned is not None:
+            return _stamp(cleaned)
         return _stamp(
             _abstain(
                 q,
@@ -3648,6 +3659,14 @@ def _maybe_generative_ask_impl(
                 stage="insights_budget",
             )
         )
+    cleaned = generate_reply(
+        payload if isinstance(payload, dict) else None,
+        question=q,
+        space_id=space_id,
+        session_id=session_id,
+    )
+    if cleaned is not None:
+        return _stamp(cleaned)
     if (
         isinstance(payload, dict)
         and insights_fail_reason(payload) == INSIGHTS_FAIL_AI_ERROR

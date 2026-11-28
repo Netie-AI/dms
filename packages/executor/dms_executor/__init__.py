@@ -1028,6 +1028,10 @@ class Executor:
                     if deadline_hit and not scale_miss_enabled():
                         env["serving_deadline_s"] = ask_budget_s
                     assert_envelope_valid(env)
+                    if not (deadline_hit and scale_miss_enabled()):
+                        from dms_executor.reply_hygiene import stamp_capacity
+
+                        stamp_capacity(env, exc.code)
                 finally:
                     reset_serving_lease_block(token)
             # An answer whose served SQL reads outside the turn's grant is a
@@ -1793,6 +1797,7 @@ class Executor:
             ontology_text,
             schema_text,
         )
+        from dms_executor.reply_hygiene import reason_completion
 
         return apply_reconfirm(
             env,
@@ -1804,6 +1809,7 @@ class Executor:
             ontology=ontology_text(space_id),
             schema=schema_text(None, granted_schema_names(space_id, tables)),
             complete=lambda prompt: complete_with_model(cortex, prompt),
+            reason_complete=lambda prompt: reason_completion(cortex, prompt),
         )
 
     def reconfirm_ask_path(self, token: str) -> str | None:

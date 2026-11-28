@@ -73,6 +73,7 @@ export const REASON_COPY: Record<string, string> = {
   missing_metric: "No metric is available for that question, so no figure was given.",
   missing_ontology: "No approved model is loaded for this Space, so no figure was given.",
   missing_table: "The query names a table that is not in the data, so no figure was given.",
+  model_unreachable: "I could not reach the model just now; ask again in a minute",
   multi_statement: "More than one statement was produced, so no figure was given.",
   no_candidate: "Nothing checked was available to answer, so no figure was given.",
   no_declared_measure: "That measure is not declared for this Space, so no figure was given.",
