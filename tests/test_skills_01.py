@@ -191,6 +191,8 @@ def test_documents_chunk_cite_and_do_not_invent_vectors(tmp_path: Path) -> None:
     cites = library.citations("policy", space_id="space-1")
     assert cites
     assert len(cites[0]["excerpt"]) <= 240
+    same = library.citations("zzzz", space_id="space-1")
+    assert same and same[0]["chunk_index"] == cites[0]["chunk_index"]
     assert len(excerpt("x" * 300)) == 240
 
     docx = _docx("Lead time is stated in the contract.")

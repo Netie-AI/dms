@@ -5,7 +5,6 @@ OpenVault embedder. Citations are short excerpts, not the file.
 from __future__ import annotations
 
 import io
-import re
 import zipfile
 from collections.abc import Callable, Sequence
 from xml.etree import ElementTree
@@ -18,7 +17,6 @@ _OVERLAP = 80
 _MAX_CHUNKS = 40
 _EXCERPT = 240
 _W_T = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
-_TOKEN = re.compile(r"[a-z0-9]+")
 
 Embedder = Callable[[list[str]], object]
 
@@ -122,7 +120,11 @@ def rank_chunks(
     chunks: Sequence[dict[str, object]],
     embedder: Embedder | None,
 ) -> list[int]:
-    """Indexes, best first. Cosine when every chunk has an OpenVault vector."""
+    """Indexes, best first. Cosine when every chunk has an OpenVault vector.
+
+    No vector means the first chunks, in order. DMS does not rank by words
+    in the question.
+    """
     vectors = [_as_vector(row.get("vector")) for row in chunks]
     if chunks and all(item is not None for item in vectors):
         query = _query_vector(question, embedder)
@@ -134,9 +136,7 @@ def rank_chunks(
             ]
             scored.sort(key=lambda item: item[0], reverse=True)
             return [index for score, index in scored if score > 0]
-    scores = _lexical(question, [str(row.get("text") or "") for row in chunks])
-    order = sorted(range(len(scores)), key=lambda index: scores[index], reverse=True)
-    return [index for index in order if scores[index] > 0]
+    return list(range(len(chunks)))
 
 
 def _query_vector(question: str, embedder: Embedder | None) -> list[float] | None:
@@ -182,15 +182,3 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
     if len(left) != len(right):
         return 0.0
     return sum(a * b for a, b in zip(left, right, strict=True))
-
-
-def _lexical(question: str, chunks: Sequence[str]) -> list[float]:
-    wanted = _TOKEN.findall(question.casefold())
-    scores: list[float] = []
-    for chunk in chunks:
-        tokens = _TOKEN.findall(chunk.casefold())
-        if not wanted or not tokens:
-            scores.append(0.0)
-            continue
-        scores.append(sum(tokens.count(token) for token in wanted) / len(tokens))
-    return scores
