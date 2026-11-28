@@ -174,7 +174,7 @@ class OrphanThresholdIn(BaseModel):
 @router.get("/{space_id}/orphan-threshold")
 def get_orphan_threshold(space_id: str, store: SpaceStoreDep) -> dict[str, Any]:
     """The recorded ratio. Flag off reports 0 and does not apply a stored value."""
-    from dms_executor.join_flags import fk_orphan_disclose_enabled, orphan_threshold_record
+    from dms_core.orphan_threshold import fk_orphan_disclose_enabled, orphan_threshold_record
 
     if store.get(space_id) is None:
         raise HTTPException(status_code=404, detail="space not found")
@@ -200,7 +200,7 @@ def put_orphan_threshold(
     settings: SettingsDep,
 ) -> dict[str, Any]:
     """Record who set the ratio. The default stays 0 until this is called."""
-    from dms_executor.join_flags import fk_orphan_disclose_enabled, set_orphan_threshold
+    from dms_core.orphan_threshold import fk_orphan_disclose_enabled, set_orphan_threshold
 
     if store.get(space_id) is None:
         raise HTTPException(status_code=404, detail="space not found")
