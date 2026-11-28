@@ -2030,6 +2030,9 @@ def _refuse_destructive(
 ) -> dict[str, Any] | None:
     """Hostile abstain, or None.
 
+    Not the compliance gate and not ``question_is_destructive``. Those stay
+    where they are. This only abstains when the model says destructive or
+    the text is a typed non-SELECT, and it does that before compile.
     Unknown is not a destructive verdict. The ask continues, and a compile
     serve still has to pass the honour check.
     """
