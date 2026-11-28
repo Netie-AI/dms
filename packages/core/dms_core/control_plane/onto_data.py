@@ -346,13 +346,16 @@ class OntologyDataStore:
         if body.get("served"):
             raise ValueError("an ontology proposal is never served")
         status = str(body.get("status") or "")
-        if status != "proposed":
-            return {
-                "status": status or "off",
-                "served": False,
-                "version_id": None,
-                "items": [],
-            }
+        if status not in {"proposed", "partial"}:
+            return _attach_gaps(
+                {
+                    "status": status or "off",
+                    "served": False,
+                    "version_id": None,
+                    "items": [],
+                },
+                body,
+            )
         version = VersionRow(
             id=str(uuid4()),
             tenant_id=tenant_id,
@@ -382,12 +385,15 @@ class OntologyDataStore:
             )
             self._items[row.id] = row
             stored.append(_public_item(row))
-        return {
-            "status": "proposed",
-            "served": False,
-            "version_id": version.id,
-            "items": stored,
-        }
+        return _attach_gaps(
+            {
+                "status": status,
+                "served": False,
+                "version_id": version.id,
+                "items": stored,
+            },
+            body,
+        )
 
     def get_item(self, item_id: str) -> ItemRow | None:
         return self._items.get(item_id)
@@ -491,13 +497,16 @@ class PostgresOntologyDataStore:
         if body.get("served"):
             raise ValueError("an ontology proposal is never served")
         status = str(body.get("status") or "")
-        if status != "proposed":
-            return {
-                "status": status or "off",
-                "served": False,
-                "version_id": None,
-                "items": [],
-            }
+        if status not in {"proposed", "partial"}:
+            return _attach_gaps(
+                {
+                    "status": status or "off",
+                    "served": False,
+                    "version_id": None,
+                    "items": [],
+                },
+                body,
+            )
         tenant = self._tenant(tenant_id)
         created = _uuid_text(created_by)
         space = _uuid_text(space_id)
@@ -580,12 +589,15 @@ class PostgresOntologyDataStore:
             raise
         finally:
             conn.close()
-        return {
-            "status": "proposed",
-            "served": False,
-            "version_id": version.id,
-            "items": [_public_item(row) for row in rows],
-        }
+        return _attach_gaps(
+            {
+                "status": status,
+                "served": False,
+                "version_id": version.id,
+                "items": [_public_item(row) for row in rows],
+            },
+            body,
+        )
 
     def approve(self, item_id: str, *, actor: str) -> ItemRow | None:
         item = _uuid_text(item_id)
@@ -838,6 +850,15 @@ def ontology_data_store() -> OntologyDataStore | PostgresOntologyDataStore:
         _PG = PostgresOntologyDataStore(url, tenant_id=tenant)
         _PG_KEY = key
     return _PG
+
+
+def _attach_gaps(result: dict[str, Any], body: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy a typed gap list onto the response. A proposal with no gaps is unchanged."""
+    gaps = body.get("gaps")
+    if not isinstance(gaps, list) or not gaps:
+        return result
+    result["gaps"] = [dict(item) for item in gaps if isinstance(item, dict)]
+    return result
 
 
 def reset_ontology_data_store() -> None:
