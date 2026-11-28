@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 from dms_executor.cube.compile import REASON_UNKNOWN, CubePlanError, compile_plan
 from dms_executor.cube.model import Cube, CubePlan
+from dms_executor.demo_warehouse import SERVING_DIALECT
 from dms_executor.route_stamp import ROUTE_AI_CUBE, stamp_route
 
 FLAG = "DMS_METRIC_CUBE"
@@ -144,7 +145,7 @@ def accept_metric_cube(
         _reject(payload, REASON_UNKNOWN, from_sql)
         return None
     try:
-        sql = compile_plan(plan, cube, dialect=dialect or "duckdb")
+        sql = compile_plan(plan, cube, dialect=dialect or SERVING_DIALECT)
     except CubePlanError as exc:
         if exc.reason == "fanout_grain":
             _reject(payload, exc.reason, from_sql)

@@ -27,6 +27,7 @@ from dms_executor.cube.model import (
     CubePlan,
     CubeTimeDimension,
 )
+from dms_executor.demo_warehouse import SERVING_DIALECT
 
 REASON_UNKNOWN = "cube_member_unknown"
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -64,9 +65,12 @@ class _Piece:
     kind: str  # dimension, time, measure
 
 
+_DIALECTS = frozenset({"postgres", "mysql", "tsql", "sqlite", SERVING_DIALECT})
+
+
 def _dialect(dialect: str) -> str:
-    name = (dialect or "").strip().lower() or "duckdb"
-    if name not in {"postgres", "mysql", "tsql", "sqlite", "duckdb"}:
+    name = (dialect or "").strip().lower() or SERVING_DIALECT
+    if name not in _DIALECTS:
         raise CubePlanError("cube_dialect_unknown")
     return name
 
