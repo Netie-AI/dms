@@ -52,6 +52,10 @@ def catalog() -> list[dict[str, Any]]:
         optional = _OPTIONAL.get(name)
         if optional:
             row["optional"] = list(optional)
+        if name in ("chart_commentary", "chart_page"):
+            from dms_core.create_style.chart_registry import known
+
+            row["chart_kinds"] = list(known())
         rows.append(row)
     return rows
 
@@ -225,7 +229,9 @@ def _chart(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise CreateError("bad_chart")
     kind = value.get("kind")
-    if kind not in ("bar", "line"):
+    from dms_core.create_style.chart_registry import known
+
+    if kind not in known():
         raise CreateError("bad_chart")
     title = value.get("title", "")
     if not isinstance(title, str):

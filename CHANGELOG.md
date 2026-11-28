@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - CREATE-STYLE-V2: professional faces and an open chart registry
+
+- **Fonts.** Slides and the UI use Inter, then Helvetica Neue, then Arial. `research-note` uses Times New Roman, then Liberation Serif, then Tinos. `cn-corporate` uses Noto Sans CJK SC, then Source Han Sans SC, then Microsoft YaHei. Captions may be italic. The nav keeps a mark and sets the word in the sans stack. Preview uses the installed file, otherwise the next face in the stack.
+- **Charts.** The model names a kind from the registry. `register()` adds a kind with no cap. The HTML file has one button per kind. A click redraws that chart from the same numbers. Off, Create files stay as they are.
+- **Renders.** `DMS_STYLE_RENDERS` receives one PNG per layout page. CI uploads that folder. Not PASS.
+
 ## 2026-11-28 - CREATE-STYLE-V2: theme file inside Create
 
 - **Flag.** `DMS_CREATE_STYLE` is off unless the value is the digit 1. Off, `render_artifact` is unchanged. There is no second `/v1/create` route.

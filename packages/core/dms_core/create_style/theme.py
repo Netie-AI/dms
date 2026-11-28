@@ -33,6 +33,24 @@ class Colours:
 class Fonts:
     display: str
     body: str
+    stack: tuple[str, ...] = ()
+    cjk: str = ""
+    office: str = ""
+    generic: str = "sans-serif"
+
+    def css_family(self) -> str:
+        """Quoted stack, then the CJK face, then a generic family."""
+        names: list[str] = []
+        for name in (self.display, self.body, *self.stack):
+            if name and name not in names:
+                names.append(name)
+        if self.cjk and self.cjk not in names:
+            names.append(self.cjk)
+        parts = []
+        for name in names:
+            parts.append(f'"{name}"' if " " in name else name)
+        parts.append(self.generic or "sans-serif")
+        return ", ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -69,7 +87,7 @@ def theme_fields() -> dict[str, list[str]]:
     """Keys a brand file may set. No sample copy."""
     return {
         "colours": ["ink", "paper", "accent", "card", "muted", "line"],
-        "fonts": ["display", "body"],
+        "fonts": ["display", "body", "stack", "cjk", "office", "generic"],
         "spacing": ["unit", "page_margin", "gap", "card_pad"],
         "slide": ["w", "h"],
         "doc": ["w", "h"],
@@ -131,6 +149,28 @@ def _font(value: object) -> str:
     return value
 
 
+def _font_or_blank(value: object) -> str:
+    if value in (None, ""):
+        return ""
+    return _font(value)
+
+
+def _generic(value: object) -> str:
+    if value in (None, ""):
+        return "sans-serif"
+    if value not in ("sans-serif", "serif"):
+        raise CreateError("theme_font")
+    return str(value)
+
+
+def _stack(value: object, display: str) -> tuple[str, ...]:
+    if value is None:
+        return (display,)
+    if not isinstance(value, list) or not value or len(value) > 8:
+        raise CreateError("theme_font")
+    return tuple(_font(item) for item in value)
+
+
 def _on_grid(value: object, unit: int, *, low: int, high: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise CreateError("theme_spacing")
@@ -157,7 +197,16 @@ def _parse(data: dict[str, Any]) -> Theme:
     fonts_raw = data.get("fonts")
     if not isinstance(fonts_raw, dict):
         raise CreateError("theme_field")
-    fonts = Fonts(display=_font(fonts_raw.get("display")), body=_font(fonts_raw.get("body")))
+    display = _font(fonts_raw.get("display"))
+    body = _font(fonts_raw.get("body"))
+    fonts = Fonts(
+        display=display,
+        body=body,
+        stack=_stack(fonts_raw.get("stack"), display),
+        cjk=_font_or_blank(fonts_raw.get("cjk")),
+        office=_font_or_blank(fonts_raw.get("office")) or display,
+        generic=_generic(fonts_raw.get("generic")),
+    )
     spacing_raw = data.get("spacing")
     if not isinstance(spacing_raw, dict):
         raise CreateError("theme_field")

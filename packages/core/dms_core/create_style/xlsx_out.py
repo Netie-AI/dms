@@ -184,7 +184,7 @@ def _styles(theme: Theme) -> str:
         '<fonts count="6">'
         f'<font><sz val="11"/><name val="{body}"/><color rgb="FF{ink}"/></font>'
         f'<font><b/><sz val="16"/><name val="{body}"/><color rgb="FF{ink}"/></font>'
-        '<font><b/><sz val="11"/><name val="Calibri"/><color rgb="FFFFFFFF"/></font>'
+        f'<font><b/><sz val="11"/><name val="{body}"/><color rgb="FFFFFFFF"/></font>'
         f'<font><sz val="11"/><name val="{body}"/><color rgb="FF{ink}"/></font>'
         f'<font><b/><sz val="20"/><name val="{body}"/><color rgb="FF{accent}"/></font>'
         f'<font><sz val="10"/><name val="{body}"/><color rgb="FF{muted}"/></font>'

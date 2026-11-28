@@ -1,0 +1,11 @@
+{
+  "name": "cn-corporate",
+  "fonts": {
+    "display": "Noto Sans CJK SC",
+    "body": "Noto Sans CJK SC",
+    "stack": ["Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei"],
+    "cjk": "Noto Sans CJK SC",
+    "office": "Microsoft YaHei",
+    "generic": "sans-serif"
+  }
+}

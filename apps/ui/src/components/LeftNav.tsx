@@ -150,9 +150,21 @@ export function LeftNav() {
         className="flex w-52 shrink-0 flex-col overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] max-lg:fixed max-lg:top-12 max-lg:bottom-0 max-lg:left-0 max-lg:z-40"
       >
       <div className="border-b border-[var(--color-line)] px-4 py-4">
-        <p className="font-[family-name:var(--font-display)] text-xl font-semibold tracking-tight text-[var(--color-ink)]">
-          netie
-        </p>
+        <div className="flex items-center gap-2">
+          <svg
+            className="netie-mark"
+            width="22"
+            height="22"
+            viewBox="0 0 22 22"
+            aria-hidden="true"
+          >
+            <rect x="1" y="1" width="20" height="20" rx="4" fill="none" stroke="currentColor" strokeWidth="1.6" />
+            <path d="M6 16V6h2.2l5.6 7.2V6H16v10h-2.2L8.2 8.8V16H6z" fill="currentColor" />
+          </svg>
+          <p className="font-[family-name:var(--font-sans)] text-xl font-semibold tracking-tight text-[var(--color-ink)]">
+            netie
+          </p>
+        </div>
         <p className="mt-0.5 text-[11px] font-medium uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
           DMS
         </p>

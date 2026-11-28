@@ -10,8 +10,12 @@
   },
   "card_alpha": 0.55,
   "fonts": {
-    "display": "Calibri",
-    "body": "Calibri"
+    "display": "Inter",
+    "body": "Inter",
+    "stack": ["Inter", "Helvetica Neue", "Arial"],
+    "cjk": "Noto Sans CJK SC",
+    "office": "Arial",
+    "generic": "sans-serif"
   },
   "logo_b64": "",
   "spacing": {

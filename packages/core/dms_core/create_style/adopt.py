@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from dms_core.create_style.chart_registry import known
 from dms_core.create_style.errors import CreateError
 from dms_core.create_style.render import render_document
 from dms_core.create_style.spec import BLOCK_TYPES
@@ -21,9 +22,10 @@ _HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 
 
 def theme_for_brand(brand: Mapping[str, Any] | None) -> Theme:
-    """Pitch file, then the brand keys Create already stores."""
+    """Pitch file, or a named theme, then the brand keys Create already stores."""
+    named = _named_theme(brand)
     if not brand:
-        return load_theme()
+        return load_theme(path=named)
     override: dict[str, Any] = {}
     colours = brand.get("colours")
     if isinstance(colours, str):
@@ -43,8 +45,18 @@ def theme_for_brand(brand: Mapping[str, Any] | None) -> Theme:
     if isinstance(alpha, (int, float)) and not isinstance(alpha, bool):
         override["card_alpha"] = alpha
     if not override:
-        return load_theme()
-    return load_theme(override)
+        return load_theme(path=named)
+    return load_theme(override, path=named)
+
+
+def _named_theme(brand: Mapping[str, Any] | None) -> Path | None:
+    if not brand:
+        return None
+    name = brand.get("theme")
+    if not isinstance(name, str) or not name.strip():
+        return None
+    path = Path(__file__).resolve().parent / "themes" / f"{name.strip()}.json"
+    return path if path.is_file() else None
 
 
 def document_from_artifact(artifact: Mapping[str, Any]) -> dict[str, Any]:
@@ -197,7 +209,7 @@ def _table(rows: list[Mapping[str, Any]]) -> dict[str, Any] | None:
 
 def _chart(chart: Mapping[str, Any], fallback: str) -> dict[str, Any] | None:
     if isinstance(chart.get("categories"), list) and isinstance(chart.get("series"), list):
-        kind = chart.get("kind") if chart.get("kind") in ("bar", "line") else "bar"
+        kind = _kind(chart.get("kind"))
         title = _string(chart.get("title")) or _string(chart.get("label")) or fallback
         return {
             "title": title,
@@ -218,7 +230,7 @@ def _chart(chart: Mapping[str, Any], fallback: str) -> dict[str, Any] | None:
             label_key = str(key)
     if not value_key or not label_key:
         return None
-    kind = chart.get("type") if chart.get("type") in ("bar", "line") else "bar"
+    kind = _kind(chart.get("type") or chart.get("kind"))
     title = _string(chart.get("label")) or _string(chart.get("title")) or fallback or value_key
     return {
         "title": title,
@@ -226,6 +238,13 @@ def _chart(chart: Mapping[str, Any], fallback: str) -> dict[str, Any] | None:
         "categories": [str(row.get(label_key, "")) for row in rows],
         "series": [{"name": value_key, "values": [row.get(value_key, 0) for row in rows]}],
     }
+
+
+def _kind(value: object) -> str:
+    """Keep the model's kind when the registry can draw it. Otherwise bar."""
+    if isinstance(value, str) and value in known():
+        return value
+    return "bar"
 
 
 def _string(value: object) -> str:

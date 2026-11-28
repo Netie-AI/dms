@@ -378,6 +378,86 @@ def test_flag_off_keeps_the_create_files(tmp_path: Path, monkeypatch: pytest.Mon
     assert client.post("/v1/create/render", json={"format": "html"}).status_code == 404
 
 
+def test_theme_font_stacks_and_caption_italics() -> None:
+    from dms_core.create_style.adopt import theme_for_brand
+
+    slides = load_theme()
+    assert slides.fonts.stack[:3] == ("Inter", "Helvetica Neue", "Arial")
+    assert "Fraunces" not in slides.fonts.css_family()
+    research = theme_for_brand({"theme": "research-note"})
+    assert research.fonts.stack[:3] == ("Times New Roman", "Liberation Serif", "Tinos")
+    assert research.fonts.generic == "serif"
+    corporate = theme_for_brand({"theme": "cn-corporate"})
+    assert corporate.fonts.stack[:2] == ("Noto Sans CJK SC", "Source Han Sans SC")
+    assert corporate.fonts.stack[2] == "Microsoft YaHei"
+    html = _render("html").decode("utf-8")
+    assert "Inter" in html
+    assert "font-style:italic" in html
+    assert "Calibri" not in html
+    pptx = _zip_text(_render("pptx"), ".xml")
+    assert "Inter" in pptx
+    assert 'i="1"' in pptx
+    docx = _zip_text(_render("docx"), ".xml")
+    assert "Times New Roman" not in docx or "Inter" in docx
+    assert "<w:i/>" in docx
+
+
+def test_chart_kind_comes_from_the_model_and_one_click_switches() -> None:
+    from dms_core.create_style.chart_registry import known, register, unregister
+
+    def _draw(chart: dict[str, object], width: int, height: int, theme: object) -> object:
+        del chart, theme
+        from PIL import Image
+
+        return Image.new("RGBA", (width, height), (0, 0, 0, 0))
+
+    register("custom_mark", _draw)
+    try:
+        assert "custom_mark" in known()
+        assert "waterfall" in known()
+        from dms_core.create_style.spec import catalog
+
+        listed = catalog()
+    finally:
+        unregister("custom_mark")
+    chart = next(item for item in listed if item["type"] == "chart_commentary")
+    assert "waterfall" in chart["chart_kinds"]
+    assert "custom_mark" in chart["chart_kinds"]
+    html = _render("html").decode("utf-8")
+    assert 'data-chart-switch' in html
+    assert ">waterfall<" in html
+    assert ">pie<" in html
+    kept = normalize(
+        {
+            "title": "",
+            "blocks": [
+                {
+                    "type": "chart_commentary",
+                    "chart": _chart("Weekly orders", [4, 9, 6], "waterfall"),
+                    "commentary": COMMENTARY,
+                }
+            ],
+        }
+    )
+    assert kept["blocks"][0]["chart"]["kind"] == "waterfall"
+
+
+def test_layout_pngs() -> None:
+    import os
+
+    theme = load_theme()
+    pages = layout_pages(normalize(pitch_document()), theme, "slide")
+    dest = os.environ.get("DMS_STYLE_RENDERS", "")
+    out = Path(dest) if dest else None
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+    for index, page in enumerate(pages, start=1):
+        raw = page_png(page, theme)
+        assert png_size(raw) == (page.w, page.h)
+        if out is not None:
+            (out / f"pitch-page-{index}.png").write_bytes(raw)
+
+
 def test_preview_pages_match_the_boxes() -> None:
     theme = load_theme()
     pages = layout_pages(normalize(pitch_document()), theme, "slide")

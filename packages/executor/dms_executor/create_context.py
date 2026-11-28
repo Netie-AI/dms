@@ -4,7 +4,7 @@
 chat or a project they own, or one shared to them. The pack is summaries, a
 schema and ontology map, and a small result set. It is not a raw table.
 
-``layout_blocks`` is the hook DMS-STYLE-V2-01 fills. It stays empty here.
+``layout_blocks`` is empty unless ``DMS_CREATE_STYLE`` is the digit 1.
 """
 
 from __future__ import annotations
@@ -33,9 +33,14 @@ def context_enabled() -> bool:
 
 
 def layout_blocks(kind: str) -> list[dict[str, Any]]:
-    """Layout blocks for one kind. DMS-STYLE-V2-01 returns the real blocks."""
-    del kind
-    return []
+    """Layout blocks for one kind. Empty unless DMS_CREATE_STYLE is the digit 1."""
+    from dms_core.create_style.flag import enabled
+
+    if not enabled():
+        return []
+    from dms_core.create_style.spec import layout_blocks as listed
+
+    return listed(kind)
 
 
 def save_chat(*, actor: str, chat: dict[str, Any]) -> dict[str, Any]:

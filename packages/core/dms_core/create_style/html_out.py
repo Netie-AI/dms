@@ -15,11 +15,17 @@ def html_bytes(pages: list[Page], theme: Theme, title: str) -> bytes:
         f":root{{--ink:{colours.ink};--paper:{colours.paper};--accent:{colours.accent};"
         f"--card:{colours.card};--muted:{colours.muted};--line:{colours.line};"
         f"--card-alpha:{theme.card_alpha};"
-        f"--display:{html.escape(theme.fonts.display)};--body:{html.escape(theme.fonts.body)};}}"
-        "body{margin:0;background:#E6E1D8;font-family:var(--body),sans-serif;}"
+        f"--display:{html.escape(theme.fonts.css_family())};"
+        f"--body:{html.escape(theme.fonts.css_family())};}}"
+        "body{margin:0;background:#E6E1D8;font-family:var(--body);}"
         ".page{position:relative;margin:24px auto;overflow:hidden;}"
         ".box{position:absolute;box-sizing:border-box;overflow:hidden;}"
         ".text{white-space:pre-wrap;word-break:normal;overflow-wrap:normal;}"
+        ".chart-switch{position:absolute;left:8px;top:8px;display:flex;flex-wrap:wrap;gap:4px;}"
+        ".chart-switch button{font:12px/1 var(--body);padding:4px 6px;border:1px solid var(--line);"
+        "background:var(--card);color:var(--ink);cursor:pointer;}"
+        ".chart-switch button.is-on{background:var(--accent);color:#fff;"
+        "border-color:var(--accent);}"
     )
     sections = []
     for page in pages:
@@ -36,17 +42,36 @@ def html_bytes(pages: list[Page], theme: Theme, title: str) -> bytes:
             elif box.kind == "image" and box.image:
                 encoded = base64.b64encode(box.image).decode("ascii")
                 style += "overflow:hidden;"
+                switch = ""
+                if box.name == "chart" and box.variants:
+                    buttons = [
+                        f'<button type="button" class="is-on" data-chart-switch '
+                        f'data-kind="{html.escape(box.chart_kind)}" '
+                        f'data-src="data:image/png;base64,{encoded}">{html.escape(box.chart_kind)}</button>'
+                    ]
+                    for name, raw in box.variants.items():
+                        alt = base64.b64encode(raw).decode("ascii")
+                        buttons.append(
+                            f'<button type="button" data-chart-switch '
+                            f'data-kind="{html.escape(name)}" '
+                            f'data-src="data:image/png;base64,{alt}">{html.escape(name)}</button>'
+                        )
+                    switch = f'<div class="chart-switch">{"".join(buttons)}</div>'
                 bits.append(
-                    f'<div class="box" data-name="{html.escape(box.name)}" style="{style}">'
+                    f'<div class="box" data-name="{html.escape(box.name)}" '
+                    f'data-kind="{html.escape(box.chart_kind)}" style="{style}">'
                     f'<img alt="" width="{box.w}" height="{box.h}" '
                     f'style="display:block;width:{box.w}px;height:{box.h}px;" '
-                    f'src="data:image/png;base64,{encoded}"/></div>'
+                    f'src="data:image/png;base64,{encoded}"/>{switch}</div>'
                 )
             elif box.kind == "text":
                 weight = "700" if box.bold else "400"
+                slant = "italic" if box.italic else "normal"
+                family = theme.fonts.css_family()
                 style += (
-                    f"color:{box.color};font-family:{html.escape(box.font)},sans-serif;"
+                    f"color:{box.color};font-family:{family};"
                     f"font-size:{box.size}px;line-height:{box.line}px;font-weight:{weight};"
+                    f"font-style:{slant};"
                 )
                 bits.append(
                     f'<div class="box text" data-name="{html.escape(box.name)}" '
@@ -59,7 +84,17 @@ def html_bytes(pages: list[Page], theme: Theme, title: str) -> bytes:
     doc = (
         '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
         f"<title>{html.escape(title)}</title><style>{css}</style></head><body>"
-        f"{''.join(sections)}</body></html>"
+        f"{''.join(sections)}"
+        "<script>document.addEventListener('click',function(event){"
+        "var button=event.target.closest('[data-chart-switch]');"
+        "if(!button)return;"
+        "var frame=button.closest('[data-name]');"
+        "var img=frame.querySelector('img');"
+        "if(button.dataset.src)img.src=button.dataset.src;"
+        "frame.setAttribute('data-kind',button.dataset.kind);"
+        "frame.querySelectorAll('[data-chart-switch]').forEach(function(item){"
+        "item.classList.toggle('is-on',item===button);});"
+        "});</script></body></html>"
     )
     return doc.encode("utf-8")
 

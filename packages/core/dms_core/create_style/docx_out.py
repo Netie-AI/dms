@@ -35,6 +35,17 @@ def docx_bytes(pages: list[Page]) -> bytes:
         paragraphs.append(f"<w:p><w:r>{''.join(runs)}</w:r></w:p>")
         if index != len(pages) - 1:
             paragraphs.append('<w:p><w:r><w:br w:type="page"/></w:r></w:p>')
+    face = "Arial"
+    east = "Noto Sans CJK SC"
+    for page in pages:
+        for box in page.boxes:
+            if box.kind == "text" and box.font:
+                face = box.font
+                east = box.ea or box.office or face
+                break
+        else:
+            continue
+        break
     width = pages[0].w
     height = pages[0].h
     # 96 px per inch, 1440 twips per inch.
@@ -74,7 +85,7 @@ def docx_bytes(pages: list[Page]) -> bytes:
             "</Relationships>"
         ),
         "word/document.xml": document,
-        "word/styles.xml": _STYLES,
+        "word/styles.xml": _styles(face, east),
         "word/_rels/document.xml.rels": (
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
             '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
@@ -148,14 +159,17 @@ def _textbox(box: Box, shape_id: int) -> str:
     half = max(box.size * 3 // 2, 2)
     line = box.line * 15
     bold = "<w:b/>" if box.bold else ""
+    italic = "<w:i/>" if box.italic else ""
+    east = xml_text(box.ea or box.office or box.font)
     paragraphs = []
     for part in box.text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         paragraphs.append(
             "<w:p><w:pPr>"
             f'<w:spacing w:before="0" w:after="0" w:line="{line}" w:lineRule="exact"/>'
             "</w:pPr><w:r><w:rPr>"
-            f'<w:rFonts w:ascii="{xml_text(box.font)}" w:hAnsi="{xml_text(box.font)}"/>'
-            f'{bold}<w:sz w:val="{half}"/><w:szCs w:val="{half}"/>'
+            f'<w:rFonts w:ascii="{xml_text(box.font)}" w:hAnsi="{xml_text(box.font)}" '
+            f'w:eastAsia="{east}" w:cs="{east}"/>'
+            f'{bold}{italic}<w:sz w:val="{half}"/><w:szCs w:val="{half}"/>'
             f'<w:color w:val="{rgb(box.color)}"/>'
             "</w:rPr>"
             f'<w:t xml:space="preserve">{xml_text(part)}</w:t>'
@@ -193,11 +207,15 @@ def _content_types(image_count: int) -> str:
     )
 
 
-_STYLES = (
-    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-    '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal">'
-    '<w:name w:val="Normal"/>'
-    '<w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr>'
-    "</w:style></w:styles>"
-)
+def _styles(face: str, east: str) -> str:
+    latin = xml_text(face)
+    cjk = xml_text(east)
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:style w:type="paragraph" w:default="1" w:styleId="Normal">'
+        '<w:name w:val="Normal"/>'
+        f'<w:rPr><w:rFonts w:ascii="{latin}" w:hAnsi="{latin}" '
+        f'w:eastAsia="{cjk}" w:cs="{cjk}"/><w:sz w:val="22"/></w:rPr>'
+        "</w:style></w:styles>"
+    )

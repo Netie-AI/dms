@@ -85,59 +85,17 @@ def icon_png(kind: str, colour: str) -> bytes:
 
 
 def chart_png(chart: dict[str, Any], width: int, height: int, theme: Theme) -> bytes:
-    """Draw the series that were supplied. No title and no sentence."""
-    if width < 8 or height < 8:
-        raise CreateError("layout_overflow")
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    accent = _rgb(theme.colours.accent)
-    muted = _rgb(theme.colours.muted)
-    ink = _rgb(theme.colours.line)
-    series = chart["series"]
-    count = len(chart["categories"])
-    peak = 0.0
-    for item in series:
-        for number in item["values"]:
-            peak = max(peak, abs(float(number)))
-    if peak == 0:
-        peak = 1.0
-    left, right, top, bottom = 8, width - 8, 8, height - 8
-    plot_w = max(right - left, 1)
-    plot_h = max(bottom - top, 1)
-    draw.line((left, bottom, right, bottom), fill=ink + (255,), width=1)
-    slot = plot_w / count
-    if chart["kind"] == "line":
-        for index, item in enumerate(series):
-            colour = accent if index == 0 else muted
-            points = []
-            for pos, number in enumerate(item["values"]):
-                x = left + slot * pos + slot / 2
-                y = bottom - (float(number) / peak) * plot_h
-                points.append((x, y))
-            if len(points) >= 2:
-                draw.line(points, fill=colour + (255,), width=2)
-            for point in points:
-                draw.ellipse(
-                    (point[0] - 2, point[1] - 2, point[0] + 2, point[1] + 2), fill=colour + (255,)
-                )
-    else:
-        group = slot * 0.72
-        bar_w = group / len(series)
-        for index, item in enumerate(series):
-            colour = accent if index == 0 else muted
-            for pos, number in enumerate(item["values"]):
-                x0 = left + slot * pos + (slot - group) / 2 + bar_w * index
-                bar_h = (float(number) / peak) * plot_h
-                y0 = bottom - bar_h
-                draw.rectangle((x0, y0, x0 + bar_w - 1, bottom), fill=colour + (230,))
-    return png_bytes(image)
+    """Draw the kind the model named. No title and no sentence."""
+    from dms_core.create_style.chart_registry import render_chart
+
+    return render_chart(chart, width, height, theme)
 
 
 def page_png(page: Any, theme: Theme) -> bytes:
     """Paint one laid-out page. Same boxes the office files use."""
     image = Image.new("RGBA", (page.w, page.h), _rgb(theme.colours.paper) + (255,))
     draw = ImageDraw.Draw(image)
-    font_cache: dict[tuple[str, int, bool], Any] = {}
+    font_cache: dict[tuple[str, int, bool, bool], Any] = {}
     for box in page.boxes:
         if box.name == "paper":
             continue
@@ -151,7 +109,7 @@ def page_png(page: Any, theme: Theme) -> bytes:
                 frame = pasted.convert("RGBA").resize((box.w, box.h), Image.Resampling.LANCZOS)
             image.alpha_composite(frame, (box.x, box.y))
         elif box.kind == "text" and box.text:
-            face = _font(font_cache, box.font, box.size, box.bold)
+            face = _font(font_cache, box.font, box.size, box.bold, italic=box.italic)
             lines = box.lines or (box.text,)
             for index, line in enumerate(lines):
                 draw.text(
@@ -168,33 +126,28 @@ def _rgba(colour: str, alpha: float) -> tuple[int, int, int, int]:
     return red, green, blue, max(0, min(255, int(round(alpha * 255))))
 
 
-def _font(cache: dict[tuple[str, int, bool], Any], name: str, size: int, bold: bool) -> Any:
-    key = (name, size, bold)
+def _font(
+    cache: dict[tuple[str, int, bool, bool], Any],
+    name: str,
+    size: int,
+    bold: bool,
+    *,
+    italic: bool = False,
+) -> Any:
+    key = (name, size, bold, italic)
     if key in cache:
         return cache[key]
-    paths = []
-    if bold:
-        paths.extend(
-            [
-                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            ]
-        )
-    paths.extend(
-        [
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ]
-    )
+    from dms_core.create_style.faces import face_file
+
+    path = face_file((name, "Inter", "Arial"), bold=bold, italic=italic)
     face: Any = None
-    for path in paths:
+    if path:
         try:
             from PIL import ImageFont
 
             face = ImageFont.truetype(path, size=size)
-            break
         except OSError:
-            continue
+            face = None
     if face is None:
         from PIL import ImageFont
 

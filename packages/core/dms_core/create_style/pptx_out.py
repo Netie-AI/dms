@@ -69,7 +69,8 @@ def pptx_bytes(pages: list[Page]) -> bytes:
     parts["ppt/slideLayouts/_rels/slideLayout1.xml.rels"] = _rels(
         [_rel("rId1", "slideMaster", "../slideMasters/slideMaster1.xml")]
     )
-    parts["ppt/theme/theme1.xml"] = _THEME
+    latin, east = _scheme_fonts(pages)
+    parts["ppt/theme/theme1.xml"] = _theme(latin, east)
     parts["docProps/core.xml"] = _CORE
     parts["docProps/app.xml"] = _APP
     parts["[Content_Types].xml"] = _content_types(len(pages), bool(images))
@@ -159,15 +160,18 @@ def _text(box: Box, shape_id: int) -> str:
     size = box.size * 75
     spacing = box.line * 75
     bold = ' b="1"' if box.bold else ""
+    italic = ' i="1"' if box.italic else ""
+    east = xml_text(box.ea or box.office or box.font)
     paragraphs = []
     for part in box.text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         paragraphs.append(
             "<a:p><a:pPr>"
             f'<a:lnSpc><a:spcPts val="{spacing}"/></a:lnSpc>'
             "</a:pPr><a:r><a:rPr"
-            f' lang="en-US" sz="{size}"{bold} dirty="0">'
+            f' lang="en-US" sz="{size}"{bold}{italic} dirty="0">'
             f'<a:solidFill><a:srgbClr val="{rgb(box.color)}"/></a:solidFill>'
-            f'<a:latin typeface="{xml_text(box.font)}"/></a:rPr>'
+            f'<a:latin typeface="{xml_text(box.font)}"/>'
+            f'<a:ea typeface="{east}"/><a:cs typeface="{east}"/></a:rPr>'
             f"<a:t>{xml_text(part)}</a:t></a:r></a:p>"
         )
     return (
@@ -254,7 +258,18 @@ _LAYOUT = (
     "<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>"
 )
 
-_THEME = (
+def _scheme_fonts(pages: list[Page]) -> tuple[str, str]:
+    for page in pages:
+        for box in page.boxes:
+            if box.kind == "text" and box.font:
+                return box.font, box.ea or box.office or box.font
+    return "Arial", "Noto Sans CJK SC"
+
+
+def _theme(latin: str, east: str) -> str:
+    face = xml_text(latin)
+    cjk = xml_text(east)
+    return (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
     f'<a:theme xmlns:a="{_A}" name="pitch">'
     "<a:themeElements>"
@@ -273,8 +288,10 @@ _THEME = (
     '<a:folHlink><a:srgbClr val="5E6670"/></a:folHlink>'
     "</a:clrScheme>"
     '<a:fontScheme name="pitch">'
-    '<a:majorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>'
-    '<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>'
+    f'<a:majorFont><a:latin typeface="{face}"/><a:ea typeface="{cjk}"/>'
+    f'<a:cs typeface="{cjk}"/></a:majorFont>'
+    f'<a:minorFont><a:latin typeface="{face}"/><a:ea typeface="{cjk}"/>'
+    f'<a:cs typeface="{cjk}"/></a:minorFont>'
     "</a:fontScheme>"
     '<a:fmtScheme name="pitch">'
     '<a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>'

@@ -10,12 +10,13 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
+from dms_core.create_style.chart_registry import known
 from dms_core.create_style.errors import CreateError
 from dms_core.create_style.paint import chart_png, icon_png, square_png
 from dms_core.create_style.spec import cell_text
 from dms_core.create_style.theme import Theme
 
-# ponytail: 0.62em is a wide Calibri guess so the box is taller than the glyphs.
+# ponytail: 0.62em is a wide grotesque guess so the box is taller than the glyphs.
 # Ceiling: a much wider face can still clip. Upgrade: measure with the font file.
 _CHAR = 0.62
 
@@ -35,9 +36,14 @@ class Box:
     size: int = 14
     line: int = 24
     bold: bool = False
-    font: str = "Calibri"
+    font: str = "Inter"
+    italic: bool = False
+    ea: str = ""
+    office: str = ""
+    chart_kind: str = ""
     image: bytes = b""
     lines: tuple[str, ...] = field(default_factory=tuple)
+    variants: dict[str, bytes] = field(default_factory=dict)
 
 
 @dataclass
@@ -250,6 +256,8 @@ class _Flow:
                     line=40,
                     bold=True,
                     font=self.theme.fonts.display,
+                    ea=self.theme.fonts.cjk,
+                    office=self.theme.fonts.office,
                     color=self.theme.colours.ink,
                 )
             )
@@ -298,6 +306,7 @@ class _Flow:
             size,
             24,
             False,
+            italic=True,
         )
         self.y += block_h
 
@@ -335,6 +344,7 @@ class _Flow:
             size,
             24,
             False,
+            italic=True,
         )
         self.y += block_h
 
@@ -473,12 +483,7 @@ class _Flow:
         )
         chart_h = _snap(chart_h, self.unit)
         self.ensure(chart_h)
-        png = chart_png(block["chart"], chart_w, chart_h, self.theme)
-        self.boxes.append(
-            Box(
-                kind="image", name="chart", x=self.margin, y=self.y, w=chart_w, h=chart_h, image=png
-            )
-        )
+        self.boxes.append(self._chart_image(block["chart"], self.margin, self.y, chart_w, chart_h))
         self._card(self.margin + chart_w + self.gap, self.y, text_w, chart_h)
         icon = icon_png("chart", self.theme.colours.ink)
         self.boxes.append(
@@ -589,10 +594,7 @@ class _Flow:
         plot_w = _snap_down(plot_w, self.unit)
         if plot_h < 64 or plot_w < 64:
             raise CreateError("layout_overflow")
-        png = chart_png(chart, plot_w, plot_h, self.theme)
-        self.boxes.append(
-            Box(kind="image", name="chart", x=x + self.pad, y=plot_y, w=plot_w, h=plot_h, image=png)
-        )
+        self.boxes.append(self._chart_image(chart, x + self.pad, plot_y, plot_w, plot_h))
 
     def _row_height(self, cells: list[str], widths: list[int], font: int, *, bold: bool) -> int:
         del bold
@@ -678,6 +680,7 @@ class _Flow:
         bold: bool,
         *,
         color: str = "",
+        italic: bool = False,
     ) -> None:
         self.boxes.append(
             Box(
@@ -692,9 +695,35 @@ class _Flow:
                 size=size,
                 line=line,
                 bold=bold,
-                font=self.theme.fonts.body,
+                italic=italic,
+                font=self.theme.fonts.display if name == "title" else self.theme.fonts.body,
+                ea=self.theme.fonts.cjk,
+                office=self.theme.fonts.office,
                 color=color or self.theme.colours.ink,
             )
+        )
+
+    def _chart_image(self, chart: dict[str, Any], x: int, y: int, w: int, h: int) -> Box:
+        """One picture for the model's kind, plus one picture per other kind."""
+        chosen = str(chart.get("kind") or "bar")
+        png = chart_png(chart, w, h, self.theme)
+        variants: dict[str, bytes] = {}
+        for name in known():
+            if name == chosen:
+                continue
+            alt = dict(chart)
+            alt["kind"] = name
+            variants[name] = chart_png(alt, w, h, self.theme)
+        return Box(
+            kind="image",
+            name="chart",
+            x=x,
+            y=y,
+            w=w,
+            h=h,
+            image=png,
+            chart_kind=chosen,
+            variants=variants,
         )
 
 
