@@ -164,12 +164,29 @@ def test_floor_serves_checked_model_sql_in_one_call(
     assert grade52.serve_path(env, GOOD_SQL) == "ai"
     assert env["ai_floor"]["calls"] == 1
     assert env["ai_floor"]["executes"] == 1
+    assert env["ai_floor"]["stage"] == "generate"
+    assert isinstance(env["ai_floor"]["ms"], int)
+    assert "context" in env["ai_floor"]["stages_ms"]
+    assert "generate" in env["ai_floor"]["stages_ms"]
+    assert "check" in env["ai_floor"]["stages_ms"]
+    assert "run" in env["ai_floor"]["stages_ms"]
     assert env["ai_floor"]["checks"] == ["grant", "read_only", "explain", "shape"]
     assert len(cortex.insights) == 1
-    assert SKU_Q in cortex.insights[0]
-    assert "inventory" in cortex.insights[0].lower()
-    assert "MEASURES" in cortex.insights[0]
-    assert "JOINS" in cortex.insights[0]
+    prompt = cortex.insights[0]
+    assert prompt.index("<tools>") < prompt.index("<question>")
+    assert "<schema>" in prompt and "</schema>" in prompt
+    assert "<ontology>" in prompt and "</ontology>" in prompt
+    assert "<examples>" in prompt and "</examples>" in prompt
+    assert "<question>" in prompt and SKU_Q in prompt
+    assert "run_sql" in prompt
+    assert "inventory" in prompt.lower()
+    assert "MEASURES" in prompt
+    assert "JOINS" in prompt
+    assert "<tool_result>" not in prompt
+    assert "sql_feedback" not in cortex.kwargs[0]
+    posted = json.dumps(cortex.kwargs[0].get("ontology") or {})
+    assert "floor_cache" not in posted
+    assert "floor_timeout_s" not in posted
     assert cortex.asks == []
     assert "route_hint" not in cortex.kwargs[0]
     assert "model" not in cortex.kwargs[0]
@@ -215,9 +232,13 @@ def test_explain_miss_is_fed_back_then_served(
     assert env["sql_used"] == GOOD_SQL
     assert env["ai_floor"]["calls"] == 2
     assert env["ai_floor"]["stage"] == "repair"
-    assert "sql_feedback" in cortex.kwargs[1]
+    assert "sql_feedback" not in cortex.kwargs[1]
     assert "route_hint" not in cortex.kwargs[1]
-    assert "nope" in str(cortex.kwargs[1]["sql_feedback"])
+    repair = cortex.insights[1]
+    assert "<tool_result>" in repair
+    assert "nope" in repair
+    assert "Binder" in repair or "explain" in repair
+    assert "<schema>" in repair
 
 
 def test_third_call_sends_escalate_role(
@@ -334,16 +355,24 @@ def test_floor_off_does_not_open_a_stream(monkeypatch: pytest.MonkeyPatch) -> No
     assert done is False
 
 
-def test_default_wiring_seeds_a_warehouse_before_the_floor(
+def test_default_wiring_uses_the_existing_lake(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Executor._warehouse is None until a lane seeds it. The floor must seed too.
+    """Executor._warehouse is None. The floor uses the existing ingest file.
 
-    Passing None abstains warehouse_missing before any SQL. This fails if the
-    floor is handed self._warehouse raw.
+    It does not reseed that file, and it does not abstain warehouse_missing.
     """
+    import duckdb
+
     monkeypatch.setenv("DMS_AI_FLOOR", "1")
-    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(tmp_path / "live.duckdb"))
+    monkeypatch.delenv("CORTEX_WAREHOUSE_DB", raising=False)
+    lake = tmp_path / "live.duckdb"
+    ensure_demo_warehouse(lake)
+    con = duckdb.connect(str(lake))
+    con.execute("CREATE TABLE keep_me (id INTEGER)")
+    con.execute("INSERT INTO keep_me VALUES (1)")
+    con.close()
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(lake))
     cortex = _Spoof(bodies=[_model_body(GOOD_SQL)])
     exe = Executor(cortex=cortex, minter=_minter())  # type: ignore[arg-type]
     assert exe._warehouse is None
@@ -356,7 +385,12 @@ def test_default_wiring_seeds_a_warehouse_before_the_floor(
     assert "warehouse_missing" not in blob
     assert env["abstained"] is False
     assert env["sql_used"] == GOOD_SQL
-    assert (tmp_path / "live.duckdb").is_file()
+    con = duckdb.connect(str(lake), read_only=True)
+    try:
+        kept = int(con.execute("SELECT COUNT(*) FROM keep_me").fetchone()[0])
+    finally:
+        con.close()
+    assert kept == 1
 
 
 def test_schema_prompt_keeps_join_and_measure_columns(tmp_path: Path) -> None:
@@ -364,7 +398,7 @@ def test_schema_prompt_keeps_join_and_measure_columns(tmp_path: Path) -> None:
     db = tmp_path / "schema.duckdb"
     ensure_demo_warehouse(db)
     grants = set(DEMO_TABLES)
-    ranking, _tables = _context(
+    ranking, _onto, _examples, _tables = _context(
         "Who are the top suppliers by number of shipments?",
         warehouse=db,
         grantable=grants,
@@ -374,7 +408,7 @@ def test_schema_prompt_keeps_join_and_measure_columns(tmp_path: Path) -> None:
     assert "shipments.sku = inventory.sku" in ranking
     assert "inventory.supplier_id = suppliers.supplier_id" in ranking
     assert "cost_myr" in ranking
-    monthly, _names = _context(
+    monthly, _onto_m, _examples_m, _names = _context(
         "Show monthly transaction totals",
         warehouse=db,
         grantable=grants,
@@ -383,6 +417,203 @@ def test_schema_prompt_keeps_join_and_measure_columns(tmp_path: Path) -> None:
     )
     assert "quantity_kg" in monthly
     assert "ts " in monthly or "ts TIMESTAMP" in monthly
+
+
+def test_run_sql_tool_text_is_the_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_AI_FLOOR", "1")
+    tool = json.dumps({"name": "run_sql", "input": {"sql": GOOD_SQL}})
+    cortex = _Spoof(
+        bodies=[
+            {
+                "text": tool,
+                "served_model": "ov-routed",
+                "served_provider": "openvault",
+            }
+        ]
+    )
+    env = _ask(tmp_path, cortex)
+    assert_envelope_valid(env)
+    assert env["abstained"] is False
+    assert env["sql_used"] == GOOD_SQL
+    assert env["ai_floor"]["executes"] == 1
+
+
+def test_explain_uses_the_executing_lake(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EXPLAIN and the prompt use the file Cortex reads, not a reseeded demo."""
+    import duckdb
+
+    monkeypatch.setenv("DMS_AI_FLOOR", "1")
+    demo = tmp_path / "demo.duckdb"
+    ensure_demo_warehouse(demo)
+    lake = tmp_path / "engine.duckdb"
+    con = duckdb.connect(str(lake))
+    con.execute(
+        "CREATE TABLE shipments (shipment_id VARCHAR, supplier_id VARCHAR, sku VARCHAR)"
+    )
+    con.execute("INSERT INTO shipments VALUES ('s1', 'SUP-99', 'sku1')")
+    con.close()
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(demo))
+    monkeypatch.setenv("CORTEX_WAREHOUSE_DB", str(lake))
+    sql = "SELECT supplier_id FROM shipments"
+    cortex = _Spoof(bodies=[_model_body(sql)])
+    exe = Executor(cortex=cortex, minter=_minter())  # type: ignore[arg-type]
+    assert exe._warehouse is None
+    try:
+        env = exe.live_ask(
+            "Which supplier shipped this",
+            space_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+            session_id="ses_ai_floor",
+        )
+    finally:
+        exe.close()
+    assert_envelope_valid(env)
+    assumptions = " ".join(str(item) for item in (env.get("assumptions") or []))
+    assert "explain_binder_error" not in assumptions
+    assert env["abstained"] is False
+    assert env["sql_used"] == sql
+    assert "supplier_id" in cortex.insights[0]
+    con = duckdb.connect(str(lake), read_only=True)
+    try:
+        cols = [str(row[1]) for row in con.execute("PRAGMA table_info('shipments')").fetchall()]
+    finally:
+        con.close()
+    assert "supplier_id" in cols
+    con = duckdb.connect(str(demo), read_only=True)
+    try:
+        demo_cols = [
+            str(row[1]) for row in con.execute("PRAGMA table_info('shipments')").fetchall()
+        ]
+    finally:
+        con.close()
+    assert "supplier_id" not in demo_cols
+
+
+def test_first_failure_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_AI_FLOOR", "1")
+    cortex = _Spoof(
+        bodies=[
+            _model_body(BAD_SQL),
+            {"ontology": {"metrics": []}},
+            {"insights_fail": "insights_timeout:generate"},
+        ]
+    )
+    env = _ask(tmp_path, cortex, "How many inventory rows are there")
+    assert env["abstained"] is True
+    assumptions = " ".join(str(item) for item in (env.get("assumptions") or []))
+    assert "explain_binder_error" in assumptions
+    assert "GEN-01: no_sql" not in assumptions
+
+
+def test_generate_timeout_is_not_renamed_no_sql(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_AI_FLOOR", "1")
+    cortex = _Spoof(
+        bodies=[
+            {"insights_fail": "insights_timeout:generate"},
+            {"ontology": {"metrics": []}},
+            {"ontology": {"metrics": []}},
+        ]
+    )
+    env = _ask(tmp_path, cortex)
+    assert env["abstained"] is True
+    assumptions = " ".join(str(item) for item in (env.get("assumptions") or []))
+    assert "generate_timeout" in assumptions
+    assert "GEN-01: no_sql" not in assumptions
+
+
+def test_generate_slice_stays_inside_the_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DMS_AI_FLOOR", "1")
+    monkeypatch.setenv("DMS_SERVING_DEADLINE_S", "33")
+    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "60")
+    cortex = _Spoof(bodies=[_model_body(GOOD_SQL)])
+    env = _ask(tmp_path, cortex)
+    assert env["abstained"] is False
+    timeout = float(cortex.kwargs[0]["timeout"])
+    assert 0 < timeout <= 8
+    assert len(cortex.insights) >= 1
+    assert isinstance(env["ai_floor"]["ms"], int)
+
+
+def test_past_deadline_does_not_start_generate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    from dms_executor.ai_floor import run_floor
+    from dms_executor.lake_registry import bind_ask_deadline, reset_ask_deadline
+
+    monkeypatch.setenv("DMS_AI_FLOOR", "1")
+    db = tmp_path / "late.duckdb"
+    ensure_demo_warehouse(db)
+    seen: list[dict[str, Any]] = []
+
+    def _compute(catalog: dict[str, Any]) -> dict[str, Any]:
+        seen.append(catalog)
+        return _model_body(GOOD_SQL)
+
+    tokens = bind_ask_deadline(time.monotonic() - 1)
+    try:
+        env = run_floor(
+            SKU_Q,
+            compute=_compute,
+            submit=lambda _sql: None,
+            ledger_append=lambda _payload: None,
+            warehouse=db,
+            grantable=set(DEMO_TABLES),
+            dialect=SERVING_DIALECT,
+            space_id=FINANCE,
+            session_id="ses_ai_floor",
+        )
+    finally:
+        reset_ask_deadline(tokens)
+    assert seen == []
+    assert env["abstained"] is True
+    assumptions = " ".join(str(item) for item in (env.get("assumptions") or []))
+    assert "serving_deadline_reserve" in assumptions
+
+
+def test_static_prefix_does_not_change_with_the_question() -> None:
+    from dms_executor.ai_floor import _catalog
+
+    one = _catalog(
+        "How many suppliers",
+        "SCHEMA",
+        "ONT",
+        "EX",
+        tool_result="",
+        escalate=False,
+        timeout=None,
+    )
+    two = _catalog(
+        "Freight by country",
+        "SCHEMA",
+        "ONT",
+        "EX",
+        tool_result="",
+        escalate=False,
+        timeout=None,
+    )
+    assert one["sql_vote_prompt"].split("<question>", 1)[0] == two[
+        "sql_vote_prompt"
+    ].split("<question>", 1)[0]
+    assert one["floor_cache"] == {"type": "ephemeral"}
+    assert one["sql_vote_prompt"].index("<tools>") < one["sql_vote_prompt"].index("<question>")
+
+
+def test_execute_sql_name_is_the_same_tool() -> None:
+    from dms_executor.ai_floor import _tool_sql
+
+    raw = json.dumps({"name": "execute_sql", "input": {"sql": GOOD_SQL}})
+    assert _tool_sql({"text": raw}) == GOOD_SQL
 
 
 def test_grade52_ai_floor_switch_is_main_only() -> None:

@@ -238,6 +238,7 @@ from dms_executor.warehouse_browse import (
     preview_warehouse_table,
 )
 from dms_executor.warehouse_identity import (
+    ask_lake,
     bronze_missing_from_serving,
     identity_check,
     ingest_warehouse_path,
@@ -308,6 +309,7 @@ def _insights_compute_seam(
     onto: dict[str, Any] | None = ontology
     feedback = None
     route_hint = None
+    floor_timeout: float | None = None
     asked = question
     examples = ""
     defs = ""
@@ -326,6 +328,8 @@ def _insights_compute_seam(
         "governed_definitions",
         "space_knowledge",
         "route_hint",
+        "floor_timeout_s",
+        "floor_cache",
     }
     if isinstance(ontology, dict) and (
         _hidden.intersection(ontology) or VERIFIED_EXAMPLES_FIELD in ontology
@@ -339,6 +343,12 @@ def _insights_compute_seam(
             hint = lifted.get("route_hint")
             if hint in {"escalate", "reason"}:
                 route_hint = hint
+            raw_timeout = lifted.get("floor_timeout_s")
+            floor_timeout = (
+                float(raw_timeout)
+                if isinstance(raw_timeout, (int, float)) and not isinstance(raw_timeout, bool)
+                else None
+            )
             vote_prompt = lifted.get("sql_vote_prompt")
             if isinstance(vote_prompt, str) and vote_prompt.strip():
                 asked = vote_prompt
@@ -382,15 +392,22 @@ def _insights_compute_seam(
             kwargs["sql_feedback"] = feedback
         if route_hint in {"escalate", "reason"}:
             kwargs["route_hint"] = route_hint
-        from cortex_client.ask_clock import generate_budget_left_s
+        if floor_timeout is not None:
+            # The floor sized this call to the time still inside the ask
+            # deadline. A non-positive slice does not start a 60s generate.
+            if floor_timeout <= 0:
+                return {"insights_fail": "serving_deadline_reserve"}
+            kwargs["timeout"] = floor_timeout
+        else:
+            from cortex_client.ask_clock import generate_budget_left_s
 
-        left = generate_budget_left_s()
-        if left is not None and left <= 0:
-            # Do not spend the ask-back reserve on another generate. The
-            # existing unsure abstain is what offer_reconfirm turns into a card.
-            return {"unsure": True}
-        if left is not None:
-            kwargs["timeout"] = left
+            left = generate_budget_left_s()
+            if left is not None and left <= 0:
+                # Do not spend the ask-back reserve on another generate. The
+                # existing unsure abstain is what offer_reconfirm turns into a card.
+                return {"unsure": True}
+            if left is not None:
+                kwargs["timeout"] = left
         try:
             return fn(asked, **kwargs)
         except TypeError:
@@ -1335,7 +1352,7 @@ class Executor:
                         session_id=session_id,
                         event_type="ask.generated_ontology",
                     ),
-                    warehouse=ensure_demo_warehouse(self._warehouse),
+                    warehouse=ask_lake(self._warehouse),
                     grantable=set(granted),
                     dialect=self.dialect or SERVING_DIALECT,
                     space_id=space_id,

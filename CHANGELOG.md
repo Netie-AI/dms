@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - AI-FLOOR-01: one run_sql call on the executing lake
+
+- **Lake.** Schema and EXPLAIN use the file the query runs on. `ensure_demo_warehouse` creates a missing demo fixture and does not reseed an existing lake.
+- **Loop.** `dms_executor.ai_floor.run_floor` is the provider tool loop. Tool name `run_sql` (`execute_sql` is the same call). A hit is one model call. A miss puts the failed SQL and the database error in the question, then `route_hint` escalate. The first failure is the abstain reason. The static schema prefix is the cache block and is not a POST field. Generate is capped at 8s, inside the ask deadline.
+- **Live 7.** Not remeasured. The 3 binder abstains were EXPLAIN on the reseeded demo. The repair 422 was `sql_feedback` on the Insights body. The reported reason was the last `no_sql`. One generate used the 60s ceiling against a 33s deadline.
+
 ## 2026-11-28 - AI-FLOOR-01: seed the warehouse and keep the join columns
 
 - **Warehouse.** Default live wiring leaves `Executor._warehouse` None. The floor now calls `ensure_demo_warehouse` before generate, same as the other lanes. Without that, every ask abstained `warehouse_missing`.
