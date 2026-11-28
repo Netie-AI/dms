@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { CreateDocsPanel, seedsFromMessages } from "@/components/studio/CreateDocsPanel";
+import { GovConsole } from "@/components/studio/GovConsole";
 import { ReadyGuide } from "@/components/studio/ReadyGuide";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { CreateSurface } from "@/components/studio/CreateSurface";
@@ -354,7 +355,7 @@ export function StudioPage() {
 
       <CreateSurface spaceId={activeSpaceId} />
       <CreateDocsPanel seeds={seedsFromMessages(messages)} spaceId={activeSpaceId} startOpen />
-
+      <GovConsole />
       <button
         type="button"
         data-testid="studio-sources-toggle"

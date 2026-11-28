@@ -190,3 +190,10 @@ def record_ask(
             type(exc).__name__,
             store.dropped,
         )
+        return
+    try:
+        from dms_api.gov_guard import note_recorded_ask
+
+        note_recorded_ask(settings, rec, envelope)
+    except Exception:  # noqa: BLE001 - a cost note must not fail the ask
+        logger.warning("gov ask cost not recorded")
