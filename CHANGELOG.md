@@ -2,6 +2,36 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto a7c0ce4f
+
+- **Base.** Rebased onto `a7c0ce4f` (#627, #600). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the tie-projection row and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `da8b2d9`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto f7063081
+
+- **Base.** Rebased onto `f7063081` (#623). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the deadline row and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `a05dedc`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 774da35a
+
+- **Base.** Rebased onto `774da35a` (#599). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the trust row, the reason-leak row, the Space catalog row, and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `098f04a`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto dc4c40d
+
+- **Base.** Rebased onto `dc4c40d` (#617, #614). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the reason-leak row, the Space catalog row, and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `cfb71a1`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 47167428
+
+- **Base.** Rebased onto `47167428` (#620, #602). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the ask-back row, the compile-honour row, the join-gate row, and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `e94f360`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 05bcd414
+
+- **Base.** Rebased onto `05bcd414` (#618, #619). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the compile-honour row, the join-gate row, and this row. The ask wrapper keeps the honour reset and the schema session. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `a3b47aa`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
 ## 2026-11-28 - NL19-COMPILE-WRONG: rename the destructive refuse helper
 
 - The helper is `_refuse_destructive`. A name containing `gate` is reserved for `packages/cortex_client`. The invariant `test_no_local_gate_policy_functions` failed on `_destructive_gate`. Behaviour is unchanged.
@@ -12,6 +42,40 @@ Append-only. Never edited, only added to. Newest first.
 - **Honour.** On, role `reason` judges grouping, filters, entity, aggregation, and time from the question, the compiled SQL, and SQL-tree semantics. A miss falls through to model SQL, then an ask-back. The E10/E12 shape-guard abstain on that path falls through the same way.
 - **Destructive.** A typed non-SELECT statement, or a destructive verdict from role `reason`, refuses before compile. No keyword list. An unknown verdict is not a destructive abstain.
 - **Stub 52.** `grade52 --main` at `12326dd`, base `3752fb4`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed grade52 and pack H were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 3752fb4
+
+- **Base.** Rebased onto `3752fb4` (#625). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the join-gate row and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `62c30ff`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto d9e8c45
+
+- **Base.** Rebased onto `d9e8c45` (#626, #597, #624). The ask wrapper keeps the qualifier repair binding and the schema session. The clock resets once. `STATUS.md` and `docs/subagents_findings/INDEX.md` keep this row and the bird-harness row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder.
+- **Stub 52.** `grade52 --main` at `ed28833`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 43e4724
+
+- **Base.** Rebased onto `43e4724` (#608, #609). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep this row and the tenant, space-grant, and onto-space-scope rows. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `b9ba22a`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 05bc1e7
+
+- **Base.** Rebased onto `05bc1e7` (#610, #611). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep both this row and the onto-space-scope row.
+- **Stub 52.** `grade52 --main` at `fa8849f`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: join parse uses SERVING_DIALECT
+
+- **Dialect.** `reads_two_base_tables` parses with `dialect or SERVING_DIALECT`. No `duckdb` literal. The grant-dialect scan stays as it was.
+- **Base.** Rebased onto `cb64f4d`.
+- **Stub 52.** `grade52 --main` at `ce6d54d`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: a missing measure reaches the AI SQL leg
+
+- **Flag.** `DMS_MEASURE_FROM_SCHEMA` defaults off. Only the digit 1 turns it on. Off, the ask prompt, the envelope, and the served route stay as they were.
+- **Compile gap.** On, `unknown_measure` and `missing_metric` ask the model for SQL. The call carries the granted schema and retrieved verified examples. The example is not executed. Existing gates stay, including ungranted and destructive SQL.
+- **Join.** `no_path` and `missing_join` propose the model SQL on the existing join confirm card. A single-table reply asks back. It is not served.
+- **Qualifier.** A dropped qualifier is one model check with role `reason`, then the same gates. A second miss asks back with the question. It is not a bare refusal.
+- **Stub 52.** `grade52 --main` at `517fe0e`, base `515f7a5`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
 
 ## 2026-11-27 - SCALE-MISS-01: rename the SQL check, use the serving dialect
 

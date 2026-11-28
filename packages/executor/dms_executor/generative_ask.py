@@ -109,6 +109,18 @@ from dms_executor.ground_defs import (
 )
 from dms_executor.keyword_routes import vague_question
 from dms_executor.manifest import OpenVaultTokenError
+from dms_executor.measure_from_schema import (
+    SchemaGap,
+    Session,
+    bind_session,
+    current_session,
+    handoff_head,
+    reset_session,
+    run_schema_handoff,
+)
+from dms_executor.measure_from_schema import (
+    enabled as measure_from_schema_enabled,
+)
 from dms_executor.measure_link import no_word_rules_enabled, reconfirm_for_reason
 from dms_executor.ontology import (
     CompiledQuery,
@@ -1270,6 +1282,43 @@ def _submit_validated(
                 route="generated",
                 question=question,
             )
+        if (
+            blocked
+            and measure_from_schema_enabled()
+            and str(blocked).startswith("unhonored_qualifier:")
+        ):
+            from dms_executor.measure_from_schema import (
+                qualifier_reconfirm,
+                try_qualifier_repair,
+            )
+
+            repaired = try_qualifier_repair(statement, question, str(blocked))
+            if repaired and repaired != statement:
+                return _submit_validated(
+                    repaired,
+                    question=question,
+                    space_id=space_id,
+                    session_id=session_id,
+                    submit=submit,
+                    ledger_append=ledger_append,
+                    notes=notes,
+                    plan_source=plan_source,
+                    keep_gt=keep_gt,
+                    measure=measure,
+                    coverage=coverage,
+                    where_paths=where_paths,
+                    warehouse=warehouse,
+                    plan_origin=plan_origin,
+                    lead=lead,
+                    served_route=served_route,
+                    grantable=grantable,
+                )
+            return qualifier_reconfirm(
+                question,
+                str(blocked),
+                space_id=space_id,
+                session_id=session_id,
+            )
         if blocked:
             return _abstain(
                 question,
@@ -1583,7 +1632,7 @@ def _try_multi_grain_envelope(
     declared_violations: Sequence[Violation] | None = None,
     grounded: Sequence[GroundedDef] | None = None,
     embedder: Any = None,
-) -> dict[str, Any] | _CompileRefused | None:
+) -> dict[str, Any] | _CompileRefused | SchemaGap | None:
     """≥2 grains: ranked where-paths + importance, or named ABSTAIN.
 
     Runs before one-grain GEN-01 plan/SQL. bind_plan is not this path.
@@ -1611,8 +1660,11 @@ def _try_multi_grain_envelope(
         return multi
     source = PLAN_SOURCE_ONTOLOGY
     if isinstance(multi, Refusal):
+        reason = f"{multi.reason}: {multi.detail}"
+        if measure_from_schema_enabled() and handoff_head(reason):
+            return SchemaGap(reason)
         return _abstain(
-            q, f"{multi.reason}: {multi.detail}",
+            q, reason,
             space_id=space_id, session_id=session_id, plan_source=source,
         )
     if multi.existential:
@@ -3460,6 +3512,8 @@ def _maybe_generative_ask_impl(
         if isinstance(preview, _CompileRefused):
             held_refusal = preview
             preview = None
+        if isinstance(preview, SchemaGap):
+            preview = None
         if preview is not None:
             held_preview = preview
         insights_ctx = with_examples(insights_ctx)
@@ -3482,6 +3536,36 @@ def _maybe_generative_ask_impl(
             note_stage("insights_generate", "done")
 
     compute = _timed_compute
+    sess = current_session()
+    if sess is not None:
+        sess.compute = compute
+        sess.ctx = insights_ctx
+        sess.warehouse = lake
+        sess.grantable = set(allowed)
+        sess.dialect = dialect
+        sess.space_id = space_id
+        sess.ontology = onto
+        sess.embedder = embedder
+        sess.question = q
+
+    def _schema_gap(reason: str) -> dict[str, Any]:
+        assert compute is not None and submit is not None and ledger_append is not None
+        return run_schema_handoff(
+            question=q,
+            reason=reason,
+            ctx=insights_ctx,
+            compute=compute,
+            warehouse=lake,
+            dialect=dialect,
+            grantable=set(allowed),
+            ontology=onto,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            embedder=embedder,
+        )
+
     vote_budget: AskCallBudget | None = None
     ladder_on = ask_ladder_enabled() and not ontology_ranked_lane_enabled()
     if not ontology_ranked_lane_enabled() and (cloop_b_enabled() or ladder_on):
@@ -3842,6 +3926,8 @@ def _maybe_generative_ask_impl(
         # compile it. Named ABSTAIN — do not bind_plan or Cortex.ask a guess.
         gap = ranking_missing_metric_gap(q, payload, onto=onto)
         if gap:
+            if measure_from_schema_enabled() and handoff_head(gap):
+                return _stamp(_schema_gap(gap))
             return _stamp(
                 _abstain(
                     q,
@@ -3936,6 +4022,8 @@ def _maybe_generative_ask_impl(
             return _stamp(_handoff(multi_env))
         held_refusal = multi_env
         multi_env = None
+    if isinstance(multi_env, SchemaGap):
+        return _stamp(_schema_gap(multi_env.reason))
     if multi_env is not None:
         # DMS's own multi-grain compile is served. Any model SQL in the
         # payload never ran, so its generate origin and model do not apply.
@@ -4320,6 +4408,8 @@ def _maybe_generative_ask_impl(
     else:
         gap = unhonored_qualifier_reason(q, plan=plan_body)
     if gap:
+        if measure_from_schema_enabled() and str(gap).startswith("unhonored_qualifier"):
+            return _stamp(_schema_gap(gap))
         return _stamp(
             _abstain(
                 q,
@@ -4405,9 +4495,12 @@ def _maybe_generative_ask_impl(
         )
     compiled = _compile_maybe_unverified(onto, plan)
     if isinstance(compiled, Refusal):
+        reason = f"{compiled.reason}: {compiled.detail}"
+        if measure_from_schema_enabled() and handoff_head(reason):
+            return _stamp(_schema_gap(reason))
         return _stamp(
             _abstain(
-                q, f"{compiled.reason}: {compiled.detail}",
+                q, reason,
                 space_id=space_id, session_id=session_id, plan_source=source,
             )
         )
@@ -4649,6 +4742,9 @@ def maybe_generative_ask(
             )
 
             repair_token = bind_qualifier_repair(repair_from_compute(compute, asked))
+    schema_token = bind_session(
+        Session(kwargs.get("compute")) if measure_from_schema_enabled() else None
+    )
     try:
         with use_ask_space(space_id):
             env = _maybe_generative_ask_impl(*args, **kwargs)
@@ -4661,6 +4757,7 @@ def maybe_generative_ask(
 
             reset_qualifier_repair(repair_token)
         _release_honour_state(honour_tokens)
+        reset_session(schema_token)
         reset_turn(turn_token)
         reset_climb(climb)
         release_clock(token)
