@@ -179,7 +179,9 @@ def test_trust_gen_path_prove_is_read_only_pickup(client, monkeypatch, tmp_path)
     assert "COMPLETE" not in blob
 
 
-def test_trust_run_detail_degrades_to_an_empty_list(client, monkeypatch):
+def test_trust_run_detail_degrades_to_an_empty_list(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
+    monkeypatch.setenv("DMS_GRADE52_DIR", str(tmp_path))
     _stub_cortex(monkeypatch, None, ok=False)
     body = client.get("/v1/trust/runs/corpus").json()
     assert body["items"] == []
