@@ -218,6 +218,7 @@ jobs:
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor:${PWD}/packages/create_docs"
           # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
           # DEF-VALIDATE-01: tests/test_def_validate_01.py runs here. No skip.
+          # HARNESS-SEC-01: tests/test_harness_sec_01.py runs here. No skip.
           bash scripts/ci_pytest_shard.sh files ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard_files.txt"
           echo "shard ${{ matrix.shard }} of 3: $(wc -l < "$RUNNER_TEMP/shard_files.txt") test files"
           xargs -a "$RUNNER_TEMP/shard_files.txt" python -m pytest -q --tb=short

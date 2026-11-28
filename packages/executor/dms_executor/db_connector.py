@@ -317,6 +317,30 @@ def _sqlite_connect(cfg: SourceConfig) -> Any:
     return con
 
 
+def _force_readonly(con: Any, kind: str, cfg: SourceConfig) -> None:
+    """Session read-only when the harness flag is on. The password is not copied."""
+    from dms_core.harness_sec import readonly_session_sql
+
+    sql = readonly_session_sql(kind)
+    if not sql:
+        return
+    try:
+        if kind == "mysql":
+            cur = con.cursor()
+            try:
+                cur.execute(sql)
+            finally:
+                cur.close()
+        else:
+            con.execute(sql)
+    except Exception:
+        try:
+            con.close()
+        except Exception:
+            pass
+        raise SourceConnectionError(f"could not connect to {cfg.describe()}") from None
+
+
 @contextmanager
 def connect(cfg: SourceConfig) -> Iterator[Any]:
     """Open a read connection to the source, closing it on the way out."""
@@ -350,6 +374,7 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
             )
         except Exception as exc:
             raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+        _force_readonly(con, "postgresql", cfg)
     elif cfg.kind == "mysql":
         try:
             import pymysql
@@ -368,6 +393,7 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
             )
         except Exception as exc:
             raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
+        _force_readonly(con, "mysql", cfg)
     elif cfg.kind == "sqlite":
         con = _sqlite_connect(cfg)
     elif cfg.kind == "gauss":

@@ -358,6 +358,10 @@ def _forward_bearer() -> str | None:
         raw = os.environ.get(name, "").strip()
         if not raw or is_published_demo_key(raw):
             continue
+        from dms_core.harness_sec import demo_key_denied
+
+        if demo_key_denied(raw):
+            continue
         return raw
     return None
 
@@ -367,6 +371,13 @@ def post_once(base_url: str) -> PinShot:
     cfg = pin_config()
     if cfg.refusal:
         return PinShot(kind="caller_error", name=cfg.refusal)
+    from dms_core.harness_sec import budget_allows
+    from dms_core.harness_sec import enabled as harness_enabled
+
+    if harness_enabled():
+        tenant = os.environ.get("DMS_TENANT_ID", "").strip() or "default"
+        if not budget_allows(tenant):
+            return PinShot(kind="caller_error", name="tenant_budget_denied")
     body = stamp_generate_body(
         {
             "messages": [{"role": "user", "content": "Reply with only: ok"}],

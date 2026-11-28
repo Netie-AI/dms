@@ -258,6 +258,19 @@ def written_names(con: Any, sql: str) -> list[str]:
 _REFUSED_SHAPES = frozenset(
     {"multi_statement", "statement_not_allowed", "sql_not_analyzable"}
 )
+#: Harness refusals abstain once. They are not pasted into a retry prompt.
+_HARNESS_STOP = frozenset(
+    {
+        "ungranted",
+        "hostile_sql",
+        "sql_relation_not_granted",
+        "sql_column_not_granted",
+        "sql_relation_unresolved",
+        "sql_dialect_unknown",
+        "row_cap",
+        "statement_timeout",
+    }
+)
 
 
 def _one_select(con: Any, sql: str) -> str | None:
@@ -300,7 +313,12 @@ def _fetch(con: Any, sql: str) -> tuple[list[dict[str, Any]] | None, str | None]
 
 
 def run_readonly(
-    sql: str, warehouse: Path
+    sql: str,
+    warehouse: Path,
+    *,
+    grants: set[str] | None = None,
+    columns: Mapping[str, set[str]] | None = None,
+    prompt: str = "",
 ) -> tuple[list[dict[str, Any]] | None, str | None]:
     """Execute on a pooled serving cursor. ``(rows, None)`` or ``(None, error)``.
 
@@ -313,7 +331,22 @@ def run_readonly(
     SELECT. Anything else, including a parse failure, is refused without
     executing. An engine error comes back as a typed code from
     ``typed_db_error``, never the database message.
+
+    ``DMS_HARNESS_SEC=1`` parses first and refuses ungranted relations,
+    ungranted columns, and a non-query before the cursor opens. The extra
+    arguments are ignored while that flag is off.
     """
+    from dms_core.harness_sec import enabled as harness_enabled
+
+    if harness_enabled():
+        from dms_executor.harness_sql import current_scope, guard_sql
+
+        scope = current_scope()
+        tables = set(grants) if grants is not None else (set(scope.tables) if scope else set())
+        cols = columns if columns is not None else (scope.columns if scope else None)
+        code = guard_sql(sql, tables=tables, columns=cols, dialect=EXTRACT_DIALECT)
+        if code:
+            return None, code
     from dms_executor.demo_warehouse import connect_serving
 
     try:
@@ -323,6 +356,18 @@ def run_readonly(
     except Exception as exc:  # noqa: BLE001
         return None, typed_db_error(exc)
     try:
+        if harness_enabled():
+            from dms_executor.harness_sql import audit_run, cited_tables, fetch_capped
+
+            try:
+                rows, err = fetch_capped(con, sql)
+            except SERVING_ERRORS:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                return None, typed_db_error(exc, written_names(con, sql))
+            if err is None and rows is not None:
+                audit_run(prompt=prompt, tables=cited_tables(sql, EXTRACT_DIALECT))
+            return rows, err
         gate = _one_select(con, sql)
         if gate is not None:
             return None, gate
@@ -557,6 +602,12 @@ def feedback_prompt(question: str, *, previous_sql: str | None, reason: str | No
         return question
     safe_reason = mask_feedback_text(reason)
     safe_sql = mask_feedback_text(previous_sql or "")
+    from dms_core.harness_sec import enabled as harness_enabled
+    from dms_core.harness_sec import provider_context
+
+    if harness_enabled():
+        data = provider_context(values=f"{safe_sql}\n{safe_reason}")
+        return f"{question}\n{data}"
     return f"{question}\n\nprevious_sql:\n{safe_sql}\n\nfeedback:\n{safe_reason}"
 
 
@@ -891,7 +942,78 @@ def _shape_after_execute(
     )
 
 
+def _judge_blocks(
+    payload: dict[str, Any] | None,
+    abstain: Callable[..., dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    sql: str,
+    retries: int,
+) -> dict[str, Any] | None:
+    """None when the judge passed or the harness flag is off."""
+    from dms_core.harness_sec import enabled as harness_enabled
+    from dms_core.harness_sec import judge_step
+
+    if not harness_enabled():
+        return None
+    verdict = judge_step(payload)
+    if verdict["passed"]:
+        return None
+    return abstain("judge_refused", attempts, sql=sql, retries=retries)
+
+
 def run_model_loop(
+    *,
+    question: str,
+    ctx: dict[str, Any],
+    payload: dict[str, Any] | None,
+    compute: Callable[[dict[str, Any]], dict[str, Any] | None],
+    warehouse: Path | None,
+    dialect: str,
+    model_sql: Callable[[dict[str, Any] | None], str | None],
+    check: Callable[[str], str | None],
+    submit_sql: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    abstain: Callable[..., dict[str, Any]],
+    empty_answer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
+    attempts: list[dict[str, Any]],
+    no_retry_reasons: frozenset[str] = frozenset(),
+    recover_failures: bool = False,
+    budget: AskCallBudget,
+    schema_ladder: Any = None,
+    grants: set[str] | None = None,
+) -> dict[str, Any]:
+    """Bind table grants for the harness, then run the loop.
+
+    ``grants`` is ignored while ``DMS_HARNESS_SEC`` is off. The loop body
+    is unchanged.
+    """
+    from dms_executor.harness_sql import bind_scope, reset_scope
+
+    token = bind_scope(set(grants)) if grants is not None else None
+    try:
+        return _run_model_loop_inner(
+            question=question,
+            ctx=ctx,
+            payload=payload,
+            compute=compute,
+            warehouse=warehouse,
+            dialect=dialect,
+            model_sql=model_sql,
+            check=check,
+            submit_sql=submit_sql,
+            abstain=abstain,
+            empty_answer=empty_answer,
+            attempts=attempts,
+            no_retry_reasons=no_retry_reasons,
+            recover_failures=recover_failures,
+            budget=budget,
+            schema_ladder=schema_ladder,
+        )
+    finally:
+        if token is not None:
+            reset_scope(token)
+
+
+def _run_model_loop_inner(
     *,
     question: str,
     ctx: dict[str, Any],
@@ -1085,7 +1207,19 @@ def run_model_loop(
             )
             return abstain(outcome, attempts, sql=sql, retries=retries)
 
-        rows, exec_err = run_readonly(sql, Path(warehouse))
+        rows, exec_err = run_readonly(sql, Path(warehouse), prompt=prompt)
+        head = (exec_err or "").split(":", 1)[0]
+        if head in _HARNESS_STOP:
+            attempts.append(
+                loop_entry(
+                    prompt=prompt,
+                    payload=current,
+                    sql=sql,
+                    outcome=f"checker:{exec_err}",
+                    dialect=dialect,
+                )
+            )
+            return abstain(exec_err or "ungranted", attempts, sql=sql, retries=retries)
         if exec_err in _REFUSED_SHAPES:
             # Not one SELECT. The first reading stops. The second reading
             # feeds the refusal back and still checks the next SQL.
@@ -1175,6 +1309,9 @@ def run_model_loop(
             if not protected_sql:
                 protected_sql = sql
             continue
+        judge_stop = _judge_blocks(current, abstain, attempts, sql, retries)
+        if judge_stop is not None:
+            return judge_stop
         if not got:
             decision = empty_result_reason(sql)
             if decision:
