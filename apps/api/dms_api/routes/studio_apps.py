@@ -101,18 +101,6 @@ def _key(request: Request) -> str:
     return raw
 
 
-def _gate(cortex: Any, actor: str, action: str, space_id: str, *, mutation: bool) -> None:
-    enforce(
-        compliance_gate(
-            action=action,
-            actor=actor,
-            metadata={"task_id": action, "space_id": space_id},
-            client=cortex,
-        ),
-        mutation=mutation,
-    )
-
-
 def _http(exc: BaseException) -> HTTPException:
     name = type(exc).__name__
     if name == "CreateAppDisabled":
@@ -130,7 +118,15 @@ def app_status(cortex: CortexDep, settings: SettingsDep) -> dict[str, bool]:
     """Flag off is ``enabled: false``. The other routes stay unmounted."""
     if not enabled():
         return {"enabled": False, "salesforce": False}
-    _gate(cortex, "status", "studio.create_app_status", "", mutation=False)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_status",
+            actor="status",
+            metadata={"task_id": "studio.create_app_status", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
     del settings
     salesforce = os.environ.get("DMS_CREATE_APP_SALESFORCE", "").strip() == "1"
     return {"enabled": True, "salesforce": salesforce}
@@ -139,7 +135,15 @@ def app_status(cortex: CortexDep, settings: SettingsDep) -> dict[str, bool]:
 @router.get("/contract")
 def app_contract(request: Request, cortex: CortexDep, settings: SettingsDep) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_contract", "", mutation=False)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_contract",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_contract", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
     return create_app_contract()
 
 
@@ -148,7 +152,15 @@ def generate(
     body: GenerateIn, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app", body.space_id, mutation=True)
+    enforce(
+        compliance_gate(
+            action="studio.create_app",
+            actor=actor,
+            metadata={"task_id": "studio.create_app", "space_id": body.space_id},
+            client=cortex,
+        ),
+        mutation=True,
+    )
     try:
         return create_app_generate(
             space_id=body.space_id,
@@ -168,7 +180,15 @@ def read_app(
     app_id: str, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_read", "", mutation=False)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_read",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_read", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
     try:
         return create_app_read(app_id=app_id)
     except Exception as exc:  # noqa: BLE001
@@ -180,7 +200,15 @@ def preview(
     app_id: str, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> HTMLResponse:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_preview", "", mutation=False)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_preview",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_preview", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
     try:
         return HTMLResponse(create_app_preview(app_id=app_id))
     except Exception as exc:  # noqa: BLE001
@@ -192,7 +220,15 @@ def publish(
     app_id: str, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_publish", "", mutation=True)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_publish",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_publish", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=True,
+    )
     try:
         return create_app_publish(app_id=app_id)
     except Exception as exc:  # noqa: BLE001
@@ -206,7 +242,15 @@ def query_sql(
     """The generated client calls this. The app token is the credential."""
     presented = request.headers.get("x-dms-app-token", "")
     del settings
-    _gate(cortex, "app", "studio.create_app_query", "", mutation=False)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_query",
+            actor="app",
+            metadata={"task_id": "studio.create_app_query", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
     try:
         return create_app_query(app_id=app_id, sql=body.sql, presented=presented)
     except Exception as exc:  # noqa: BLE001
@@ -218,7 +262,15 @@ def dry_run(
     app_id: str, body: ActionIn, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_action", "", mutation=False)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_action",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_action", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
     try:
         return create_app_dry_run(
             app_id=app_id, action_id=body.action_id, actor=actor, payload=body.payload
@@ -232,7 +284,15 @@ def confirm(
     app_id: str, body: ActionIn, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_action", "", mutation=True)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_action",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_action", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=True,
+    )
     try:
         return create_app_confirm(
             app_id=app_id,
@@ -252,7 +312,15 @@ def chain(
     app_id: str, body: ChainIn, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_chain", "", mutation=True)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_chain",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_chain", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=True,
+    )
     try:
         return create_app_chain(
             app_id=app_id,
@@ -273,7 +341,15 @@ def chain_from_answer(
     body: AnswerChainIn, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
-    _gate(cortex, actor, "studio.create_app_chain", body.space_id, mutation=True)
+    enforce(
+        compliance_gate(
+            action="studio.create_app_chain",
+            actor=actor,
+            metadata={"task_id": "studio.create_app_chain", "space_id": body.space_id},
+            client=cortex,
+        ),
+        mutation=True,
+    )
     try:
         return create_app_chain_answer(
             source_ref=body.source_ref,
