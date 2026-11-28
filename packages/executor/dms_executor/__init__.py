@@ -1326,19 +1326,37 @@ class Executor:
             from dms_executor.ai_floor import run_floor
 
             if floor_enabled():
+                from dms_executor import ai_floor_direct
+
+                floor_lake = ask_lake(self._warehouse)
+                if ai_floor_direct.enabled() and floor_lake is not None:
+                    # DMS_AI_FLOOR_DIRECT=1: one OV role=sql call per attempt,
+                    # no Cortex think step (10-20 s of Opus per ask), and every
+                    # failed attempt's SQL and exact DB error fed forward.
+                    floor_compute = ai_floor_direct.floor_compute(
+                        question,
+                        db_path=floor_lake,
+                        grantable=set(granted),
+                        dialect=self.dialect or SERVING_DIALECT,
+                    )
+                else:
+
+                    def floor_compute(catalog: Any) -> Any:
+                        return _seen(
+                            seen,
+                            _insights_compute_seam(
+                                self._cortex,
+                                question,
+                                session_id=session_id,
+                                space_id=space_id,
+                                ontology=catalog,
+                            ),
+                        )
+
                 # Fixed lanes stay off this path. The harness is the ask.
                 env = run_floor(
                     question,
-                    compute=lambda catalog: _seen(
-                        seen,
-                        _insights_compute_seam(
-                            self._cortex,
-                            question,
-                            session_id=session_id,
-                            space_id=space_id,
-                            ontology=catalog,
-                        ),
-                    ),
+                    compute=floor_compute,
                     submit=lambda sql: self._submit_verified_sql(
                         sql,
                         space_id=space_id,
@@ -1352,7 +1370,7 @@ class Executor:
                         session_id=session_id,
                         event_type="ask.generated_ontology",
                     ),
-                    warehouse=ask_lake(self._warehouse),
+                    warehouse=floor_lake,
                     grantable=set(granted),
                     dialect=self.dialect or SERVING_DIALECT,
                     space_id=space_id,

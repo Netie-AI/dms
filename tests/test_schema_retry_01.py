@@ -525,7 +525,7 @@ def test_prompt_bytes_change_only_when_a_hint_is_present() -> None:
         f"{_QUESTION}\n\nprevious_sql:\n{_BAD}\n\nfeedback:\nchecker:explain:BinderException"
     )
     assert plain["model_preference"] == FREEROUTE_PREFERENCE
-    assert set(plain["sql_feedback"]) == {"previous_sql", "reason"}
+    assert "sql_feedback" not in plain
     hinted = _insights_body(
         _QUESTION,
         session_id="s",
@@ -560,7 +560,7 @@ def test_prompt_bytes_change_only_when_a_hint_is_present() -> None:
     )
     assert "Fix only the identifier and kind named in repair_hint." in hinted["question"]
     assert hinted["model_preference"] == "escalate"
-    assert set(hinted["sql_feedback"]) == {"previous_sql", "reason"}
+    assert "sql_feedback" not in hinted
     _assert_clean(hinted["question"])
     assert "opus" not in hinted["model_preference"]
 
