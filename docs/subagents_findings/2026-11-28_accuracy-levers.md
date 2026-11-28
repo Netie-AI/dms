@@ -10,4 +10,6 @@ Value link profiles distinct text and numeric ranges once per database file and 
 
 Learned memory stores SQL only when the confirmer is the asker and the question plus intent match the governed answer. A Yes on a generic reading stores nothing. Retrieval is `<examples>`. An exact question is re-executed. Stored rows are not kept.
 
-Scripted delta (`scripts/verify/accuracy_levers_delta.py`): control wrong, each lever correct, generic Yes refused. Not a live Claude call. Not PASS.
+Scripted delta (`scripts/verify/accuracy_levers_delta.py`): control wrong, each lever correct, generic Yes refused. Not a live Claude call.
+
+Stub 52 on `8f879aa` with every lever flag unset: correct=43 wrong=0 reconfirm=5 ai=0 rule=43. Same split as the floor. Not PASS.
