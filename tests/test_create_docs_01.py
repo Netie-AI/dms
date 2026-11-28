@@ -37,6 +37,10 @@ def _style() -> dict[str, Any]:
     }
 
 
+def _chart(label: str, sql: str, mark: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {"label": label, "title": label, "sql": sql, "mark": mark, "rows": rows}
+
+
 def _deck(bad: bool) -> dict[str, Any]:
     revenue = "North was 1200. South was 800. North led the granted rows."
     if bad:
@@ -45,32 +49,39 @@ def _deck(bad: bool) -> dict[str, Any]:
         "kind": "slides",
         "title": "Answers from this session",
         "parts": [
-            {"id": "s0", "title": "Revenue by region", "body": revenue, "sql": _REVENUE},
+            {
+                "id": "s0",
+                "title": "Revenue by region",
+                "body": revenue,
+                "sql": _REVENUE,
+                "charts": [
+                    _chart(
+                        "Revenue by region, North against South",
+                        _REVENUE,
+                        "bar",
+                        [{"region": "North", "revenue": 1200}, {"region": "South", "revenue": 800}],
+                    ),
+                    _chart(
+                        "Revenue by region, North against South as a line",
+                        _REVENUE,
+                        "line",
+                        [{"region": "North", "revenue": 1200}, {"region": "South", "revenue": 800}],
+                    ),
+                ],
+            },
             {
                 "id": "s1",
                 "title": "Orders by channel",
                 "body": "Web was 40. Store was 10. Web led the granted rows.",
                 "sql": _ORDERS,
-            },
-        ],
-        "charts": [
-            {
-                "id": "c1",
-                "title": "Revenue by region, North against South",
-                "sql": _REVENUE,
-                "mark": "bar",
-            },
-            {
-                "id": "c2",
-                "title": "Orders by channel, Web against Store",
-                "sql": _ORDERS,
-                "mark": "bar",
-            },
-            {
-                "id": "c3",
-                "title": "Revenue by region, North against South as a line",
-                "sql": _REVENUE,
-                "mark": "line",
+                "charts": [
+                    _chart(
+                        "Orders by channel, Web against Store",
+                        _ORDERS,
+                        "column",
+                        [{"channel": "Web", "orders": 40}, {"channel": "Store", "orders": 10}],
+                    ),
+                ],
             },
         ],
         "style": {"colours": "ink", "fonts": "plain", "logo": "", "tone": "calm"},
@@ -100,15 +111,23 @@ def _transport(script: list[Any]) -> Any:
     return transport
 
 
+def _part_charts(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    found: list[dict[str, Any]] = []
+    for part in artifact.get("parts") or []:
+        if isinstance(part, dict):
+            found.extend(chart for chart in part.get("charts") or [] if isinstance(chart, dict))
+    return found
+
+
 def _assert_submittable(artifact: dict[str, Any]) -> None:
-    charts = artifact["charts"]
+    charts = _part_charts(artifact)
     assert 2 <= len(charts) <= 5
-    titles = [chart["title"] for chart in charts]
+    titles = [chart["label"] for chart in charts]
     assert len(titles) == len(set(titles))
     sqls = {_REVENUE, _ORDERS}
     for chart in charts:
-        assert not _GENERIC.match(chart["title"])
-        assert "against" in chart["title"]
+        assert not _GENERIC.match(chart["label"])
+        assert "against" in chart["label"]
         assert chart["sql"] in sqls
         assert chart["mark"] in {"bar", "line", "column"}
     bodies = []
@@ -133,18 +152,21 @@ def test_deck_comes_from_their_generate(monkeypatch: pytest.MonkeyPatch) -> None
     assert view["stopped"] is None
     assert view["steps"] == 1
     assert view["versions"][0]["issues"] == []
-    assert view["charts"] == deck["charts"]
+    assert view["charts"] == _part_charts(deck)
     assert view["versions"][0]["artifact"]["parts"] == deck["parts"]
     _assert_submittable(view["versions"][0]["artifact"])
-    body = json.dumps(transport.seen[0])
-    assert "Plain layout. Keep the brand colours" in body
-    assert "One idea in each section" in body
-    assert "SELECT *" not in body
-    assert transport.seen[0]["role"] == "create_generate"
-    assert transport.seen[0]["container"]["skills"][0]["skill_id"] == "pptx"
+    sent = transport.seen[0]
+    user = next(item["content"] for item in sent["messages"] if item["role"] == "user")
+    assert "Plain layout. Keep the brand colours" in user
+    assert "One idea in each section" in user
+    assert "SELECT *" not in user
+    assert "pptx" in user
+    assert "python-pptx" not in json.dumps(sent)
+    assert sent["role"] == "reason"
+    assert "tools" not in sent
     digest = view["versions"][0]["sign"]["digest"]
     assert view["versions"][0]["sign"]["tool"] == "sign_request"
-    assert digest == governance().prompt_digest(transport.seen[0]["messages"][0]["content"])
+    assert digest == governance().prompt_digest(user)
     assert view["spend"]["prompt_tokens"] == 420
     assert view["spend"]["completion_tokens"] == 180
     assert view["spend"]["usd"] is None
@@ -173,7 +195,8 @@ def test_section_edit_splices_with_their_helper(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("DMS_CREATE_GENERATOR", "claude_api")
     edited = _deck(False)
     edited["parts"][0]["body"] = "North was 1200. South was 800. Shorter."
-    edited["charts"] = [{"id": "gone", "title": "Chart 1", "sql": _REVENUE, "mark": "bar"}]
+    edited["parts"][0].pop("charts")
+    edited["charts"] = [{"label": "Chart 1", "sql": _REVENUE}]
     transport = _transport([_usage(_deck(False)), _usage(edited)])
     run = new_run(_answers(), _style())
     produce(run, api_key=_KEY, transport=transport)
@@ -181,7 +204,7 @@ def test_section_edit_splices_with_their_helper(monkeypatch: pytest.MonkeyPatch)
     latest = view["versions"][1]["artifact"]
     assert latest["parts"][0]["body"].endswith("Shorter.")
     assert latest["parts"][1]["body"].startswith("Web was 40.")
-    assert latest["charts"][0]["title"] == "Revenue by region, North against South"
+    assert latest["parts"][0]["charts"][0]["label"] == "Revenue by region, North against South"
     assert view["versions"][1]["issues"] == []
 
 

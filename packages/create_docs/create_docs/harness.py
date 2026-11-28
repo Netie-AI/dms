@@ -263,12 +263,25 @@ def _splice(
 
 
 def _charts(artifact: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Charts on the artifact and on each part. Their schema puts charts on parts."""
     if not isinstance(artifact, dict):
         return []
-    charts = artifact.get("charts")
-    if not isinstance(charts, list):
-        return []
-    return [item for item in charts if isinstance(item, dict)]
+    raw: list[Any] = []
+    top = artifact.get("charts")
+    if isinstance(top, list):
+        raw.extend(top)
+    for part in artifact.get("parts") or []:
+        if isinstance(part, dict) and isinstance(part.get("charts"), list):
+            raw.extend(part["charts"])
+    found = []
+    for chart in raw:
+        if not isinstance(chart, dict):
+            continue
+        item = dict(chart)
+        if not item.get("title") and item.get("label"):
+            item["title"] = item["label"]
+        found.append(item)
+    return found
 
 
 def _latest_artifact(run: dict[str, Any]) -> dict[str, Any] | None:

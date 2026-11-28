@@ -13,7 +13,7 @@ export type CreateDocsSeed = {
 };
 
 type FewShot = { title: string; text: string };
-type Chart = { id?: string; title?: string; sql?: string; mark?: string };
+type Chart = { id?: string; title?: string; label?: string; sql?: string; mark?: string };
 type Part = { id?: string; title?: string; body?: string; sql?: string };
 type Version = {
   id: string;
@@ -379,8 +379,9 @@ export function CreateDocsPanel({
           {run.charts.length ? (
             <ul className="mt-2 list-disc pl-4">
               {run.charts.map((chart) => (
-                <li key={chart.id || chart.title}>
-                  {chart.title} ({chart.mark})
+                <li key={chart.id || chart.title || chart.label}>
+                  {chart.title || chart.label}
+                  {chart.mark ? ` (${chart.mark})` : ""}
                 </li>
               ))}
             </ul>

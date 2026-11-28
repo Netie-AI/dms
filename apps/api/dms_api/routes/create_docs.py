@@ -94,16 +94,6 @@ class EditIn(BaseModel):
     instruction: str = Field(min_length=1, max_length=400)
 
 
-def _gate(cortex: CortexDep, action: str, run_id: str | None) -> None:
-    decision = compliance_gate(
-        action=action,
-        resource=run_id,
-        metadata={"task_id": action, "run_id": run_id or ""},
-        client=cortex,
-    )
-    enforce(decision)
-
-
 def _key(request: Request) -> str:
     raw = create_caller_key(request.headers.get("x-openvault-key"))
     if not raw.startswith("ov_") or " " in raw or len(raw) <= 3:
@@ -140,7 +130,14 @@ def create_docs_status() -> dict[str, bool]:
 
 @router.post("/runs")
 def create_docs_run(body: CreateIn, cortex: CortexDep) -> dict[str, Any]:
-    _gate(cortex, "create_docs.plan", None)
+    enforce(
+        compliance_gate(
+            action="create_docs.plan",
+            resource=None,
+            metadata={"task_id": "create_docs.plan", "run_id": ""},
+            client=cortex,
+        )
+    )
     try:
         run = new_run([item.model_dump() for item in body.answers], _style(body.style))
     except ValueError as exc:
@@ -153,7 +150,14 @@ def create_docs_run(body: CreateIn, cortex: CortexDep) -> dict[str, Any]:
 def create_docs_generate(
     run_id: str, body: GenerateIn, request: Request, cortex: CortexDep
 ) -> dict[str, Any]:
-    _gate(cortex, "create_docs.generate", run_id)
+    enforce(
+        compliance_gate(
+            action="create_docs.generate",
+            resource=run_id,
+            metadata={"task_id": "create_docs.generate", "run_id": run_id},
+            client=cortex,
+        )
+    )
     key = _key(request)
     run = _load(run_id)
     try:
@@ -170,7 +174,14 @@ def create_docs_generate(
 def create_docs_edit(
     run_id: str, body: EditIn, request: Request, cortex: CortexDep
 ) -> dict[str, Any]:
-    _gate(cortex, "create_docs.edit", run_id)
+    enforce(
+        compliance_gate(
+            action="create_docs.edit",
+            resource=run_id,
+            metadata={"task_id": "create_docs.edit", "run_id": run_id},
+            client=cortex,
+        )
+    )
     key = _key(request)
     run = _load(run_id)
     try:
