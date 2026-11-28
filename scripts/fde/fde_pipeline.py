@@ -310,49 +310,15 @@ def _key_candidates(con: Any, t: str, n: int, cols: dict[str, Any]) -> list[list
 
 
 def _infer_fks(con: Any, prof: dict[str, Any], pk: dict[str, list[str]]) -> list[list[Any]]:
-    """Integer columns whose non-null values all exist in another table's single-column PK.
+    """Integer columns contained in another table's single-column PK.
 
-    Value inclusion alone over-claims on small integer ranges (a 1..4 line number fits
-    inside any id column), so a candidate must also cover at least 20% of the parent's
-    keys, and only the best-covered parent per column is kept. These are proposals for
-    the steward, never served as joins on their own.
+    The check lives in ``dms_executor.link_inclusion`` so derive uses the same
+    coverage gate. A row is ``[child, column, parent, parent_column, coverage, fanout]``.
+    Callers that only need the pair still read ``[:4]`` and coverage at ``[4]``.
     """
-    parents = {
-        t: cols[0]
-        for t, cols in pk.items()
-        if len(cols) == 1 and t in prof and INTEGER.match(prof[t]["columns"][cols[0]]["type"])
-    }
-    out: list[list[Any]] = []
-    for child, info in prof.items():
-        own_pk = pk.get(child, [])
-        for col, ci in info["columns"].items():
-            if not INTEGER.match(ci["type"]) or ci["distinct"] < 2:
-                continue
-            if own_pk == [col]:
-                continue
-            for parent, pcol in parents.items():
-                if parent == child:
-                    continue
-                pn = prof[parent]["rows"]
-                if not pn or ci["distinct"] < 0.2 * pn or ci["distinct"] > pn:
-                    continue
-                if ci.get("min") is not None and ci["min"] < prof[parent]["columns"][pcol].get(
-                    "min", 0
-                ):
-                    continue
-                missing = con.execute(
-                    f"SELECT COUNT(*) FROM {q(child)} c WHERE c.{q(col)} IS NOT NULL "
-                    "AND NOT EXISTS "
-                    f"(SELECT 1 FROM {q(parent)} p WHERE p.{q(pcol)} = c.{q(col)})"
-                ).fetchone()[0]
-                if missing == 0:
-                    out.append([child, col, parent, pcol, round(ci["distinct"] / pn, 3)])
-    # Surrogate ids overlap: doctor ids 1..20 also fit inside branch ids 1..30. Per child
-    # column keep the parent it covers best; an exact tie stays ambiguous (all kept).
-    best: dict[tuple[str, str], float] = {}
-    for c in out:
-        best[(c[0], c[1])] = max(best.get((c[0], c[1]), 0.0), c[4])
-    return [c for c in out if c[4] == best[(c[0], c[1])]]
+    from dms_executor.link_inclusion import infer_fk_candidates
+
+    return infer_fk_candidates(con, prof, pk)
 
 
 # --------------------------------------------------------------------------- ontology

@@ -308,6 +308,12 @@ def _violation_rows(violations: Sequence[Violation]) -> list[dict[str, str]]:
     return [{"check": v.check, "subject": v.subject, "detail": v.detail} for v in violations]
 
 
+def _link_propose_on() -> bool:
+    import os
+
+    return os.environ.get("DMS_ONTO_LINK_PROPOSE", "0").strip() == "1"
+
+
 def derive_and_store(
     catalog: Mapping[str, Any],
     *,
@@ -325,6 +331,23 @@ def derive_and_store(
             "reason": "space_id is not a Space this store can version (not a UUID)",
         }
     body, violations = derive_and_verify(catalog, warehouse=warehouse)
+    if _link_propose_on():
+        # Flag on only. Off, body stays the declared catalog derive_and_verify built.
+        try:
+            from dms_executor.link_propose import propose_links
+
+            proposed, err = propose_links(
+                catalog,
+                warehouse=warehouse,
+                space_id=str(sid),
+                actor=actor,
+            )
+        except Exception as exc:  # noqa: BLE001 - derive still stores the declared ontology
+            proposed, err = [], type(exc).__name__
+        if proposed:
+            body["proposed_links"] = proposed
+        if err:
+            body["link_propose_error"] = err
     target = store or ontology_store()
     version = target.reconnect(
         space_id=sid,
@@ -406,6 +429,25 @@ def ontology_view(version: OntologyVersion, snap: OntologySnapshot) -> dict[str,
                 "max_fanout": spec.get("max_fanout"),
                 "status": "verified" if ok else "unverified",
                 "violations": bad or endpoint_bad,
+            }
+        )
+    for spec in body.get("proposed_links") or []:
+        if not isinstance(spec, dict):
+            continue
+        links.append(
+            {
+                "name": spec.get("name") or "",
+                "from": spec.get("from") or "",
+                "from_columns": list(spec.get("from_columns") or []),
+                "to": spec.get("to") or "",
+                "to_columns": list(spec.get("to_columns") or []),
+                "cardinality": spec.get("cardinality"),
+                "max_fanout": spec.get("max_fanout"),
+                "status": "unverified",
+                "coverage": spec.get("coverage"),
+                "fanout": spec.get("fanout"),
+                "item_id": spec.get("item_id"),
+                "violations": list(spec.get("violations") or []),
             }
         )
     for fk in body.get("unlanded_links") or []:
@@ -538,7 +580,13 @@ def load_space_ontology(
     if not catalogs:
         return None
     onto = ontology_from_catalog(merge_catalogs(catalogs))
-    return onto if onto.objects else None
+    if not onto.objects:
+        return None
+    if _link_propose_on():
+        from dms_executor.link_propose import apply_approved_links
+
+        apply_approved_links(onto, str(space_id))
+    return onto
 
 
 # --------------------------------------------------------------------------
