@@ -491,8 +491,10 @@ def _cell(value: Any) -> Any:
 def _parses(sql: str) -> bool:
     import sqlglot
 
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
     try:
-        return sqlglot.parse_one(sql, read="duckdb") is not None
+        return sqlglot.parse_one(sql, read=SERVING_DIALECT) is not None
     except Exception:
         return False
 
