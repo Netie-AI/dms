@@ -1,0 +1,67 @@
+{
+  "responses": [
+    {
+      "served_provider": "openvault",
+      "served_model": "ov-routed",
+      "choices": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "{\"answer\": \"Here is stock by warehouse.\", \"chart_spec\": {\"kind\": \"bar\", \"x\": \"location_id\", \"y\": [\"quantity_kg\"], \"series\": null}}",
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "execute_sql",
+                  "arguments": "{\"sql\": \"SELECT location_id, SUM(quantity_kg) AS quantity_kg FROM inventory GROUP BY location_id\"}"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "served_provider": "openvault",
+      "served_model": "ov-routed",
+      "choices": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "{\"answer\": \"Here are the suppliers.\"}",
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "execute_sql",
+                  "arguments": "{\"sql\": \"SELECT supplier_id, supplier_name FROM suppliers\"}"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "served_provider": "openvault",
+      "served_model": "ov-routed",
+      "choices": [
+        {
+          "message": {
+            "role": "assistant",
+            "content": "{\"answer\": \"Here are the warehouses.\"}",
+            "tool_calls": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "execute_sql",
+                  "arguments": "{\"sql\": \"SELECT location_id, name FROM locations\"}"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

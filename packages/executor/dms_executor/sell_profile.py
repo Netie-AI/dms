@@ -3,13 +3,17 @@
 On, Studio /ask skips the fixed lanes and calls the AI floor
 (``dms_executor.ai_floor.run_floor``) when that module is present.
 Until it lands, the same generate, read-only execute, check, one repair,
-and ``route_hint`` escalate run here. Table picking calls
+and ``route_hint`` escalate run here. SQL comes from an OpenVault
+``execute_sql`` tool call, then runs on the warehouse. A recorded
+provider file (``DMS_SELL_PROVIDER_FIXTURE``) is the no-key stand-in.
+Stub insights ``query_sql`` is not a source. Table picking calls
 ``dms_executor.big_schema.schema_for_ask`` when that module is present.
 This module does not edit either module's internals and names no model.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable
@@ -19,7 +23,12 @@ from typing import Any
 from dms_executor.demo_warehouse import SERVING_DIALECT
 
 SELL_PROFILE_ENV = "DMS_SELL_PROFILE"
+# Recorded OpenVault chat completions. Set only when there is no live key.
+PROVIDER_FIXTURE_ENV = "DMS_SELL_PROVIDER_FIXTURE"
 ROW_CAP = 20
+_TOOL_NAME = "execute_sql"
+_cursor: dict[str, Any] = {"path": "", "i": 0, "rows": []}
+_provider_calls: list[dict[str, Any]] = []
 _CHECKS = ("grant", "read_only", "explain", "shape")
 _READ_ONLY_HEADS = frozenset(
     {
@@ -44,6 +53,187 @@ def enabled(env: dict[str, str] | None = None) -> bool:
     """True only when ``DMS_SELL_PROFILE`` is the digit 1."""
     source = os.environ if env is None else env
     return str(source.get(SELL_PROFILE_ENV) or "").strip() == "1"
+
+
+def reset_provider_fixture() -> None:
+    """Drop the recorded-response cursor. Tests call this between asks."""
+    _cursor["path"] = ""
+    _cursor["i"] = 0
+    _cursor["rows"] = []
+    _provider_calls.clear()
+
+
+def provider_calls() -> list[dict[str, Any]]:
+    """Catalogs sent to the provider, in order. Not question routing."""
+    return [dict(item) for item in _provider_calls]
+
+
+def provider_turn(catalog: dict[str, Any]) -> dict[str, Any] | None:
+    """One OpenVault turn. The floor executes whatever SQL this returns.
+
+    A chat completion with an ``execute_sql`` tool call is the source.
+    A bare ``query_sql`` field, the shape of a stub insights payload, is
+    ignored. No key and no fixture is a miss, not a figure.
+    """
+    if not isinstance(catalog, dict):
+        return None
+    _provider_calls.append(dict(catalog))
+    try:
+        raw = _dispatch(catalog)
+    except Exception:
+        return None
+    return _from_provider(raw)
+
+
+def _dispatch(catalog: dict[str, Any]) -> Any:
+    path = os.environ.get(PROVIDER_FIXTURE_ENV, "").strip()
+    if path:
+        return _fixture_response(path)
+    return _post_openvault(catalog)
+
+
+def _fixture_response(path: str) -> Any:
+    if _cursor["path"] != path:
+        loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+        rows = loaded.get("responses") if isinstance(loaded, dict) else loaded
+        _cursor["path"] = path
+        _cursor["i"] = 0
+        _cursor["rows"] = list(rows) if isinstance(rows, list) else []
+    rows = _cursor["rows"]
+    index = int(_cursor["i"])
+    _cursor["i"] = index + 1
+    if not isinstance(rows, list) or index >= len(rows):
+        return None
+    return rows[index]
+
+
+def _post_openvault(catalog: dict[str, Any]) -> Any:
+    """POST /v1/chat/completions. No model id. No call without an ov_ key."""
+    url = os.environ.get("OPENVAULT_URL", "").strip().rstrip("/")
+    key = ""
+    for name in ("OPENVAULT_API_KEY", "CORTEX_API_KEY"):
+        raw = os.environ.get(name, "").strip()
+        if raw.startswith("ov_"):
+            key = raw
+            break
+    if not url or not key:
+        return None
+    body: dict[str, Any] = {
+        "role": "sql",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Call the execute_sql tool with one read-only SELECT. "
+                    "Put a short answer in the message content as JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": str(catalog.get("sql_vote_prompt") or ""),
+            },
+        ],
+    }
+    hint = catalog.get("route_hint")
+    if hint in {"escalate", "reason"}:
+        body["route_hint"] = hint
+    import httpx
+
+    try:
+        response = httpx.post(
+            url + "/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except Exception:
+        return None
+    try:
+        return response.json()
+    except Exception:
+        return None
+
+
+def _message(payload: dict[str, Any]) -> dict[str, Any] | None:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first = choices[0]
+    if not isinstance(first, dict):
+        return None
+    message = first.get("message")
+    return message if isinstance(message, dict) else None
+
+
+def _tool_sql(message: dict[str, Any]) -> str | None:
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list):
+        return None
+    for call in calls:
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function")
+        if not isinstance(fn, dict) or fn.get("name") != _TOOL_NAME:
+            continue
+        args = fn.get("arguments")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                continue
+        if isinstance(args, dict):
+            sql = args.get("sql")
+            if isinstance(sql, str) and sql.strip():
+                return sql.strip()
+    return None
+
+
+def _content_object(content: Any) -> dict[str, Any] | None:
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str) or not content.strip():
+        return None
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _from_provider(raw: Any) -> dict[str, Any] | None:
+    """Normalize one provider envelope. Insights ``query_sql`` is not read."""
+    if not isinstance(raw, dict):
+        return None
+    message = _message(raw)
+    if message is None:
+        return None
+    extra = _content_object(message.get("content"))
+    sql = _tool_sql(message)
+    if sql is None and isinstance(extra, dict):
+        candidate = extra.get("sql")
+        if isinstance(candidate, str) and candidate.strip():
+            sql = candidate.strip()
+    out: dict[str, Any] = {}
+    if sql:
+        out["query_sql"] = sql
+    if isinstance(extra, dict):
+        answer = extra.get("answer")
+        if isinstance(answer, str) and answer.strip():
+            out["answer"] = answer.strip()
+        clarify = extra.get("clarify")
+        if isinstance(clarify, dict):
+            out["clarify"] = clarify
+        chart = extra.get("chart_spec") or extra.get("chart")
+        if isinstance(chart, dict):
+            out["chart_spec"] = chart
+    for key in ("served_model", "served_provider", "served_local"):
+        if key in raw:
+            out[key] = raw[key]
+    return out or None
 
 
 def _head(reason: str) -> str:

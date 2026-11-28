@@ -1,7 +1,7 @@
-"""Demo warehouse plus a scripted model. DMS_SELL_PROFILE=1.
+"""Demo warehouse plus a recorded OpenVault fixture. DMS_SELL_PROFILE=1.
 
-Three asks, in order, get three read-only replies. The model text is fixed.
-The SQL runs on the demo warehouse. No phrase table.
+Three asks, in fixture order, execute the tool-call SQL on the warehouse.
+Stub insights carry a query_sql the sell path must ignore.
 """
 
 from __future__ import annotations
@@ -26,37 +26,9 @@ for rel in (
 os.environ["DMS_SELL_PROFILE"] = "1"
 os.environ["DMS_DEMO_FALLBACK"] = "0"
 os.environ["DMS_ASK_MODE"] = "live"
-
-FINANCE_SQL = (
-    {
-        "query_sql": (
-            "SELECT location_id, SUM(quantity_kg) AS quantity_kg "
-            "FROM inventory GROUP BY location_id"
-        ),
-        "answer": "Here is stock by warehouse.",
-        "served_model": "ov-routed",
-        "served_provider": "openvault",
-        "chart_spec": {
-            "kind": "bar",
-            "x": "location_id",
-            "y": ["quantity_kg"],
-            "series": None,
-        },
-    },
-    {
-        "query_sql": "SELECT supplier_id, supplier_name FROM suppliers",
-        "answer": "Here are the suppliers.",
-        "served_model": "ov-routed",
-        "served_provider": "openvault",
-    },
-    {
-        "query_sql": "SELECT location_id, name FROM locations",
-        "answer": "Here are the warehouses.",
-        "served_model": "ov-routed",
-        "served_provider": "openvault",
-    },
+os.environ["DMS_SELL_PROVIDER_FIXTURE"] = str(
+    ROOT / "tests" / "fixtures" / "sell_profile" / "provider_demo.json"
 )
-
 
 def main() -> None:
     import uvicorn
@@ -75,15 +47,12 @@ def main() -> None:
 
     db = Path(os.environ.get("DMS_SELL_DEMO_DB", "/tmp/sell-profile-demo.duckdb"))
     ensure_demo_warehouse(db)
-    script = [dict(item) for item in FINANCE_SQL]
-    calls = {"n": 0}
 
     class _Model:
         def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
             _ = question
-            index = min(calls["n"], len(script) - 1)
-            calls["n"] += 1
-            return dict(script[index])
+            # Stub insights. The sell path must not read this query_sql.
+            return {"query_sql": "SELECT 999 AS n FROM inventory", "served_model": "stub"}
 
         def submit(self, req: Any) -> QueryResult:
             plan = getattr(req, "plan", None)

@@ -1309,19 +1309,18 @@ class Executor:
             from dms_executor.sell_profile import run_sell
 
             if sell_enabled():
-                # Fixed lanes stay off this path. The floor is the ask.
+                # Root cause of the 0/52 reconfirm: this used to call
+                # _insights_compute_seam (this file, the lambda below the
+                # grant check) and sell_profile._harness read only
+                # payload["query_sql"] (generative_ask.query_sql_from_payload).
+                # grade52's stub compute_insights returns recorded insights
+                # with no query_sql (scripts/verify/grade52.py _Stub).
+                # The floor now gets SQL from the OpenVault tool call.
+                from dms_executor.sell_profile import provider_turn
+
                 env = run_sell(
                     question,
-                    compute=lambda catalog: _seen(
-                        seen,
-                        _insights_compute_seam(
-                            self._cortex,
-                            question,
-                            session_id=session_id,
-                            space_id=space_id,
-                            ontology=catalog,
-                        ),
-                    ),
+                    compute=lambda catalog: _seen(seen, provider_turn(catalog)),
                     submit=lambda sql: self._submit_verified_sql(
                         sql,
                         space_id=space_id,

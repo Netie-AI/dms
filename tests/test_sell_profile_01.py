@@ -19,7 +19,7 @@ from dms_executor import Executor
 from dms_executor.demo_warehouse import ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
-from dms_executor.sell_profile import enabled
+from dms_executor.sell_profile import enabled, provider_calls, reset_provider_fixture
 
 FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 SKU_Q = "How many SKUs do we have in inventory?"
@@ -102,15 +102,35 @@ def _ask(tmp_path: Path, cortex: _Spoof, question: str = SKU_Q) -> dict[str, Any
         exe.close()
 
 
-def _model_body(sql: str, **extra: Any) -> dict[str, Any]:
-    body = {
-        "query_sql": sql,
+def _completion(sql: str | None = None, **extra: Any) -> dict[str, Any]:
+    """One recorded OpenVault chat completion. Not an insights payload."""
+    content: dict[str, Any] = {"answer": "Here is what the warehouse returned."}
+    content.update(extra)
+    message: dict[str, Any] = {"role": "assistant", "content": json.dumps(content)}
+    if sql:
+        message["tool_calls"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_sql",
+                    "arguments": json.dumps({"sql": sql}),
+                },
+            }
+        ]
+    return {
         "served_model": "ov-routed",
         "served_provider": "openvault",
-        "answer": "Here is what the warehouse returned.",
+        "choices": [{"message": message}],
     }
-    body.update(extra)
-    return body
+
+
+def _use_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replies: list[dict[str, Any]]
+) -> None:
+    path = tmp_path / "provider.json"
+    path.write_text(json.dumps({"responses": replies}), encoding="utf-8")
+    monkeypatch.setenv("DMS_SELL_PROVIDER_FIXTURE", str(path))
+    reset_provider_fixture()
 
 
 def _stable(env: dict[str, Any]) -> str:
@@ -146,15 +166,18 @@ def test_profile_serves_checked_model_sql(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DMS_SELL_PROFILE", "1")
-    token = bind_ask("ask-sell-01")
-    cortex = _Spoof(
-        bodies=[
-            _model_body(
+    _use_fixture(
+        tmp_path,
+        monkeypatch,
+        [
+            _completion(
                 GOOD_SQL,
                 chart_spec={"kind": "bar", "x": "n", "y": ["n"], "series": None},
             )
-        ]
+        ],
     )
+    token = bind_ask("ask-sell-01")
+    cortex = _Spoof(bodies=[{"query_sql": "SELECT 999 AS n FROM inventory"}])
     try:
         env = _ask(tmp_path, cortex)
     finally:
@@ -167,6 +190,8 @@ def test_profile_serves_checked_model_sql(
     assert env["sell_checks"] == ["grant", "read_only", "explain", "shape"]
     assert env["text"].startswith("Here is what the warehouse returned.")
     assert cortex.asks == []
+    assert cortex.insights == []
+    assert env["sql_used"] != "SELECT 999 AS n FROM inventory"
     events, _done = wait_events("ask-sell-01", 0, 0.1)
     stages = [event["stage"] for event in events]
     for name in ("understand", "find", "write", "run", "check", "answer"):
@@ -175,16 +200,19 @@ def test_profile_serves_checked_model_sql(
 
 def test_clarify_asks_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_SELL_PROFILE", "1")
-    cortex = _Spoof(
-        bodies=[
-            {
-                "clarify": {
+    _use_fixture(
+        tmp_path,
+        monkeypatch,
+        [
+            _completion(
+                clarify={
                     "question": "Which warehouse should I use?",
                     "options": ["Warehouse A", "Warehouse B"],
                 }
-            }
-        ]
+            )
+        ],
     )
+    cortex = _Spoof(bodies=[{"query_sql": "SELECT 999 AS n FROM inventory"}])
     env = _ask(tmp_path, cortex)
     assert_envelope_valid(env)
     assert env["abstained"] is True
@@ -195,32 +223,49 @@ def test_clarify_asks_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
         "Warehouse B",
     ]
     assert cortex.asks == []
+    assert cortex.insights == []
 
 
 def test_destructive_sql_abstains_without_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("DMS_SELL_PROFILE", "1")
-    cortex = _Spoof(bodies=[_model_body(DROP_SQL)] * 3)
+    _use_fixture(tmp_path, monkeypatch, [_completion(DROP_SQL)] * 3)
+    cortex = _Spoof(bodies=[{"query_sql": DROP_SQL}] * 3)
     env = _ask(tmp_path, cortex)
     assert env["abstained"] is True
     assert env.get("sql_used") in (None, "")
-    assert len(cortex.insights) == 1
+    assert cortex.insights == []
+    assert len(provider_calls()) == 1
 
 
 def test_repair_then_serves(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_SELL_PROFILE", "1")
-    cortex = _Spoof(bodies=[_model_body(BAD_SQL), _model_body(GOOD_SQL)])
+    _use_fixture(
+        tmp_path,
+        monkeypatch,
+        [_completion(BAD_SQL), _completion(GOOD_SQL)],
+    )
+    cortex = _Spoof()
     env = _ask(tmp_path, cortex)
     assert env["abstained"] is False
     assert env["sql_used"] == GOOD_SQL
-    assert len(cortex.insights) == 2
+    assert cortex.insights == []
+    assert len(provider_calls()) == 2
 
 
 def test_escalate_after_two_misses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_SELL_PROFILE", "1")
-    cortex = _Spoof(bodies=[_model_body(BAD_SQL)] * 3)
+    _use_fixture(tmp_path, monkeypatch, [_completion(BAD_SQL)] * 3)
+    cortex = _Spoof()
     env = _ask(tmp_path, cortex)
     assert env["abstained"] is True
-    assert len(cortex.insights) == 3
-    assert cortex.kwargs[-1].get("route_hint") == "escalate"
+    assert cortex.insights == []
+    assert len(provider_calls()) == 3
+    assert provider_calls()[-1].get("route_hint") == "escalate"
+
+
+def test_insights_query_sql_is_not_a_source() -> None:
+    from dms_executor.sell_profile import _from_provider
+
+    assert _from_provider({"query_sql": "SELECT 999 AS n FROM inventory"}) is None
