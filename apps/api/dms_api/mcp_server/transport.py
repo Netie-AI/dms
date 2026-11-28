@@ -10,7 +10,7 @@ puts its own proxy in front.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, MutableMapping
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -111,7 +111,7 @@ class _AuthGate:
         app_token = bind_app(self._app)
         sent = False
 
-        async def replay() -> dict[str, Any]:
+        async def replay() -> MutableMapping[str, Any]:
             nonlocal sent
             if not sent:
                 sent = True

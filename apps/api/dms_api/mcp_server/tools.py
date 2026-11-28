@@ -154,13 +154,13 @@ def _can_elicit(ctx: Context) -> bool:
     elicitation = getattr(caps, "elicitation", None) if caps is not None else None
     if elicitation is None:
         return False
-    form = getattr(elicitation, "form", None)
-    url = getattr(elicitation, "url", None)
-    return form is not None or url is None
+    # A missing url is not a capability. Form mode has to be declared.
+    # Url-only clients cannot answer a form elicitation.
+    return getattr(elicitation, "form", None) is not None
 
 
 def _reading_schema(ids: list[str]) -> type[BaseModel]:
-    choice = Literal[tuple(ids)]  # type: ignore[valid-type]
+    choice: Any = Literal[tuple(ids)]  # type: ignore[valid-type]
     return create_model("ReadingChoice", reading_id=(choice, ...))
 
 
@@ -224,7 +224,11 @@ async def _pump(ctx: Context, ask_id: str, stop: anyio.Event) -> None:
     index = 0
     seen = 0
     while not stop.is_set():
-        batch, done = await anyio.to_thread.run_sync(lambda i=index: wait_events(ask_id, i, 0.05))
+
+        def _wait(since: int = index) -> tuple[list[dict[str, Any]], bool]:
+            return wait_events(ask_id, since, 0.05)
+
+        batch, done = await anyio.to_thread.run_sync(_wait)
         for event in batch:
             seen += 1
             stage = str(event.get("stage") or "")

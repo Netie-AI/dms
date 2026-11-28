@@ -36,9 +36,10 @@ All six are read-only. They call the existing HTTP handlers in-process.
 | describe_space | GET /v1/spaces/{id}/ontology, with row payloads removed |
 | get_proof | SQL, sources, and route stamp for a proof id from this caller's ask |
 
-If `ask` returns a clarify and the client declared the elicitation capability,
-the readings are an elicitation. Any other client gets the clarify envelope
-as the tool result. A declined or unknown reading is not answered.
+If `ask` returns a clarify and the client declared form elicitation, the
+readings are an elicitation. A bare capability, a url-only capability, or no
+capability returns the clarify envelope as the tool result. A declined or
+unknown reading is not answered.
 
 When `DMS_ASK_STREAM=1` and the client sends a progress token, ask stages are
 `notifications/progress` messages of the form `stage:status`. Those messages

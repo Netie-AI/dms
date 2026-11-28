@@ -126,8 +126,10 @@ def _handshake(
     *,
     token: str | None = TOKEN,
     elicit: bool = False,
+    caps: dict[str, Any] | None = None,
 ) -> str:
-    caps: dict[str, Any] = {"elicitation": {}} if elicit else {}
+    if caps is None:
+        caps = {"elicitation": {"form": {}}} if elicit else {}
     resp, messages = _rpc(
         client,
         method="initialize",
@@ -586,7 +588,7 @@ async def _finish(live: _Live) -> tuple[int, dict[str, str], list[dict[str, Any]
 
 
 async def _open_live(tg: anyio.abc.TaskGroup, app: ASGIApp, *, elicit: bool) -> str:
-    caps: dict[str, Any] = {"elicitation": {}} if elicit else {}
+    caps: dict[str, Any] = {"elicitation": {"form": {}}} if elicit else {}
     status, headers, messages = await _finish(
         _begin(
             tg,
@@ -640,6 +642,40 @@ def test_clarify_without_elicitation_returns_the_envelope(
     monkeypatch.setattr(tools, "chat_clarify_pick", _pick)
     with TestClient(mcp_app) as client:
         session = _handshake(client, elicit=False)
+        _resp, messages = _rpc(
+            client,
+            method="tools/call",
+            req_id=10,
+            session=session,
+            params={"name": "ask", "arguments": {"question": "Revenue?"}},
+        )
+        got = _tool_json(messages, 10)
+    assert got["clarify"]["clarify_id"] == "clr_test_01"
+    assert picks == []
+
+
+@pytest.mark.parametrize(
+    "caps",
+    [{}, {"elicitation": {}}, {"elicitation": {"url": {}}}],
+)
+def test_clarify_without_form_capability_returns_the_envelope(
+    mcp_app: Any, monkeypatch: pytest.MonkeyPatch, caps: dict[str, Any]
+) -> None:
+    import dms_api.mcp_server.tools as tools
+
+    picks: list[str] = []
+
+    def _ask(*_a: object, **_k: object) -> dict[str, Any]:
+        return _clarify_env()
+
+    def _pick(body: object, *_a: object, **_k: object) -> dict[str, Any]:
+        picks.append(getattr(body, "reading_id", ""))
+        return _picked_env()
+
+    monkeypatch.setattr(tools, "chat_ask", _ask)
+    monkeypatch.setattr(tools, "chat_clarify_pick", _pick)
+    with TestClient(mcp_app) as client:
+        session = _handshake(client, caps=caps)
         _resp, messages = _rpc(
             client,
             method="tools/call",
