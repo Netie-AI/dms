@@ -62,6 +62,8 @@ _FLAG_ON = frozenset({"1", "true", "yes", "on"})
 _SAVE_PROVENANCE = frozenset({"yes:reconfirm", "yes:vote"})
 _ADJUST_FLAG = "DMS_STUDIO_ADJUST"
 PROVENANCE_STEWARD_ADJUSTED = "steward_adjusted"
+PROVENANCE_CREATE_ACCEPT = "create_accept"
+_NOT_REPLAYED = frozenset({PROVENANCE_STEWARD_ADJUSTED, PROVENANCE_CREATE_ACCEPT})
 # ponytail: fixed preview size. Upgrade: the ask page size, still read-only.
 _ADJUST_PREVIEW_CAP = 200
 _SKIP_ROUTES = frozenset({"verified_query", "l1_governed_metric"})
@@ -792,10 +794,10 @@ def revoke_verified_example(
 
 
 def _replayable(row: dict[str, Any]) -> bool:
-    """Exact-match replay. ``steward_adjusted`` is a writer example, never an answer."""
+    """Exact-match replay. Example rows are for the writer, never an answer."""
     if row.get("revoked_at"):
         return False
-    return row.get("provenance") != PROVENANCE_STEWARD_ADJUSTED
+    return row.get("provenance") not in _NOT_REPLAYED
 
 
 def _hit(question: str, row: dict[str, Any]) -> bool:
@@ -820,7 +822,7 @@ def lookup_verified_query(
     """Return ``{asset_id, sql}`` for a Space hit. Does not run SQL as the answer.
 
     ``DMS_VQ_RAG`` on: always None. The row is a few-shot example, not a replay.
-    ``steward_adjusted`` is never a hit, even when that flag is off.
+    ``steward_adjusted`` and ``create_accept`` are never a hit, even when that flag is off.
     """
     if vq_rag_enabled() or tables:
         return None
@@ -1100,3 +1102,30 @@ def save_steward_adjusted(
     if saved.get("provenance") != PROVENANCE_STEWARD_ADJUSTED:
         raise ValueError("not_stored")
     return saved
+
+
+def save_create_example(
+    *,
+    question: str,
+    sql: str,
+    space_id: str | None,
+    actor: str,
+    warehouse: Path | None,
+    grantable: set[str],
+    dialect: str | None,
+) -> dict[str, Any] | None:
+    """Store one accepted SQL. Lookup never replays ``create_accept``.
+
+    The row is a writer example. ``DMS_VQ_RAG`` is not required. A grant miss
+    or a blocked pack hash stores nothing.
+    """
+    return _save_example(
+        question=question,
+        sql=sql,
+        space_id=space_id,
+        warehouse=warehouse,
+        grantable=grantable,
+        dialect=dialect,
+        provenance=PROVENANCE_CREATE_ACCEPT,
+        actor=actor,
+    )

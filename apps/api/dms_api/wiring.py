@@ -2171,3 +2171,73 @@ def sign_ledger_callback(client: Any) -> Any:
         return response.entry_id
 
     return record
+
+def create_caller_key(header: str | None) -> str:
+    """The customer OpenVault key from the request. No install-key fallback."""
+    return (header or "").strip()
+
+
+def create_start(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import start_session
+
+    return start_session(**kwargs)
+
+
+def create_confirm(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import confirm_intent
+
+    return confirm_intent(**kwargs)
+
+
+def create_plan(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import draft_plan
+
+    return draft_plan(**kwargs)
+
+
+def create_generate(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import generate_artifact
+
+    return generate_artifact(**kwargs)
+
+
+def create_improve(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import improve_artifact
+
+    return improve_artifact(**kwargs)
+
+
+def create_accept(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import accept_artifact
+
+    return accept_artifact(**kwargs)
+
+
+def create_read(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import read_artifact
+
+    return read_artifact(**kwargs)
+
+
+def create_query(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import query_artifact
+
+    return query_artifact(**kwargs)
+
+
+def create_export(**kwargs: Any) -> tuple[bytes, str]:
+    from dms_executor.create_surface import export_bytes
+
+    return export_bytes(**kwargs)
+
+
+def create_events(**kwargs: Any) -> Any:
+    from dms_executor.create_surface import draft_events
+
+    return draft_events(**kwargs)
+
+
+def create_confirm_final(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import confirm_final
+
+    return confirm_final(**kwargs)

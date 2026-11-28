@@ -4,6 +4,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { ReadyGuide } from "@/components/studio/ReadyGuide";
 import { ChatTurn } from "@/components/studio/ChatTurn";
+import { CreateSurface } from "@/components/studio/CreateSurface";
 import { useApp } from "@/context/AppContext";
 import {
   describeApiError,
@@ -349,6 +350,8 @@ export function StudioPage() {
           </button>
         </div>
       </div>
+
+      <CreateSurface spaceId={activeSpaceId} />
 
       <button
         type="button"

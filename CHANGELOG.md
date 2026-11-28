@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: Create app behind a default-off flag
+
+- **Flag.** `DMS_CREATE` defaults off. Only the digit 1 turns it on. Off, the status body is `{"enabled": false}` and the action routes are not mounted.
+- **App only.** Studio shows Create app. Doc and slides are refused (`kind_required`). They belong to DMS-CREATE-02 in `packages/create_docs`.
+- **Cost.** One `create_plan` call returns intent, an outline, and an estimate. The user confirms before any component is built. Each component is generated, checked, and kept. A failed component is retried once. The run stops on max steps (default 8), max tokens (default 8000), max USD (default 1.0), or OpenVault HTTP 402 `budget_exceeded`, and returns the pieces already checked. Tenant overrides live in `DMS_CREATE_BUDGETS`.
+- **Meter.** Each streamed step carries tokens, USD, and steps. A missing count stays null. The log stores model, tokens, and cost only when the response included them.
+- **Measured.** Stub orders lake, no usage in the response: seconds=0.299799, tokens=null, cost=null. Not a live OpenVault bill. grade52 was not re-run. Not PASS.
+- **Base.** Rebased onto `fa0eeef` (#655). The READY-04 row below stays.
 ## 2026-11-28 - DMS-SIGN: load the signing key through the executor package
 
 - **Import.** `load_sign_pems` used `dms_executor.manifest` directly. Import-linter only allows `dms_api.wiring` to import the `dms_executor` package. It now uses `dms_executor.ManifestMinter`, the same path as `load_vault_secret`.
