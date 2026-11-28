@@ -2,12 +2,17 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-SIGN: documents can be signed, disclosed, and stored
+
+- **Flag.** `DMS_SIGN` is off unless the value is the digit 1. Off, `/v1/sign` is not mounted and the audit page renders no sign panel. On, typed, drawn, and uploaded signatures become a pyHanko PAdES. The tenant key comes from OpenVault (`signkey/{tenant}`, `signcert/{tenant}`). Tests use a self-signed cert that is not a production trust anchor.
+- **Record.** Tables `sign_documents`, `sign_versions`, `sign_envelopes`, `sign_signers`, `sign_signatures`, `sign_audit_events`, `sign_disclosures`, `sign_access_log` (migration `0012_sign`). The hash chain is on `sign_audit_events` only. `ledger_ref` stays a pointer. `DMS_SIGN_LEDGER=1` writes a Cortex ledger pointer and does not copy the key.
+- **Space.** `dms_core.signing.sdk.SigningClient` exposes `create_envelope`, `add_signer`, `sign`, `verify`, and `disclose`. Drafting never signs. A model actor is refused. This repo does not change Space.
+- **Tests.** `tests/test_sign_01.py` signs a sample PDF and verifies intact, valid, trusted, and hash match. UI vitest covers the flag-off empty panel and the consent sentence.
 ## 2026-11-28 - FDE-KIT-01: launcher, engagement folder, report schema
 
 - **Flag.** `DMS_FDE_KIT` defaults off. Only the digit `1` turns it on. Unset, `true`, `01`, and ` 1 ` exit 2 with `fde_kit_disabled` and write nothing. `list` works with the flag off.
 - **Report.** `scripts/fde/report.py` is `netie.fde.report/1`. Markdown is rendered from the JSON. An empty check list is SKIPPED. A kit that raises is a FAIL check with the exception class.
 - **Kits.** `run --stage all` calls `fde_pipeline` extract, profile, ontology, and pack. It does not copy those stages. Not PASS.
-
 ## 2026-11-28 - AI-FLOOR-01: direct floor record is not an envelope
 
 - **Record.** `run_direct` returns `stopped`, not a served abstain dict. The dialect string is `SERVING_DIALECT`.

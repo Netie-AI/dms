@@ -12,6 +12,7 @@ from dms_core.control_plane.ask_audit import (
     InMemoryAskAuditStore,
     PostgresAskAuditStore,
 )
+from dms_core.signing.flag import enabled as sign_enabled
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -256,6 +257,10 @@ def create_app() -> FastAPI:
         app.include_router(studio_knowledge.router)
     if space_bench.enabled():
         app.include_router(space_bench.router)
+    if sign_enabled():
+        from dms_api.routes import sign as sign_routes
+
+        app.include_router(sign_routes.router)
     return app
 
 

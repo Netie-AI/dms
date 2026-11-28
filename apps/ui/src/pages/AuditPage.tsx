@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ConstraintTracePanel } from "@/components/ConstraintTracePanel";
 import { useApp } from "@/context/AppContext";
+import { SignGate } from "@/pages/SignPanel";
 
 type Ref = { seq: number; cortex_entry_id: string; created_at?: string | null };
 
@@ -59,6 +60,7 @@ export function AuditPage() {
         ))}
       </ul>
       <ConstraintTracePanel trace={latestAnswer?.constraint_trace} />
+      <SignGate />
     </div>
   );
 }
