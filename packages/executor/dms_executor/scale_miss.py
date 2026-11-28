@@ -158,7 +158,7 @@ def begin(
         return _askback(
             question,
             why="vague_question",
-            interpretations=_readings(turn),
+            interpretations=_offer_readings(turn),
             space_id=space_id,
             session_id=session_id,
         )
@@ -170,25 +170,28 @@ def begin(
         return _askback(
             question,
             why="no_sql",
-            interpretations=_readings(turn),
+            interpretations=_offer_readings(turn),
             space_id=space_id,
             session_id=session_id,
         )
     turn.steps.append("generate")
     note_stage("insights_generate", "started")
+    from dms_executor.askback_specific import enabled as specific_enabled
+    from dms_executor.askback_specific import generate_request
     from dms_executor.sql_vote import reading_prompt
 
-    payload = _invoke(
-        turn,
-        {
-            "sql_vote_prompt": reading_prompt(question, reading=1),
-            "sql_vote_kind": "direct",
-        },
-    )
+    # Flag off: the question only. On: schema, ontology, and examples first.
+    ctx: dict[str, Any] = {
+        "sql_vote_prompt": reading_prompt(question, reading=1),
+        "sql_vote_kind": "direct",
+    }
+    if specific_enabled():
+        ctx = generate_request(turn)
+    payload = _invoke(turn, ctx)
     note_stage("insights_generate", "done")
     sql = _sql_of(payload)
     if not sql:
-        payload, sql = _plan_then_sql(turn)
+        payload, sql = _plan_then_sql(turn, ctx=ctx)
     if sql:
         payload, sql = _repair_explain(turn, payload, sql)
     if sql:
@@ -234,7 +237,7 @@ def stop_envelope(
     return _askback(
         question,
         why="no_sql",
-        interpretations=_readings(turn) if turn is not None else list(_FILL[:2]),
+        interpretations=_offer_readings(turn),
         space_id=space_id,
         session_id=session_id,
     )
@@ -306,7 +309,7 @@ def empty_sql_askback(question: str) -> dict[str, Any]:
     return _askback(
         question,
         why="no_sql",
-        interpretations=_readings(turn) if turn is not None else list(_FILL[:2]),
+        interpretations=_offer_readings(turn),
         space_id=space_id,
         session_id=session_id,
     )
@@ -430,7 +433,7 @@ def explain_askback(
     return _askback(
         question,
         why="explain",
-        interpretations=_readings(turn) if turn is not None else list(_FILL[:2]),
+        interpretations=_offer_readings(turn),
         space_id=space_id,
         session_id=session_id,
     )
@@ -593,6 +596,17 @@ def _verdict(payload: dict[str, Any] | None) -> str:
     return "unknown"
 
 
+def _offer_readings(turn: Turn | None) -> list[str]:
+    """Flag off keeps the canned list. On, the specific card writes its own."""
+    from dms_executor.askback_specific import enabled as specific_enabled
+
+    if specific_enabled():
+        return []
+    if turn is None:
+        return list(_FILL[:2])
+    return _readings(turn)
+
+
 def _readings(turn: Turn | None) -> list[str]:
     found: list[str] = []
     if turn is not None and turn.compute is not None:
@@ -670,6 +684,18 @@ def _askback(
     space_id: str | None,
     session_id: str | None,
 ) -> dict[str, Any]:
+    from dms_executor.askback_specific import enabled as specific_enabled
+    from dms_executor.askback_specific import specific_askback
+
+    if specific_enabled():
+        return specific_askback(
+            question,
+            why=why,
+            turn=_TURN.get(),
+            space_id=space_id,
+            session_id=session_id,
+            margin=over_budget(),
+        )
     from datetime import UTC, datetime
 
     from dms_executor.abstain import build_abstain

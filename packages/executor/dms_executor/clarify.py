@@ -225,6 +225,14 @@ def resolve_pick(
             break
     if chosen is None:
         raise ValueError("unknown reading")
+    if snapshot.get("question_readings") is True:
+        _drop(clarify_id)
+        return Pick(
+            question=str(chosen.get("text") or ""),
+            space_id=_str_or_none(snapshot.get("space_id")),
+            session_id=_str_or_none(snapshot.get("session_id")),
+            tables=_tables(snapshot.get("tables")),
+        )
     gap = _static_gap(str(chosen.get("sql_preview") or ""), grantable, dialect)
     if gap:
         return Pick(
@@ -612,6 +620,30 @@ def _bound_question(reading: dict[str, Any]) -> str:
     if not slots:
         return text
     return "slots:\n" + json.dumps(slots, sort_keys=True) + "\nQuestion:\n" + text
+
+
+def save_question_readings(
+    clarify_id: str,
+    *,
+    question: str,
+    readings: list[dict[str, Any]],
+    space_id: str | None,
+    session_id: str | None,
+    tables: list[str],
+) -> None:
+    """Store ask-back readings. A pick re-asks the reading. It does not run a preview."""
+    _save(
+        clarify_id,
+        {
+            "question": question,
+            "readings": readings,
+            "space_id": space_id,
+            "session_id": session_id,
+            "tables": list(tables),
+            "question_readings": True,
+            "free_text_ok": False,
+        },
+    )
 
 
 def _save(clarify_id: str, pending: dict[str, Any]) -> None:

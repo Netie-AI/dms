@@ -44,6 +44,15 @@ sources = [
   "pyodbc>=5.1",
   "PyMySQL>=1.1",
 ]
+# FEAT-CONNECT-GAUSS-01. psycopg is already a core dependency. The extra is the
+# install name for a GaussDB / openGauss host. Stock libpq is tried first.
+gauss = [
+  "psycopg[binary]>=3.1",
+]
+# python-oracledb thin mode. No Oracle client.
+oracle = [
+  "oracledb>=2.0",
+]
 # CCA-LLM: the ask-path recogniser (packages/executor/dms_executor/cca/proposer.py)
 # when DMS_CCA_PROPOSER=anthropic. Optional because the shipped default is the
 # word list, which needs no credential and no network. The swap scenario is the

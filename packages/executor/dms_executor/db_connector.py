@@ -37,7 +37,7 @@ from dms_executor.bronze import (
     write_bronze_rows,
 )
 
-SourceKind = Literal["sqlserver", "mysql", "postgresql", "sqlite"]
+SourceKind = Literal["sqlserver", "mysql", "postgresql", "sqlite", "gauss", "oracle"]
 
 #: Ceiling on a single pull. ``write_bronze_rows`` materialises every row in
 #: memory before the INSERT, so an unbounded pull against a production table is
@@ -50,7 +50,27 @@ _DEFAULT_PORTS: dict[str, int] = {
     "mysql": 3306,
     "postgresql": 5432,
     "sqlite": 0,
+    "gauss": 5432,
+    "oracle": 1521,
 }
+
+
+def _accept_kind(kind: str) -> bool:
+    """Gauss and Oracle stay unsupported until their flag is on.
+
+    Off, SourceConfig raises the same ValueError an unknown kind raises.
+    """
+    if kind in {"sqlserver", "mysql", "postgresql", "sqlite"}:
+        return True
+    if kind == "gauss":
+        from dms_executor.drivers.gauss import enabled
+
+        return enabled()
+    if kind == "oracle":
+        from dms_executor.drivers.oracle import enabled
+
+        return enabled()
+    return False
 
 #: SQLite sources are files on the DMS host. Off unless this names a directory; a
 #: path outside it (after resolving symlinks and ``..``) is refused, so an API caller
@@ -59,7 +79,16 @@ SQLITE_ROOT_ENV = "DMS_SQLITE_SOURCE_ROOT"
 
 
 class SourceConnectionError(RuntimeError):
-    """Connect/auth failed, or the required driver is not installed."""
+    """Connect/auth failed, or the required driver is not installed.
+
+    ``code`` and ``doc`` are set by a typed driver failure. The message stays
+    the credential-free description. ``doc`` is a public URL or empty.
+    """
+
+    def __init__(self, message: str, *, code: str = "", doc: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.doc = doc
 
 
 class UnknownSourceTable(LookupError):
@@ -88,7 +117,7 @@ class SourceConfig:
     connect_timeout: int = 30
 
     def __post_init__(self) -> None:
-        if self.kind not in _DEFAULT_PORTS:
+        if self.kind not in _DEFAULT_PORTS or not _accept_kind(self.kind):
             raise ValueError(f"unsupported source kind: {self.kind!r}")
         if self.kind == "sqlite":
             # database is the file path; host is not used. "#" would split the
@@ -341,6 +370,14 @@ def connect(cfg: SourceConfig) -> Iterator[Any]:
             raise SourceConnectionError(f"could not connect to {cfg.describe()}") from exc
     elif cfg.kind == "sqlite":
         con = _sqlite_connect(cfg)
+    elif cfg.kind == "gauss":
+        from dms_executor.drivers.gauss import open_source
+
+        con = open_source(cfg)
+    elif cfg.kind == "oracle":
+        from dms_executor.drivers.oracle import open_source
+
+        con = open_source(cfg)
     else:
         raise SourceConnectionError(f"unsupported source kind: {cfg.kind!r}")
     try:
@@ -357,6 +394,24 @@ _SYSTEM_SCHEMAS: dict[str, set[str]] = {
     "mysql": {"mysql", "information_schema", "performance_schema", "sys"},
     "postgresql": {"pg_catalog", "information_schema", "pg_toast"},
     "sqlite": {"temp"},
+    "gauss": {"pg_catalog", "information_schema", "pg_toast"},
+    "oracle": {
+        "SYS",
+        "SYSTEM",
+        "XDB",
+        "CTXSYS",
+        "MDSYS",
+        "OLAPSYS",
+        "ORDSYS",
+        "OUTLN",
+        "DBSNMP",
+        "WMSYS",
+        "APPQOSSYS",
+        "GSMADMIN_INTERNAL",
+        "OJVMSYS",
+        "LBACSYS",
+        "DVSYS",
+    },
 }
 
 
@@ -387,6 +442,11 @@ def list_source_tables(cfg: SourceConfig, *, con: Any | None = None) -> list[Sou
             "ORDER BY TABLE_SCHEMA, TABLE_NAME"
         )
         params = (cfg.database,)
+    elif cfg.kind == "oracle":
+        from dms_executor.drivers.oracle import TABLES_SQL
+
+        sql = TABLES_SQL
+        params = ()
     else:
         # SQL Server and PostgreSQL: database is not a schema. MySQL's filter
         # TABLE_SCHEMA = database would find zero tables on bird_minidev/public.
@@ -558,10 +618,15 @@ def list_source_keys(cfg: SourceConfig, *, con: Any | None = None) -> SourceKeys
     params: tuple[Any, ...]
     if cfg.kind == "mysql":
         pk_sql, fk_sql, params = _PK_MYSQL, _FK_MYSQL, (cfg.database,)
-    elif cfg.kind == "postgresql":
+    elif cfg.kind in {"postgresql", "gauss"}:
         # Not the MySQL TABLE_SCHEMA = database filter, and not INFORMATION_SCHEMA
-        # (blind to a SELECT-only login); see _PK_POSTGRES.
+        # (blind to a SELECT-only login); see _PK_POSTGRES. Gauss PG mode uses
+        # the same catalog statements (FDE-PG-KEYS-01).
         pk_sql, fk_sql, params = _PK_POSTGRES, _FK_POSTGRES, ()
+    elif cfg.kind == "oracle":
+        from dms_executor.drivers.oracle import FK_SQL, PK_SQL
+
+        pk_sql, fk_sql, params = PK_SQL, FK_SQL, ()
     else:
         pk_sql, fk_sql, params = _PK_SQLSERVER, _FK_SQLSERVER, ()
     skip = _SYSTEM_SCHEMAS[cfg.kind]

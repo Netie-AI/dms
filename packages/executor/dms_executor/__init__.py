@@ -748,12 +748,36 @@ class Executor:
             ttl_seconds=900,
         )
 
+    def _mint_for_bind(self, acl: SessionAcl) -> Any:
+        """Mint the signed manifest. Flag on attaches the Space catalog off-signature.
+
+        The demo Space and the flag-off path return the minted object unchanged.
+        """
+        manifest = self._minter.mint_manifest(acl)
+        from dms_executor.space_catalog_manifest import (
+            load_space_catalog_ontology,
+            session_space_catalog,
+            space_catalog_enabled,
+            stamp_manifest,
+        )
+
+        if not space_catalog_enabled() or is_demo_space(acl.space_id):
+            return manifest
+        onto = load_space_catalog_ontology(acl.space_id)
+        catalog = session_space_catalog(onto, list(acl.row_predicates))
+        signature = self._minter.sign_space_catalog(
+            catalog,
+            space_id=acl.space_id or "",
+            session_id=acl.session_id,
+        )
+        return stamp_manifest(manifest, catalog, signature)
+
     def bind_session(self, session: SessionContext | SessionAcl) -> Any:
         """Mint + submit plan.kind=session_bind (C4-min)."""
         if self._cortex is None:
             raise RuntimeError("CortexClient required for bind_session")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
-        manifest = self._minter.mint_manifest(acl)
+        manifest = self._mint_for_bind(acl)
         req = SubmitRequest(
             pool=PoolSpec(id=acl.pool_id),
             plan={"kind": "session_bind"},
@@ -766,7 +790,7 @@ class Executor:
             err = classify_submit_error(exc)
             if should_rement(err.code):
                 self._minter.invalidate(acl.session_id)
-                manifest = self._minter.mint_manifest(acl)
+                manifest = self._mint_for_bind(acl)
                 req = SubmitRequest(
                     pool=PoolSpec(id=acl.pool_id),
                     plan={"kind": "session_bind"},
@@ -1028,6 +1052,30 @@ class Executor:
                     if deadline_hit and not scale_miss_enabled():
                         env["serving_deadline_s"] = ask_budget_s
                     assert_envelope_valid(env)
+                    if not (deadline_hit and scale_miss_enabled()):
+                        from dms_executor.reply_hygiene import stamp_capacity
+
+                        def _capacity_rung(hint: str | None) -> dict[str, Any] | None:
+                            fn = getattr(self._cortex, "compute_insights", None)
+                            if not callable(fn):
+                                return None
+                            kwargs: dict[str, Any] = {}
+                            if hint:
+                                kwargs["route_hint"] = hint
+                            got = fn(question, **kwargs)
+                            return got if isinstance(got, dict) else None
+
+                        granted = [str(name) for name in (tables or []) if str(name).strip()]
+                        env = stamp_capacity(
+                            env,
+                            exc.code,
+                            call=_capacity_rung,
+                            question=question,
+                            names=granted,
+                            space_id=space_id,
+                            session_id=session_id,
+                            tables=granted,
+                        )
                 finally:
                     reset_serving_lease_block(token)
             # An answer whose served SQL reads outside the turn's grant is a
@@ -1475,6 +1523,21 @@ class Executor:
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
+        # The chooser runs inside the generative call, which is before the
+        # contract bind. Flag on binds first so that call sees this Space's
+        # catalog. A mint failure does not block SQL generation; the later
+        # bind still reports it. Flag off does not bind here.
+        from dms_executor.space_catalog_manifest import space_catalog_enabled
+
+        if space_catalog_enabled() and not is_demo_space(space_id):
+            try:
+                early = self.demo_acl(
+                    session_id=session_id, space_id=space_id, tables=tables
+                )
+                if early.session_id not in self._bound_sessions:
+                    self.bind_session(early)
+            except (AskServiceError, OpenVaultTokenError):
+                logger.warning("space_catalog_bind_skipped")
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -1601,6 +1664,20 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        from dms_executor.space_catalog_manifest import space_catalog_after_ask
+
+        handed = space_catalog_after_ask(
+            resp,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            granted=readable,
+            ontology=space_onto,
+        )
+        if handed is not None:
+            env = attach_cascade(handed, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
         raw_sql = getattr(resp, "sql_used", None)
         sql_used = str(raw_sql or "")
         if sql_used.strip() and not getattr(resp, "abstained", False):
@@ -1793,6 +1870,10 @@ class Executor:
             ontology_text,
             schema_text,
         )
+        from dms_executor.reply_hygiene import reason_completion
+
+        def _next_rung(prompt: str, hint: str | None) -> str:
+            return reason_completion(cortex, prompt, route_hint=hint)
 
         return apply_reconfirm(
             env,
@@ -1804,6 +1885,8 @@ class Executor:
             ontology=ontology_text(space_id),
             schema=schema_text(None, granted_schema_names(space_id, tables)),
             complete=lambda prompt: complete_with_model(cortex, prompt),
+            reason_complete=lambda prompt: reason_completion(cortex, prompt),
+            retry=_next_rung,
         )
 
     def reconfirm_ask_path(self, token: str) -> str | None:
@@ -1921,6 +2004,8 @@ class Executor:
                         env["assumptions"] = assumptions
                     assumptions.append("join_link:not_filed")
                 return env
+        if pending.get("askback_specific") is True:
+            return self._run_specific_reading(pending)
         if reconfirm_run_held_enabled() and held_ready(pending):
             return self._run_held_sql(pending)
         suggested = str(pending.get("suggested_question") or "").strip()
@@ -1961,6 +2046,104 @@ class Executor:
                 or str(offered.get("badge") or "") == "ABSTAIN",
             )
         return offered
+
+    def _run_specific_reading(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """Yes runs the reading SQL. The asked question is what gets stored."""
+        from datetime import UTC, datetime
+
+        from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+        from dms_executor.generative_ask import validate_compiled_sql, validated_sql_reason
+        from dms_executor.sql_loop import run_readonly
+
+        sql = str(pending.get("sql") or "").strip()
+        question = str(pending.get("question") or "").strip()
+        raw_grants = pending.get("grantable")
+        grantable = (
+            {str(name) for name in raw_grants if str(name).strip()}
+            if isinstance(raw_grants, list)
+            else set()
+        )
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        raw_wh = pending.get("warehouse")
+        warehouse = (
+            Path(raw_wh) if isinstance(raw_wh, str) and raw_wh.strip() else self._warehouse
+        )
+
+        def abstain(reason: str) -> dict[str, Any]:
+            env = build_abstain(
+                reason=reason or "reading_rejected",
+                question=question,
+                stage="reconfirm_yes",
+                answer_id="ans_askback_specific_yes",
+                text="That reading did not pass the check, so I am not running it.",
+                abstain_reason=reason or "reading_rejected",
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[reason or "reading_rejected"],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
+            return env
+
+        if not sql or not question:
+            return abstain("reading_missing")
+        gate = validated_sql_reason(
+            sql,
+            question=question,
+            warehouse=warehouse,
+            grantable=grantable,
+        )
+        compiled = validate_compiled_sql(
+            sql,
+            grantable=grantable,
+            warehouse=warehouse,
+            dialect=self.dialect,
+        )
+        if gate or compiled:
+            return abstain(gate or compiled or "reading_rejected")
+        if warehouse is None or not Path(warehouse).is_file():
+            return abstain("warehouse_missing")
+        rows, err = run_readonly(sql, Path(warehouse))
+        if err or rows is None:
+            return abstain(err or "execute_failed")
+        env = build_answer_envelope(
+            answer_id="ans_askback_specific_yes",
+            text="The confirmed reading ran.",
+            badge="L2_VALIDATED",
+            abstained=False,
+            rows=rows,
+            sql_used=sql,
+            assumptions=["yes:reconfirm"],
+            as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="generated",
+            question=question,
+        )
+        assert_envelope_valid(env)
+        env["reconfirm_accepted"] = True
+        env["provenance"] = "yes:reconfirm"
+        route = env.get("served_route")
+        maybe_save_checked_sql(
+            question=question,
+            sql=sql,
+            space_id=space_id,
+            warehouse=warehouse,
+            grantable=grantable,
+            dialect=self.dialect,
+            provenance="yes:reconfirm",
+            served_route=route.strip() if isinstance(route, str) else "",
+            abstained=False,
+        )
+        return env
 
     def _cortex_confirm_no(self, pending: dict[str, Any]) -> dict[str, Any]:
         """No on a Cortex reconfirm. Cortex logs the pipeline-failure ticket.

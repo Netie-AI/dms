@@ -21,6 +21,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -145,6 +146,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.space_catalog_manifest import release_chooser_handoff
 from dms_executor.space_ontology import (
     REASON_NO_DECLARED_MEASURE,
     REASON_UNVERIFIED_JOIN,
@@ -1588,6 +1590,9 @@ def _try_multi_grain_envelope(
     """
     if _rules_off():
         return None
+    honour_block = _compile_blocked()
+    if honour_block is not None:
+        return honour_block
     lock = _multi_grain_measure(q, onto, payload)
     multi = try_compile_multi_grain(
         onto,
@@ -1698,9 +1703,11 @@ def _try_multi_grain_envelope(
             )
         )
         return None
-    return _submit_validated(
+    return _commit_compile(
         multi.sql,
         question=q,
+        onto=onto,
+        dialect=dialect,
         space_id=space_id,
         session_id=session_id,
         submit=submit,
@@ -1777,6 +1784,9 @@ def rank_window_ask(
         if _qualifier_note_only("rank_window_open_ended"):
             return None
         return _no("rank_window_open_ended")
+    honour_block = _compile_blocked()
+    if honour_block is not None:
+        return honour_block
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
         return _no(f"{compiled.reason}: {compiled.detail}")
@@ -1819,9 +1829,11 @@ def rank_window_ask(
             )
         )
         return None
-    return _submit_validated(
+    return _commit_compile(
         compiled.sql,
         question=q,
+        onto=onto,
+        dialect=dialect,
         space_id=space_id,
         session_id=session_id,
         submit=submit,
@@ -1952,6 +1964,251 @@ def _checker_is_direct(reason: str) -> bool:
     """Ungranted, hostile, and non-SELECT stay abstains. Everything else can climb."""
     head = str(reason or "").split(":", 1)[0]
     return head in _DIRECT_CHECK_HEADS or str(reason or "").startswith("hostile_sql")
+
+
+_HONOUR_REASONS = frozenset(
+    {"compile_not_honoured", "shape_guard", "compile_honour_unknown"}
+)
+_HONOUR_BLOCK: ContextVar[_CompileRefused | None] = ContextVar(
+    "dms_compile_honour_block", default=None
+)
+_DESTRUCTIVE: ContextVar[tuple[str, str] | None] = ContextVar(
+    "dms_compile_honour_destructive", default=None
+)
+
+
+def _honour_enabled() -> bool:
+    from dms_executor.compile_honour import compile_honour_enabled
+
+    return compile_honour_enabled()
+
+
+def _reset_honour_state() -> tuple[Any, Any]:
+    return (_HONOUR_BLOCK.set(None), _DESTRUCTIVE.set(None))
+
+
+def _release_honour_state(tokens: tuple[Any, Any]) -> None:
+    _HONOUR_BLOCK.reset(tokens[0])
+    _DESTRUCTIVE.reset(tokens[1])
+
+
+def _note_honour_block(refused: _CompileRefused) -> None:
+    _HONOUR_BLOCK.set(refused)
+
+
+def _compile_blocked() -> _CompileRefused | None:
+    if not _honour_enabled():
+        return None
+    return _HONOUR_BLOCK.get()
+
+
+def _destructive_status(question: str) -> str:
+    """off, safe, hostile, or unknown. Flag off does not call the model."""
+    if not _honour_enabled():
+        return "off"
+    cached = _DESTRUCTIVE.get()
+    if cached is not None and cached[0] == question:
+        return cached[1]
+    from dms_executor.compile_honour import ast_non_select, classify_destructive
+
+    ast_hit = ast_non_select(question)
+    verdict = classify_destructive(question)["verdict"]
+    if ast_hit or verdict == "destructive":
+        status = "hostile"
+    elif verdict == "safe":
+        status = "safe"
+    else:
+        status = "unknown"
+    _DESTRUCTIVE.set((question, status))
+    return status
+
+
+def _refuse_destructive(
+    question: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """Hostile abstain, or None.
+
+    Not the compliance gate and not ``question_is_destructive``. Those stay
+    where they are. This only abstains when the model says destructive or
+    the text is a typed non-SELECT, and it does that before compile.
+    Unknown is not a destructive verdict. The ask continues, and a compile
+    serve still has to pass the honour check.
+    """
+    if _destructive_status(question) != "hostile":
+        return None
+    return _abstain(
+        question,
+        "hostile_sql",
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_OTHER,
+    )
+
+
+def _measure_facts(onto: Ontology | None, name: str | None) -> dict[str, str] | None:
+    measure_name = str(name or "").strip()
+    if onto is None or not measure_name or measure_name not in onto.measures:
+        return None
+    spec = onto.measures[measure_name]
+    return {
+        "name": measure_name,
+        "grain": str(getattr(spec, "grain", "") or ""),
+        "expression": str(getattr(spec, "expression", "") or ""),
+        "description": str(getattr(spec, "description", "") or ""),
+    }
+
+
+def _commit_compile(
+    sql: str,
+    *,
+    question: str,
+    onto: Ontology | None,
+    dialect: str | None,
+    space_id: str | None,
+    session_id: str | None,
+    submit: Callable[[str], Any],
+    ledger_append: Callable[[dict[str, Any]], Any],
+    notes: Sequence[str],
+    plan_source: str,
+    measure: str | None = None,
+    coverage: Coverage | None = None,
+    where_paths: Sequence[WherePath] = (),
+    warehouse: Path | None = None,
+    plan_origin: str = "",
+    lead: str = "",
+    served_route: str = "",
+    grantable: set[str] | None = None,
+    keep_gt: float | None = None,
+    qualifier_notes: tuple[str, ...] = (),
+) -> dict[str, Any] | _CompileRefused:
+    """Serve compiled SQL. Flag on: honour check, then the shape guard.
+
+    A miss is not an abstain. The caller hands the question to the AI leg.
+    Flag off is ``_submit_validated`` with the same arguments.
+    """
+    if _honour_enabled():
+        from dms_executor.compile_honour import check_honour, shape_guard_hit
+
+        checked = check_honour(
+            question,
+            sql,
+            dialect=dialect,
+            measure=_measure_facts(onto, measure),
+        )
+        if checked.get("verdict") != "honoured":
+            refused = _CompileRefused(reason="compile_not_honoured", sql=sql)
+            _note_honour_block(refused)
+            return refused
+        env = _submit_validated(
+            sql,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            submit=submit,
+            ledger_append=ledger_append,
+            notes=notes,
+            plan_source=plan_source,
+            keep_gt=keep_gt,
+            measure=measure,
+            coverage=coverage,
+            where_paths=where_paths,
+            warehouse=warehouse,
+            plan_origin=plan_origin,
+            lead=lead,
+            served_route=served_route,
+            grantable=grantable,
+            qualifier_notes=qualifier_notes,
+        )
+        if shape_guard_hit(env):
+            refused = _CompileRefused(reason="shape_guard", sql=sql)
+            _note_honour_block(refused)
+            return refused
+        return env
+    return _submit_validated(
+        sql,
+        question=question,
+        space_id=space_id,
+        session_id=session_id,
+        submit=submit,
+        ledger_append=ledger_append,
+        notes=notes,
+        plan_source=plan_source,
+        keep_gt=keep_gt,
+        measure=measure,
+        coverage=coverage,
+        where_paths=where_paths,
+        warehouse=warehouse,
+        plan_origin=plan_origin,
+        lead=lead,
+        served_route=served_route,
+        grantable=grantable,
+        qualifier_notes=qualifier_notes,
+    )
+
+
+def _compile_askback(
+    question: str,
+    reason: str,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    """Typed reconfirm after the AI leg. The suggested question is non-empty."""
+    env = _abstain(
+        question,
+        reason,
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_ONTOLOGY,
+        stage="extract_loop",
+    )
+    suggested = str(question or "").strip()
+    env["reconfirm"] = {
+        "why": reason,
+        "reason_code": reason,
+        "suggested_question": suggested,
+        "closest_question": suggested,
+    }
+    assert_envelope_valid(env)
+    return env
+
+
+def _direct_refusal(env: Mapping[str, Any]) -> bool:
+    codes: list[str] = []
+    raw = env.get("abstain_reason")
+    if isinstance(raw, str) and raw.strip():
+        codes.append(raw.strip())
+    assumptions = env.get("assumptions") or []
+    if isinstance(assumptions, list):
+        for item in assumptions:
+            text = str(item).strip()
+            if text.startswith("GEN-01:"):
+                codes.append(text[len("GEN-01:") :].strip())
+            elif text.startswith("validate:"):
+                codes.append(text[len("validate:") :].strip())
+    for code in codes:
+        head = code.split(":", 1)[0]
+        if head in _DIRECT_CHECK_HEADS or code.startswith("hostile_sql"):
+            return True
+    return False
+
+
+def _askback_if_honour_miss(
+    env: dict[str, Any],
+    reason: str,
+    *,
+    question: str,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any]:
+    if reason not in _HONOUR_REASONS or env.get("abstained") is not True:
+        return env
+    if _direct_refusal(env):
+        return env
+    return _compile_askback(question, reason, space_id=space_id, session_id=session_id)
 
 
 JOIN_CONFIRM_CODE = "join_unconfirmed"
@@ -2786,7 +3043,7 @@ def _hand_compile_to_ai(
     if isinstance(current, dict):
         sql = query_sql_from_payload(current) or insights_query_sql(current)
     if sql and isinstance(current, dict):
-        return _run_extract_loop(
+        env = _run_extract_loop(
             question=question,
             ctx=ctx,
             payload=current,
@@ -2804,6 +3061,17 @@ def _hand_compile_to_ai(
             attempts=attempts,
             budget=budget,
             grounded=grounded,
+        )
+        return _askback_if_honour_miss(
+            env,
+            reason,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+        )
+    if reason in _HONOUR_REASONS:
+        return _compile_askback(
+            question, reason, space_id=space_id, session_id=session_id
         )
     return _abstain(
         question,
@@ -3030,6 +3298,9 @@ def _maybe_generative_ask_impl(
         from dms_executor.join_flags import bind_serve_ontology
 
         bind_serve_ontology(space_onto or onto)
+    hostile = _refuse_destructive(q, space_id=space_id, session_id=session_id)
+    if isinstance(hostile, dict):
+        return hostile
     held_refusal: _CompileRefused | None = None
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
@@ -3244,6 +3515,9 @@ def _maybe_generative_ask_impl(
         ):
             raise
         payload = None
+    # A chooser handoff is not an answer. Flag off leaves the payload as it
+    # arrived, so a flag-off generate result is unchanged.
+    payload = release_chooser_handoff(payload)
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
     # or drop Cortex setup fields. Ranking merge keeps these keys.
     setup_src = payload if isinstance(payload, dict) else None
@@ -3350,10 +3624,50 @@ def _maybe_generative_ask_impl(
             )
         )
 
+    from dms_executor.reply_hygiene import (
+        Recovered,
+        generate_reply,
+        reply_hygiene_enabled,
+        transport_code,
+    )
+
+    _stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
+    if (
+        not (_stop and _scale_miss_on())
+        and reply_hygiene_enabled()
+        and transport_code(payload if isinstance(payload, dict) else None, reason=_stop)
+    ):
+
+        def _next_payload(hint: str | None) -> dict[str, Any] | None:
+            if compute is None:
+                return None
+            ctx: dict[str, Any] = {
+                "sql_vote_prompt": q + "\n\nGranted schema:\n" + "\n".join(sorted(allowed)),
+                "question": q,
+            }
+            if hint:
+                ctx["route_hint"] = hint
+            got = compute(ctx)
+            return got if isinstance(got, dict) else None
+
+        cleaned = generate_reply(
+            payload if isinstance(payload, dict) else None,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+            reason=_stop,
+            call=_next_payload if compute is not None else None,
+        )
+        if isinstance(cleaned, Recovered):
+            payload = cleaned.payload
+        elif cleaned is not None:
+            return _stamp(cleaned)
+
     kind = parse_compute_plan(payload)
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
+
     if budget_stop:
         # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
         # Flag on: a partial or an ask-back. Never the timeout abstain.
@@ -3368,6 +3682,15 @@ def _maybe_generative_ask_impl(
                     session_id=session_id,
                 )
             )
+        cleaned = generate_reply(
+            payload if isinstance(payload, dict) else None,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+            reason=budget_stop,
+        )
+        if isinstance(cleaned, dict):
+            return _stamp(cleaned)
         return _stamp(
             _abstain(
                 q,
@@ -3378,6 +3701,14 @@ def _maybe_generative_ask_impl(
                 stage="insights_budget",
             )
         )
+    cleaned = generate_reply(
+        payload if isinstance(payload, dict) else None,
+        question=q,
+        space_id=space_id,
+        session_id=session_id,
+    )
+    if isinstance(cleaned, dict):
+        return _stamp(cleaned)
     if (
         isinstance(payload, dict)
         and insights_fail_reason(payload) == INSIGHTS_FAIL_AI_ERROR
@@ -3592,6 +3923,8 @@ def _maybe_generative_ask_impl(
         embedder=embedder,
     )
     if isinstance(multi_env, _CompileRefused):
+        if multi_env.reason in _HONOUR_REASONS:
+            return _stamp(_handoff(multi_env))
         held_refusal = multi_env
         multi_env = None
     if multi_env is not None:
@@ -4041,6 +4374,9 @@ def _maybe_generative_ask_impl(
                 )
             )
 
+    honour_block = _compile_blocked()
+    if honour_block is not None:
+        return _stamp(_handoff(honour_block))
     ungrounded = _ungrounded_measure(q, plan.measure, onto, embedder=embedder)
     if ungrounded:
         blocked = reconfirm_for_reason(
@@ -4148,27 +4484,30 @@ def _maybe_generative_ask_impl(
                 )
             )
         return _stamp(_handoff(_CompileRefused(reason=checker_why, sql=compiled.sql)))
-    return _stamp(
-        _submit_validated(
-            compiled.sql,
-            question=q,
-            space_id=space_id,
-            session_id=session_id,
-            submit=submit,
-            ledger_append=ledger_append,
-            notes=tuple([*compiled.notes, *trail_notes]),
-            plan_source=source,
-            keep_gt=plan.keep_gt,
-            measure=plan.measure,
-            coverage=compiled.coverage,
-            where_paths=compiled.where_paths,
-            warehouse=lake,
-            grantable=allowed,
-            plan_origin=origin,
-            served_route=ROUTE_COMPILE,
-            qualifier_notes=plan_notes,
-        )
+    served = _commit_compile(
+        compiled.sql,
+        question=q,
+        onto=onto,
+        dialect=dialect,
+        space_id=space_id,
+        session_id=session_id,
+        submit=submit,
+        ledger_append=ledger_append,
+        notes=tuple([*compiled.notes, *trail_notes]),
+        plan_source=source,
+        keep_gt=plan.keep_gt,
+        measure=plan.measure,
+        coverage=compiled.coverage,
+        where_paths=compiled.where_paths,
+        warehouse=lake,
+        grantable=allowed,
+        plan_origin=origin,
+        served_route=ROUTE_COMPILE,
+        qualifier_notes=plan_notes,
     )
+    if isinstance(served, _CompileRefused):
+        return _stamp(_handoff(served))
+    return _stamp(served)
 
 
 def _climb_after_silent_verdict(
@@ -4287,6 +4626,7 @@ def maybe_generative_ask(
     token = ensure_clock()
     climb = bind_climb(None)
     turn_token = bind_turn(None)
+    honour_tokens = _reset_honour_state()
     repair_token = None
     if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
         asked = kwargs.get("question")
@@ -4311,6 +4651,7 @@ def maybe_generative_ask(
             from dms_executor.qualifier_ai import reset_qualifier_repair
 
             reset_qualifier_repair(repair_token)
+        _release_honour_state(honour_tokens)
         reset_turn(turn_token)
         reset_climb(climb)
         release_clock(token)

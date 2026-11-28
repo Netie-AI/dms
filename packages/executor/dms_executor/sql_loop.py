@@ -105,6 +105,16 @@ def dialect_for_connector(kind: str | None) -> str:
     """
     key = str(kind or "").strip().lower()
     found = _CONNECTOR_DIALECT.get(key)
+    if found is None and key == "gauss":
+        from dms_executor.drivers.gauss import enabled
+
+        if enabled():
+            found = "postgres"
+    if found is None and key == "oracle":
+        from dms_executor.drivers.oracle import enabled
+
+        if enabled():
+            found = "oracle"
     if found is None:
         from dms_executor.grant_struct import sql_refusal_envelope
 

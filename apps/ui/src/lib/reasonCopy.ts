@@ -35,6 +35,7 @@ export const REASON_COPY: Record<string, string> = {
   empty_result_unverified:
     "The query returned nothing, and that empty result is not verified, so no figure was given.",
   envelope_demoted: "The result could not be certified, so no figure was given.",
+  execute_failed: "That reading could not be run, so no figure was given.",
   explain: "The database could not describe how this query would run, so no figure was given.",
   fanout_refused: "That join would count the same row more than once, so no figure was given.",
   filter_dropped: "A filter in the question was dropped, so no figure was given.",
@@ -72,6 +73,7 @@ export const REASON_COPY: Record<string, string> = {
   missing_metric: "No metric is available for that question, so no figure was given.",
   missing_ontology: "No approved model is loaded for this Space, so no figure was given.",
   missing_table: "The query names a table that is not in the data, so no figure was given.",
+  model_unreachable: "I could not reach the model just now; ask again in a minute",
   multi_statement: "More than one statement was produced, so no figure was given.",
   no_candidate: "Nothing checked was available to answer, so no figure was given.",
   no_declared_measure: "That measure is not declared for this Space, so no figure was given.",
@@ -97,6 +99,8 @@ export const REASON_COPY: Record<string, string> = {
   rank_window_open_ended: "The ranking has no end, so no figure was given.",
   rank_window_unhandled_terms:
     "The ranking uses a term this Space cannot apply, so no figure was given.",
+  reading_missing: "That reading had no query to run, so no figure was given.",
+  reading_rejected: "That reading did not pass the check, so no figure was given.",
   reconfirm_no: "You declined the suggested question, so no figure was given.",
   reserved_param: "That question uses a reserved date setting, so no figure was given.",
   retry: "A later try can answer this. Nothing was served just now.",
