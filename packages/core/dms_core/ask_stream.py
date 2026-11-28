@@ -51,7 +51,13 @@ _slots: dict[str, _Slot] = {}
 
 
 def stream_enabled() -> bool:
-    return os.environ.get(FLAG, "").strip().lower() in _TRUE
+    """``DMS_ASK_STREAM``, or ``DMS_DEADLINE_ADAPTIVE`` so a long ask shows stages.
+
+    Adaptive reads the env here. ``dms_core`` does not import ``cortex_client``.
+    """
+    if os.environ.get(FLAG, "").strip().lower() in _TRUE:
+        return True
+    return os.environ.get("DMS_DEADLINE_ADAPTIVE", "0").strip() == "1"
 
 
 def valid_ask_id(value: object) -> bool:

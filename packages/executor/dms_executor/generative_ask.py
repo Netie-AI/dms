@@ -32,6 +32,7 @@ import sqlglot
 from cortex_client.ask_clock import (
     attach_timings,
     ensure_clock,
+    note_progress,
     note_prompt_ctx,
     release_clock,
     span,
@@ -813,6 +814,7 @@ def validate_compiled_sql(
         )
     finally:
         note_stage("validate_explain", "done")
+        note_progress("gate")
 
 
 def _validate_compiled_sql(

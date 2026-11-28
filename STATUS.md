@@ -1,20 +1,20 @@
 # STATUS.md - DMS
-**Last updated:** 2026-11-28, UX-TRUST-01
+**Last updated:** 2026-11-28, BIRD-SERVING-DEADLINE-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_REPLY_HYGIENE` default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 ai=0 rule=43. On, correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Missing trust counts say Not measured yet. Ontology tiles only when ok. No Space says Pick a Space. Connect uses `DMS_INSIGHTS_TIMEOUT_S`. Lists past 100 say showing N of M. Flags stay off. Stub `--main` off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43. On `--ai-first`: correct=0 wrong=0 reconfirm=48 ai=0 rule=0. mode=stub-exec. Armed unmeasured. Not PASS.
+**Tip:** `DMS_DEADLINE_ADAPTIVE` default off (base `774da35a`). Off and on, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43. An expired clock does not abstain `serving_deadline_reserve` while a step returns SQL or a gate result. `DMS_REPLY_HYGIENE` default off: on, correct=43 wrong=0 reconfirm=0 clarify=5 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Missing trust counts say Not measured yet. Ontology tiles only when ok. No Space says Pick a Space. Connect uses `DMS_INSIGHTS_TIMEOUT_S`. Lists past 100 say showing N of M. Compile honour on is 23/0/25 ai=0 rule=23. Other flags stay off. Armed unmeasured. Not PASS.
 ## Direction
 AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, richer context, plan, then an OpenVault escalate role. `DMS_AI_CLARIFY` defaults off. On, role `reason` asks back with 2 to 4 checked readings. No verdict keeps the old gates. Direct abstain only for ungranted tables, PII, and destructive SQL. DMS does not name a model.
-
 ## 52 pack - number of record (STUB)
 STUB at `139b010`, `grade52 --main`, base `4716742`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
-
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
 | defaults | correct=43 wrong=0 reconfirm=5 abstain=0 refusal_ok=4 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| DMS_DEADLINE_ADAPTIVE=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | DMS_REPLY_HYGIENE=1 | correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | DMS_COMPILE_HONOUR_CHECK=1 | correct=23 wrong=0 reconfirm=25 | ai=0 rule=23 L1=23 | ai_share=0/23 wrong=0 |
 | DMS_ONTO_SPACE_SCOPE=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| DMS_SCALE_MISS=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | DMS_ASKBACK_SPECIFIC=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | DMS_AI_FIRST=1 | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
