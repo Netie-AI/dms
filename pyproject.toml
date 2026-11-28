@@ -114,6 +114,7 @@ pythonpath = [
   "packages/executor",
   "packages/ledger",
   "packages/ao_vendor",
+  "packages/create_docs",
 ]
 
 [tool.mypy]

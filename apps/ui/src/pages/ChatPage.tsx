@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
 import { ResultView } from "@/components/studio/ResultView";
 import { ScopeChip } from "@/components/ScopeChip";
+import { seedsFromMessages } from "@/components/studio/CreateDocsPanel";
 import { useApp, type ChatMessage } from "@/context/AppContext";
 
 function askedBefore(messages: ChatMessage[], index: number): string {
@@ -202,7 +203,12 @@ export function ChatPage() {
                   {m.text}
                 </div>
               ) : (
-                <AnswerMessage key={m.id} envelope={m.envelope} question={askedBefore(messages, index)} />
+                <AnswerMessage
+                  key={m.id}
+                  envelope={m.envelope}
+                  question={askedBefore(messages, index)}
+                  seeds={seedsFromMessages(messages)}
+                />
               ),
             )}
             {askError && (

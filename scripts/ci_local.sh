@@ -94,12 +94,12 @@ python -m build --wheel --outdir /tmp/cc /tmp/contract >/tmp/build.log 2>&1 || {
 
 pip install --quiet /tmp/cc/cortex_contract-*.whl 2>/dev/null || exit 1
 pip install --quiet -e ./packages/core -e ./packages/cortex_client \
-                    -e ./packages/executor -e ./packages/ledger 2>/dev/null || exit 1
+                    -e ./packages/executor -e ./packages/ledger -e ./packages/create_docs 2>/dev/null || exit 1
 pip install --quiet -e ".[dev]" 2>/dev/null || exit 1
 pip install --quiet fastapi uvicorn httpx pydantic-settings cryptography 2>/dev/null || exit 1
 touch /pipcache/.dms-deps-installed
 
-export PYTHONPATH="/work/apps/api:/work/packages/core:/work/packages/cortex_client:/work/packages/executor:/work/packages/ledger"
+export PYTHONPATH="/work/apps/api:/work/packages/core:/work/packages/cortex_client:/work/packages/executor:/work/packages/ledger:/work/packages/create_docs"
 echo "-- python $(python -V 2>&1 | cut -d" " -f2) on $(uname -s)"
 echo
 
