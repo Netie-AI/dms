@@ -5,11 +5,13 @@ prompt, envelope, and served route untouched. On, ``dms`` posts
 ``/v1/chat/ask`` (and ``/v1/chat/ask/confirm`` when simulating Yes).
 ``baseline`` is one OpenVault call with role ``sql``.
 
-A 402 or 429 is not a later copy of the same POST. The next call sends role
-``escalate`` so OpenVault can route it. One retry of the original POST is the
-last rung. A 402 or 429 that is still there after that rung stays in the
-denominator as infra_unscored. Finished ids are skipped. An unresolved id is
-climbed again on a later run, escalate role first.
+On 402 or 429 the dms arm retries ``POST /v1/chat/ask`` with role
+``escalate``. OpenVault routes that role. The graded body is the DMS
+envelope. A raw completion is not executed. One plain retry of the original
+POST is the last rung. The baseline arm sends the same role to OpenVault,
+because that arm is the raw model. A 402 or 429 that is still there after
+the last rung stays in the denominator as infra_unscored. Finished ids are
+skipped. An unresolved id is climbed again on a later run.
 """
 
 from __future__ import annotations
@@ -129,6 +131,17 @@ def _call_contaminated(status: int | None, payload: Any) -> bool:
     return contaminated(None, detail_code(payload))
 
 
+def _raw_completion(payload: Any) -> bool:
+    """A chat-completion body. It is not a DMS envelope and is not graded."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("choices"), list):
+        return False
+    if "rows" in payload or "sql_used" in payload or "abstained" in payload:
+        return False
+    if payload.get("reconfirm") or payload.get("badge"):
+        return False
+    return True
+
+
 def climb_post(
     post: PostJson,
     url: str,
@@ -136,25 +149,35 @@ def climb_post(
     headers: dict[str, str],
     *,
     escalate: Callable[[], tuple[int, Any] | None],
+    accept: Callable[[int, Any], bool] | None = None,
 ) -> tuple[int, Any, str]:
-    """Original POST, then role ``escalate``, then one retry of the original POST.
+    """Original POST, then the escalate call, then one retry of the original POST.
 
-    ``escalate`` returns None when there is no OpenVault URL to send the role to.
-    The same-POST retry is only the last rung, and only while the failure is
-    still 402 or 429.
+    ``accept`` rejects a body that must not count as an answer. A raw
+    completion fails it, so the dms arm does not stop on one. The same-POST
+    retry is only the last rung, and only while the failure is still 402 or
+    429 or a rejected body.
     """
+
+    def answered(status: int, payload: Any) -> bool:
+        if _call_contaminated(status, payload):
+            return False
+        if accept is not None and not accept(status, payload):
+            return False
+        return True
+
     status, payload = post(url, body, headers)
-    if not _call_contaminated(status, payload):
+    if answered(status, payload):
         return status, payload, "first"
     escalated = escalate()
     if escalated is not None:
         status, payload = escalated
-        if not _call_contaminated(status, payload):
+        if answered(status, payload):
             return status, payload, "escalate"
     last_status, last_payload = status, payload
     for _ in range(LAST_RUNG_RETRIES):
         last_status, last_payload = post(url, body, headers)
-        if not _call_contaminated(last_status, last_payload):
+        if answered(last_status, last_payload):
             return last_status, last_payload, "retry"
     return last_status, last_payload, "unresolved"
 
@@ -256,13 +279,6 @@ def grade_item(
             held["predicted"] = rows
             held["pred_error"] = None
 
-    def send_role() -> tuple[int, Any] | None:
-        """Role ``escalate`` on OpenVault. No provider and no model id."""
-        if not ov_url:
-            return None
-        prompt = escalate_body(baseline_body(text, schema_block(path)))
-        return post(ov_url.rstrip("/") + "/v1/chat/completions", prompt, ov_headers)
-
     if arm == "baseline":
         body = baseline_body(text, schema_block(path))
 
@@ -289,19 +305,27 @@ def grade_item(
     elif not space_id:
         held["pred_error"] = "space_missing"
     else:
+        ask_url = api_base.rstrip("/") + "/v1/chat/ask"
         ask_body = {"question": text, "space_id": space_id}
+
+        def escalate_ask() -> tuple[int, Any]:
+            """Same ask, role ``escalate``. DMS runs the pipeline. No model id."""
+            return post(ask_url, escalate_body(ask_body), {})
+
+        def dms_body(_status: int, payload: Any) -> bool:
+            return not _raw_completion(payload)
+
         status, payload, rung = climb_post(
             post,
-            api_base.rstrip("/") + "/v1/chat/ask",
+            ask_url,
             ask_body,
             {},
-            escalate=send_role,
+            escalate=escalate_ask,
+            accept=dms_body,
         )
         held["rung"] = rung
         note(status, payload)
-        if rung == "escalate" and not blocked():
-            take_completion(payload)
-        elif not blocked():
+        if not blocked() and not _raw_completion(payload):
             env = payload if isinstance(payload, dict) else None
             if (
                 simulate_yes
@@ -315,14 +339,14 @@ def grade_item(
                     api_base.rstrip("/") + "/v1/chat/ask/confirm",
                     confirm_body,
                     {},
-                    escalate=send_role,
+                    escalate=escalate_ask,
+                    accept=dms_body,
                 )
                 held["rung"] = confirm_rung
                 note(status, payload)
-                if confirm_rung == "escalate" and not blocked():
-                    take_completion(payload)
-                elif not blocked():
-                    record["yes"] = True
+                if not blocked() and not _raw_completion(payload):
+                    if confirm_rung != "escalate":
+                        record["yes"] = True
                     take_envelope(payload)
             else:
                 take_envelope(payload)

@@ -471,19 +471,25 @@ def test_release_layout_and_full_file_guard(tmp_path: Path) -> None:
     assert (got_db / "shop.sqlite").is_file()
 
 
-def test_402_sends_escalate_role_before_one_same_post_retry(tmp_path: Path) -> None:
+def test_dms_402_retries_ask_and_does_not_grade_a_raw_completion(tmp_path: Path) -> None:
     root = tmp_path / "db"
     _two_dbs(root)
-    seen: list[tuple[str, object, dict[str, str]]] = []
+    seen: list[tuple[str, object]] = []
+    ask = "http://api.example/v1/chat/ask"
 
     def post(url: str, body: dict[str, object], headers: dict[str, str]) -> tuple[int, dict]:
-        seen.append((url, body.get("role"), headers))
-        blob = json.dumps(body).lower()
-        assert "claude" not in blob
+        seen.append((url, body.get("role")))
+        assert "/v1/chat/completions" not in url
+        assert headers == {}
         assert "model" not in body
+        assert "provider" not in body
+        assert "claude" not in json.dumps(body).lower()
         if body.get("role") == "escalate":
+            assert url == ask
             return 200, {"choices": [{"message": {"content": "SELECT code FROM plots"}}]}
-        return 402, {"detail": {"code": "402"}}
+        if sum(1 for _url, role in seen if role is None) == 1:
+            return 402, {"detail": {"code": "402"}}
+        return 200, {"rows": [{"code": "Z"}], "abstained": False, **_AI}
 
     out = tmp_path / "dms.jsonl"
     run.run_questions(
@@ -500,20 +506,13 @@ def test_402_sends_escalate_role_before_one_same_post_retry(tmp_path: Path) -> N
         ov_url="http://ov.example",
         ov_headers={"Authorization": "Bearer ov_test"},
     )
-    assert [item[0] for item in seen] == [
-        "http://api.example/v1/chat/ask",
-        "http://ov.example/v1/chat/completions",
-    ]
-    assert seen[0][2] == {}
-    assert seen[1][1] == "escalate"
-    assert "Authorization" in seen[1][2]
+    assert seen == [(ask, None), (ask, "escalate"), (ask, None)]
     row = run.load_jsonl(out)[0]
-    assert row["outcome"] == "CORRECT"
-    assert row["rung"] == "escalate"
+    assert row["outcome"] == "WRONG"
+    assert row["rung"] == "retry"
     assert row["contaminated"] is False
     blob = out.read_text(encoding="utf-8")
     assert "ov_test" not in blob
-    assert "Alpha" not in blob
     assert "SELECT" not in blob
 
     seen.clear()

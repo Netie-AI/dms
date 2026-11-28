@@ -122,13 +122,14 @@ printed on its own line labelled secondary. A run with infra_unscored above
 secondary line.
 
 A record whose HTTP status is 402 or 429, or whose error code contains those
-tokens, is not answered by posting the same body again. The next call sends
-role `escalate` to OpenVault (schema plus the question, no provider and no
-model id). OpenVault routes that role; on 402 or 429 the route is the Claude
-route. One retry of the original POST is the last rung, and only while the
-failure is still 402 or 429. Set `OPENVAULT_URL` on the dms arm as well so
-that role can be sent. An id that is still 402 or 429 is infra_unscored. A
-later run climbs it again, escalate role first. Finished ids are skipped.
+tokens, is not answered by a raw model completion. The dms arm retries
+`POST /v1/chat/ask` with role `escalate` (no provider and no model id).
+OpenVault routes that role. The graded body is the envelope DMS returns, so
+it has been through the ask pipeline. A chat-completion body is not executed
+and is not a CORRECT. One plain retry of the original POST is the last rung.
+The baseline arm sends role `escalate` on its own OpenVault call, then one
+retry of the original call. An id that is still 402 or 429 is
+infra_unscored. A later run climbs it again. Finished ids are skipped.
 
 The JSONL stores ids, outcomes, and codes. It does not store row values, SQL,
 question text, or keys.
