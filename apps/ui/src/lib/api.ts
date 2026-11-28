@@ -710,6 +710,13 @@ export type SqlSourceLinks = {
   violations: SqlSourceViolation[];
 };
 
+export type SqlGrantProposal = {
+  privilege: "read";
+  tables: string[];
+  confirmed: boolean;
+  source_id: string;
+};
+
 export type SqlSourceReceipt = {
   source: string;
   tables: SqlSourcePull[];
@@ -717,6 +724,8 @@ export type SqlSourceReceipt = {
   declared_primary_keys: number;
   declared_foreign_keys: number;
   links: SqlSourceLinks;
+  /** Present only when DMS_READY_GRANT is on. Absent, the receipt view is unchanged. */
+  grant_proposal?: SqlGrantProposal;
 };
 
 export type SqlSourceRequest = {

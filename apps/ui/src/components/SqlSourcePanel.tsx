@@ -259,6 +259,22 @@ export function SqlSourcePanel({
 
 export function SqlSourceReceiptView({ receipt }: { receipt: SqlSourceReceipt }) {
   const failed = receipt.links.links.filter((l) => l.cardinality !== "many_to_one");
+  const proposal = receipt.grant_proposal;
+  const [picked, setPicked] = useState<string[]>(proposal?.tables ?? []);
+  const [grantMsg, setGrantMsg] = useState<string | null>(null);
+
+  const onGrant = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!proposal) return;
+    setGrantMsg(null);
+    const res = await fetch(`/api/v1/ready/sources/${proposal.source_id}/grants`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tables: picked }),
+    });
+    setGrantMsg(res.ok ? "Read-only grant saved." : "Could not confirm the tables.");
+  };
+
   return (
     <div data-testid="sql-source-receipt" className="mt-4 text-sm text-[var(--color-ink)]">
       <p data-testid="sql-source-receipt-headline" className="font-medium">
@@ -318,6 +334,38 @@ export function SqlSourceReceiptView({ receipt }: { receipt: SqlSourceReceipt })
           still succeeded.
         </p>
       )}
+      {proposal ? (
+        <form data-testid="sql-grant-proposal" className="mt-4" onSubmit={(e) => void onGrant(e)}>
+          <p className="text-xs font-medium text-[var(--color-ink)]">
+            Confirm read-only tables. Nothing is granted until you save this list.
+          </p>
+          <ul className="mt-2 space-y-1 text-xs">
+            {proposal.tables.map((table) => (
+              <li key={table}>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={picked.includes(table)}
+                    onChange={() =>
+                      setPicked((prev) =>
+                        prev.includes(table) ? prev.filter((name) => name !== table) : [...prev, table],
+                      )
+                    }
+                  />
+                  <span className="font-mono">{table}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="submit"
+            className="mt-2 border border-[var(--color-line)] px-3 py-1 text-xs"
+          >
+            Save read-only grant
+          </button>
+          {grantMsg ? <p className="mt-2 text-xs text-[var(--color-ink-muted)]">{grantMsg}</p> : null}
+        </form>
+      ) : null}
     </div>
   );
 }

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 import httpx
 from cortex_client.runtime_check import runtime_health_fields
+from dms_core.control_plane.ready_flow import health_status
 from fastapi import APIRouter
 
 from dms_api.deps import SettingsDep, StoreBindingDep
@@ -220,7 +221,7 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
     ov_root = _openvault_root_hint()
     host = urlparse(settings.openvault_url).hostname or "127.0.0.1"
     body = {
-        "status": "ok",
+        "status": health_status(binding.persistent),
         "product": "dms",
         "version": "0.1.0",
         "contract": settings.cortex_contract_version,

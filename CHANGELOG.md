@@ -2,6 +2,16 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - READY-04: a new company can connect, confirm, and count
+
+- **Flags.** `DMS_READY_HEALTH`, `DMS_READY_TENANT`, `DMS_READY_GRANT`, `DMS_READY_JOINS`, `DMS_READY_GUIDE`, and `DMS_READY_DEMO` default off. Only the digit 1 turns each one on.
+- **Off.** Health status stays `ok`. The data map has no `join_candidates` key. `/v1/ready` is not mounted. A missing user foreign key stays HTTP 500.
+- **On.** Health is `degraded` when the store is not persistent. Creating the configured tenant inserts the steward user before the Space, so that foreign key is not a 500. Connect lists readable tables and grants only the read-only subset an admin confirms. Joins are inferred from a shared column name or from value inclusion, never from a word list, and a steward confirms them. Both-primary pairs are not candidates. Five questions come from OpenVault role `questions` (no model id, no cell values). One granted table returns its row count.
+- **Demo.** `DMS_READY_DEMO` builds a synthetic sqlite database with no declared foreign key and walks the same confirm steps.
+- **Studio.** The guide renders only after `GET /v1/ready/guide` answers. Flag off, the page is unchanged.
+- **Stub 52.** `grade52 --main` pending the clean-tree stamp. Armed grade52 and pack H were not run. Not PASS.
+- **Base.** Rebased onto `b1af74c`. `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the main rows, including the tie-projection row, the deadline row, and the schema-gap row.
+
 ## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto a7c0ce4f
 
 - **Base.** Rebased onto `a7c0ce4f` (#627, #600). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the tie-projection row and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
