@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-28, BIRD-ASKBACK-GENERIC-01 on main 05bcd414
+**Last updated:** 2026-11-28, FDE-REASON-LEAK-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_COMPILE_HONOUR_CHECK` default off on main `05bcd414`. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, no reason model, so compile is not served: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. `DMS_JOIN_DECLARED_FK` and `DMS_FK_ORPHAN_DISCLOSE` default off. Orphan ratio stays 0 until a steward sets it. `DMS_TENANT_PROVISION` default off: the operator CLI refuses and writes nothing until it is on, then it inserts a tenant row and a default pool as steward, a rerun is a no-op, and it creates no key, grant, or credential. A write route does not provision. A missing tenant is HTTP 409 `tenant_not_provisioned`. `DMS_ONTO_SPACE_SCOPE` stays default off: approved items follow the asking Space, plus a steward `tenant_wide` mark. `DMS_SQL_SOURCE_BIND` stays default off. `DMS_ASKBACK_SPECIFIC` default off. Its stub 52 flag off and on is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_REPLY_HYGIENE` default off (`14cbe8a`, base `515f7a5`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, correct=43 wrong=0 reconfirm=0 refusal_ok=9 ai=0 rule=43. Five empty-suggestion cards become plain abstains. Rule-served did not grow. Armed and pack H unmeasured. Not PASS.
 
 ## Direction
 
@@ -12,15 +12,19 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `12326dd`, `grade52 --main`, base `3752fb4`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `14cbe8a`, `grade52 --main`, base `515f7a5`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
 | defaults | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| DMS_REPLY_HYGIENE=1 | correct=43 wrong=0 reconfirm=0 refusal_ok=9 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | DMS_COMPILE_HONOUR_CHECK=1 | correct=23 wrong=0 reconfirm=25 | ai=0 rule=23 L1=23 | ai_share=0/23 wrong=0 |
+| DMS_ONTO_SPACE_SCOPE=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| DMS_ASKBACK_SPECIFIC=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
 | DMS_AI_FIRST=1 | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-Flag off and on: refusal_ok=4, refusal_wrong=0. Twenty compile qids move to reconfirm. Rule-served 43 to 23. Armed and pack H unmeasured. Not PASS.
+Flag off: refusal_ok=4, refusal_wrong=0, gold_broken=0, clarify=0, wrong_ub95=6.7%, coverage 43/43. Flag on: refusal_ok=9, refusal_wrong=0, clarify=0. Pack H and armed grade52 not measured. Not PASS.
+Compile honour, flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23. Twenty compile qids move to reconfirm.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
@@ -44,8 +48,11 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
-| NL19-COMPILE-WRONG: honour check before a compile serve. Flag off. | this branch |
-| BIRD-JOIN-GATE-01 / BIRD-FK-ORPHANS-01: declared FK on a key-less child, one join repair, orphan disclose. Flags off. | this branch |
+| NL19-COMPILE-WRONG: honour check before a compile serve. Flag off. | #618 |
+| BIRD-ASKBACK-GENERIC-01: stop the generic Space ask-back. Flag off. | #620 |
+| BIRD-JOIN-GATE-01 / BIRD-FK-ORPHANS-01: declared FK on a key-less child, one join repair, orphan disclose. Flags off. | #625 |
+| FDE-ONTO-SPACE-SCOPE-01: approved items stay in their Space. Flag off. | #610 |
+| FDE-REASON-LEAK-01: no raw transport text, no dead-end Yes. Flag off. | #617 |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
