@@ -3,7 +3,7 @@
 Budgets, usage readback, upload findings, and alerts. No secret value column.
 No cross-schema foreign key. The ask question stays in ``dms.ask_audit``.
 
-Chain: ``0012_gov_console`` on ``0011_space_bench``.
+Chain: ``0013_gov_console`` on ``0012_sign``.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0012_gov_console"
-down_revision: str | None = "0011_space_bench"
+revision: str = "0013_gov_console"
+down_revision: str | None = "0012_sign"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
