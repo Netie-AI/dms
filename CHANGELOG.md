@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto dc4c40d
+
+- **Base.** Rebased onto `dc4c40d` (#617, #614). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the reason-leak row, the Space catalog row, and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
+- **Stub 52.** `grade52 --main` at `cfb71a1`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
 ## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 47167428
 
 - **Base.** Rebased onto `47167428` (#620, #602). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep the ask-back row, the compile-honour row, the join-gate row, and this row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
