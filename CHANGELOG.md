@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - AI-FLOOR-01: seed the warehouse and keep the join columns
+
+- **Warehouse.** Default live wiring leaves `Executor._warehouse` None. The floor now calls `ensure_demo_warehouse` before generate, same as the other lanes. Without that, every ask abstained `warehouse_missing`.
+- **Schema.** The 480-token pack reserved measures and dropped the join columns, so ranking, freight, and monthly questions came back `no_sql`. The floor asks for a 4000-token schema that keeps those columns and the physical joins.
+- **Stub 52.** `grade52 --main` at `2def3f4`. Off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43. On: correct=0 wrong=0 reconfirm=52 ai=0 rule=0. Same split as `ce1cabd`. The stub still has no `query_sql`. median_ms=62. Not PASS.
+
 ## 2026-11-28 - AI-FLOOR-01: checked model SQL and live ask steps
 
 - **Flag.** `DMS_AI_FLOOR` is off unless the value is the digit 1. Off, the ask is unchanged. On, fixed lanes are skipped. The model SQL is served only after grant, one read-only SELECT, EXPLAIN, and a column shape. One error is fed back, then `route_hint` escalate. No model id.
