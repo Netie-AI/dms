@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, SCALE-MISS-01
+**Last updated:** 2026-11-28, FEAT-METRIC-CUBE-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_SCALE_MISS` default off (`363b1aa`, base `d4e414c`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, the same stub stays correct=43 wrong=0 reconfirm=5 ai=0 rule=43: the stub returns no SQL, so compile is not replaced. That stays above `DMS_RULES_OFF` 23/0/18. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_METRIC_CUBE` default off (draft #607). Stub 52, flag off and on, is correct=43 wrong=0 reconfirm=5 refusal_wrong=0 clarify=0 abstain=0 (bucket) ai=0 rule=43 unattributed=0 ai_cube_plan=0. p50 unmeasured (stub). Armed, pack H, and the 172 set unmeasured (stub). Not PASS.
 
 ## Direction
 
@@ -44,7 +44,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
-| SCALE-MISS-01: generate first, repair EXPLAIN, ask back. Flag off. | this branch |
+| FEAT-METRIC-CUBE-01: governed cubes the model plans against. Flag off. Draft. | #607 |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |
