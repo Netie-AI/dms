@@ -17,12 +17,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from dms_api.auth_sso import AuthRequiredMiddleware, load_bootstrap, set_secret_loader
+from dms_api.auth_sso import enabled as sso_enabled
 from dms_api.middleware_actor import RejectIdentityHeadersMiddleware
 from dms_api.migrate import run_migrations
 from dms_api.routes import (
     admin,
     amend,
     audit,
+    auth_sso,
     chat,
     connect,
     freeroute,
@@ -143,6 +146,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
         bind_ontology_store(settings.database_url, str(settings.dms_tenant_id))
     app.state.ask_audit_store = _build_ask_audit_store(settings, binding)
+    if sso_enabled():
+        from dms_api.tenant_scope import scope_stores
+
+        scope_stores(app, settings.dms_tenant_id)
     cortex = CortexClient(
         settings.cortex_url,
         timeout=settings.cortex_timeout_seconds,
@@ -175,6 +182,16 @@ def create_app() -> FastAPI:
     app.state.ask_audit_store = InMemoryAskAuditStore()
     app.state.cortex = None
     app.state.ask_service = build_ask_service(None)
+    if sso_enabled():
+        from dms_api.tenant_scope import scope_stores
+        from dms_api.wiring import load_vault_secret
+
+        scope_stores(app, settings.dms_tenant_id)
+        set_secret_loader(load_vault_secret)
+        load_bootstrap()
+        # Added before the identity-header middleware so that middleware stays
+        # outermost: a client header is still a 400, not a 401.
+        app.add_middleware(AuthRequiredMiddleware)
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
@@ -198,6 +215,8 @@ def create_app() -> FastAPI:
     install_tenant_errors(app)
 
     app.include_router(health.router, tags=["health"])
+    if sso_enabled():
+        app.include_router(auth_sso.router)
     app.include_router(ping.router, tags=["skeleton"])
     app.include_router(spaces.router)
     app.include_router(chat.router)

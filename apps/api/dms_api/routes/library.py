@@ -11,6 +11,7 @@ from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from dms_api.auth_sso import bound_tenant_id
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 from dms_api.wiring import (
@@ -47,41 +48,50 @@ def _bound_space_id(space_id: object) -> str | None:
     raise TypeError("space_id")
 
 
+def _demo_sources() -> list[dict[str, Any]]:
+    """Offline fixture tree so Library is usable without Postgres."""
+    return [
+        {
+            "id": "src_q3_sales",
+            "kind": "xlsx",
+            "ref": "Finance/workbooks/sales_q3.xlsx",
+            "scope": "team",
+            "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "space_name": "Finance",
+        },
+        {
+            "id": "src_q3_inv",
+            "kind": "csv",
+            "ref": "Finance/csv/inventory_snapshot.csv",
+            "scope": "team",
+            "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            "space_name": "Finance",
+        },
+        {
+            "id": "src_company_gl",
+            "kind": "csv",
+            "ref": "Company/finance/gl_export.csv",
+            "scope": "company",
+            "space_id": None,
+            "space_name": None,
+        },
+    ]
+
+
 def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list[dict[str, Any]]:
     space_id = _bound_space_id(space_id)
     if not settings.database_url:
-        # Offline fixture tree so Library is usable without Postgres.
-        sources: list[dict[str, Any]] = [
-            {
-                "id": "src_q3_sales",
-                "kind": "xlsx",
-                "ref": "Finance/workbooks/sales_q3.xlsx",
-                "scope": "team",
-                "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                "space_name": "Finance",
-            },
-            {
-                "id": "src_q3_inv",
-                "kind": "csv",
-                "ref": "Finance/csv/inventory_snapshot.csv",
-                "scope": "team",
-                "space_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                "space_name": "Finance",
-            },
-            {
-                "id": "src_company_gl",
-                "kind": "csv",
-                "ref": "Company/finance/gl_export.csv",
-                "scope": "company",
-                "space_id": None,
-                "space_name": None,
-            },
-        ]
+        # Another company does not see this install's demo files. Flag off,
+        # bound_tenant_id is the deployment tenant, so the list is unchanged.
+        if bound_tenant_id(settings.dms_tenant_id) != settings.dms_tenant_id:
+            sources: list[dict[str, Any]] = []
+        else:
+            sources = _demo_sources()
         if _hide_offline_fixtures(settings):
             sources = [s for s in sources if s.get("space_id")]
     else:
         with psycopg.connect(settings.database_url) as conn:
-            set_tenant_context(conn, settings.dms_tenant_id, role="viewer")
+            set_tenant_context(conn, bound_tenant_id(settings.dms_tenant_id), role="viewer")
             if space_id:
                 rows = conn.execute(
                     """
@@ -91,7 +101,7 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
                      WHERE d.tenant_id = %s AND d.space_id = %s::uuid
                      ORDER BY d.created_at DESC
                     """,
-                    (UUID(settings.dms_tenant_id), UUID(space_id)),
+                    (UUID(bound_tenant_id(settings.dms_tenant_id)), UUID(space_id)),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -102,7 +112,7 @@ def _list_sources(settings: SettingsDep, *, space_id: str | None = None) -> list
                      WHERE d.tenant_id = %s
                      ORDER BY d.created_at DESC
                     """,
-                    (UUID(settings.dms_tenant_id),),
+                    (UUID(bound_tenant_id(settings.dms_tenant_id)),),
                 ).fetchall()
             conn.commit()
         sources = [
