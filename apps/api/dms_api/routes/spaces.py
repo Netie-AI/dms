@@ -163,3 +163,63 @@ def derive_space_ontology(
     enforce(decision)
     source = body.source.model_dump() if body is not None and body.source is not None else None
     return space_ontology_rederive(space_id, source=source)
+
+
+class OrphanThresholdIn(BaseModel):
+    """Steward ratio of child rows that may reference a missing parent. 0 refuses."""
+
+    ratio: float = Field(ge=0.0, le=1.0)
+
+
+@router.get("/{space_id}/orphan-threshold")
+def get_orphan_threshold(space_id: str, store: SpaceStoreDep) -> dict[str, Any]:
+    """The recorded ratio. Flag off reports 0 and does not apply a stored value."""
+    from dms_executor.join_flags import fk_orphan_disclose_enabled, orphan_threshold_record
+
+    if store.get(space_id) is None:
+        raise HTTPException(status_code=404, detail="space not found")
+    if not fk_orphan_disclose_enabled():
+        return {"space_id": space_id, "ratio": 0.0, "set_by": None, "enabled": False}
+    row = orphan_threshold_record(space_id)
+    if row is None:
+        return {"space_id": space_id, "ratio": 0.0, "set_by": None, "enabled": True}
+    return {
+        "space_id": space_id,
+        "ratio": row.ratio,
+        "set_by": row.set_by,
+        "enabled": True,
+    }
+
+
+@router.put("/{space_id}/orphan-threshold")
+def put_orphan_threshold(
+    space_id: str,
+    body: OrphanThresholdIn,
+    store: SpaceStoreDep,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Record who set the ratio. The default stays 0 until this is called."""
+    from dms_executor.join_flags import fk_orphan_disclose_enabled, set_orphan_threshold
+
+    if store.get(space_id) is None:
+        raise HTTPException(status_code=404, detail="space not found")
+    if not fk_orphan_disclose_enabled():
+        raise HTTPException(status_code=404, detail="orphan_threshold_disabled")
+    decision = compliance_gate(
+        action="spaces.orphan_threshold.set",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "spaces.orphan_threshold.set", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision)
+    try:
+        row = set_orphan_threshold(space_id, body.ratio, actor=settings.dms_actor_user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "space_id": row.space_id,
+        "ratio": row.ratio,
+        "set_by": row.set_by,
+        "enabled": True,
+    }

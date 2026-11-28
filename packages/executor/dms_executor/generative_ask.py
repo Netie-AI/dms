@@ -20,7 +20,7 @@ import copy
 import json
 import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1140,6 +1140,10 @@ def _l2_envelope(
         *list(env.get("assumptions") or []),
         *stamped.assumption_lines(),
     ]
+    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+        from dms_executor.join_repair import stamp_orphan_exclusion
+
+        stamp_orphan_exclusion(env)
     assert_envelope_valid(env)
     env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
     if where_paths:
@@ -1172,12 +1176,20 @@ def validated_sql_reason(
     question: str,
     warehouse: Path | None,
     grantable: set[str] | None,
+    space_onto: Ontology | None = None,
+    declared_violations: Sequence[Violation] | None = None,
+    columns_of: Mapping[str, set[str]] | None = None,
+    dialect: str | None = None,
 ) -> str | None:
     """Pre-execute gates shared with ``_submit_validated``.
 
     Qualifier, a stated value, currency, reserved ``$as_of``, and an untyped
     numeric. None means those gates passed. Coverage and the compile-only
     hold stay with the caller.
+
+    A join repair passes ``space_onto`` so this same call also re-runs the
+    join rule and ``validate_compiled_sql``. Callers that omit it keep the
+    previous checks only.
     """
     gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
         question, sql, warehouse, grantable=grantable
@@ -1189,7 +1201,21 @@ def validated_sql_reason(
         return ccy_why
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
-    return untyped_numeric_reason(sql, warehouse)
+    numeric = untyped_numeric_reason(sql, warehouse)
+    if numeric:
+        return numeric
+    if space_onto is None or columns_of is None:
+        return None
+    join_why = unverified_join_reason(
+        sql, space_onto, list(declared_violations or ()), columns_of=columns_of
+    )
+    if join_why:
+        return join_why
+    if grantable is None:
+        return None
+    return validate_compiled_sql(
+        sql, grantable=set(grantable), warehouse=warehouse, dialect=dialect
+    )
 
 
 def _submit_validated(
@@ -2103,6 +2129,19 @@ def ai_lane_sql_check(
     if declared is not None:
         broken = violations_cited_by_sql(sql, declared, declared_violations)
         if broken:
+            if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+                from dms_executor.join_repair import orphan_reconfirm
+
+                held_orphans = orphan_reconfirm(
+                    broken,
+                    declared,
+                    question=question,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if held_orphans is not None:
+                    box["env"] = held_orphans
+                    return "fk_orphan_hold"
             return violation_reason(broken)
     grounded_defs = list(grounded or [])
     if grounded_defs:
@@ -2205,6 +2244,31 @@ def _run_extract_loop(
         held_env = held.get("env")
         if isinstance(held_env, dict):
             return held_env
+        if (
+            sql
+            and os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1"
+        ):
+            from dms_executor.join_flags import join_repair_stop
+
+            if join_repair_stop(reason):
+                from dms_executor.join_repair import resolve_join_repair
+
+                decided = resolve_join_repair(
+                    reason,
+                    sql,
+                    question=question,
+                    space_onto=space_onto,
+                    violations=declared_violations,
+                    warehouse=warehouse,
+                    grantable=grantable,
+                    dialect=dialect,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if isinstance(decided, dict):
+                    return decided
+                if isinstance(decided, str):
+                    return submit_sql(decided, _attempts)
         if reason == RESERVED_PARAM_AS_OF:
             env = reserved_as_of_abstain(
                 space_id=space_id,
@@ -2814,6 +2878,11 @@ def _maybe_generative_ask_impl(
     if lake is not None and not lake.is_file():
         lake = None
 
+    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+        from dms_executor.join_flags import bind_orphan_space, bind_serve_ontology
+
+        bind_orphan_space(space_id)
+        bind_serve_ontology(None)
     onto = ontology
     # A2-02/A2-06: a caller-declared ontology that FAILED verify keeps its
     # evidence and stays loaded with failed subjects marked. The default
@@ -2905,6 +2974,10 @@ def _maybe_generative_ask_impl(
     # A Space ontology (never the demo one). Compile serves run the same
     # join rule the AI lane runs, so this is known before the rank window.
     space_onto = (declared or onto) if not demo_ontology_allowed else None
+    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+        from dms_executor.join_flags import bind_serve_ontology
+
+        bind_serve_ontology(space_onto or onto)
     held_refusal: _CompileRefused | None = None
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
@@ -3550,6 +3623,19 @@ def _maybe_generative_ask_impl(
         if broken:
             # The lake's declared ontology says this join is not safe (an
             # orphan FK misattributes or drops rows). SQL is no exemption.
+            # A steward threshold above the measured ratio reconfirms instead.
+            if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+                from dms_executor.join_repair import orphan_reconfirm
+
+                held_orphans = orphan_reconfirm(
+                    broken,
+                    declared,
+                    question=q,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if held_orphans is not None:
+                    return _stamp(held_orphans)
             return _stamp(
                 _abstain(
                     q,
@@ -3569,6 +3655,7 @@ def _maybe_generative_ask_impl(
                 )
             )
         join_why: str | None = None
+        cols: dict[str, set[str]] | None = None
         # The join rule is the named refusal. An EXPLAIN or grant miss must
         # not hide it behind a generic validate reason.
         if space_onto is not None:
@@ -3603,16 +3690,40 @@ def _maybe_generative_ask_impl(
             # SQL may join two relations only over a link the source declared
             # and verify() measured. A confident join on anything else is the
             # plausible wrong number this layer exists to refuse.
-            return _stamp(
-                _abstain(
-                    q,
+            # Flag on, four fixable shapes get one repair, then the same gates.
+            if os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1":
+                from dms_executor.join_repair import resolve_join_repair
+
+                decided = resolve_join_repair(
                     join_why,
+                    sql,
+                    question=q,
+                    space_onto=space_onto,
+                    violations=declared_violations,
+                    warehouse=lake,
+                    grantable=set(allowed),
+                    dialect=dialect,
                     space_id=space_id,
                     session_id=session_id,
-                    plan_source=source,
-                    sql=sql,
+                    columns_of=cols,
                 )
-            )
+                if isinstance(decided, dict):
+                    return _stamp(decided)
+                if isinstance(decided, str):
+                    sql = decided
+                    join_why = None
+                    why = None
+            if join_why:
+                return _stamp(
+                    _abstain(
+                        q,
+                        join_why,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source,
+                        sql=sql,
+                    )
+                )
         if why:
             shown = customer_grant_reason(why)
             cited = (

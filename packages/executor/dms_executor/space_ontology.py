@@ -230,6 +230,24 @@ def derive_and_verify(
     return describe_body(catalog, onto, attributes), violations
 
 
+def _link_body(link: Any, orphan: Any) -> dict[str, Any]:
+    """One stored link. Orphan keys are added only when a disclosure was measured."""
+    row: dict[str, Any] = {
+        "from": link.from_object,
+        "from_columns": list(link.from_columns),
+        "to": link.to_object,
+        "to_columns": list(link.to_columns),
+        "one_to_one": link.one_to_one,
+        "cardinality": link.cardinality,
+        "max_fanout": link.max_fanout,
+    }
+    if isinstance(orphan, dict):
+        row["orphan_rows"] = int(orphan.get("orphan_rows") or 0)
+        row["orphan_status"] = "verified_with_orphans"
+        row["exclude_line"] = str(orphan.get("line") or "")
+    return row
+
+
 def describe_body(
     catalog: Mapping[str, Any],
     onto: Ontology,
@@ -249,21 +267,14 @@ def describe_body(
             for name, obj in sorted(onto.objects.items())
         },
         "links": {
-            name: {
-                "from": link.from_object,
-                "from_columns": list(link.from_columns),
-                "to": link.to_object,
-                "to_columns": list(link.to_columns),
-                "one_to_one": link.one_to_one,
-                "cardinality": link.cardinality,
-                "max_fanout": link.max_fanout,
-            }
+            name: _link_body(link, (onto.__dict__.get("_orphan_links") or {}).get(name))
             for name, link in sorted(onto.links.items())
         },
         # Never derived. Declared measures arrive through a steward (NEEDS_FOUNDER).
         "measures": {},
-        # Landed tables that declare no primary key: not objects, so no join
-        # may be verified through them. Shown, not hidden.
+        # Landed tables that are not objects. Flag off, a table with no primary
+        # key is here. Flag on, a key-less child of a declared foreign key is
+        # an object with an empty key instead, and its links are measured.
         "unkeyed_tables": sorted(
             str(t["path"]) for t in catalog["tables"] if t["path"] not in keyed
         ),
@@ -324,7 +335,18 @@ def derive_and_store(
             "derived": False,
             "reason": "space_id is not a Space this store can version (not a UUID)",
         }
-    body, violations = derive_and_verify(catalog, warehouse=warehouse)
+    from dms_executor.join_flags import (
+        bind_orphan_space,
+        fk_orphan_disclose_enabled,
+        reset_orphan_space,
+    )
+
+    token = bind_orphan_space(space_id) if fk_orphan_disclose_enabled() else None
+    try:
+        body, violations = derive_and_verify(catalog, warehouse=warehouse)
+    finally:
+        if token is not None:
+            reset_orphan_space(token)
     target = store or ontology_store()
     version = target.reconnect(
         space_id=sid,
@@ -395,19 +417,24 @@ def ontology_view(version: OntologyVersion, snap: OntologySnapshot) -> dict[str,
         endpoint_bad = [v for o in (spec["from"], spec["to"]) for v in failed.get(o, [])]
         measured = spec.get("cardinality") in {"many_to_one", "many_to_many"}
         ok = not bad and not endpoint_bad and measured
-        links.append(
-            {
-                "name": name,
-                "from": spec["from"],
-                "from_columns": list(spec["from_columns"]),
-                "to": spec["to"],
-                "to_columns": list(spec["to_columns"]),
-                "cardinality": spec.get("cardinality"),
-                "max_fanout": spec.get("max_fanout"),
-                "status": "verified" if ok else "unverified",
-                "violations": bad or endpoint_bad,
-            }
-        )
+        status = "verified" if ok else "unverified"
+        if ok and spec.get("orphan_status") == "verified_with_orphans":
+            status = "verified_with_orphans"
+        shown = {
+            "name": name,
+            "from": spec["from"],
+            "from_columns": list(spec["from_columns"]),
+            "to": spec["to"],
+            "to_columns": list(spec["to_columns"]),
+            "cardinality": spec.get("cardinality"),
+            "max_fanout": spec.get("max_fanout"),
+            "status": status,
+            "violations": bad or endpoint_bad,
+        }
+        if status == "verified_with_orphans":
+            shown["orphan_rows"] = spec.get("orphan_rows")
+            shown["exclude_line"] = spec.get("exclude_line")
+        links.append(shown)
     for fk in body.get("unlanded_links") or []:
         links.append(
             {

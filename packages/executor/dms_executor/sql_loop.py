@@ -1000,6 +1000,20 @@ def run_model_loop(
                 continue
 
         why = check(sql)
+        if why and os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1":
+            from dms_executor.join_flags import join_repair_stop
+
+            if join_repair_stop(why):
+                attempts.append(
+                    loop_entry(
+                        prompt=prompt,
+                        payload=current,
+                        sql=sql,
+                        outcome=f"checker:{mask_feedback_text(why)}",
+                        dialect=dialect,
+                    )
+                )
+                return abstain(why, attempts, sql=sql, retries=retries)
         if why:
             safe_why = mask_feedback_text(why)
             outcome = f"checker:{safe_why}"
