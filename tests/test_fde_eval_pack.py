@@ -7,6 +7,7 @@ SQLite login, not a DuckDB lake.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -19,6 +20,27 @@ sys.path.insert(0, str(ROOT / "scripts" / "verify"))
 
 import eval_pack as ep  # noqa: E402
 import grade52  # noqa: E402
+
+_SCORED_ENVS = (
+    "DMS_SCORED_PACK_HASHES",
+    "DMS_SCORED_ITEM_HASHES",
+    "DMS_SCORED_ITEM_HASHES_FILE",
+    "DMS_SCORED_RESULT_HASHES",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_scored_env():
+    """Pack build writes the process env. The next test must not inherit it."""
+    saved = {name: os.environ.get(name) for name in _SCORED_ENVS}
+    present = {name: name in os.environ for name in _SCORED_ENVS}
+    yield
+    for name in _SCORED_ENVS:
+        if present[name]:
+            os.environ[name] = saved[name] or ""
+        else:
+            os.environ.pop(name, None)
+
 
 DEF_COMPLETED = "DEF-SENTENCE-IN-PROMPT completed status only"
 DEF_FIRST = "DEF-SENTENCE-IN-PROMPT first ETL load only"
@@ -400,3 +422,117 @@ def test_connect_error_does_not_include_the_password(monkeypatch: pytest.MonkeyP
             pass
     assert "hunter2" not in str(caught.value)
     assert ep._READ_ONLY_SQL["postgresql"] == "SET default_transaction_read_only = on"
+
+
+def test_built_pack_is_refused_by_the_scored_hash_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A built pack's SQL cannot be saved or retrieved as a verified example."""
+    import duckdb
+    from dms_executor.skills_quarantine import (
+        WRITE_BLOCKED,
+        filter_retrieved_rows,
+        item_content_hash,
+        reject_scored_write,
+    )
+    from dms_executor.verified_queries import (
+        list_verified_queries,
+        maybe_save_checked_sql,
+        register_verified_query,
+    )
+
+    hash_file = tmp_path / "scored-item-hashes.txt"
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES_FILE", str(hash_file))
+    pack, _spec = _pack(tmp_path)
+    item = _item(pack, "q_count")
+    alt = item["alt"][0]
+    listed = set(os.environ["DMS_SCORED_ITEM_HASHES"].replace(",", " ").split())
+    for text in (item["question"], item["sql"], alt["sql"]):
+        assert item_content_hash(text) in listed
+    assert set(pack["scored_item_hashes"]) <= listed
+    filed = set(hash_file.read_text(encoding="utf-8").split())
+    assert item_content_hash(item["sql"]) in filed
+
+    path = tmp_path / "vq.duckdb"
+    con = duckdb.connect(str(path))
+    try:
+        con.execute("CREATE TABLE sale (load_batch INTEGER, status VARCHAR)")
+        con.execute("CREATE TABLE inventory (n INTEGER)")
+    finally:
+        con.close()
+
+    import dms_executor.verified_queries as vq
+
+    real = vq._grantable
+
+    def _grant(space_id, warehouse):  # noqa: ANN001
+        return set(real(space_id, warehouse)) | {"sale", "inventory"}
+
+    monkeypatch.setattr(vq, "_grantable", _grant)
+    monkeypatch.setenv("DMS_VQ_RAG", "1")
+    space = "space-fde-eval-pack"
+    keeper_q = "ordinary steward item"
+    keeper_sql = "SELECT n FROM inventory"
+    register_verified_query(
+        space_id=space, question=keeper_q, sql=keeper_sql, path=path, dialect="duckdb"
+    )
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        register_verified_query(
+            space_id=space,
+            question=item["question"],
+            sql=item["sql"],
+            path=path,
+            dialect="duckdb",
+        )
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        reject_scored_write({"question": item["question"], "sql": item["sql"]}, warehouse=path)
+
+    saved = maybe_save_checked_sql(
+        question=keeper_q,
+        sql=keeper_sql,
+        space_id=space,
+        warehouse=path,
+        grantable={"sale", "inventory"},
+        dialect="duckdb",
+        provenance="yes:reconfirm",
+        served_route="ai",
+    )
+    assert saved is not None
+    blocked = maybe_save_checked_sql(
+        question=item["question"],
+        sql=item["sql"],
+        space_id=space,
+        warehouse=path,
+        grantable={"sale", "inventory"},
+        dialect="duckdb",
+        provenance="yes:reconfirm",
+        served_route="ai",
+    )
+    assert blocked is None
+    stored = {row["question"] for row in list_verified_queries(space_id=space, path=path)}
+    assert item["question"] not in stored
+
+    con = duckdb.connect(str(path))
+    try:
+        con.execute(
+            """
+            INSERT INTO main._verified_queries
+              (asset_id, space_id, question, question_norm, sql_text,
+               synonyms_json, created_at, pack_hash)
+            VALUES ('vq_pack', ?, ?, ?, ?, '[]', now(), NULL)
+            """,
+            [space, item["question"], item["question"].casefold(), item["sql"]],
+        )
+    finally:
+        con.close()
+    after = {row["question"] for row in list_verified_queries(space_id=space, path=path)}
+    assert item["question"] not in after
+    assert keeper_q in after
+    kept = filter_retrieved_rows(
+        [
+            {"question": item["question"], "sql": item["sql"]},
+            {"question": keeper_q, "sql": keeper_sql},
+        ],
+        warehouse=path,
+    )
+    assert [row["question"] for row in kept] == [keeper_q]

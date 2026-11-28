@@ -22,6 +22,9 @@ script does neither.
   error is ``reconfirm``, not a guessed number.
 * The DMS arm is graded by the same function. ``serve_path`` is grouped with
   ``grade52.path_group`` into AI vs rule.
+* Building a pack appends a hash of every gold SQL and question to
+  ``DMS_SCORED_ITEM_HASHES``. ``reject_scored_write`` and
+  ``filter_retrieved_rows`` already refuse that list. No second registry.
 
     eval_pack.py build --definitions D.yaml --templates Q.yaml --out pack.json
     eval_pack.py grade --definitions D.yaml --pack pack.json --arm raw --out R.json
@@ -546,7 +549,58 @@ def build_pack(
                 **body,
             }
         )
-    return {"definitions": [dict(d) for d in definitions], "questions": questions}
+    pack = {"definitions": [dict(d) for d in definitions], "questions": questions}
+    pack["scored_item_hashes"] = register_scored_items(pack)
+    return pack
+
+
+def _scored_texts(pack: Mapping[str, Any]) -> list[str]:
+    """Gold SQL, alt SQL, and the question. Same strings a later write would store."""
+    texts: list[str] = []
+    for item in pack.get("questions") or []:
+        texts.append(str(item.get("question") or ""))
+        texts.append(str(item.get("sql") or ""))
+        for alt in item.get("alt") or []:
+            if isinstance(alt, Mapping):
+                texts.append(str(alt.get("sql") or ""))
+    return [text for text in texts if text.strip()]
+
+
+def register_scored_items(pack: Mapping[str, Any]) -> list[str]:
+    """Append this pack's item hashes to the scored-hash list.
+
+    ``DMS_SCORED_ITEM_HASHES`` is the list ``reject_scored_write`` and
+    ``filter_retrieved_rows`` already read. A hash already there stays.
+    When ``DMS_SCORED_ITEM_HASHES_FILE`` names a file, the same hashes are
+    appended there. That file is the other reader of this list, not a new one.
+    """
+    from dms_executor.skills_quarantine import SCORED_ITEM_HASHES_ENV, item_content_hash
+
+    fresh: list[str] = []
+    for text in _scored_texts(pack):
+        digest = item_content_hash(text)
+        if digest not in fresh:
+            fresh.append(digest)
+    raw = os.environ.get(SCORED_ITEM_HASHES_ENV, "")
+    parts = [part for part in raw.replace(",", " ").split() if part]
+    for digest in fresh:
+        if digest not in parts:
+            parts.append(digest)
+    os.environ[SCORED_ITEM_HASHES_ENV] = ",".join(parts)
+    file_env = os.environ.get("DMS_SCORED_ITEM_HASHES_FILE", "").strip()
+    if file_env:
+        _append_scored_hash_file(file_env, fresh)
+    return fresh
+
+
+def _append_scored_hash_file(path: str, hashes: Sequence[str]) -> None:
+    file = Path(path)
+    existing = file.read_text(encoding="utf-8") if file.is_file() else ""
+    parts = [part for part in existing.replace(",", " ").split() if part]
+    for digest in hashes:
+        if digest not in parts:
+            parts.append(digest)
+    file.write_text("\n".join(parts) + ("\n" if parts else ""), encoding="utf-8")
 
 
 def build_on_source(
