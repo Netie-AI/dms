@@ -13,6 +13,11 @@ Append-only. Never edited, only added to. Newest first.
 - **Destructive.** A typed non-SELECT statement, or a destructive verdict from role `reason`, refuses before compile. No keyword list. An unknown verdict is not a destructive abstain.
 - **Stub 52.** `grade52 --main` at `12326dd`, base `3752fb4`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed grade52 and pack H were not run. Not PASS.
 
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto d9e8c45
+
+- **Base.** Rebased onto `d9e8c45` (#626, #597, #624). The ask wrapper keeps the qualifier repair binding and the schema session. The clock resets once. `STATUS.md` and `docs/subagents_findings/INDEX.md` keep this row and the bird-harness row. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder.
+- **Stub 52.** `grade52 --main` at `ed28833`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
 ## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 43e4724
 
 - **Base.** Rebased onto `43e4724` (#608, #609). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep this row and the tenant, space-grant, and onto-space-scope rows. Join parse stays on `SERVING_DIALECT`. Abstain still goes through the existing builder. Imports are unchanged.
