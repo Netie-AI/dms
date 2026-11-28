@@ -88,6 +88,22 @@ def company_default_tables() -> tuple[str, ...]:
     return tuple(seen)
 
 
+def _bind_withheld(space_id: str | None = None) -> set[str]:
+    """Landed SQL tables the steward has not granted.
+
+    Only when ``DMS_SQL_SOURCE_BIND`` is on. Off, this is empty, so the
+    bronze listing the ask path already used stays byte-identical.
+    """
+    from dms_core.control_plane.connect_grants import (
+        proposed_ungranted,
+        sql_source_bind_enabled,
+    )
+
+    if not sql_source_bind_enabled():
+        return set()
+    return proposed_ungranted(space_id)
+
+
 def source_id_for(table: str) -> uuid.UUID:
     """Stable id for a table-backed source."""
     return uuid.uuid5(_SOURCE_NS, table)
@@ -190,11 +206,14 @@ class DemoSessionStore:
         sid = canonical_space_id(space_id)
         space_uploads = ingested_bronze_tables(self.warehouse, space_id=sid)
         tables = (*self._tables_for(sid), *self.extra_grants, *space_uploads)
+        held_back = _bind_withheld(sid)
+        tables = tuple(name for name in dict.fromkeys(tables) if name not in held_back)
         return [source_id_for(t) for t in tables]
 
     def list_user_source_grants(self, tenant_id: str, user_id: str) -> list[SourceGrant]:
         seeded = {t for _, tables in DEMO_SPACE_GRANTS.values() for t in tables}
         every = seeded | set(self.extra_grants) | set(self._uploaded()) | connected_table_names()
+        every -= _bind_withheld()
         return [
             SourceGrant(
                 source_id=source_id_for(t),

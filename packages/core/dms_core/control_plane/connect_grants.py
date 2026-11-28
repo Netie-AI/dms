@@ -204,14 +204,28 @@ def granted_tables(space_id: str) -> tuple[str, ...]:
         return tuple(sorted(_grants.get(space_id, {})))
 
 
-def proposed_ungranted() -> set[str]:
-    """Tables a registered source exposed that no steward has granted.
+def proposed_ungranted(space_id: str | None = None) -> set[str]:
+    """Tables a registered source exposed that a steward has not granted.
 
+    ``space_id`` set: that Space only. ``None``: exposed somewhere and granted
+    by nobody, so a grant in one Space is not hidden by another Space's land.
     Used only when ``DMS_SQL_SOURCE_BIND`` is on. A landed name is not a grant.
     """
     with _lock:
+        if space_id is None:
+            exposed: set[str] = set()
+            granted: set[str] = set()
+            for src in _sources.values():
+                exposed.update(src.exposed)
+                held = _grants.get(src.space_id, {})
+                granted.update(
+                    name for name, owner in held.items() if owner == src.source_id
+                )
+            return exposed - granted
         out: set[str] = set()
         for src in _sources.values():
+            if src.space_id != space_id:
+                continue
             held = _grants.get(src.space_id, {})
             for name in src.exposed:
                 if held.get(name) != src.source_id:
