@@ -3620,11 +3620,49 @@ def _maybe_generative_ask_impl(
             )
         )
 
+    from dms_executor.reply_hygiene import (
+        Recovered,
+        generate_reply,
+        reply_hygiene_enabled,
+        transport_code,
+    )
+
+    _stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
+    if (
+        not (_stop and _scale_miss_on())
+        and reply_hygiene_enabled()
+        and transport_code(payload if isinstance(payload, dict) else None, reason=_stop)
+    ):
+
+        def _next_payload(hint: str | None) -> dict[str, Any] | None:
+            if compute is None:
+                return None
+            ctx: dict[str, Any] = {
+                "sql_vote_prompt": q + "\n\nGranted schema:\n" + "\n".join(sorted(allowed)),
+                "question": q,
+            }
+            if hint:
+                ctx["route_hint"] = hint
+            got = compute(ctx)
+            return got if isinstance(got, dict) else None
+
+        cleaned = generate_reply(
+            payload if isinstance(payload, dict) else None,
+            question=q,
+            space_id=space_id,
+            session_id=session_id,
+            reason=_stop,
+            call=_next_payload if compute is not None else None,
+        )
+        if isinstance(cleaned, Recovered):
+            payload = cleaned.payload
+        elif cleaned is not None:
+            return _stamp(cleaned)
+
     kind = parse_compute_plan(payload)
     source = plan_source_from_payload(payload)
     origin = plan_origin_from_payload(payload)
     budget_stop = insights_budget_stop(payload if isinstance(payload, dict) else None)
-    from dms_executor.reply_hygiene import generate_reply
 
     if budget_stop:
         # Before ranking/multi-grain: a timeout or cap stop never compiles a plan.
@@ -3647,7 +3685,7 @@ def _maybe_generative_ask_impl(
             session_id=session_id,
             reason=budget_stop,
         )
-        if cleaned is not None:
+        if isinstance(cleaned, dict):
             return _stamp(cleaned)
         return _stamp(
             _abstain(
@@ -3665,7 +3703,7 @@ def _maybe_generative_ask_impl(
         space_id=space_id,
         session_id=session_id,
     )
-    if cleaned is not None:
+    if isinstance(cleaned, dict):
         return _stamp(cleaned)
     if (
         isinstance(payload, dict)

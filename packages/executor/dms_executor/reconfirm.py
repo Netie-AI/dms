@@ -538,6 +538,7 @@ def apply_reconfirm(
     schema: str,
     complete: Complete,
     reason_complete: Complete | None = None,
+    retry: Any = None,
 ) -> dict[str, Any]:
     """Attach ``reconfirm`` when the ladder did not check an answer."""
 
@@ -568,6 +569,8 @@ def apply_reconfirm(
             session_id=session_id,
             tables=tables,
             complete=reason_complete,
+            ontology=ontology,
+            retry=retry,
         )
 
     if not isinstance(env, dict):

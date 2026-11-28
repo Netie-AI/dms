@@ -89,6 +89,7 @@ _CODES = frozenset(
         "intent_spec_unverified",
         "ladder_exhausted",
         "loop_exhausted",
+        "model_unreachable",
         "multi_statement",
         "no_plan",
         "no_sql",

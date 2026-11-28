@@ -181,12 +181,53 @@ def transport_envelope(
     return env
 
 
-def stamp_capacity(env: dict[str, Any], code: str) -> None:
-    """Replace a capacity sentence in place. No-op when the flag is off."""
+def schema_readings(names: list[str]) -> list[dict[str, str]]:
+    """1 to 3 granted names. The text is the identifier, not a phrased question."""
+    out: list[dict[str, str]] = []
+    for name in names:
+        token = str(name or "").strip()
+        if not token:
+            continue
+        out.append({"id": f"r{len(out) + 1}", "text": token})
+        if len(out) == 3:
+            break
+    return out
+
+
+def stamp_capacity(
+    env: dict[str, Any],
+    code: str,
+    *,
+    call: Any = None,
+    question: str = "",
+    names: list[str] | None = None,
+    space_id: str | None = None,
+    session_id: str | None = None,
+    tables: list[str] | None = None,
+) -> dict[str, Any]:
+    """Capacity stop after the OpenVault rungs. Flag off returns ``env``.
+
+    A later rung that returns SQL or a plan becomes an ask-back. The fixed
+    sentence is only the exhausted rung, and that rung is logged.
+    """
     if not reply_hygiene_enabled() or code not in _CAPACITY:
-        return
+        return env
+    granted = list(names or [])
+    recovered = climb_payloads(call)
+    if recovered is not None:
+        readings = schema_readings(granted)
+        if readings:
+            return _ask_back(
+                env,
+                question=question or str(env.get("question") or ""),
+                readings=readings,
+                space_id=space_id,
+                session_id=session_id,
+                tables=tables if tables else granted,
+            )
     from dms_executor.envelope import assert_envelope_valid
 
+    _log_exhausted(code, question or str(env.get("question") or ""))
     env["text"] = USER_SENTENCE
     env["abstain_reason"] = USER_SENTENCE
     env["reason_code"] = code
@@ -194,6 +235,58 @@ def stamp_capacity(env: dict[str, Any], code: str) -> None:
     env["assumptions"] = ["retry"]
     env.pop("reconfirm", None)
     assert_envelope_valid(env)
+    return env
+
+
+def _usable(payload: Any) -> bool:
+    """A rung the model answered. A transport payload and an ontology-only stub are not."""
+    if not isinstance(payload, dict) or transport_code(payload) is not None:
+        return False
+    for key in ("query_sql", "sql"):
+        raw = payload.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return True
+    plan = payload.get("query_plan")
+    return isinstance(plan, dict) and bool(plan)
+
+
+def _log_exhausted(code: str, question: str) -> None:
+    from dms_executor.pipeline_failure import log_pipeline_failure_ticket
+
+    log_pipeline_failure_ticket(
+        reason=code,
+        question=question,
+        sql=None,
+        retries=2,
+        stage="reply_hygiene",
+        ask_id="ans_reply_hygiene",
+    )
+
+
+class Recovered:
+    """A later rung returned SQL or a plan. Not a user envelope."""
+
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+
+
+def climb_payloads(call: Any) -> dict[str, Any] | None:
+    """Ask OpenVault for the next rung, then the escalate role.
+
+    ``call(None)`` keeps the free route so OpenVault can rotate a key.
+    ``call("escalate")`` is the stronger role. DMS does not name a provider
+    or a model. None when both rungs are still a transport failure.
+    """
+    if not reply_hygiene_enabled() or not callable(call):
+        return None
+    for hint in (None, "escalate"):
+        try:
+            payload = call(hint)
+        except Exception:
+            payload = None
+        if _usable(payload):
+            return payload
+    return None
 
 
 def generate_reply(
@@ -203,11 +296,20 @@ def generate_reply(
     space_id: str | None,
     session_id: str | None,
     reason: str | None = None,
-) -> dict[str, Any] | None:
-    """User envelope for a generate failure. None when the flag is off or this is not one."""
+    call: Any = None,
+) -> dict[str, Any] | Recovered | None:
+    """Exhausted transport envelope, or None.
+
+    None when the flag is off, this is not a transport failure, or a later
+    rung returned SQL or a plan. The sentence is only the exhausted rung.
+    """
     code = transport_code(payload, reason=reason)
     if code is None:
         return None
+    recovered = climb_payloads(call)
+    if recovered is not None:
+        return Recovered(recovered)
+    _log_exhausted(code, question)
     return transport_envelope(
         payload,
         code,
@@ -271,15 +373,26 @@ def _readings_prompt(question: str, schema: str, code: str) -> str:
     )
 
 
-def reason_completion(cortex: Any, prompt: str) -> str:
-    """One OpenVault call with role ``reason``. No provider and no model id."""
+def reason_completion(
+    cortex: Any,
+    prompt: str,
+    route_hint: str | None = ROLE_REASON,
+) -> str:
+    """One OpenVault call. No provider and no model id.
+
+    ``route_hint`` None keeps the free route. ``escalate`` is the stronger
+    role. ``reason`` asks for readings. OpenVault picks the key and the model.
+    """
     if not reply_hygiene_enabled():
         return ""
     fn = getattr(cortex, "compute_insights", None)
     if not callable(fn):
         return ""
+    kwargs: dict[str, Any] = {}
+    if route_hint:
+        kwargs["route_hint"] = route_hint
     try:
-        payload = fn(prompt, route_hint=ROLE_REASON)
+        payload = fn(prompt, **kwargs)
     except Exception:
         return ""
     if isinstance(payload, str):
@@ -320,41 +433,6 @@ def _blank_unmatched(block: dict[str, Any], names: list[str]) -> None:
         raw = block.get(key)
         if isinstance(raw, str) and raw.strip() and not matches_schema(raw, names):
             block[key] = ""
-
-
-def _plain_abstain(
-    source: dict[str, Any],
-    *,
-    question: str,
-    code: str,
-    space_id: str | None,
-    session_id: str | None,
-) -> dict[str, Any]:
-    from dms_executor.abstain import build_abstain
-    from dms_executor.envelope import assert_envelope_valid
-    from dms_executor.gen_path_refuse import customer_abstain_text
-
-    token = _code_token(code)
-    sentence = customer_abstain_text(token)
-    env = build_abstain(
-        reason=token,
-        question=question,
-        stage="reply_hygiene",
-        answer_id="ans_reply_abstain",
-        text=sentence,
-        abstain_reason=sentence,
-        values=[],
-        rows=[],
-        sql_used=None,
-        assumptions=[token],
-        space_id=space_id if space_id is not None else source.get("space_id"),
-        session_id=session_id if session_id is not None else source.get("session_id"),
-        ask_mode=str(source.get("ask_mode") or "live"),
-        route="abstain",
-    )
-    env["reason_code"] = token
-    assert_envelope_valid(env)
-    return env
 
 
 def _ask_back(
@@ -426,6 +504,12 @@ def _drop_token(block: dict[str, Any]) -> None:
     take_pending(token)
 
 
+def _model_readings(raw: Any, names: list[str]) -> list[dict[str, str]]:
+    if not isinstance(raw, str):
+        return []
+    return [item for item in parse_readings(raw) if matches_schema(item["text"], names)][:3]
+
+
 def finish_reconfirm(
     env: dict[str, Any],
     *,
@@ -435,6 +519,8 @@ def finish_reconfirm(
     session_id: str | None = None,
     tables: list[str] | None = None,
     complete: Any = None,
+    ontology: str = "",
+    retry: Any = None,
 ) -> dict[str, Any]:
     """Clean one envelope. Flag off returns ``env`` unchanged."""
     if not reply_hygiene_enabled() or not isinstance(env, dict):
@@ -471,12 +557,20 @@ def finish_reconfirm(
     _drop_token(block)
     token = _code_token(str(block.get("reason_code") or env.get("abstain_reason") or ""))
     readings: list[dict[str, str]] = []
-    if names and callable(complete):
-        raw = complete(_readings_prompt(question, schema, token))
-        if isinstance(raw, str):
-            readings = [
-                item for item in parse_readings(raw) if matches_schema(item["text"], names)
-            ][:3]
+    ask = retry if callable(retry) else None
+    if ask is not None:
+        richer = f"{question}\n\nGranted schema:\n{schema}\n\nOntology:\n{ontology}\n"
+        for hint in (None, "escalate"):
+            readings = _model_readings(ask(richer, hint), names)
+            if readings:
+                break
+        if not readings:
+            prompt = _readings_prompt(question, schema, token)
+            readings = _model_readings(ask(prompt, "reason"), names)
+    elif names and callable(complete):
+        readings = _model_readings(complete(_readings_prompt(question, schema, token)), names)
+    if not readings:
+        readings = schema_readings(names)
     if readings:
         return _ask_back(
             env,
@@ -486,10 +580,11 @@ def finish_reconfirm(
             session_id=session_id,
             tables=tables if tables else names,
         )
-    return _plain_abstain(
+    _log_exhausted(token, question)
+    return transport_envelope(
         env,
+        "model_unreachable",
         question=question,
-        code=token,
         space_id=space_id,
         session_id=session_id,
     )

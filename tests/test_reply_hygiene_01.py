@@ -61,6 +61,7 @@ def _offer(
     *,
     complete: Any,
     reason_complete: Any = None,
+    retry: Any = None,
 ) -> dict[str, Any]:
     from dms_executor.reconfirm import apply_reconfirm
 
@@ -75,6 +76,7 @@ def _offer(
         schema=_SCHEMA,
         complete=complete,
         reason_complete=reason_complete,
+        retry=retry,
     )
 
 
@@ -195,17 +197,44 @@ def test_generate_429_flag_off_keeps_the_machine_payload(monkeypatch: pytest.Mon
     assert _RAW not in json.dumps(payload)
 
 
-def test_generate_429_is_a_typed_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    from dms_executor.reply_hygiene import USER_SENTENCE, generate_reply
+def test_generate_429_climbs_before_the_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dms_executor.reply_hygiene import USER_SENTENCE, Recovered, generate_reply
 
     monkeypatch.setenv("DMS_REPLY_HYGIENE", "1")
     monkeypatch.delenv("DMS_STRICT_MODEL", raising=False)
     monkeypatch.delenv("DMS_STRICT_PROVIDER", raising=False)
     payload = _generate(429)
     assert payload is not None
-    assert payload.get("ai_call_status") == 429
-    env = generate_reply(payload, question=_QUESTION, space_id="sp", session_id="ses")
-    assert env is not None
+    hints: list[str | None] = []
+
+    def recover(hint: str | None) -> dict[str, Any]:
+        hints.append(hint)
+        if hint == "escalate":
+            return {"query_sql": "select count(*) from fills"}
+        return payload
+
+    recovered = generate_reply(
+        payload,
+        question=_QUESTION,
+        space_id="sp",
+        session_id="ses",
+        call=recover,
+    )
+    assert isinstance(recovered, Recovered)
+    assert recovered.payload["query_sql"].startswith("select")
+    assert hints == [None, "escalate"]
+
+    def still_down(_hint: str | None) -> dict[str, Any]:
+        return payload
+
+    env = generate_reply(
+        payload,
+        question=_QUESTION,
+        space_id="sp",
+        session_id="ses",
+        call=still_down,
+    )
+    assert isinstance(env, dict)
     assert env["reason_code"] == "model_unreachable"
     assert env["text"] == USER_SENTENCE
     assert env["abstain_reason"] == USER_SENTENCE
@@ -285,18 +314,27 @@ def test_empty_closest_question_has_no_yes_token(monkeypatch: pytest.MonkeyPatch
     assert picked.question == "How many fills were sold?"
 
 
-def test_no_reading_is_a_plain_abstain(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_no_reading_asks_back_from_the_schema(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DMS_REPLY_HYGIENE", "1")
+    hints: list[str | None] = []
+
+    def retry(_prompt: str, hint: str | None) -> str:
+        hints.append(hint)
+        return ""
+
     base = _gap()
     base["reconfirm"] = {
         "suggested_question": "",
         "closest_question": "",
         "reason_code": "unspecified",
     }
-    out = _offer(base, complete=lambda _prompt: "", reason_complete=lambda _prompt: "")
+    out = _offer(base, complete=lambda _prompt: "", reason_complete=lambda _prompt: "", retry=retry)
     assert "reconfirm" not in out
-    assert "clarify" not in out
-    assert out["abstained"] is True
+    assert out["clarify"]["blocks"] is True
+    labels = [item["label"] for item in out["clarify"]["readings"]]
+    assert labels == ["fills", "stores"]
+    assert hints == [None, "escalate", "reason"]
+    assert out["route"] == "needs_clarification"
     assert_user_visible_clean(out)
 
 
