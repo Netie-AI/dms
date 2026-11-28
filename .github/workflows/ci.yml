@@ -405,7 +405,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install the grader's two libraries
-        run: python -m pip install "sqlglot>=27,<28" "PyYAML>=6"
+        run: python -m pip install "sqlglot>=27,<28" "PyYAML>=6" "pytest>=8.0"
 
       - name: Offline slice
         run: python scripts/verify/generality.py offline --out generality-out
