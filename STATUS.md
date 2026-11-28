@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-28, BIRD-JOIN-GATE-01
+**Last updated:** 2026-11-28, NL19-COMPILE-WRONG
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_JOIN_DECLARED_FK` and `DMS_FK_ORPHAN_DISCLOSE` default off (base `43e4724`). Stub 52 off and both on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Orphan ratio stays 0 until a steward sets it. Armed unmeasured (stub). Not PASS.
+**Tip:** `DMS_COMPILE_HONOUR_CHECK` default off (`12326dd`, base `3752fb4`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, no reason model, so compile is not served: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed and pack H unmeasured. Not PASS.
 
 ## Direction
 
@@ -12,15 +12,15 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `962fed6`, `grade52 --main`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `12326dd`, `grade52 --main`, base `3752fb4`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
 | defaults | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
-| DMS_ONTO_SPACE_SCOPE=1 | correct=43 wrong=0 reconfirm=5 | ai=0 rule=43 L1=23 compile=20 | ai_share=0/43 wrong=0 |
+| DMS_COMPILE_HONOUR_CHECK=1 | correct=23 wrong=0 reconfirm=25 | ai=0 rule=23 L1=23 | ai_share=0/23 wrong=0 |
 | DMS_AI_FIRST=1 | correct=0 wrong=0 reconfirm=48 | ai=0 rule=0 | ai_share=0/0 wrong=0 |
 
-Both on this branch's stub: refusal_ok=4, refusal_wrong=0, gold_broken=0, clarify=0 (ops_spend_boundary is a certified refusal). Flag off wrong_ub95=6.7%, coverage 43/43. COMPILE-CHECK-01 remeasured the stub before (f286c4a) and after the checker: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Those compile answers pass the checker. Pack H and armed grade52 not measured. Not PASS.
+Flag off and on: refusal_ok=4, refusal_wrong=0. Twenty compile qids move to reconfirm. Rule-served 43 to 23. Armed and pack H unmeasured. Not PASS.
 
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
@@ -44,6 +44,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
+| NL19-COMPILE-WRONG: honour check before a compile serve. Flag off. | this branch |
 | BIRD-JOIN-GATE-01 / BIRD-FK-ORPHANS-01: declared FK on a key-less child, one join repair, orphan disclose. Flags off. | this branch |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
