@@ -6,7 +6,7 @@ verifier. The secret stays in OpenVault under ``cred_ref``.
 
 No cross-schema foreign key.
 
-Chain: ``0013_scim`` on ``0012_gov_console``.
+Chain: ``0014_scim`` on ``0013_gov_console``.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0013_scim"
-down_revision: str | None = "0012_gov_console"
+revision: str = "0014_scim"
+down_revision: str | None = "0013_gov_console"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

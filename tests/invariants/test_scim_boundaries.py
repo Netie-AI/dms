@@ -52,7 +52,7 @@ def test_scim_sources_do_not_log_the_bearer() -> None:
 
 
 def test_migration_has_no_plaintext_token_column() -> None:
-    text = (ROOT / "alembic/versions/0013_scim.py").read_text(encoding="utf-8")
+    text = (ROOT / "alembic/versions/0014_scim.py").read_text(encoding="utf-8")
     assert "token_sha256" in text
     assert "cred_ref" in text
     lowered = text.lower()

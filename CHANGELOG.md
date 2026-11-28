@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - SCIM-01: Alembic head is 0014_scim
+
+- **Chain.** `0014_scim` revises `0013_gov_console`. `0013_gov_console` revises `0012_sign`. The single-head check stays.
+
 ## 2026-11-28 - SCIM-01: directory provisioning behind DMS_SCIM
 
 - **Flag.** `DMS_SCIM` defaults off. Only the exact digit 1 turns it on. `true`, `yes`, `on`, and a padded ` 1 ` stay off. Off, `/scim/v2` is not mounted and the space list is unchanged.
