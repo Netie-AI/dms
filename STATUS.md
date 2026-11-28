@@ -1,7 +1,7 @@
 # STATUS.md - DMS
-**Last updated:** 2026-11-28, FDE-REASON-LEAK-01
+**Last updated:** 2026-11-28, UX-TRUST-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_REPLY_HYGIENE` default off (`139b010`, base `4716742`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 ai=0 rule=43. On, correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_REPLY_HYGIENE` default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 ai=0 rule=43. On, correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Trust reads grade52 files. No file shows "No benchmark run yet". Ask events and adjust status answer while flags stay off. Ontology counts come from one GET. 52 not run on this commit. Armed and pack H unmeasured. Not PASS.
 ## Direction
 AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
 Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, richer context, plan, then an OpenVault escalate role. `DMS_AI_CLARIFY` defaults off. On, role `reason` asks back with 2 to 4 checked readings. No verdict keeps the old gates. Direct abstain only for ungranted tables, PII, and destructive SQL. DMS does not name a model.

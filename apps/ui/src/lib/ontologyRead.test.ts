@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ontologyHonestCard, ontologyReadPath } from "./ontologyRead";
+import { ontologyBundle, ontologyHonestCard, ontologyReadPath } from "./ontologyRead";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc";
@@ -37,7 +37,34 @@ describe("ontology reads name the active Space", () => {
     const api = readFileSync(join(here, "api.ts"), "utf8");
     expect(page).toContain("fetchOntology(activeSpaceId, signal)");
     expect(page).toContain('data-testid="ontology-honest-card"');
+    expect(page).toContain('data-testid="ontology-counts"');
     expect(api).toContain("ontologyReadPath(");
+    expect(api).toContain("ontologyBundle(");
     expect(api).not.toContain('getJson<OntologySummary>("/v1/ontology", signal)');
+    expect(api).not.toContain('ontologyReadPath("objects"');
+  });
+
+  it("reads counts from the one summary body", () => {
+    const bundle = ontologyBundle({
+      ok: true,
+      counts: {
+        object_types: 3,
+        properties: 1,
+        sensitive_properties: 0,
+        link_types: 2,
+        action_types: 0,
+        action_tools: 0,
+        action_events: 0,
+        functions: 4,
+        metrics: 1,
+      },
+      object_types: [],
+      link_types: [],
+    });
+    expect(bundle.summary.counts?.object_types).toBe(3);
+    expect(bundle.summary.counts?.link_types).toBe(2);
+    expect(bundle.summary.counts?.functions).toBe(4);
+    expect(bundle.objects).toEqual([]);
+    expect(bundle.graph.nodes).toEqual([]);
   });
 });

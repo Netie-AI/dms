@@ -131,16 +131,23 @@ def test_trust_summary_forwards_the_claim_verdict(client, monkeypatch):
     assert claim["corpus_n"] == 47
 
 
-def test_trust_refuses_the_claim_when_evidence_is_unavailable(client, monkeypatch):
+def test_trust_empty_state_when_the_engine_has_no_artifact(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
+    monkeypatch.setenv("DMS_GRADE52_DIR", str(tmp_path))
     _stub_cortex(monkeypatch, None, ok=False)
     body = client.get("/v1/trust/summary").json()
-    assert body["ok"] is False
+    assert body["ok"] is True
+    assert body["empty"] is True
+    assert body["empty_title"] == "No benchmark run yet"
+    assert "grade52.py" in body["how_to_run"]
     assert body["claim"]["supported"] is False
-    assert body["claim"]["blockers"]
+    assert "{" not in body["how_to_run"]
+    assert "detail" not in body
 
 
 def test_trust_ask_path_does_not_flip_cortex_claim(client, monkeypatch, tmp_path):
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
+    monkeypatch.setenv("DMS_GRADE52_DIR", str(tmp_path))
     (tmp_path / "score_hostile.json").write_text(
         '{"pack":"hostile_score","precision_on_answered":100,"coverage_pct":71.43,'
         '"correct":10,"answered":10,"wrong":0,"total":14,"passed":true}',
@@ -156,6 +163,7 @@ def test_trust_ask_path_does_not_flip_cortex_claim(client, monkeypatch, tmp_path
 
 def test_trust_gen_path_prove_is_read_only_pickup(client, monkeypatch, tmp_path):
     monkeypatch.setenv("DMS_SCORE_DIR", str(tmp_path))
+    monkeypatch.setenv("DMS_GRADE52_DIR", str(tmp_path))
     (tmp_path / "score_gen_path_prove.json").write_text(
         '{"kind":"dms.gen_path_prove","ticket":"GEN-PATH-PROVE-01","issue":199,'
         '"claim":"measured","pack":"curated_ceo","wrong":0,'

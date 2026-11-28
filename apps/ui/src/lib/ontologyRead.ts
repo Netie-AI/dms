@@ -1,5 +1,40 @@
 /** Ontology page reads. A missing Space id is left missing. Never a default Space. */
 
+import type {
+  OntologyAction,
+  OntologyBundle,
+  OntologyFunction,
+  OntologyGraphEdge,
+  OntologyGraphNode,
+  OntologyLink,
+  OntologyMetric,
+  OntologyObject,
+  OntologySummary,
+} from "./types";
+
+/** The one GET /v1/ontology body. Counts and the lists travel together. */
+export type OntologyReadBody = OntologySummary & {
+  object_types?: OntologyObject[];
+  link_types?: OntologyLink[];
+  action_types?: OntologyAction[];
+  functions?: OntologyFunction[];
+  metrics?: OntologyMetric[];
+  nodes?: OntologyGraphNode[];
+  edges?: OntologyGraphEdge[];
+};
+
+export function ontologyBundle(body: OntologyReadBody): OntologyBundle {
+  return {
+    summary: body,
+    objects: body.object_types ?? [],
+    links: body.link_types ?? [],
+    actions: body.action_types ?? [],
+    functions: body.functions ?? [],
+    metrics: body.metrics ?? [],
+    graph: { nodes: body.nodes ?? [], edges: body.edges ?? [] },
+  };
+}
+
 const TITLES: Record<string, string> = {
   space_required: "No Space selected",
   empty_store: "No ontology for this Space",

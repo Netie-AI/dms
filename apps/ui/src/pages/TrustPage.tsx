@@ -9,6 +9,7 @@ import {
   StatTile,
 } from "@/components/PageShell";
 import { fetchTrustRun, fetchTrustSummary } from "@/lib/api";
+import { publicTrustHint, trustCorpusRun, trustIsEmpty } from "@/lib/trustEmpty";
 import { useAsync } from "@/lib/useAsync";
 import type { TrustRun, TrustRunDetailItem, TrustSummary } from "@/lib/types";
 
@@ -263,8 +264,9 @@ export function TrustPage() {
   );
 
   const claim = data?.claim;
+  const empty = trustIsEmpty(data);
   const runs = Object.values(data?.runs ?? {});
-  const corpusRun = data?.runs?.corpus;
+  const corpusRun = trustCorpusRun(data?.runs);
   const thresholds = (data?.thresholds ?? {}) as Record<string, unknown>;
 
   return (
@@ -284,11 +286,21 @@ export function TrustPage() {
         }
       />
 
-      {data?.ok === false && (
+      {empty && (
+        <div
+          data-testid="trust-empty"
+          className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4"
+        >
+          <p className="font-medium">{data?.empty_title || "No benchmark run yet"}</p>
+          <p className="mt-2 text-sm text-[var(--color-ink-muted)]">{data?.how_to_run}</p>
+        </div>
+      )}
+
+      {data?.ok === false && !empty && (
         <DependencyNotice
           tone="danger"
           title="Evidence is unavailable"
-          hint={data.hint ?? "The answer engine did not respond. Refresh to try again."}
+          hint={publicTrustHint(data.hint)}
         />
       )}
 
@@ -323,7 +335,7 @@ export function TrustPage() {
       )}
 
       <AsyncBoundary loading={loading} error={error} onRetry={reload}>
-        {claim && (
+        {!empty && claim && (
           <div
             className={`mt-6 border px-4 py-4 ${
               claim.supported
@@ -340,15 +352,19 @@ export function TrustPage() {
               </Pill>
               {claim.phase && <Pill>phase {claim.phase}</Pill>}
             </div>
-            {claim.blockers?.length ? (
+            {claim.supported ? (
+              <p className="mt-2 text-sm">
+                Every recorded run is green and the corpus has reached its target size.
+              </p>
+            ) : claim.blockers?.length ? (
               <ul className="mt-2 list-inside list-disc text-sm text-[var(--color-ink)]">
                 {claim.blockers.map((b) => (
                   <li key={b}>{b}</li>
                 ))}
               </ul>
             ) : (
-              <p className="mt-2 text-sm">
-                Every recorded run is green and the corpus has reached its target size.
+              <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
+                The files on disk do not mark this claim supported.
               </p>
             )}
             {claim.corpus_target ? (
@@ -361,6 +377,8 @@ export function TrustPage() {
           </div>
         )}
 
+        {!empty && (
+        <>
         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <StatTile
             label="Confidently wrong"
@@ -420,8 +438,10 @@ export function TrustPage() {
             <CategoryTable run={corpusRun} />
           </Section>
         )}
+        </>
+        )}
 
-        {inspect && (
+        {!empty && inspect && (
           <Section
             title={`Cases · ${inspect.id}${inspect.outcome ? ` · ${inspect.outcome}` : ""}`}
             actions={

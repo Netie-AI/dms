@@ -140,16 +140,27 @@ async def _event_frames(ask_id: str) -> AsyncIterator[bytes]:
             return
 
 
-def events_router() -> APIRouter | None:
-    """Mount only when ``DMS_ASK_STREAM`` is on. Off, the route does not exist."""
-    if not stream_enabled():
-        return None
+async def _disabled_frames() -> AsyncIterator[bytes]:
+    """Flag off. One end event, no stages, and the ask body is not read."""
+    yield b"retry: 86400000\n\n"
+    yield b'data: {"enabled":false}\n\n'
+
+
+def events_router() -> APIRouter:
+    """Always mounted. ``DMS_ASK_STREAM`` off answers ``enabled: false`` and stores nothing."""
     out = APIRouter(prefix="/v1/studio", tags=["studio"])
 
     @out.get("/ask/{ask_id}/events")
     async def studio_ask_events(ask_id: str, cortex: CortexDep) -> StreamingResponse:
         if not valid_ask_id(ask_id):
             raise HTTPException(status_code=404, detail="ask_not_found")
+        headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        if not stream_enabled():
+            return StreamingResponse(
+                _disabled_frames(),
+                media_type="text/event-stream",
+                headers=headers,
+            )
         decision = compliance_gate(
             action="studio.ask_events",
             metadata={"task_id": "studio.ask_events"},
@@ -159,7 +170,7 @@ def events_router() -> APIRouter | None:
         return StreamingResponse(
             _event_frames(ask_id),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            headers=headers,
         )
 
     return out

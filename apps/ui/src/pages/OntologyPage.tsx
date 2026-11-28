@@ -343,6 +343,30 @@ export function OntologyPage() {
         }
       />
 
+      <AsyncBoundary loading={loading} error={error} onRetry={reload}>
+      {counts ? (
+      <div
+        data-testid="ontology-counts"
+        className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6"
+      >
+        <StatTile label="Object types" value={counts.object_types} />
+        <StatTile label="Links" value={counts.link_types} />
+        <StatTile
+          label="Governed actions"
+          value={counts.action_tools}
+          hint="invocable writes"
+        />
+        <StatTile label="Ledger events" value={counts.action_events} />
+        <StatTile label="Functions" value={counts.functions} />
+        <StatTile
+          label="Withheld props"
+          value={counts.sensitive_properties}
+          tone={counts.sensitive_properties ? "warn" : "neutral"}
+          hint="never sent to a model"
+        />
+      </div>
+      ) : null}
+
       {honest && (
         <DependencyNotice
           data-testid="ontology-honest-card"
@@ -355,24 +379,6 @@ export function OntologyPage() {
 
       {!honest && (
       <>
-      <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        <StatTile label="Object types" value={counts?.object_types ?? "—"} />
-        <StatTile label="Links" value={counts?.link_types ?? "—"} />
-        <StatTile
-          label="Governed actions"
-          value={counts?.action_tools ?? "—"}
-          hint="invocable writes"
-        />
-        <StatTile label="Ledger events" value={counts?.action_events ?? "—"} />
-        <StatTile label="Functions" value={counts?.functions ?? "—"} />
-        <StatTile
-          label="Withheld props"
-          value={counts?.sensitive_properties ?? "—"}
-          tone={counts?.sensitive_properties ? "warn" : "neutral"}
-          hint="never sent to a model"
-        />
-      </div>
-
       {data?.summary.objects_without_metrics?.length ? (
         <DependencyNotice
           title={`${data.summary.objects_without_metrics.length} object type(s) have no governed metric`}
@@ -404,7 +410,6 @@ export function OntologyPage() {
         />
       </div>
 
-      <AsyncBoundary loading={loading} error={error} onRetry={reload}>
         {tab === "objects" && (
           <Section title="Object types" count={objects.length}>
             <ul className="flex flex-col gap-2">
@@ -545,9 +550,9 @@ export function OntologyPage() {
             </ul>
           </Section>
         )}
-      </AsyncBoundary>
       </>
       )}
+      </AsyncBoundary>
     </Page>
   );
 }

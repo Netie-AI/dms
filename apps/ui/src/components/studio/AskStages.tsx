@@ -93,7 +93,12 @@ export function AskStages({ stages, onCancel }: Props) {
 
 let streamOff = false;
 
-/** Subscribe to stage events for one ask id. A 404 (flag off) stops further connects. */
+/** Flag off sends this and no stages. It is not an error. */
+export function isDisabledStreamEvent(body: unknown): boolean {
+  return !!body && typeof body === "object" && (body as { enabled?: unknown }).enabled === false;
+}
+
+/** Subscribe to stage events for one ask id. Flag off closes quietly. */
 export function useAskStages(askId: string | null): AskStageEvent[] {
   const [stages, setStages] = useState<AskStageEvent[]>([]);
   useEffect(() => {
@@ -110,6 +115,11 @@ export function useAskStages(askId: string | null): AskStageEvent[] {
       try {
         body = JSON.parse(msg.data) as AskStageEvent;
       } catch {
+        return;
+      }
+      if (isDisabledStreamEvent(body)) {
+        streamOff = true;
+        source.close();
         return;
       }
       if (typeof body.stage !== "string" || typeof body.t_ms !== "number") return;

@@ -335,6 +335,9 @@ export type TrustSummary = Degradable & {
   runs?: Record<string, TrustRun>;
   claim: TrustClaim;
   ask_path?: AskPathScore[];
+  empty?: boolean;
+  empty_title?: string;
+  how_to_run?: string;
 };
 
 export type TrustRunDetailItem = {
