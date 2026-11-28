@@ -32,7 +32,7 @@ from dms_executor.acl import (
     mint_manifest_for_session,
     resolve_session_acl,
 )
-from dms_executor.ao_compile import compile_source
+from dms_executor.ao_compile import ao_compile_resilient, compile_source, space_compile_tables
 from dms_executor.batch_ingest import ingest_batch
 from dms_executor.bronze import (
     IngestReceipt,
@@ -2428,7 +2428,9 @@ __all__ = [
     "canonical_space_id",
     "is_demo_space",
     "default_readable_tables",
+    "ao_compile_resilient",
     "compile_source",
+    "space_compile_tables",
     "connect_serving",
     "warehouse_path",
     "serving_sync_state",
