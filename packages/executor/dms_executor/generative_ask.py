@@ -497,7 +497,10 @@ def load_verified_ontology(
         target = onto
         declared = True
     elif onto_from_data_enabled():
-        target = Ontology.from_store()
+        from dms_core.control_plane.onto_data import use_ask_space
+
+        with use_ask_space(space_id):
+            target = Ontology.from_store()
         declared = True
     else:
         from dms_executor.demo_grants import is_demo_space
@@ -4079,14 +4082,19 @@ def maybe_generative_ask(
     *args: Any, **kwargs: Any
 ) -> dict[str, Any] | None:
     """Bind the ask clock, then stamp ``timings`` on the envelope."""
+    from dms_core.control_plane.onto_data import use_ask_space
+
     from dms_executor.ask_ladder import bind_climb, reset_climb
     from dms_executor.scale_miss import bind_turn, reset_turn
 
+    raw_space = kwargs.get("space_id")
+    space_id = raw_space if isinstance(raw_space, str) else None
     token = ensure_clock()
     climb = bind_climb(None)
     turn_token = bind_turn(None)
     try:
-        env = _maybe_generative_ask_impl(*args, **kwargs)
+        with use_ask_space(space_id):
+            env = _maybe_generative_ask_impl(*args, **kwargs)
         if isinstance(env, dict):
             attach_timings(env)
         return env

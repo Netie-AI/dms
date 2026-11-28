@@ -55,7 +55,10 @@ def validate_generated_sql(
     """None when the flag is off. The caller executes only on ``pass``."""
     if not def_validate_enabled():
         return None
-    onto = Ontology.from_store()
+    from dms_core.control_plane.onto_data import use_ask_space
+
+    with use_ask_space(space_id):
+        onto = Ontology.from_store()
     meta = _meta(onto)
     provenance = _provenance(meta)
     parsed = _parse(sql)

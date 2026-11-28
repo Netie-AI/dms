@@ -9,6 +9,11 @@ Swap: in-memory, or Postgres over ``dms.ontology_versions`` and
 only when ``DATABASE_URL`` is set, the factory returns
 ``PostgresOntologyDataStore``. Otherwise the in-memory store.
 
+``DMS_ONTO_SPACE_SCOPE`` defaults off. On, ``approved_items(space_id)``
+returns rows whose version ``space_id`` is the asking Space, plus a
+version with ``space_id`` null only when a steward set provenance
+``tenant_wide`` true. A missing ``space_id`` is not that mark.
+
 ponytail: ``deny_steward`` is process-local on either store. Upgrade path: a
 membership read.
 """
@@ -18,7 +23,9 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -30,6 +37,7 @@ from dms_core.control_plane.session import set_tenant_context
 
 KINDS = ("object", "link", "measure", "grain", "pii")
 STATUSES = ("proposed", "approved", "revoked")
+SCOPE_FLAG = "DMS_ONTO_SPACE_SCOPE"
 
 _LOCK = threading.Lock()
 #: Same default as ``Settings.dms_tenant_id``. Used only when the flag is on.
@@ -260,6 +268,89 @@ def _approval_provenance(ref: str, actor: str) -> dict[str, str]:
     return {"approval_ref": ref, "approved_by": actor}
 
 
+def onto_space_scope_enabled() -> bool:
+    """True only when ``DMS_ONTO_SPACE_SCOPE`` is the digit 1. Unset is off."""
+    return os.environ.get(SCOPE_FLAG, "0").strip() == "1"
+
+
+def _space_key(value: str | None) -> str | None:
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    return _uuid_text(raw) or raw
+
+
+def _tenant_wide_version(version: VersionRow | None) -> bool:
+    """Null ``space_id`` counts only when a steward set ``tenant_wide`` true."""
+    if version is None or _space_key(version.space_id) is not None:
+        return False
+    return version.provenance.get("tenant_wide") is True
+
+
+def _in_ask_space(version: VersionRow | None, space_id: str | None) -> bool:
+    if _tenant_wide_version(version):
+        return True
+    key = _space_key(space_id)
+    if version is None or key is None:
+        return False
+    return _space_key(version.space_id) == key
+
+
+def _scope_maps(
+    versions: Mapping[str, VersionRow],
+    items: Mapping[str, ItemRow],
+    space_id: str | None,
+) -> tuple[dict[str, VersionRow], dict[str, ItemRow]]:
+    kept_versions = {vid: ver for vid, ver in versions.items() if _in_ask_space(ver, space_id)}
+    kept_items = {iid: row for iid, row in items.items() if row.version_id in kept_versions}
+    return kept_versions, kept_items
+
+
+def _version_provenance(
+    body: Mapping[str, Any], *, tenant_wide: bool, space_id: str | None
+) -> dict[str, Any]:
+    """Version provenance. ``tenant_wide`` is set only with no Space id."""
+    prov = proposal_provenance(body, version=True)
+    if tenant_wide and _space_key(space_id) is None:
+        prov["tenant_wide"] = True
+    return prov
+
+
+_ASK_SPACE: ContextVar[str | None] = ContextVar("dms_onto_ask_space", default=None)
+
+
+def bind_ask_space(space_id: str | None) -> Token[str | None]:
+    """Remember the Space this ask is for. The caller resets the token."""
+    return _ASK_SPACE.set(_space_key(space_id))
+
+
+def reset_ask_space(token: Token[str | None]) -> None:
+    _ASK_SPACE.reset(token)
+
+
+def ask_space_id() -> str | None:
+    return _ASK_SPACE.get()
+
+
+@contextmanager
+def use_ask_space(space_id: str | None) -> Iterator[None]:
+    """Bind ``space_id`` while the flag is on. Flag off does not touch the ask.
+
+    None leaves a Space an outer ask already bound. The ask entry binds
+    None itself so the next ask does not keep the previous Space.
+    """
+    if not onto_space_scope_enabled() or space_id is None:
+        yield
+        return
+    token = bind_ask_space(space_id)
+    try:
+        yield
+    finally:
+        reset_ask_space(token)
+
+
 _PROVENANCE_SKIP = frozenset({"question", "text", "rows", "samples", "sql"})
 
 
@@ -342,6 +433,7 @@ class OntologyDataStore:
         created_by: str,
         space_id: str | None = None,
         tenant_id: str = "",
+        tenant_wide: bool = False,
     ) -> dict[str, Any]:
         if body.get("served"):
             raise ValueError("an ontology proposal is never served")
@@ -361,7 +453,7 @@ class OntologyDataStore:
             tenant_id=tenant_id,
             space_id=space_id,
             source=proposal_source(body),
-            provenance=proposal_provenance(body, version=True),
+            provenance=_version_provenance(body, tenant_wide=tenant_wide, space_id=space_id),
             created_by=created_by,
             ts=_now(),
         )
@@ -443,8 +535,14 @@ class OntologyDataStore:
         row.ts = _now()
         return row
 
-    def approved_items(self) -> list[dict[str, Any]]:
+    def approved_items(self, space_id: str | None = None) -> list[dict[str, Any]]:
         rows = [row for row in self._items.values() if row.status == "approved"]
+        if onto_space_scope_enabled():
+            rows = [
+                row
+                for row in rows
+                if _in_ask_space(self._versions.get(row.version_id), space_id)
+            ]
         rows.sort(key=lambda row: (row.ts, row.id))
         return [_public_item(row) for row in rows]
 
@@ -453,8 +551,14 @@ class OntologyDataStore:
         rows.sort(key=lambda row: (row.ts, row.id))
         return [_public_item(row) for row in rows]
 
-    def diff(self, version_id: str | None = None) -> dict[str, Any]:
-        return _diff_rows(self._versions, self._items, version_id)
+    def diff(
+        self, version_id: str | None = None, *, space_id: str | None = None
+    ) -> dict[str, Any]:
+        versions: Mapping[str, VersionRow] = self._versions
+        items: Mapping[str, ItemRow] = self._items
+        if onto_space_scope_enabled():
+            versions, items = _scope_maps(versions, items, space_id)
+        return _diff_rows(versions, items, version_id)
 
 
 class PostgresOntologyDataStore:
@@ -493,6 +597,7 @@ class PostgresOntologyDataStore:
         created_by: str,
         space_id: str | None = None,
         tenant_id: str = "",
+        tenant_wide: bool = False,
     ) -> dict[str, Any]:
         if body.get("served"):
             raise ValueError("an ontology proposal is never served")
@@ -517,7 +622,7 @@ class PostgresOntologyDataStore:
             tenant_id=tenant,
             space_id=space,
             source=proposal_source(body),
-            provenance=proposal_provenance(body, version=True),
+            provenance=_version_provenance(body, tenant_wide=tenant_wide, space_id=space),
             created_by=created_by,
             ts=ts,
         )
@@ -729,13 +834,17 @@ class PostgresOntologyDataStore:
             return None
         return _item_from_db(fetched)
 
-    def approved_items(self) -> list[dict[str, Any]]:
-        return [_public_item(row) for row in self._items_by_status("approved")]
+    def approved_items(self, space_id: str | None = None) -> list[dict[str, Any]]:
+        if not onto_space_scope_enabled():
+            return [_public_item(row) for row in self._items_by_status("approved")]
+        return [_public_item(row) for row in self._approved_scoped(space_id)]
 
     def revoked_items(self) -> list[dict[str, Any]]:
         return [_public_item(row) for row in self._items_by_status("revoked")]
 
-    def diff(self, version_id: str | None = None) -> dict[str, Any]:
+    def diff(
+        self, version_id: str | None = None, *, space_id: str | None = None
+    ) -> dict[str, Any]:
         tenant = self._tenant(None)
         conn = self._connect()
         try:
@@ -768,7 +877,47 @@ class PostgresOntologyDataStore:
             raise
         finally:
             conn.close()
+        if onto_space_scope_enabled():
+            versions, items = _scope_maps(versions, items, space_id)
         return _diff_rows(versions, items, version_id)
+
+    def _approved_scoped(self, space_id: str | None) -> list[ItemRow]:
+        """Approved rows for one Space, plus steward-marked tenant-wide rows."""
+        tenant = self._tenant(None)
+        space = _uuid_text(space_id)
+        wide = (
+            "v.space_id IS NULL AND COALESCE(v.provenance, '{}'::jsonb) "
+            "@> '{\"tenant_wide\": true}'::jsonb"
+        )
+        if space is None:
+            where = wide
+            params: tuple[Any, ...] = ("approved",)
+        else:
+            where = f"(v.space_id = %s::uuid OR ({wide}))"
+            params = ("approved", space)
+        conn = self._connect()
+        try:
+            set_tenant_context(conn, tenant, role="steward")
+            fetched = conn.execute(
+                f"""
+                SELECT i.id::text, i.tenant_id::text, i.version_id::text, i.kind,
+                       i.payload, i.status, i.source, i.provenance,
+                       i.created_by::text, i.approved_by, i.approval_ref, i.ts
+                  FROM dms.ontology_items i
+                  JOIN dms.ontology_versions v ON v.id = i.version_id
+                 WHERE i.status = %s
+                   AND ({where})
+                 ORDER BY i.ts, i.id
+                """,
+                params,
+            ).fetchall()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return [_item_from_db(record) for record in fetched]
 
     def _items_by_status(self, status: str) -> list[ItemRow]:
         tenant = self._tenant(None)
@@ -869,8 +1018,11 @@ def reset_ontology_data_store() -> None:
         _PG_KEY = None
 
 
-def approved_items() -> list[dict[str, Any]]:
-    return ontology_data_store().approved_items()
+def approved_items(space_id: str | None = None) -> list[dict[str, Any]]:
+    store = ontology_data_store()
+    if onto_space_scope_enabled():
+        return store.approved_items(space_id)
+    return store.approved_items()
 
 
 def revoked_items() -> list[dict[str, Any]]:
@@ -883,10 +1035,12 @@ def store_proposal(
     created_by: str,
     space_id: str | None = None,
     tenant_id: str = "",
+    tenant_wide: bool = False,
 ) -> dict[str, Any]:
     return ontology_data_store().store_proposal(
         body,
         created_by=created_by,
         space_id=space_id,
         tenant_id=tenant_id,
+        tenant_wide=tenant_wide,
     )

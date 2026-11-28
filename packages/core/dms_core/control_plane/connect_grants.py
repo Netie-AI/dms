@@ -13,10 +13,14 @@ table, once the parked Postgres grant tables are actually read.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from threading import Lock
+
+_FLAG = "DMS_SQL_SOURCE_BIND"
+_ON = frozenset({"1", "true", "yes", "on"})
 
 _TABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
@@ -60,6 +64,11 @@ _audit: list[_Audit] = []
 
 def _now() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def sql_source_bind_enabled() -> bool:
+    """``DMS_SQL_SOURCE_BIND`` default off. On, a studio SQL land is a Space source."""
+    return os.environ.get(_FLAG, "0").strip().lower() in _ON
 
 
 def clean_tables(tables: list[str] | tuple[str, ...]) -> tuple[str, ...]:
@@ -193,6 +202,59 @@ def is_connected_space(space_id: str) -> bool:
 def granted_tables(space_id: str) -> tuple[str, ...]:
     with _lock:
         return tuple(sorted(_grants.get(space_id, {})))
+
+
+def proposed_ungranted(space_id: str | None = None) -> set[str]:
+    """Tables a registered source exposed that a steward has not granted.
+
+    ``space_id`` set: that Space only. ``None``: exposed somewhere and granted
+    by nobody, so a grant in one Space is not hidden by another Space's land.
+    Used only when ``DMS_SQL_SOURCE_BIND`` is on. A landed name is not a grant.
+    """
+    with _lock:
+        if space_id is None:
+            exposed: set[str] = set()
+            granted: set[str] = set()
+            for src in _sources.values():
+                exposed.update(src.exposed)
+                held = _grants.get(src.space_id, {})
+                granted.update(
+                    name for name, owner in held.items() if owner == src.source_id
+                )
+            return exposed - granted
+        out: set[str] = set()
+        for src in _sources.values():
+            if src.space_id != space_id:
+                continue
+            held = _grants.get(src.space_id, {})
+            for name in src.exposed:
+                if held.get(name) != src.source_id:
+                    out.add(name)
+        return out
+
+
+def sources_for_space(space_id: str) -> list[dict[str, object]]:
+    """Sources registered for this Space. Same fields the sources list shows."""
+    with _lock:
+        out: list[dict[str, object]] = []
+        for src in _sources.values():
+            if src.space_id != space_id:
+                continue
+            held = _grants.get(src.space_id, {})
+            granted = sorted(name for name, owner in held.items() if owner == src.source_id)
+            out.append(
+                {
+                    "id": src.source_id,
+                    "kind": "sql",
+                    "ref": src.connector_id,
+                    "scope": "team",
+                    "space_id": src.space_id,
+                    "space_name": None,
+                    "exposed_tables": list(src.exposed),
+                    "granted_tables": granted,
+                }
+            )
+        return out
 
 
 def connected_table_names() -> set[str]:

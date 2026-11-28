@@ -39,11 +39,13 @@ from dms_api.routes import (
     studio,
     studio_adjust,
     studio_chat,
+    studio_sql_bind,
     trust,
 )
 from dms_api.settings import get_settings
 from dms_api.store.binding import StoreBinding
 from dms_api.store.memory import DemoSpaceStore
+from dms_api.tenant_http import install as install_tenant_errors
 from dms_api.wiring import build_ask_service
 
 logger = logging.getLogger(__name__)
@@ -145,8 +147,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.cortex = cortex
     ask = build_ask_service(cortex)
     app.state.ask_service = ask
+    mcp_life = getattr(app.state, "mcp_v2_lifespan", None)
     try:
-        yield
+        if mcp_life is not None:
+            async with mcp_life:
+                yield
+        else:
+            yield
     finally:
         ask.close()
         cortex.close()
@@ -182,6 +189,10 @@ def create_app() -> FastAPI:
             status_code=422, content={"detail": _validation_detail_without_input(exc)}
         )
 
+    # A missing dms.tenants row is a 409 on every write route. The body is the
+    # code only: the driver error can quote the statement.
+    install_tenant_errors(app)
+
     app.include_router(health.router, tags=["health"])
     app.include_router(ping.router, tags=["skeleton"])
     app.include_router(spaces.router)
@@ -204,10 +215,17 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     if settings.dms_mcp:
         app.include_router(mcp.router)
+    app.state.mcp_v2_lifespan = None
+    if settings.dms_mcp_v2:
+        from dms_api.mcp_server.transport import mount_mcp
+
+        app.state.mcp_v2_lifespan = mount_mcp(app)
     if insight_proof.enabled():
         app.include_router(insight_proof.router)
     if studio_adjust.enabled():
         app.include_router(studio_adjust.router)
+    if studio_sql_bind.enabled():
+        app.include_router(studio_sql_bind.router)
     return app
 
 

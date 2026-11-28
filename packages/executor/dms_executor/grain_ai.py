@@ -209,7 +209,10 @@ def map_question_to_grains(
         heard = thin_understand_question(question, examples)
     heard = dict(heard)
     question_text = str(heard.get("question") or "")
-    candidates = approved_grain_names()
+    from dms_core.control_plane.onto_data import use_ask_space
+
+    with use_ask_space(space_id):
+        candidates = approved_grain_names()
     transport = _TRANSPORT.get() or default_transport
     try:
         first = _one_reading(

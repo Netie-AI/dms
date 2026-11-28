@@ -879,8 +879,15 @@ class Executor:
         # recorded here, so the scrub and the served-SQL check read it rather
         # than opening a connection of their own.
         grant_turn = begin_grant_turn(self, space_id)
+        from dms_core.control_plane.onto_data import (
+            bind_ask_space,
+            onto_space_scope_enabled,
+            reset_ask_space,
+        )
+
         from dms_executor.route_stamp import freeze_route
 
+        space_token = bind_ask_space(space_id) if onto_space_scope_enabled() else None
         try:
             from dms_executor.ai_first import ai_first_enabled, begin_example_turn
             from dms_executor.arbiter import arbiter_enabled
@@ -1037,6 +1044,8 @@ class Executor:
                 attach_timings(masked)
             return masked
         finally:
+            if space_token is not None:
+                reset_ask_space(space_token)
             if example_token is not None:
                 from dms_executor.ai_first import end_example_turn
 
@@ -1161,6 +1170,27 @@ class Executor:
             raise
         except Exception:  # noqa: BLE001 -- named refusal, never the whole space
             granted, grant_read = [], False
+        # FDE-SPACE-GRANT-01: a Space whose SQL source is bound has no grant
+        # until a steward grants tables. Both lanes abstain. An ungranted
+        # bronze name is not grounded. Flag off keeps the empty-grant fall
+        # through below.
+        from dms_core.control_plane.connect_grants import (
+            is_connected_space,
+            sql_source_bind_enabled,
+        )
+
+        if (
+            grant_read
+            and not granted
+            and sql_source_bind_enabled()
+            and space_id
+            and is_connected_space(canonical_space_id(space_id))
+        ):
+            env = path_miss_envelope(
+                question, "ungranted", space_id=space_id, session_id=session_id
+            )
+            self._store_turn(session_id, space_id, env)
+            return env
         if not grant_read or (not granted and not allow_cortex):
             env = path_miss_envelope(
                 question, GRANT_UNREADABLE, space_id=space_id, session_id=session_id
