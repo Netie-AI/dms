@@ -16,15 +16,16 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
+from dms_executor.demo_warehouse import SERVING_DIALECT
 from dms_executor.semantic_import.normalize import rows, text
 
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _READS = {
-    "snowflake": ("snowflake", "duckdb", "ansi"),
-    "genie": ("databricks", "spark", "duckdb", "ansi"),
-    "osi": ("duckdb", "ansi", "snowflake"),
-    "dbt": ("duckdb", "ansi"),
-    "wren": ("duckdb", "ansi"),
+    "snowflake": ("snowflake", SERVING_DIALECT, "ansi"),
+    "genie": ("databricks", "spark", SERVING_DIALECT, "ansi"),
+    "osi": (SERVING_DIALECT, "ansi", "snowflake"),
+    "dbt": (SERVING_DIALECT, "ansi"),
+    "wren": (SERVING_DIALECT, "ansi"),
 }
 _GRANT_HEADS = frozenset({"ungranted", "sql_relation_not_granted"})
 
