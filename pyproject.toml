@@ -29,6 +29,13 @@ dependencies = [
   "python-multipart>=0.0.9",
   "PyYAML>=6.0",
   "openpyxl>=3.1",
+  # DMS_SIGN (default off). PAdES signatures via pyHanko. Swap: another PAdES
+  # library with the same sign/verify result. reportlab draws the unsigned
+  # page. pypdf stamps a disclosure copy. pillow reads a drawn signature.
+  "pyhanko>=0.25,<0.40",
+  "reportlab>=4,<5",
+  "pypdf>=5,<7",
+  "pillow>=10,<12",
   # pandas.DataFrame.to_parquet in scripts/load_adventureworks.py --extract
   "pyarrow>=14",
 ]
