@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
+import { CreateDocsPanel, seedsFromMessages } from "@/components/studio/CreateDocsPanel";
 import { ReadyGuide } from "@/components/studio/ReadyGuide";
 import { ChatTurn } from "@/components/studio/ChatTurn";
+import { CreateSurface } from "@/components/studio/CreateSurface";
 import { useApp } from "@/context/AppContext";
 import {
   describeApiError,
@@ -61,7 +63,7 @@ function askableLeaves(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {
 }
 
 export function StudioPage() {
-  const { setActivity, activeSpaceId } = useApp();
+  const { setActivity, activeSpaceId, messages } = useApp();
   const navigate = useNavigate();
 
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -349,6 +351,9 @@ export function StudioPage() {
           </button>
         </div>
       </div>
+
+      <CreateSurface spaceId={activeSpaceId} />
+      <CreateDocsPanel seeds={seedsFromMessages(messages)} spaceId={activeSpaceId} startOpen />
 
       <button
         type="button"

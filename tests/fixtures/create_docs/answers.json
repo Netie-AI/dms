@@ -1,0 +1,26 @@
+[
+  {
+    "question": "Revenue by region",
+    "text": "North was 1200. South was 800.",
+    "sql": "SELECT region, SUM(revenue) AS revenue FROM sales GROUP BY region",
+    "sources": ["sales"],
+    "as_of": "2026-11-28T09:00:00Z",
+    "space_id": "space_sales",
+    "rows": [
+      {"region": "North", "revenue": 1200},
+      {"region": "South", "revenue": 800}
+    ]
+  },
+  {
+    "question": "Orders by channel",
+    "text": "Web was 40. Store was 10.",
+    "sql": "SELECT channel, COUNT(*) AS orders FROM orders GROUP BY channel",
+    "sources": ["orders"],
+    "as_of": "2026-11-28T09:05:00Z",
+    "space_id": "space_orders",
+    "rows": [
+      {"channel": "Web", "orders": 40},
+      {"channel": "Store", "orders": 10}
+    ]
+  }
+]

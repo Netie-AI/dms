@@ -50,6 +50,48 @@ from dms_executor.bronze_sheet_ask import (
 )
 from dms_executor.connectors import connector_tables
 from dms_executor.contract_infer import infer_contract
+from dms_executor.create_context import (
+    context_enabled as create_context_enabled,
+)
+from dms_executor.create_context import (
+    list_visible as create_context_list,
+)
+from dms_executor.create_context import (
+    save_chat as create_context_save_chat,
+)
+from dms_executor.create_context import (
+    save_project as create_context_save_project,
+)
+from dms_executor.create_context import (
+    share as create_context_share,
+)
+from dms_executor.create_surface import (
+    confirm_final as create_confirm_final,
+)
+from dms_executor.create_surface import (
+    draft_events as create_draft_events,
+)
+from dms_executor.create_surface import (
+    generate_artifact as create_generate_artifact,
+)
+from dms_executor.create_surface import (
+    improve_artifact as create_improve_artifact,
+)
+from dms_executor.create_surface import (
+    read_artifact as create_read_artifact,
+)
+from dms_executor.create_surface import (
+    read_guide as create_read_guide,
+)
+from dms_executor.create_surface import (
+    restore_version as create_restore_version,
+)
+from dms_executor.create_surface import (
+    save_guide as create_save_guide,
+)
+from dms_executor.create_surface import (
+    start_session as create_start_session,
+)
 from dms_executor.db_connector import (
     DEFAULT_MAX_ROWS,
     SourceConfig,
@@ -2860,6 +2902,20 @@ __all__ = [
     "list_warehouse_tables",
     "list_verified_queries",
     "ask_failed_envelope",
+    "create_confirm_final",
+    "create_draft_events",
+    "create_generate_artifact",
+    "create_improve_artifact",
+    "create_read_artifact",
+    "create_read_guide",
+    "create_restore_version",
+    "create_save_guide",
+    "create_start_session",
+    "create_context_enabled",
+    "create_context_list",
+    "create_context_save_chat",
+    "create_context_save_project",
+    "create_context_share",
     "check_gold_sql",
     "execute_gold",
     "guard_benchmark_write",

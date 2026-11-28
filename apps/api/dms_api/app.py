@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -46,6 +47,7 @@ from dms_api.routes import (
     studio,
     studio_adjust,
     studio_chat,
+    studio_create,
     studio_knowledge,
     studio_sql_bind,
     trust,
@@ -247,6 +249,9 @@ def create_app() -> FastAPI:
     app.include_router(studio_adjust.status_router)
     if studio_adjust.enabled():
         app.include_router(studio_adjust.router)
+    app.include_router(studio_create.status_router)
+    if studio_create.enabled():
+        app.include_router(studio_create.router)
     if studio_sql_bind.enabled():
         app.include_router(studio_sql_bind.router)
     if ready.mount_enabled():
@@ -261,7 +266,23 @@ def create_app() -> FastAPI:
         from dms_api.routes import sign as sign_routes
 
         app.include_router(sign_routes.router)
+    # Doc and slides stay unmounted until the digit 1. Status is mounted when
+    # the package imports, so the UI can see enabled:false without Cortex.
+    _mount_create_docs(app)
     return app
+
+
+def _mount_create_docs(app: FastAPI) -> None:
+    on = os.environ.get("DMS_CREATE_DOCS", "0").strip() == "1"
+    try:
+        from dms_api.routes import create_docs as create_docs_routes
+    except ImportError:
+        if on:
+            raise
+        return
+    app.include_router(create_docs_routes.status_router)
+    if on:
+        app.include_router(create_docs_routes.router)
 
 
 app = create_app()

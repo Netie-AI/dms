@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dms-create-docs"
+version = "0.1.0"
+description = "Doc and slides harness. The provider writes the file. Flag DMS_CREATE_DOCS, default off."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["create_docs*"]
