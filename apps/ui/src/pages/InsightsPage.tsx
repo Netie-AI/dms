@@ -18,13 +18,13 @@ import {
 } from "@/lib/insightProof";
 
 /**
- * INS-PROOF-03 - /insights, reachable by URL only (no nav link).
+ * INS-PROOF-03 - /insights. The nav link is hidden unless GET /v1/features
+ * says insight_proof is on, and this page is not mounted until then, so a
+ * flag-off visit never calls /v1/insight-proof/status.
  *
- * It asks GET /v1/insight-proof/status first. With the flag off that is a 404
- * and this page renders the same redirect to "/" as the catch-all route, so the
- * URL behaves as it does on main. Any status other than a 2xx that says
- * enabled, and a fetch that rejects (API down), redirect the same way, and
- * nothing of the feature (not even its header) renders before the answer.
+ * Once mounted, it asks GET /v1/insight-proof/status first. Any status other
+ * than a 2xx that says enabled, and a fetch that rejects (API down), redirect
+ * home, and nothing of the feature renders before the answer.
  */
 
 export type InsightsView =

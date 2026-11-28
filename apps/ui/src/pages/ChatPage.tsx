@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { AnswerMessage } from "@/components/AnswerMessage";
+import { AnswerRowsTable } from "@/components/AnswerRowsTable";
+import { SimpleChart } from "@/components/SimpleChart";
 import { ResultView } from "@/components/studio/ResultView";
 import { ScopeChip } from "@/components/ScopeChip";
 import { seedsFromMessages } from "@/components/studio/CreateDocsPanel";
 import { useApp, type ChatMessage } from "@/context/AppContext";
+import { splitInsights } from "@/lib/splitInsights";
 
 function askedBefore(messages: ChatMessage[], index: number): string {
   for (let i = index - 1; i >= 0; i -= 1) {
@@ -28,10 +31,10 @@ export function ChatPage() {
     spacesFromApi,
     suggestions,
     sessionId,
+    latestAnswer,
     cortexContractOk,
     cortexContractRoutesOk,
     cortexTrustOk,
-    cortexTrustHint,
     askQueueDepth,
     composerPaused,
     composerPauseReason,
@@ -43,6 +46,8 @@ export function ChatPage() {
   const location = useLocation();
   const navigate = useNavigate();
   const [draft, setDraft] = useState("");
+  const [deliverableNote, setDeliverableNote] = useState<string | null>(null);
+  const [showApp, setShowApp] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -54,7 +59,13 @@ export function ChatPage() {
   // re-apply a scope or draft the user has since cleared.
   useEffect(() => {
     const s = location.state as
-      | { groundedTables?: string[]; groundedLabels?: string[]; draftQuestion?: string }
+      | {
+          groundedTables?: string[];
+          groundedLabels?: string[];
+          draftQuestion?: string;
+          deliverable?: "app";
+          deliverableNote?: string;
+        }
       | null;
     let consumed = false;
     if (s?.groundedTables?.length) {
@@ -66,10 +77,23 @@ export function ChatPage() {
       setDraft(draftQuestion);
       consumed = true;
     }
+    if (s?.deliverable === "app") {
+      setShowApp(true);
+      setDeliverableNote(
+        latestAnswer
+          ? "App shows this answer. No figure is added."
+          : "Ask a question first. An app is that answer, with its table and chart. No figure is added.",
+      );
+      consumed = true;
+    }
+    if (s?.deliverableNote) {
+      setDeliverableNote(s.deliverableNote);
+      consumed = true;
+    }
     if (consumed) {
       navigate(location.pathname, { replace: true, state: null });
     }
-  }, [location, navigate, setGrounded]);
+  }, [location, navigate, setGrounded, latestAnswer]);
 
   const submit = (q: string) => {
     const trimmed = q.trim();
@@ -128,32 +152,23 @@ export function ChatPage() {
                 {spacesFromApi ? " Spaces loaded from DMS API." : " Using offline Space fixtures."}
               </p>
             )}
-            {askMode === "live" && cortexContractRoutesOk === false && (
+            {askMode === "live" && cortexContractOk === false && (
               <p className="mt-3 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-danger)]">
-                Cortex is up but contract routes are missing (submit would 404). Restart Cortex from
-                the current tree:{" "}
-                <code className="font-mono">D:\Cortex\scripts\start_cortex_engine.ps1 -Port 8010 -Force</code>
+                The analysis service is not reachable. A question stays on screen and says when no
+                figure can be given.
+              </p>
+            )}
+            {askMode === "live" && cortexContractOk !== false && cortexContractRoutesOk === false && (
+              <p className="mt-3 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-danger)]">
+                The analysis service is missing its contract routes, so a question cannot be submitted.
               </p>
             )}
             {askMode === "live" &&
-              cortexContractRoutesOk !== false &&
-              cortexContractOk === false &&
-              cortexTrustOk === false && (
-              <p className="mt-3 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-danger)]">
-                Cortex or OpenVault trust is degraded (JWKS refresh). Ask may fail until siblings
-                restart.{" "}
-                {cortexTrustHint ??
-                  "Pin OPENVAULT_HOME=D:\\OpenVault\\.openvault, then restart Cortex + DMS API."}
-              </p>
-            )}
-            {askMode === "live" &&
-              cortexContractRoutesOk !== false &&
               cortexContractOk !== false &&
+              cortexContractRoutesOk !== false &&
               cortexTrustOk === false && (
               <p className="mt-3 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-2 text-xs text-[var(--color-danger)]">
-                Live trust gap — OpenVault JWKS / Cortex refresh.{" "}
-                {cortexTrustHint ??
-                  "Pin OPENVAULT_HOME=D:\\OpenVault\\.openvault, mint via smoke, POST /v1/contract/jwks/refresh."}
+                Sign-in trust is not ready, so a question may not run.
               </p>
             )}
             <p className="mt-8 text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
@@ -251,6 +266,34 @@ export function ChatPage() {
         )}
       </div>
 
+      {deliverableNote && (
+        <p
+          data-testid="deliverable-note"
+          className="border-t border-[var(--color-line)] px-4 py-2 text-xs text-[var(--color-ink-muted)]"
+        >
+          {deliverableNote}
+        </p>
+      )}
+      {showApp && (
+        <section data-testid="created-app" className="border-t border-[var(--color-line)] px-4 py-3">
+          <h2 className="text-sm font-semibold text-[var(--color-ink)]">App</h2>
+          {latestAnswer ? (
+            <div className="mt-2">
+              <p className="text-sm text-[var(--color-ink)]">{splitInsights(latestAnswer.text).prose}</p>
+              {(latestAnswer.rows?.length ?? 0) > 0 && (
+                <AnswerRowsTable rows={latestAnswer.rows ?? []} />
+              )}
+              {latestAnswer.chart && (latestAnswer.rows?.length ?? 0) > 0 && (
+                <SimpleChart chart={latestAnswer.chart} rows={latestAnswer.rows ?? []} />
+              )}
+            </div>
+          ) : (
+            <p className="mt-2 text-sm text-[var(--color-ink-muted)]">
+              No answer yet. Ask first. The app uses that answer and adds no figure.
+            </p>
+          )}
+        </section>
+      )}
       <div className="shrink-0 border-t border-[var(--color-line)] bg-[var(--color-panel)]/80 px-4 py-3">
         <div className={`mx-auto flex ${chatWidth} flex-col gap-2`}>
           <ScopeChip />

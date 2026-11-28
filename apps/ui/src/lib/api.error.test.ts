@@ -17,4 +17,17 @@ describe("describeApiError", () => {
       "The write was refused. No error detail was returned.",
     );
   });
+
+  it("turns a closed plan body into a sentence and drops the transport class", () => {
+    const body = JSON.stringify({
+      ok: false,
+      sql_ran: false,
+      code: "cortex_unavailable",
+      message: "unreachable: ConnectError",
+    });
+    const sentence = describeApiError(body);
+    expect(sentence).toMatch(/not reachable/);
+    expect(sentence).not.toContain("ConnectError");
+    expect(sentence).not.toContain("{");
+  });
 });

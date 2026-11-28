@@ -345,9 +345,9 @@ export function StudioPage() {
             title="Add CSV or Excel files"
             disabled={busy}
             onClick={() => fileInput.current?.click()}
-            className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-accent)] text-xl font-semibold leading-none text-white hover:opacity-90 disabled:opacity-50"
+            className="flex h-10 items-center justify-center rounded-full bg-[var(--color-accent)] px-3 text-xs font-semibold leading-none text-white hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? "…" : "+"}
+            {busy ? "…" : "Add"}
           </button>
         </div>
       </div>
@@ -494,6 +494,7 @@ export function StudioPage() {
             )}
           </div>
           <div
+            id="connector"
             data-testid="studio-sql-source"
             className="max-lg:mt-4 lg:col-span-2 lg:row-start-2"
           >
