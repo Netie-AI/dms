@@ -93,6 +93,8 @@ export const REASON_COPY: Record<string, string> = {
   path_not_allowed: "That path is not allowed, so no figure was given.",
   pii: "That asks for personal data, so no figure was given.",
   predictive: "History is not a forecast, so no figure was given.",
+  projection_mismatch:
+    "The result has a column the question did not ask to see, so no figure was given until you confirm it.",
   query_sql_empty: "No query was produced, so no figure was given.",
   rank_window_entity_mismatch:
     "The ranking does not match the thing being counted, so no figure was given.",
@@ -121,6 +123,9 @@ export const REASON_COPY: Record<string, string> = {
   submit_failed: "The query could not be submitted, so no figure was given.",
   syntax: "The query was not valid, so no figure was given.",
   ticket_missing: "The failure record was missing, so no figure was given.",
+  tie_envelope:
+    "The tied rows could not be shown as a checked answer, so no figure was given until you confirm the full set.",
+  two_readings: "Two readings of this question both fit, so no figure was given until you choose.",
   type_mismatch: "A value had the wrong kind for its column, so no figure was given.",
   uncertified_paraphrase: "That wording is not the certified question, so no figure was given.",
   undeclared_join:
