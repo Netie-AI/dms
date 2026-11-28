@@ -5,6 +5,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
 import { AccessCard } from "@/components/AccessCard";
+import { GrantAskbackCard, readGrantAskback } from "@/components/GrantAskbackCard";
 import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
 import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "@/components/studio/abstainReason";
 import { ResultView } from "@/components/studio/ResultView";
@@ -367,6 +368,7 @@ export function AnswerMessage({
   const offer = reconfirmCard(envelope);
   const clarify = readClarify(envelope);
   const access = readAccess(envelope);
+  const grant = readGrantAskback(envelope);
 
   async function pickReading(reading: ClarifyReading) {
     if (!clarify || cardBusy) return;
@@ -552,6 +554,9 @@ export function AnswerMessage({
           serverSpaceIds={memberIds}
           onSwitch={switchSpace}
         />
+      ) : null}
+      {grant ? (
+        <GrantAskbackCard card={grant} productMode={productMode} onResult={setFollow} />
       ) : null}
       {showLayer && (
         <div className="mb-3 border border-[var(--color-line)] bg-[var(--color-paper)] px-3 py-2.5">

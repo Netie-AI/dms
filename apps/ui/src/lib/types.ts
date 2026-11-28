@@ -130,6 +130,23 @@ export type AnswerEnvelope = {
   clarify?: ClarifyBlock | null;
   /** Present only when the table is not shared with this Space. */
   access_needed?: AccessNeeded | null;
+  /** UX-GRANT-DATA-01. Absent when DMS_GRANT_ASKBACK is off. */
+  grant_askback?: GrantAskback | null;
+};
+
+export type GrantAskback = {
+  kind?: string;
+  text: string;
+  formula?: string;
+  sql_preview?: string;
+  actions: { id: string; label: string }[];
+  picks?: { name: string }[];
+  token?: string;
+  table?: string;
+  column?: string;
+  source?: string;
+  can_grant?: boolean;
+  served?: boolean;
 };
 
 export type SpaceSummary = {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -164,6 +165,14 @@ class ExportXlsxBody(BaseModel):
     """INSIGHTS-EXPORT-01 — serialize an existing ask envelope. No re-ask."""
 
     envelope: dict[str, Any]
+
+
+class GrantAskbackBody(BaseModel):
+    token: str = Field(min_length=8, max_length=80)
+    action: Literal["grant", "define_measure", "pick_measure", "connect_source"]
+    allow: bool = False
+    measure: str | None = None
+    formula: str | None = Field(default=None, max_length=500)
 
 
 class ExportBiBody(BaseModel):
@@ -830,3 +839,46 @@ def chat_export_bi(
             status_code=400,
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
+
+
+@router.post("/grant-askback")
+def chat_grant_askback(
+    body: GrantAskbackBody,
+    settings: SettingsDep,
+    cortex: CortexDep,
+    ask: AskServiceDep,
+) -> dict[str, Any]:
+    """Steward allow grants, then the original question is asked again.
+
+    Flag off is a missing route. The ask itself never grants.
+    """
+    if os.environ.get("DMS_GRANT_ASKBACK", "0").strip() != "1":
+        raise HTTPException(status_code=404, detail="Not Found")
+    decision = compliance_gate(
+        action="chat.grant_askback",
+        actor=settings.dms_actor_user_id,
+        metadata={"task_id": "chat.grant_askback", "action": body.action},
+        client=cortex,
+    )
+    enforce(decision)
+    from dms_api.wiring import apply_grant_askback
+
+    try:
+        return apply_grant_askback(
+            token=body.token,
+            action=body.action,
+            allow=body.allow,
+            role=settings.dms_actor_role,
+            actor=settings.dms_actor_user_id,
+            rerun=ask.live_ask,
+            warehouse=getattr(ask, "_warehouse", None),
+            dialect=getattr(ask, "dialect", None),
+            formula=body.formula,
+            measure=body.measure,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except KeyError:
+        raise HTTPException(status_code=404, detail="grant_askback_unknown") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None

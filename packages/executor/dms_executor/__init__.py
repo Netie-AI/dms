@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -1030,6 +1031,20 @@ class Executor:
             if isinstance(masked, dict):
                 hide_echo(masked, "", grants=turn_grants())
                 attach_timings(masked)
+                # Flag off: this branch does not import the card module.
+                if os.environ.get("DMS_GRANT_ASKBACK", "0").strip() == "1":
+                    from dms_executor.grant_askback import consider
+                    from dms_executor.verified_queries import openvault_embedder
+
+                    consider(
+                        masked,
+                        question=question,
+                        space_id=space_id if isinstance(space_id, str) else None,
+                        session_id=session_id if isinstance(session_id, str) else None,
+                        warehouse=self._warehouse,
+                        grantable=set(turn_grants() or ()),
+                        embedder=openvault_embedder(self._cortex),
+                    )
             return masked
         finally:
             if example_token is not None:

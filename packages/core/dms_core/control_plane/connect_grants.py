@@ -209,6 +209,30 @@ def source_for(source_id: str) -> _Source | None:
         return _sources.get(source_id)
 
 
+def exposed_ungranted(space_id: str) -> tuple[dict[str, str], ...]:
+    """Tables a connected source listed that this Space has not been granted.
+
+    Read only. Granting still goes through ``grant_tables``.
+    """
+    with _lock:
+        granted = set(_grants.get(space_id, {}))
+        rows: list[dict[str, str]] = []
+        for src in _sources.values():
+            if src.space_id != space_id:
+                continue
+            for table in src.exposed:
+                if table in granted:
+                    continue
+                rows.append(
+                    {
+                        "source_id": src.source_id,
+                        "connector_id": src.connector_id,
+                        "table": table,
+                    }
+                )
+        return tuple(rows)
+
+
 def audit_rows() -> list[dict[str, object]]:
     with _lock:
         return [row.as_dict() for row in _audit]

@@ -438,6 +438,39 @@ def connect_audit_rows() -> list[dict[str, Any]]:
     return audit_rows()
 
 
+def apply_grant_askback(
+    *,
+    token: str,
+    action: str,
+    allow: bool,
+    role: str,
+    actor: str,
+    rerun: Any,
+    warehouse: Any = None,
+    dialect: str | None = None,
+    formula: str | None = None,
+    measure: str | None = None,
+) -> dict[str, Any]:
+    """Steward grant or a filed measure. The ask service re-runs the question."""
+    from dms_core.control_plane.onto_data import ontology_data_store
+    from dms_executor.grant_askback import apply_action
+
+    return apply_action(
+        token=token,
+        action=action,
+        allow=allow,
+        role=role,
+        actor=actor,
+        token_id=actor,
+        store=ontology_data_store(),
+        rerun=rerun,
+        warehouse=warehouse,
+        dialect=dialect,
+        formula=formula,
+        measure=measure,
+    )
+
+
 def sql_source_ingest(
     *,
     kind: str,

@@ -76,7 +76,12 @@ describe("Chat reconfirm card", () => {
   it("stays byte-identical when clarify and access_needed are absent", () => {
     const base = envelope(null);
     const html = markup(base);
-    const withNulls = markup({ ...base, clarify: null, access_needed: null });
+    const withNulls = markup({
+      ...base,
+      clarify: null,
+      access_needed: null,
+      grant_askback: null,
+    });
     const junk = markup({
       ...base,
       clarify: { question: "Which one?" } as AnswerEnvelope["clarify"],
@@ -86,7 +91,35 @@ describe("Chat reconfirm card", () => {
     expect(junk).toBe(html);
     expect(html).not.toContain("clarify-card");
     expect(html).not.toContain("access-card");
+    expect(html).not.toContain("grant-askback-card");
     expect(html).not.toContain("Ask the steward for access");
+  });
+
+  it("shows the grant card and no result figure", () => {
+    const html = markup({
+      ...envelope(null),
+      text: "Sales by month needs sales.amount from erp, which this Space can't see yet. Ask steward to grant / Define the measure / Pick a different measure",
+      rows: [],
+      grant_askback: {
+        kind: "grant",
+        text: "Sales by month needs sales.amount from erp, which this Space can't see yet. Ask steward to grant / Define the measure / Pick a different measure",
+        formula: "SUM(sales.amount)",
+        sql_preview: "SELECT SUM(sales.amount) AS value FROM sales",
+        actions: [
+          { id: "grant", label: "Ask steward to grant" },
+          { id: "define_measure", label: "Define the measure" },
+          { id: "pick_measure", label: "Pick a different measure" },
+        ],
+        token: "gak_example",
+        can_grant: true,
+        served: false,
+      },
+    });
+    expect(html).toContain('data-testid="grant-askback-card"');
+    expect(html).toContain("sales.amount from erp");
+    expect(html).toContain("Ask steward to grant");
+    expect(html).toContain("SUM(sales.amount)");
+    expect(html).not.toContain("12345");
   });
 
   it("hides the card when the offer has no suggestion and no definition", () => {

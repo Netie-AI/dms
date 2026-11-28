@@ -62,6 +62,11 @@ _FLAG_ON = frozenset({"1", "true", "yes", "on"})
 _SAVE_PROVENANCE = frozenset({"yes:reconfirm", "yes:vote"})
 _ADJUST_FLAG = "DMS_STUDIO_ADJUST"
 PROVENANCE_STEWARD_ADJUSTED = "steward_adjusted"
+# Filed from a grant ask-back. A proposal, never an answer to replay.
+PROVENANCE_GRANT_PROPOSAL = "grant_askback_proposed"
+_NOT_AN_ANSWER = frozenset(
+    {PROVENANCE_STEWARD_ADJUSTED, PROVENANCE_GRANT_PROPOSAL}
+)
 # ponytail: fixed preview size. Upgrade: the ask page size, still read-only.
 _ADJUST_PREVIEW_CAP = 200
 _SKIP_ROUTES = frozenset({"verified_query", "l1_governed_metric"})
@@ -503,6 +508,9 @@ def _rank_examples(
 def _example_ok(row: dict[str, Any], allowed: set[str], dialect: str | None) -> bool:
     if row.get("revoked_at"):
         return False
+    # A grant proposal is not a few-shot. Steward edits stay examples.
+    if row.get("provenance") == PROVENANCE_GRANT_PROPOSAL:
+        return False
     sql_text = str(row.get("sql") or "")
     if _sql_outside_space(sql_text, allowed):
         return False
@@ -644,6 +652,7 @@ def _save_example(
     dialect: str | None,
     provenance: str,
     actor: str | None = None,
+    proposal: bool = False,
 ) -> dict[str, Any] | None:
     sid = scope_key(space_id)
     q = (question or "").strip()
@@ -652,11 +661,14 @@ def _save_example(
         return None
     db = warehouse or warehouse_path()
     allowed = grantable if grantable is not None else _grantable(space_id, db)
-    gap = serve_gap(sql_text, grantable=allowed, dialect=dialect)
-    if gap:
-        return None
-    if _sql_outside_space(sql_text, allowed):
-        return None
+    # A proposal is not served, so an ungranted table in the preview is not a
+    # grant. Lookup and few-shot both skip this provenance.
+    if not proposal:
+        gap = serve_gap(sql_text, grantable=allowed, dialect=dialect)
+        if gap:
+            return None
+        if _sql_outside_space(sql_text, allowed):
+            return None
     try:
         reject_hostile_chat_sql(sql_text)
     except SecurityEvent:
@@ -671,10 +683,11 @@ def _save_example(
         con = _connect(db, write=True)
         try:
             _ensure(con)
-            con.execute(
-                f"DELETE FROM {_TABLE} WHERE space_id = ? AND question_norm = ?",
-                [sid, qn],
-            )
+            if not proposal:
+                con.execute(
+                    f"DELETE FROM {_TABLE} WHERE space_id = ? AND question_norm = ?",
+                    [sid, qn],
+                )
             con.execute(
                 f"""
                 INSERT INTO {_TABLE}
@@ -744,10 +757,33 @@ def revoke_verified_example(
 
 
 def _replayable(row: dict[str, Any]) -> bool:
-    """Exact-match replay. ``steward_adjusted`` is a writer example, never an answer."""
+    """Exact-match replay. Steward edits and grant proposals are never answers."""
     if row.get("revoked_at"):
         return False
-    return row.get("provenance") != PROVENANCE_STEWARD_ADJUSTED
+    return row.get("provenance") not in _NOT_AN_ANSWER
+
+
+def save_proposed_example(
+    *,
+    question: str,
+    sql: str,
+    space_id: str | None,
+    warehouse: Path | None,
+    dialect: str | None,
+    actor: str | None = None,
+) -> dict[str, Any] | None:
+    """Store one grant-askback proposal. Lookup will not replay it."""
+    return _save_example(
+        question=question,
+        sql=sql,
+        space_id=space_id,
+        warehouse=warehouse,
+        grantable=set(),
+        dialect=dialect,
+        provenance=PROVENANCE_GRANT_PROPOSAL,
+        actor=actor,
+        proposal=True,
+    )
 
 
 def _hit(question: str, row: dict[str, Any]) -> bool:

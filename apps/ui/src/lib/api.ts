@@ -259,6 +259,35 @@ export async function postAccessRequest(
   return { ok: true };
 }
 
+/** POST /v1/chat/grant-askback. 404 means the flag is off. Allow is only sent for grant. */
+export async function postGrantAskback(body: {
+  token: string;
+  action: string;
+  allow?: boolean;
+  measure?: string;
+  formula?: string;
+}): Promise<{ note: string; envelope: AnswerEnvelope | null }> {
+  const res = await fetch("/api/v1/chat/grant-askback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      token: body.token,
+      action: body.action,
+      allow: body.allow === true,
+      measure: body.measure,
+      formula: body.formula,
+    }),
+  });
+  if (res.status === 404) return { note: "Grant ask-back is off.", envelope: null };
+  if (res.status === 403) return { note: "A steward has to allow this grant.", envelope: null };
+  if (!res.ok) return { note: "The request was refused.", envelope: null };
+  const payload = (await res.json()) as AnswerEnvelope;
+  if (!payload || typeof payload.badge !== "string") {
+    return { note: "Sent.", envelope: null };
+  }
+  return { note: "Sent.", envelope: payload };
+}
+
 /** What the access card does after the POST. A missing route hides the button. */
 export function nextAccessRequestState(result: AccessRequestResult): {
   routeMissing: boolean;
