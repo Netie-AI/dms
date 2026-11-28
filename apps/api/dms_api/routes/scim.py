@@ -59,7 +59,7 @@ class MapIn(BaseModel):
     kind: str
     source: str = Field(min_length=1, max_length=200)
     priority: int = Field(default=100, ge=0, le=10000)
-    role: str
+    directory_role: str
     gov_role: str = "member"
     daily_usd: float | None = Field(default=None, ge=0, le=1_000_000)
     monthly_usd: float | None = Field(default=None, ge=0, le=1_000_000)
@@ -685,7 +685,7 @@ def _check_map(body: MapIn) -> None:
             status_code=422,
             detail={"code": "scim_map", "message": "Kind is department or group."},
         )
-    if body.role not in ROLES:
+    if body.directory_role not in ROLES:
         raise HTTPException(
             status_code=422,
             detail={"code": "scim_map", "message": "Role is admin, steward, analyst, or viewer."},
@@ -737,7 +737,7 @@ def scim_put_map(body: MapIn, settings: SettingsDep, cortex: CortexDep) -> dict[
         kind=body.kind,
         source=body.source.strip(),
         priority=body.priority,
-        role=body.role,
+        role=body.directory_role,
         gov_role=body.gov_role,
         daily_usd=body.daily_usd,
         monthly_usd=body.monthly_usd,

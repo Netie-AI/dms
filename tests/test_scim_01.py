@@ -130,7 +130,7 @@ def _map(client: TestClient, **extra: object) -> dict[str, object]:
     body = {
         "kind": "department",
         "source": "Finance",
-        "role": "analyst",
+        "directory_role": "analyst",
         "gov_role": "member",
         "priority": 50,
         "spaces": [FINANCE],
@@ -451,7 +451,7 @@ def test_mapping_assigns_role_budget_and_ignores_a_prefix(monkeypatch: pytest.Mo
         client,
         kind="department",
         source="Finance",
-        role="steward",
+        directory_role="steward",
         priority=10,
         spaces=[WAREHOUSE],
     )
@@ -484,12 +484,12 @@ def test_mapping_assigns_role_budget_and_ignores_a_prefix(monkeypatch: pytest.Mo
 
 def test_group_mapping_beats_a_higher_priority_number(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(monkeypatch)
-    _map(client, priority=50, role="analyst")
+    _map(client, priority=50, directory_role="analyst")
     _map(
         client,
         kind="group",
         source="Engineers",
-        role="steward",
+        directory_role="steward",
         priority=5,
         spaces=[FINANCE, WAREHOUSE],
     )
@@ -528,7 +528,7 @@ def test_deactivate_revokes_the_session_and_the_next_login(monkeypatch: pytest.M
         json={
             "kind": "department",
             "source": "Finance",
-            "role": "analyst",
+            "directory_role": "analyst",
             "gov_role": "member",
             "priority": 10,
             "spaces": [FINANCE],

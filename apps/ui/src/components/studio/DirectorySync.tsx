@@ -193,7 +193,7 @@ export function DirectorySync() {
       body: JSON.stringify({
         kind: form.kind,
         source: form.source.trim(),
-        role: form.role,
+        directory_role: form.role,
         gov_role: form.gov_role,
         priority: Number(form.priority || "100"),
         spaces,
