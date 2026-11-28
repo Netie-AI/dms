@@ -390,6 +390,112 @@ jobs:
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           python -m pytest tests/test_connect_v2.py -q --tb=short -p no:cacheprovider
 
+  # FEAT-CONNECT-GAUSS-01. Optional. Skips when the image will not pull.
+  # opengauss/opengauss is MulanPSL-2.0. gvenzl/oracle-free packages Oracle
+  # Database Free (Oracle Free Use Terms), not a paid edition.
+  connect-gauss-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev,gauss,oracle]"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Probe when the images are available
+        shell: bash
+        run: |
+          set -uo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          gauss=0
+          oracle=0
+          if timeout 120 docker pull opengauss/opengauss:5.0.0; then
+            docker run -d --name opengauss -p 15432:5432 \
+              -e GS_PASSWORD=Ci_only_Gauss1 opengauss/opengauss:5.0.0 || true
+            gauss=1
+          else
+            echo "skipped: opengauss image unavailable"
+          fi
+          if timeout 180 docker pull gvenzl/oracle-free:23-slim; then
+            docker run -d --name oracle-free -p 1521:1521 \
+              -e ORACLE_PASSWORD=Ci_only_Oracle1 gvenzl/oracle-free:23-slim || true
+            oracle=1
+          else
+            echo "skipped: oracle free image unavailable"
+          fi
+          if [ "$gauss" != 1 ] && [ "$oracle" != 1 ]; then
+            echo "skipped: no engine image"
+            exit 0
+          fi
+          if [ "$gauss" = 1 ]; then
+            ready=0
+            for _ in $(seq 1 30); do
+              if python -c 'import socket; s=socket.create_connection(("127.0.0.1",15432),2); s.close()'; then
+                ready=1
+                break
+              fi
+              sleep 4
+            done
+            if [ "$ready" = 1 ]; then
+              export DMS_CONNECT_GAUSS_LIVE=1
+              export CONNECT_GAUSS_HOST=127.0.0.1
+              export CONNECT_GAUSS_PORT=15432
+              export CONNECT_GAUSS_USER=gaussdb
+              export CONNECT_GAUSS_DB=postgres
+              export CONNECT_GAUSS_PASSWORD=Ci_only_Gauss1
+            else
+              echo "skipped: opengauss did not accept connections"
+            fi
+          fi
+          if [ "$oracle" = 1 ]; then
+            ready=0
+            for _ in $(seq 1 40); do
+              if python -c 'import socket; s=socket.create_connection(("127.0.0.1",1521),2); s.close()'; then
+                ready=1
+                break
+              fi
+              sleep 6
+            done
+            if [ "$ready" = 1 ]; then
+              export DMS_CONNECT_ORACLE_LIVE=1
+              export CONNECT_ORACLE_HOST=127.0.0.1
+              export CONNECT_ORACLE_PORT=1521
+              export CONNECT_ORACLE_USER=system
+              export CONNECT_ORACLE_DB=FREEPDB1
+              export CONNECT_ORACLE_PASSWORD=Ci_only_Oracle1
+            else
+              echo "skipped: oracle free did not accept connections"
+            fi
+          fi
+          if [ "${DMS_CONNECT_GAUSS_LIVE:-}" != 1 ] && [ "${DMS_CONNECT_ORACLE_LIVE:-}" != 1 ]; then
+            echo "skipped: engines did not become ready"
+            exit 0
+          fi
+          python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live
+
   lint-type-test:
     runs-on: ubuntu-latest
     # The cap dates from when pytest ran inside this job (18.5 min on main

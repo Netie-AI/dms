@@ -290,6 +290,12 @@ def _dialect_name(kind: str | None) -> str | None:
     key = (kind or "").strip().lower()
     if not key:
         return None
+    if key == "gauss":
+        from dms_executor.drivers.gauss import enabled
+
+        if not enabled():
+            return None
+        key = "postgres"
     mapped = _DIALECTS.get(key, key)
     try:
         Dialect.get_or_raise(mapped)

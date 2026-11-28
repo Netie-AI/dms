@@ -1631,7 +1631,11 @@ def connect_v2_probe(
         _note_probe(
             code, actor=actor, token_id=token_id, database_url=database_url, tenant_id=tenant_id
         )
-        return {"ok": False, "error": code, "latency_ms": 0}
+        body: dict[str, Any] = {"ok": False, "error": code, "latency_ms": 0}
+        doc = getattr(exc, "doc", "")
+        if doc:
+            body["doc"] = doc
+        return body
     except Exception:
         _note_probe(
             code, actor=actor, token_id=token_id, database_url=database_url, tenant_id=tenant_id
@@ -1787,13 +1791,14 @@ def connect_v2_schema(
         raise KeyError(source_id)
     live = False
     error: str | None = None
+    probed: dict[str, Any] | None = None
     secret = ""
     user = ""
     password = ""
     try:
         secret = _resolve_connect_secret(ask, row["cred_ref"])
         user, password = _connect_v2().parse_login(secret)
-        _connect_v2().probe_source(
+        probed = _connect_v2().probe_source(
             kind=row["kind"],
             host=row["host"],
             port=int(row["port"]),
@@ -1813,7 +1818,7 @@ def connect_v2_schema(
         secret = ""
         user = ""
         password = ""
-    return {
+    body: dict[str, Any] = {
         "source_id": source_id,
         "live": live,
         "error": error,
@@ -1821,6 +1826,11 @@ def connect_v2_schema(
         "truncated": False,
         "bounded": False,
     }
+    if live and row["kind"] in {"gauss", "oracle"} and isinstance(probed, dict):
+        body["dialect"] = str(probed.get("dialect") or "")
+        body["keys"] = probed.get("keys") or {"primary_keys": {}, "foreign_keys": []}
+        body["prompt"] = str(probed.get("prompt") or "")
+    return body
 
 
 def _live_row(database_url: str, tenant_id: str, source_id: str) -> dict[str, Any]:
