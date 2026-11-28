@@ -2516,6 +2516,15 @@ def ai_lane_sql_check(
     return None
 
 
+def _harness_grants(grantable: set[str]) -> dict[str, set[str]]:
+    """Table grants for the SQL tool. Empty while the harness flag is off."""
+    from dms_core.harness_sec import enabled as harness_enabled
+
+    if not harness_enabled():
+        return {}
+    return {"grants": set(grantable)}
+
+
 def _run_extract_loop(
     *,
     question: str,
@@ -2743,7 +2752,7 @@ def _run_extract_loop(
         ),
         budget=budget,
         schema_ladder=schema_ladder,
-        grants=set(grantable),
+        **_harness_grants(grantable),
     )
     if first.get("abstained") or not first.get("rows"):
         return first
@@ -2911,7 +2920,7 @@ def _second_reading(
         recover_failures=True,
         budget=budget,
         schema_ladder=schema_ladder,
-        grants=set(grantable),
+        **_harness_grants(grantable),
     )
     note_rungs(second_attempts)
     second_sql = str(second.get("sql_used") or "")

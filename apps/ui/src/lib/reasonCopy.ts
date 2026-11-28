@@ -61,6 +61,7 @@ export const REASON_COPY: Record<string, string> = {
   intent_spec_unverified: "The intended meaning could not be verified, so no figure was given.",
   join_unconfirmed:
     "That join is not confirmed for this Space, so no figure was given until you say yes.",
+  judge_refused: "A required check did not pass, so no figure was given.",
   ladder_exhausted: "The attempts to answer are used up, so no figure was given.",
   loop_exhausted: "The attempts to repair the query are used up, so no figure was given.",
   measure_drift:
@@ -108,6 +109,7 @@ export const REASON_COPY: Record<string, string> = {
   reserved_param: "That question uses a reserved date setting, so no figure was given.",
   retry: "A later try can answer this. Nothing was served just now.",
   revoked_measure: "That measure was revoked, so no figure was given.",
+  row_cap: "The query returned more rows than the limit, so no figure was given.",
   rules_off: "The checked rules for this answer are turned off, so no figure was given from them.",
   schema_repair_exhausted: "The attempts to repair the table names are used up, so no figure was given.",
   serving_deadline_exceeded: "The answer did not finish in the time allowed, so no figure was given.",
@@ -116,13 +118,16 @@ export const REASON_COPY: Record<string, string> = {
   serving_lease_cap: "Every answer slot is in use. Ask again in a moment.",
   serving_lease_queue_full: "The queue for answers is full. Ask again in a moment.",
   shape_misfit: "The query does not match the shape of the question, so no figure was given.",
+  sql_column_not_granted: "This Space is not allowed to read that column, so no figure was given.",
   sql_dialect_unknown: "The database dialect is unknown, so no figure was given.",
   sql_not_analyzable: "The query could not be read, so no figure was given.",
   sql_relation_not_granted: "This Space is not allowed to read that table, so no figure was given.",
   sql_relation_unresolved: "A table in the query could not be resolved, so no figure was given.",
   statement_not_allowed: "That statement is not a read, so it was not run.",
+  statement_timeout: "The query took longer than the time limit, so no figure was given.",
   submit_failed: "The query could not be submitted, so no figure was given.",
   syntax: "The query was not valid, so no figure was given.",
+  tenant_budget_denied: "This company has used its answer budget, so no figure was given.",
   ticket_missing: "The failure record was missing, so no figure was given.",
   tie_envelope:
     "The tied rows could not be shown as a checked answer, so no figure was given until you confirm the full set.",

@@ -2269,9 +2269,14 @@ class Executor:
             return abstain(gate or compiled or "reading_rejected")
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")
-        rows, err = run_readonly(
-            sql, Path(warehouse), grants=grantable, prompt=question
-        )
+        from dms_core.harness_sec import enabled as harness_enabled
+
+        if harness_enabled():
+            rows, err = run_readonly(
+                sql, Path(warehouse), grants=grantable, prompt=question
+            )
+        else:
+            rows, err = run_readonly(sql, Path(warehouse))
         if err or rows is None:
             return abstain(err or "execute_failed")
         env = build_answer_envelope(
@@ -2512,9 +2517,14 @@ class Executor:
         warehouse = self._warehouse
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")
-        rows, err = run_readonly(
-            sql, Path(warehouse), grants=grantable, prompt=question
-        )
+        from dms_core.harness_sec import enabled as harness_enabled
+
+        if harness_enabled():
+            rows, err = run_readonly(
+                sql, Path(warehouse), grants=grantable, prompt=question
+            )
+        else:
+            rows, err = run_readonly(sql, Path(warehouse))
         if err or rows is None:
             return abstain(err or "execute_failed")
         env = build_answer_envelope(
