@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - Slim: rebase onto 5b8da59
+
+- **Base.** Rebased onto `5b8da59` (#656). READY-02 rows stay. That merge did not switch the ask path.
+- **Stub.** Re-measured after the rebase, same line as `f40db70`: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. `DMS_RULES_LEGACY=0`: correct=0 wrong=0 reconfirm=34 abstain=10 refusal_ok=8 ai=0 rule=0.
+- **Lines.** Versus `5b8da59`: product py 312/136885 to 309/136098. Text 1026/307206 to 905/303627. Cold start before 0.8219, 0.7586, 0.7671; after 0.7479, 0.7585, 0.7399. See `SLIM_INVENTORY.md`.
+
 ## 2026-11-28 - Slim: clean-tree stamp
 
 - **Suite.** On `1203707`, the grade52 stamp tests that refused the dirty tree, plus `tests/test_rules_legacy_01.py`: 49 passed.

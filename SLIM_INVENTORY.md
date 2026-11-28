@@ -8,7 +8,7 @@ Rule paths that still serve answers are KEEP. They sit behind `DMS_RULES_LEGACY`
 
 ## What the rule paths serve
 
-Exec stub, `grade52 --main`, mode=stub-exec. Base is origin/main `fa0eeef` (same line).
+Exec stub, `grade52 --main`, mode=stub-exec. Same line on `fa0eeef` and after rebase onto `5b8da59`.
 
 | Switch | correct | wrong | reconfirm | ai | rule | of 52 |
 |--------|---------|-------|-----------|----|------|-------|
@@ -21,23 +21,23 @@ Exec stub, `grade52 --main`, mode=stub-exec. Base is origin/main `fa0eeef` (same
 
 ## Line count and cold start
 
-Live tree versus origin/main `fa0eeef`. Excludes `attic/`, `.git`, `.venv`, `node_modules`, `__pycache__`, `dist`, and `generated`. Count is files and newline count.
+Live tree versus origin/main `5b8da59` (#656). Excludes `attic/`, `.git`, `.venv`, `node_modules`, `__pycache__`, `dist`, and `generated`. Count is files and newline count. The delta matches the earlier count against `fa0eeef`: -3 product files, -787 product lines, -120 docs files.
 
 | Set | Before (files / lines) | After (files / lines) |
 |-----|------------------------|------------------------|
-| product py (`apps` `packages` `scripts`) | 308 / 135732 | 305 / 134945 |
-| product py+ts+tsx | 432 / 154206 | 429 / 153419 |
-| docs md | 195 / 7303 | 75 / 4323 |
-| text (py ts tsx md yml) | 1020 / 305461 | 899 / 301876 |
+| product py (`apps` `packages` `scripts`) | 312 / 136885 | 309 / 136098 |
+| product py+ts+tsx | 436 / 155359 | 433 / 154572 |
+| docs md | 196 / 7319 | 76 / 4339 |
+| text (py ts tsx md yml) | 1026 / 307206 | 905 / 303627 |
 
 Gitignored `playground/data/` is not in the count. `attic/` is not in the after column. The after column includes this file.
 
-Cold start is a fresh process importing `dms_api.app`, `DATABASE_URL` unset, three runs.
+Cold start is a fresh process importing `dms_api.app`, `DATABASE_URL` unset, three runs. Against `5b8da59`. An earlier trio against `fa0eeef` was 1.0635, 0.7270, 0.6944 before and 0.7443, 0.7023, 0.6928 after.
 
 | | seconds |
 |--|---------|
-| before `fa0eeef` | 1.0635, 0.7270, 0.6944 |
-| after this tree | 0.7443, 0.7023, 0.6928 |
+| before `5b8da59` | 0.8219, 0.7586, 0.7671 |
+| after this tree | 0.7479, 0.7585, 0.7399 |
 
 The steady imports sit in the same band. The first-import gap is process noise, not a harness change. Docs moved out of the import path.
 
