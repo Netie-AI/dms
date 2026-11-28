@@ -44,20 +44,19 @@ HEADERS = {"Authorization": f"Bearer {DMS_SECRET}", "X-OpenVault-Key": OV_KEY}
 CURSOR_KEY = "cursor_live_key_abc"
 
 
+def _recorded(name: str) -> dict[str, Any]:
+    path = Path(__file__).parent / "fixtures" / "create" / name
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        raise AssertionError(name)
+    return loaded
+
+
 def _app() -> dict[str, Any]:
-    return {
-        "kind": "app",
-        "title": "Orders",
-        "estimated_cost": 0.02,
-        "parts": [
-            {
-                "id": "by_month",
-                "title": "Orders by month",
-                "body": "The chart follows the granted table.",
-                "sql": "SELECT month, amount FROM orders ORDER BY month",
-            }
-        ],
-    }
+    content = _recorded("provider_app.json")["content"]
+    if not isinstance(content, dict):
+        raise AssertionError("provider_app")
+    return content
 
 
 def _deck() -> dict[str, Any]:
@@ -290,7 +289,8 @@ def test_stub_app_and_deck_through_the_adapter(
         "choices": {"inputs": ["orders"]},
     }
     style = {"prompt": "Quiet", "template": "Plain layout.", "brand": {}, "guide": "One screen."}
-    app_stub = _patch(monkeypatch, [_usage(_app(), 11, 0.02)])
+    recorded = _recorded("provider_app.json")
+    app_stub = _patch(monkeypatch, [recorded])
     app = generate(
         {"kind": "app", "goal": "See order trend", "audience": "Founder"},
         context,

@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: CI replays a recorded provider app
+
+- **Fixture.** `tests/fixtures/create/provider_app.json` is the provider response CI replays through `generate`. Title Orders, cost 0.02. Not a live bill.
+- **Budget.** The OpenVault daily cap is the budget. A 402 stops the run. `DMS_CREATE_MAX_TOKENS` and a tenant `max_steps` of 1 do not.
+
 ## 2026-11-28 - DMS-CREATE-01: a shown app scores at least the direct ask
 
 - **Bar.** The Claude body is the direct ask (system prompt plus the same XML) plus tools and skills. A shown app is scored from `create_score.json` against those same words with the SQL and the citations removed. It is shown only when its points are at least that direct reading. A body that cites 18 from a granted row scores above a direct answer that cites 99999.
