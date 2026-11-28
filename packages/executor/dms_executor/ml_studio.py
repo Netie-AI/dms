@@ -285,8 +285,9 @@ def plan_job(
 def check_model_sql(sql: str, known: set[str]) -> str | None:
     """None when the statement is one aggregated read over known tables."""
     from dms_executor.ai_floor_direct import check_sql
+    from dms_executor.demo_warehouse import SERVING_DIALECT
 
-    why = check_sql(sql, "duckdb", {name.lower() for name in known})
+    why = check_sql(sql, SERVING_DIALECT, {name.lower() for name in known})
     if why:
         if why.startswith("sql_not_analyzable"):
             return "sql_not_analyzable"
@@ -297,7 +298,7 @@ def check_model_sql(sql: str, known: set[str]) -> str | None:
     from sqlglot import exp
 
     try:
-        tree = sqlglot.parse_one(sql, read="duckdb")
+        tree = sqlglot.parse_one(sql, read=SERVING_DIALECT)
     except Exception:  # noqa: BLE001
         return "sql_not_analyzable"
     if tree is None or not any(True for _ in tree.find_all(exp.AggFunc)):
