@@ -390,6 +390,39 @@ jobs:
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           python -m pytest tests/test_connect_v2.py -q --tb=short -p no:cacheprovider
 
+  # GENERALITY-HARNESS-01. Recorded fixtures only. No provider, no pack download.
+  # A red slice fails the lint-type-test gate below. Not a DMS measurement.
+  generality-offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the grader's two libraries
+        run: python -m pip install "sqlglot>=27,<28" "PyYAML>=6" "pytest>=8.0"
+
+      - name: Offline slice
+        run: python scripts/verify/generality.py offline --out generality-out
+
+      - name: Harness tests
+        run: python -m pytest tests/test_generality.py -q --tb=short -p no:cacheprovider --noconftest
+
+      - name: Upload the slice scoreboard
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generality-offline
+          if-no-files-found: ignore
+          path: |
+            generality-out/generality.json
+            generality-out/generality.md
+
   lint-type-test:
     runs-on: ubuntu-latest
     # The cap dates from when pytest ran inside this job (18.5 min on main
@@ -397,11 +430,11 @@ jobs:
     # and this job takes about a minute. The cap is not raised.
     timeout-minutes: 30
     # This job keeps its name and stays the single gate: it is red unless the
-    # two gates, every pytest shard, the live-pages smoke, and connect-v2 are
-    # green. `!cancelled()` is needed so a failed shard makes this job FAIL.
-    # Without it the job would be skipped, and a skipped required check counts
-    # as passing.
-    needs: [protected-paths, contract-pin, pytest, live-pages-smoke, connect-v2]
+    # two gates, every pytest shard, the live-pages smoke, connect-v2, and the
+    # generality offline slice are green. `!cancelled()` is needed so a failed
+    # shard makes this job FAIL. Without it the job would be skipped, and a
+    # skipped required check counts as passing.
+    needs: [protected-paths, contract-pin, pytest, live-pages-smoke, connect-v2, generality-offline]
     if: ${{ !cancelled() }}
     env:
       PYTHONUTF8: "1"
@@ -410,8 +443,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }} live-pages-smoke=${{ needs.live-pages-smoke.result }} connect-v2=${{ needs.connect-v2.result }}"
-          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ] || [ "${{ needs.live-pages-smoke.result }}" != "success" ] || [ "${{ needs.connect-v2.result }}" != "success" ]; then
+          echo "protected-paths=${{ needs.protected-paths.result }} contract-pin=${{ needs.contract-pin.result }} pytest=${{ needs.pytest.result }} live-pages-smoke=${{ needs.live-pages-smoke.result }} connect-v2=${{ needs.connect-v2.result }} generality-offline=${{ needs.generality-offline.result }}"
+          if [ "${{ needs.protected-paths.result }}" != "success" ] || [ "${{ needs.contract-pin.result }}" != "success" ] || [ "${{ needs.pytest.result }}" != "success" ] || [ "${{ needs.live-pages-smoke.result }}" != "success" ] || [ "${{ needs.connect-v2.result }}" != "success" ] || [ "${{ needs.generality-offline.result }}" != "success" ]; then
             echo "::error::a required job is not green (see the line above)"
             exit 1
           fi

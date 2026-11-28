@@ -1,0 +1,144 @@
+# GENERALITY-HARNESS-01. Manual full-pack eval. Not on pull_request.
+# The Mini-Dev zip is about 800MB and is not downloaded unless fetch_bird is true.
+# Exit 0 is a finished run. Exit 2 is the flag, a missing pack, or the budget.
+# Exit 1 is a grader failure (the buckets did not add up). Not PASS.
+name: generality-live
+
+on:
+  workflow_dispatch:
+    inputs:
+      budget_usd:
+        description: Hard spend cap in USD. The next call is refused before it can cross this.
+        required: true
+        type: string
+      max_usd_per_call:
+        description: Most one provider call may cost. Must be above 0 and at most the cap.
+        required: true
+        type: string
+      fetch_bird:
+        description: Download the Mini-Dev zip (about 800MB). Leave off unless you mean to.
+        required: false
+        type: boolean
+        default: false
+      bird:
+        description: Path to an already unpacked Mini-Dev tree. Used when fetch_bird is off.
+        required: false
+        type: string
+        default: ""
+      everyday:
+        description: Path to the 172 everyday questions.
+        required: false
+        type: string
+        default: ""
+      pharmacy:
+        description: Path to the unseen pharmacy pack. It must sit outside the repo.
+        required: false
+        type: string
+        default: ""
+      harborline_gold:
+        description: Path to Harborline gold.json (PR 659). Graded by executing its SQL.
+        required: false
+        type: string
+        default: ""
+      harborline_db:
+        description: Path to the Harborline sqlite file.
+        required: false
+        type: string
+        default: ""
+      harborline_source:
+        description: Path to a Harborline eval_pack source yaml.
+        required: false
+        type: string
+        default: ""
+      dms_api:
+        description: DMS API base for the one dms:server row. Flag profiles stay not_run.
+        required: false
+        type: string
+        default: ""
+      space_id:
+        description: Optional space id for POST /v1/chat/ask.
+        required: false
+        type: string
+        default: ""
+      openvault_url:
+        description: OpenVault base URL. Falls back to the OPENVAULT_URL secret.
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: generality-live-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the grader's two libraries
+        run: python -m pip install "sqlglot>=27,<28" "PyYAML>=6"
+
+      - name: Live generality eval
+        env:
+          DMS_GENERALITY: "1"
+          OPENVAULT_URL: ${{ secrets.OPENVAULT_URL }}
+          OPENVAULT_API_KEY: ${{ secrets.OPENVAULT_API_KEY }}
+          CORTEX_API_KEY: ${{ secrets.CORTEX_API_KEY }}
+          BUDGET_USD: ${{ inputs.budget_usd }}
+          MAX_USD: ${{ inputs.max_usd_per_call }}
+          FETCH_BIRD: ${{ inputs.fetch_bird }}
+          BIRD: ${{ inputs.bird }}
+          EVERYDAY: ${{ inputs.everyday }}
+          PHARMACY: ${{ inputs.pharmacy }}
+          HARBORLINE_GOLD: ${{ inputs.harborline_gold }}
+          HARBORLINE_DB: ${{ inputs.harborline_db }}
+          HARBORLINE_SOURCE: ${{ inputs.harborline_source }}
+          DMS_API: ${{ inputs.dms_api }}
+          SPACE_ID: ${{ inputs.space_id }}
+          OV_URL_INPUT: ${{ inputs.openvault_url }}
+        run: |
+          set -euo pipefail
+          args=(
+            scripts/verify/generality.py live
+            --out generality-out
+            --budget-usd "$BUDGET_USD"
+            --max-usd-per-call "$MAX_USD"
+          )
+          if [ -n "$OV_URL_INPUT" ]; then
+            args+=(--openvault-url "$OV_URL_INPUT")
+          fi
+          if [ "$FETCH_BIRD" = "true" ]; then
+            args+=(--fetch-bird "$RUNNER_TEMP/bird-minidev")
+          elif [ -n "$BIRD" ]; then
+            args+=(--bird "$BIRD")
+          fi
+          if [ -n "$EVERYDAY" ]; then args+=(--everyday "$EVERYDAY"); fi
+          if [ -n "$PHARMACY" ]; then args+=(--pharmacy "$PHARMACY"); fi
+          if [ -n "$HARBORLINE_GOLD" ]; then args+=(--harborline-gold "$HARBORLINE_GOLD"); fi
+          if [ -n "$HARBORLINE_DB" ]; then args+=(--harborline-db "$HARBORLINE_DB"); fi
+          if [ -n "$HARBORLINE_SOURCE" ]; then args+=(--harborline-source "$HARBORLINE_SOURCE"); fi
+          if [ -n "$DMS_API" ]; then args+=(--dms-api "$DMS_API"); fi
+          if [ -n "$SPACE_ID" ]; then args+=(--space-id "$SPACE_ID"); fi
+          python "${args[@]}"
+
+      - name: Upload the live scoreboard
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: generality-live
+          if-no-files-found: ignore
+          path: |
+            generality-out/generality.json
+            generality-out/generality.md
