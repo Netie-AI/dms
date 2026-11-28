@@ -1,10 +1,13 @@
 """BIRD-QUALIFIER-AI-01. Default off.
 
 On, named_filter, time_filter, time_grain, ungrounded_qualifier, and
-rank_window checks only produce notes. One OpenVault call with role
-``sql_verify`` judges the SQL against the question, the steward hint, the
-schema, EXPLAIN, and a LIMITed probe. Not honored repairs once. Unsure
-reconfirms. A literal the verifier cites must be in the granted column.
+rank_window checks only produce notes. Every candidate is sent to OpenVault
+role ``sql_verify``, notes or not. The call judges the SQL against the
+question, the steward hint, the schema, EXPLAIN, and a LIMITed probe.
+Not honored repairs once. Unsure reconfirms. No key, an error, an empty
+reply, or 402/429 after OpenVault's own ladder is unsure, then a typed
+reconfirm, and is not served. A literal the verifier cites must be in
+the granted column.
 
 Off, ``review_candidate`` returns the SQL unchanged and sends nothing.
 """
@@ -262,8 +265,8 @@ def review_candidate(
             notes.append(note)
     fn = transport if transport is not None else _TRANSPORT.get()
     fixer = repair if repair is not None else _REPAIR.get()
-    if fn is None and not _api_key() and not notes:
-        return _result("serve", sql, notes=[], repaired=repaired)
+    # Flag on: sql_verify runs on every candidate. Missing key, transport
+    # error, empty reply, and 402/429 are unsure. They do not serve.
     try:
         probed = _probe(sql, warehouse)
         schema = _schema(sql, warehouse, grantable)
@@ -428,6 +431,7 @@ def default_transport(body: dict[str, Any]) -> Any:
         status = exc.response.status_code
         if status in (401, 403):
             raise QualifierCallError("ov_unauthorized") from None
+        # 402 and 429 are terminal: OpenVault already walked its ladder.
         raise QualifierCallError(f"ov_http_{status}") from None
     except httpx.HTTPError:
         raise QualifierCallError("ov_unreachable") from None

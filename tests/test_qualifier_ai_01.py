@@ -19,7 +19,9 @@ from dms_executor.envelope import assert_envelope_valid
 from dms_executor.generative_ask import _submit_validated, validated_sql_reason
 from dms_executor.ontology import NO_SILENT_PAD, Coverage
 from dms_executor.qualifier_ai import (
+    QualifierCallError,
     bind_qualifier_transport,
+    candidate_notes,
     qualifier_ai_enabled,
     request_body,
     reset_qualifier_transport,
@@ -444,3 +446,116 @@ def test_submit_serves_the_honored_max_sql(tmp_path: Path, monkeypatch: pytest.M
     assert "MAX(points)" in str(env["sql_used"])
     assert env.get("served_route") == "model"
     assert submitted == [_MAX_SQL]
+
+
+def _assert_typed_reconfirm(out: dict[str, Any]) -> None:
+    assert out["action"] == "reconfirm"
+    env = out["envelope"]
+    assert_envelope_valid(env)
+    assert env["abstained"] is True
+    assert env["sql_used"] is None
+    assert env["rows"] == []
+    assert env["values"] == []
+    block = env["reconfirm"]
+    assert block["reason_code"] == "qualifier_ai"
+    assert block["requirement"]
+    assert block["suggested_question"]
+
+
+def _no_key(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    seen: list[str] = []
+
+    def missing(body: dict[str, Any]) -> Any:
+        seen.append(str(body.get("role")))
+        raise QualifierCallError("ov_api_key_missing")
+
+    monkeypatch.setattr("dms_executor.qualifier_ai.default_transport", missing)
+    return seen
+
+
+def test_flag_on_no_key_and_no_notes_reconfirms(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear(monkeypatch)
+    monkeypatch.setenv("DMS_QUALIFIER_AI", "1")
+    asked = "how many"
+    sql = "SELECT 1 AS n"
+    assert candidate_notes(asked, sql, warehouse=None, grantable=set()) == []
+    seen = _no_key(monkeypatch)
+    out = review_candidate(asked, sql, warehouse=None, grantable=set(), served_route="model")
+    assert seen == ["sql_verify"]
+    _assert_typed_reconfirm(out)
+
+
+def test_flag_on_no_key_with_notes_reconfirms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _clear(monkeypatch)
+    monkeypatch.setenv("DMS_QUALIFIER_AI", "1")
+    db = _lake(tmp_path)
+    asked = "points in 2019"
+    sql = "SELECT SUM(points) AS total FROM constructors"
+    assert candidate_notes(asked, sql, warehouse=db, grantable=_grants())
+    seen = _no_key(monkeypatch)
+    out = review_candidate(asked, sql, warehouse=db, grantable=_grants(), served_route="model")
+    assert seen == ["sql_verify"]
+    _assert_typed_reconfirm(out)
+
+
+def test_empty_or_terminal_verifier_reconfirms(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear(monkeypatch)
+    monkeypatch.setenv("DMS_QUALIFIER_AI", "1")
+    asked = "how many"
+    sql = "SELECT 1 AS n"
+
+    def empty(_body: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    out = review_candidate(
+        asked, sql, warehouse=None, grantable=set(), served_route="model", transport=empty
+    )
+    _assert_typed_reconfirm(out)
+
+    def missing(_body: dict[str, Any]) -> None:
+        return None
+
+    out = review_candidate(
+        asked, sql, warehouse=None, grantable=set(), served_route="model", transport=missing
+    )
+    _assert_typed_reconfirm(out)
+
+    for code in ("ov_http_402", "ov_http_429"):
+
+        def fail(_body: dict[str, Any], code: str = code) -> Any:
+            raise QualifierCallError(code)
+
+        out = review_candidate(
+            asked, sql, warehouse=None, grantable=set(), served_route="model", transport=fail
+        )
+        _assert_typed_reconfirm(out)
+
+
+def test_submit_without_a_verifier_does_not_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    _clear(monkeypatch)
+    monkeypatch.setenv("DMS_QUALIFIER_AI", "1")
+    submitted: list[str] = []
+
+    def submit(statement: str) -> Any:
+        submitted.append(statement)
+        return _rows(statement)
+
+    env = _submit_validated(
+        "SELECT 1 AS n",
+        question="how many",
+        space_id="spc_qual",
+        session_id="ses_qual",
+        submit=submit,
+        ledger_append=_ledger,
+        notes=(),
+        plan_source="ontology_plan",
+        coverage=_coverage(),
+        served_route="model",
+    )
+    assert submitted == []
+    assert_envelope_valid(env)
+    assert env["sql_used"] is None
+    assert env["rows"] == []
+    assert env["reconfirm"]["suggested_question"]
