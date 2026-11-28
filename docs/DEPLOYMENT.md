@@ -4,6 +4,19 @@ Audience: a customer operator or a Netie forward-deployed engineer (FDE) standin
 Based on: `Netie-AI/dms` main `f43a86d5`, `Netie-AI/Cortex` main `7d6945b4`, `Netie-AI/OpenVault` main `ceab7c77` (read-only clones), and the working single-VM stack Netie runs today (`bootstrap.sh`, `keepalive.sh`).
 Written 2026-11-29.
 
+## Fill these in from your private ops notes
+
+These placeholders are not values. Copy them from your private ops notes. Do not commit a filled-in copy.
+
+| Placeholder | Fill with |
+|-------------|-----------|
+| `<STUDIO_HOST>` | DNS name clients use for Studio |
+| `<DEPLOY_ROOT>` | Deployment tree on the host (gateway site and launchers) |
+| `<OPS_ROOT>` | Private ops scripts, not in the three git repos |
+| `<STUDIO_WEB_ROOT>` | Directory the web server serves as the Studio static files |
+| `<HTPASSWD_PATH>` | Basic-auth password file, mode 600 |
+| `<LOOPBACK>` | This host's loopback address only |
+
 ## 0. How to read the verification marks
 
 | Mark | Meaning |
@@ -12,7 +25,7 @@ Written 2026-11-29.
 | **[V-repo]** | Taken from files in the repos (compose file, Dockerfile, CI job, docs) and cross-read against the code. Not executed by the author of this guide. |
 | **[NOT VERIFIED]** | Plausible and consistent with the repos, but nobody has run it. Treat as a starting point and test on a scratch host first. |
 
-A list of everything unverified is in section 14. Paths under `/workspace/netie-stack-run/` and `/home/box/netie-run/` are Netie's own build box (`bootstrap.sh`, `keepalive.sh`, `offbox-backup.sh`, `ovctl.py`, `RESTORE.md`); they are not in the three repos.
+A list of everything unverified is in section 14. Operator scripts (`bootstrap.sh`, `keepalive.sh`, `offbox-backup.sh`, `ovctl.py`, `RESTORE.md`) live under `<OPS_ROOT>` on the operations host. The gateway and its launchers live under `<DEPLOY_ROOT>`. Neither tree is in the three repos.
 
 ## 1. What you are deploying
 
@@ -20,16 +33,16 @@ Three services, one rule: **model routing and provider keys live only in OpenVau
 
 | Service | Role | Default port | Health | Start command (Linux) |
 |---------|------|--------------|--------|----------------------|
-| **DMS** (`dms`) | Studio SPA plus the API: connect, ontology, ask, exports, Create. Owns the Postgres control plane and a DuckDB copy of each customer's data. | API `8090` (box) or `8080` (compose, behind Caddy `8080` TLS) | `GET /health` | `python -m uvicorn dms_api.app:app --host 127.0.0.1 --port 8090` |
-| **Cortex** | The answer engine. DMS calls it over the pinned `cortex-contract` (1.2.x). | `8010` | `GET /health` | `python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010` |
-| **OpenVault** | Key custody, FreeRoute (role routing, hard spend caps), service tokens. | API `5000`, console `3010` | `GET /api/healthz` | `openmw console --host 127.0.0.1 --port 5000 --no-open-browser` (from `OpenMW/`) |
+| **DMS** (`dms`) | Studio SPA plus the API: connect, ontology, ask, exports, Create. Owns the Postgres control plane and a DuckDB copy of each customer's data. | API `8090` (box) or `8080` (compose, behind Caddy `8080` TLS) | `GET /health` | `python -m uvicorn dms_api.app:app --host <LOOPBACK> --port 8090` |
+| **Cortex** | The answer engine. DMS calls it over the pinned `cortex-contract` (1.2.x). | `8010` | `GET /health` | `python -m uvicorn CortexOS.api.main:app --host <LOOPBACK> --port 8010` |
+| **OpenVault** | Key custody, FreeRoute (role routing, hard spend caps), service tokens. | API `5000`, console `3010` | `GET /api/healthz` | `openmw console --host <LOOPBACK> --port 5000 --no-open-browser` (from `OpenMW/`) |
 | **Postgres** | DMS control plane (`dms` schema, row level security forced). | `5432` | `pg_isready` | system service |
 
 Request flow: browser -> TLS reverse proxy (nginx or Caddy) -> DMS `/api/*` and `/v1/*` -> Cortex `:8010` -> OpenVault `:5000` -> model provider. DMS also talks to OpenVault directly (service token) for ontology and Create calls.
 
 Non-negotiables for every topology:
 
-- **Never expose OpenVault `:5000` or its console `:3010` to a network.** Custody routes trust loopback (plus an explicit `OPENVAULT_SERVICES_ALLOW` list for service minting). Bind them to `127.0.0.1` or a private interface. **[V-repo]** `OPENVAULT_ALLOW_PUBLIC_BIND` exists as an override; do not set it.
+- **Never expose OpenVault `:5000` or its console `:3010` to a network.** Custody routes trust loopback (plus an explicit `OPENVAULT_SERVICES_ALLOW` list for service minting). Bind them to `<LOOPBACK>` only. **[V-repo]** `OPENVAULT_ALLOW_PUBLIC_BIND` exists as an override; do not set it.
 - **DMS has no per-user login unless you turn on SSO** (`DMS_SSO=1`). The deployment is the actor (DR-0004, `docs/decisions/0004-the-authentication-trust-boundary.md`). So the reverse proxy must authenticate people (basic auth, SSO proxy, VPN or IAP) before anything reaches DMS. **[V-repo]**
 - DMS is single-tenant per install for a first sale. One tenant per company, one Space per company (`docs/fde/RUNBOOK.md`).
 - Extract-only: DMS reads `SELECT * FROM <granted table>` from the customer's database into DuckDB; model-written SQL never runs on the source (`docs/fde/RUNBOOK.md`, Security notes).
@@ -142,26 +155,26 @@ The DMS and Cortex lines are exactly what `bootstrap.sh` runs. **[V-live]** The 
 ```bash
 # Studio SPA, served as static files by nginx
 cd /opt/netie/dms/apps/ui && npm ci && npm run build        # output: apps/ui/dist
-sudo mkdir -p /var/www/netie-studio && sudo rsync -a --delete dist/ /var/www/netie-studio/
+sudo mkdir -p <STUDIO_WEB_ROOT> && sudo rsync -a --delete dist/ <STUDIO_WEB_ROOT>/
 
 # OpenVault console (loopback only, optional but useful for key admin)
 cd /opt/netie/openvault/apps/web && npm ci && npm run build
 ```
 
-`npm run build` = `tsc --noEmit && vite build` for Studio. **[V-repo]** Netie's box serves a pre-built bundle from `/workspace/studio-host/www`; building from source on a customer host is **[NOT VERIFIED]** end to end.
+`npm run build` = `tsc --noEmit && vite build` for Studio. **[V-repo]** The operations host serves a pre-built bundle from `<STUDIO_WEB_ROOT>`; building from source on a customer host is **[NOT VERIFIED]** end to end.
 
 ### 3.5 Environment files
 
 `/etc/netie/dms.env` (no secrets inline; secrets are files):
 
 ```bash
-DATABASE_URL=postgresql://dms:<from /etc/netie/db.env>@127.0.0.1:5432/dms   # assemble in the launcher, see below
-CORTEX_URL=http://127.0.0.1:8010
-OPENVAULT_URL=http://127.0.0.1:5000
+DATABASE_URL=postgresql://dms:<from /etc/netie/db.env>@<LOOPBACK>:5432/dms   # assemble in the launcher, see below
+CORTEX_URL=http://<LOOPBACK>:8010
+OPENVAULT_URL=http://<LOOPBACK>:5000
 DMS_ASK_MODE=live
 DMS_DEMO_FALLBACK=0
 DMS_INSIGHTS_TIMEOUT_S=60
-CORS_ORIGINS=https://studio.example.com
+CORS_ORIGINS=https://<STUDIO_HOST>
 DMS_TENANT_ID=<uuid of this customer's tenant row, section 8.4>
 DMS_OV_SERVICE_TOKEN_FILE=/etc/netie/dms_ov_service_token
 # CORTEX_API_KEY is exported by the launcher from /etc/netie/dms_cortex_api_key
@@ -175,14 +188,14 @@ The box launcher (`start-dms.sh`) builds `DATABASE_URL` from `db.env`, runs the 
 set -euo pipefail
 cd /opt/netie/dms && . .venv/bin/activate
 set -a; . /etc/netie/db.env; . /etc/netie/dms.env; set +a
-export DATABASE_URL="postgresql://dms:${DMS_DB_PASSWORD}@127.0.0.1:5432/dms"
+export DATABASE_URL="postgresql://dms:${DMS_DB_PASSWORD}@<LOOPBACK>:5432/dms"
 [ -s /etc/netie/dms_cortex_api_key ] && export CORTEX_API_KEY="$(cat /etc/netie/dms_cortex_api_key)"
 export PYTHONPATH=$PWD/apps/api:$PWD/packages/core:$PWD/packages/cortex_client:$PWD/packages/executor:$PWD/packages/ledger
 python -c "from dms_api.migrate import run_migrations; import os; run_migrations(os.environ['DATABASE_URL'])"
-exec python -m uvicorn dms_api.app:app --host 127.0.0.1 --port 8090
+exec python -m uvicorn dms_api.app:app --host <LOOPBACK> --port 8090
 ```
 
-**[V-live]** (derived from `/workspace/studio-host/start-dms.sh`). `run_migrations` is `alembic upgrade head` and is idempotent.
+**[V-live]** (derived from `<DEPLOY_ROOT>/start-dms.sh`). `run_migrations` is `alembic upgrade head` and is idempotent.
 
 Cortex launcher (from `start-cortex.sh`) **[V-live]**:
 
@@ -192,10 +205,10 @@ Cortex launcher (from `start-cortex.sh`) **[V-live]**:
 set -euo pipefail
 cd /opt/netie/cortex && . .venv/bin/activate
 export CORTEX_PROFILE=core PACK=dms DMS_REFUSE_DEMO_KEYS=1
-export OPENVAULT_BASE_URL=http://127.0.0.1:5000
+export OPENVAULT_BASE_URL=http://<LOOPBACK>:5000
 # the box also sets CORTEX_CALL_DEADLINE=1 CORTEX_FREEROUTE_ROLE=1 and points
 # CORTEX_FREEROUTE_TOKEN_FILE / DMS_OV_SERVICE_TOKEN_FILE at 600 files
-exec python -m uvicorn CortexOS.api.main:app --host 127.0.0.1 --port 8010
+exec python -m uvicorn CortexOS.api.main:app --host <LOOPBACK> --port 8010
 ```
 
 Never set `DMS_AUTH_DISABLED` or `CORTEX_DEV_MODE` on a real host. Cortex refuses `DMS_AUTH_DISABLED` unless `CORTEX_DEV_MODE` is also set (`AUTH_DISABLED_WITHOUT_DEV_MODE`), and the images deliberately set neither. **[V-repo]** `DMS_REFUSE_DEMO_KEYS=1` rejects the built-in demo keys.
@@ -209,8 +222,8 @@ set -euo pipefail
 export OPENVAULT_HOME=/var/lib/netie/openvault-home
 export OPENVAULT_ROUTE_POLICY=/etc/netie/route_policy.json     # copy of OpenVault/config/route_policy.claude.json, edited per customer
 cd /opt/netie/openvault/OpenMW
-exec uv run --no-sync openmw console --host 127.0.0.1 --port 5000 \
-     --cortex-url http://127.0.0.1:8010 --no-open-browser
+exec uv run --no-sync openmw console --host <LOOPBACK> --port 5000 \
+     --cortex-url http://<LOOPBACK>:8010 --no-open-browser
 ```
 
 The console (`apps/web`, `PORT=3010 npm run start`) is optional and must stay on loopback.
@@ -272,18 +285,18 @@ sudo systemctl enable --now netie-openvault netie-cortex netie-dms
 
 ### 3.7 nginx with TLS and basic auth
 
-Netie's gateway **[V-live]** (`studio-gateway.nginx`), loopback only because a Cloudflare tunnel fronts it:
+A loopback gateway **[V-live]** (nginx site under `<DEPLOY_ROOT>`) listens only on `<LOOPBACK>`. TLS is terminated in front of it by a private front door. Record that front door in private ops notes, not in this repo:
 
 ```nginx
 server {
-    listen 127.0.0.1:3080;
-    server_name studio.netie.ai;
-    root /workspace/studio-host/www;
+    listen <LOOPBACK>:3080;
+    server_name <STUDIO_HOST>;
+    root <STUDIO_WEB_ROOT>;
     client_max_body_size 200m;
     auth_basic "Netie Studio";
-    auth_basic_user_file /workspace/studio-host/secrets/studio.htpasswd;
+    auth_basic_user_file <HTPASSWD_PATH>;
     location /api/ {
-        proxy_pass http://127.0.0.1:8090/;      # trailing slash strips /api
+        proxy_pass http://<LOOPBACK>:8090/;      # trailing slash strips /api
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
@@ -299,31 +312,31 @@ For a customer VM with its own certificate **[NOT VERIFIED]** (same locations, T
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name studio.example.com;
+    server_name <STUDIO_HOST>;
     ssl_certificate     /etc/ssl/netie/tls.crt;     # leaf + chain, PEM
     ssl_certificate_key /etc/ssl/netie/tls.key;
     ssl_protocols TLSv1.2 TLSv1.3;
-    root /var/www/netie-studio;
+    root <STUDIO_WEB_ROOT>;
     client_max_body_size 200m;
 
     auth_basic "Netie Studio";
-    auth_basic_user_file /etc/nginx/netie.htpasswd;
+    auth_basic_user_file <HTPASSWD_PATH>;
 
     location /api/ {
-        proxy_pass http://127.0.0.1:8090/;
+        proxy_pass http://<LOOPBACK>:8090/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_buffering off;
         proxy_read_timeout 600s;
     }
-    location /health { proxy_pass http://127.0.0.1:8090/health; }
+    location /health { proxy_pass http://<LOOPBACK>:8090/health; }
     location / { try_files $uri /index.html; }
 }
-server { listen 80; server_name studio.example.com; return 301 https://$host$request_uri; }
+server { listen 80; server_name <STUDIO_HOST>; return 301 https://$host$request_uri; }
 ```
 
-Create the htpasswd file without echoing a password: `sudo htpasswd -c /etc/nginx/netie.htpasswd <user>` (prompts), then `sudo nginx -t && sudo systemctl reload nginx`. Public CA certificates: `certbot --nginx -d studio.example.com` **[NOT VERIFIED]**. Do **not** proxy anything to `:5000`, `:3010` or `:8010`.
+Create the basic-auth password file at `<HTPASSWD_PATH>` without echoing a password (the web server password-file tool prompts; do not put the password on the command line), then `sudo nginx -t && sudo systemctl reload nginx`. Public CA certificates: `certbot --nginx -d <STUDIO_HOST>` **[NOT VERIFIED]**. Do **not** proxy anything to `:5000`, `:3010` or `:8010`.
 
 ### 3.8 Basic auth, or SSO
 
@@ -341,10 +354,10 @@ Create the htpasswd file without echoing a password: `sudo htpasswd -c /etc/ngin
 sudo systemctl start netie-openvault && sleep 10
 # unseal (section 7.2), then:
 sudo systemctl start netie-cortex netie-dms
-curl -fsS http://127.0.0.1:5000/api/healthz
-curl -fsS http://127.0.0.1:8010/health
-curl -fsS http://127.0.0.1:8090/health      # expect "backend":"postgres", NOT "memory" (checked on Netie's stack)
-curl -fsS -u '<user>' https://studio.example.com/api/health
+curl -fsS http://<LOOPBACK>:5000/api/healthz
+curl -fsS http://<LOOPBACK>:8010/health
+curl -fsS http://<LOOPBACK>:8090/health      # expect "backend":"postgres", NOT "memory" (checked on Netie's stack)
+curl -fsS -u '<user>' https://<STUDIO_HOST>/api/health
 ```
 
 If `/health` shows `"backend":"memory"`, DMS could not use Postgres (wrong `DATABASE_URL` or password) and fell back to in-memory Spaces. Fix before going further. **[V-repo]** (`docs/DEPLOY.md`)
@@ -384,7 +397,7 @@ docker compose up -d --build
 | `DMS_TLS_MODE` | `internal` | `internal` (Caddy's own CA, pilot only) or `files` (your CA certificate). Any other value stops the `ui` service before Caddy starts. |
 | `DMS_TLS_DIR` | `./tls` | `files` mode: host directory holding `tls.crt` (leaf plus chain) and `tls.key`. Mounted read-only. Keep it outside git. |
 | `DMS_TLS_HOST` | `localhost` | DNS name or IPv4 clients use; must be in the certificate SAN. |
-| `DMS_BIND_ADDR` | `0.0.0.0` | Host address the one published port binds to. `127.0.0.1` behind a same-host load balancer. |
+| `DMS_BIND_ADDR` | all interfaces | Host address the one published port binds to. Set `<LOOPBACK>` behind a same-host load balancer. |
 | `CORTEX_URL` | `http://host.docker.internal:8010` | Where the API reaches Cortex. |
 | `OPENVAULT_URL` | `http://host.docker.internal:5000` | Where the API reaches OpenVault. |
 | `CORTEX_API_KEY` | empty | DMS to Cortex key (an OpenVault-issued key). Empty means keyed Cortex calls refuse by name. |
@@ -394,7 +407,7 @@ docker compose up -d --build
 
 The only published port is Caddy's **`:8080` over TLS**. Plain HTTP to it is refused (400), not redirected. Postgres and the API are internal (`expose` only). HTTP/3 is off. Studio, `/health`, `/v1/*` and `/api/*` are all on that one `https://` site. **No HSTS, client certificates, rate limiting or per-user login in the appliance** (use `DMS_SSO=1` or a fronting proxy).
 
-Corporate or bank CA: `DMS_TLS_MODE=files`, `DMS_TLS_DIR=/etc/netie/tls`, `DMS_TLS_HOST=studio.corp.example`. Rotation = replace the two files and `docker compose restart ui`. Pilot: `DMS_TLS_MODE=internal`, then trust Caddy's root: `docker compose cp ui:/data/caddy/pki/authorities/local/root.crt ./dms-root.crt` (the root lives in the `caddy_data` volume; `down -v` deletes it).
+Corporate or bank CA: `DMS_TLS_MODE=files`, `DMS_TLS_DIR=/etc/netie/tls`, `DMS_TLS_HOST=<STUDIO_HOST>`. Rotation = replace the two files and `docker compose restart ui`. Pilot: `DMS_TLS_MODE=internal`, then trust Caddy's root: `docker compose cp ui:/data/caddy/pki/authorities/local/root.crt ./dms-root.crt` (the root lives in the `caddy_data` volume; `down -v` deletes it).
 
 ### 4.3 What CI proves (`compose-tls-smoke`)
 
@@ -403,7 +416,7 @@ Corporate or bank CA: `DMS_TLS_MODE=files`, `DMS_TLS_DIR=/etc/netie/tls`, `DMS_T
 ### 4.4 Adding Cortex and OpenVault beside it
 
 - **Cortex**: `compose.constructor.yml` (Dockerfile.constructor, port `8010:8080`, `OPENVAULT_BASE_URL=http://host.docker.internal:5000`, `DMS_REFUSE_DEMO_KEYS=1`, auth stays on) or `Dockerfile.core` (profile `core`, port 8010, healthcheck on `/health`). `docker-compose.yml` in the Cortex repo is a Qdrant service only. **[V-repo]**, build not run here.
-- **OpenVault**: run on the host (section 3.5 launcher, systemd) and let the containers reach it through `host.docker.internal`. The `extra_hosts: host.docker.internal:host-gateway` lines in the compose files make that work on Linux. Because OpenVault binds `127.0.0.1`, containers on the bridge network cannot reach it; either bind it to the docker bridge address (`172.17.0.1`) **and** add that CIDR to `OPENVAULT_SERVICES_ALLOW` where required, or run DMS and Cortex on the host network. **[NOT VERIFIED]** and security sensitive; prefer the single-VM topology if you can.
+- **OpenVault**: run it on the host (section 3.5 launcher, systemd) and bind it to `<LOOPBACK>` only. Do not publish `:5000` or `:3010`. Do not bind OpenVault to a bridge address, and do not add any non-loopback CIDR to `OPENVAULT_SERVICES_ALLOW`. Containers on a bridge network cannot reach a loopback bind; prefer topology 1 so DMS and Cortex call OpenVault on `<LOOPBACK>`. **[NOT VERIFIED]**
 
 ## 5. Topology 3: the customer's cloud (AWS, Azure, GCP)
 
@@ -426,7 +439,7 @@ Rules that matter more than the vendor:
 
 1. Keep `:5000`/`:3010` unreachable from anything but the VM itself.
 2. The DMS lake (DuckDB files) is on local disk. It is a copy of customer data; pick the region and disk encryption with the customer. (`docs/fde/RUNBOOK.md`: "Data residency")
-3. A load balancer with `DMS_BIND_ADDR=127.0.0.1` is the compose pattern for IAP or a same-host balancer (`docs/DEMO_RUNBOOK.md`).
+3. A load balancer with `DMS_BIND_ADDR=<LOOPBACK>` is the compose pattern for IAP or a same-host balancer (`docs/DEMO_RUNBOOK.md`).
 4. Kubernetes is not supported today. No ingress, chart or operator exists.
 
 ## 6. Topology 4: air-gapped and on-premises
@@ -453,7 +466,7 @@ For Docker, `docker save` the images on the build host and `docker load` on the 
 
 ### 6.2 Models without the internet
 
-OpenVault has a local hop: a loopback OpenAI-compatible server (llama.cpp at `http://127.0.0.1:8080/v1` or Ollama at `http://127.0.0.1:11434/v1`) configured by `OPENVAULT_LOCAL_BASE_URL` and `OPENVAULT_LOCAL_MODEL` (default `qwen2.5:0.5b`). It needs no cloud key, the host must be loopback, and OpenVault does not start or download the model. Requests can ask for local-only (`local_only`, 503 `openvault_local_only_unavailable` when unavailable). **[V-repo]** (`vault/local_hop.py`).
+OpenVault has a local hop: a loopback OpenAI-compatible server (llama.cpp at `http://<LOOPBACK>:8080/v1` or Ollama at `http://<LOOPBACK>:11434/v1`) configured by `OPENVAULT_LOCAL_BASE_URL` and `OPENVAULT_LOCAL_MODEL` (default `qwen2.5:0.5b`). It needs no cloud key, the host must be loopback, and OpenVault does not start or download the model. Requests can ask for local-only (`local_only`, 503 `openvault_local_only_unavailable` when unavailable). **[V-repo]** (`vault/local_hop.py`).
 
 Honest limits: the default model is tiny and was built as a plumbing test. **Accuracy on a local model has not been measured**, and the accuracy bar (WRONG = 0 on a held-out pack) must be re-proven for whatever model the customer can host. An alternative is an in-network gateway to an approved model endpoint registered in OpenVault the same way as a cloud provider key. **[NOT VERIFIED]**
 
@@ -482,18 +495,18 @@ Admin token and passphrase are generated into `OPENVAULT_HOME` (`admin_token`, `
 # A header file keeps the admin token off the command line and out of `ps`.
 # Create it once (mode 600): the single line  X-OpenVault-Admin: <contents of $OPENVAULT_HOME/admin_token>
 H=/etc/netie/ov-admin.hdr
-curl -s http://127.0.0.1:5000/api/vault/status -H @$H                       # sealed? passphrase configured?
+curl -s http://<LOOPBACK>:5000/api/vault/status -H @$H                       # sealed? passphrase configured?
 # set the passphrase once; /etc/netie/passphrase.json is {"passphrase": "..."} with mode 600
-curl -s -X POST http://127.0.0.1:5000/api/vault/passphrase -H @$H -H 'Content-Type: application/json' --data @/etc/netie/passphrase.json
+curl -s -X POST http://<LOOPBACK>:5000/api/vault/passphrase -H @$H -H 'Content-Type: application/json' --data @/etc/netie/passphrase.json
 # unseal after every restart
-curl -s -X POST http://127.0.0.1:5000/api/vault/unseal     -H @$H -H 'Content-Type: application/json' --data @/etc/netie/passphrase.json
+curl -s -X POST http://<LOOPBACK>:5000/api/vault/unseal     -H @$H -H 'Content-Type: application/json' --data @/etc/netie/passphrase.json
 ```
 
-Prefer Netie's `ovctl.py init-passphrase | unseal | status` (on the box at `/home/box/netie-run/bin/ovctl.py`; **not in a repo**, copy it into your ops tooling) because it reads both from 600 files and prints neither. (`curl -H @file` is the equivalent; `$(cat admin_token)` inside a command line would show the token in `ps`.) The `-H @file` form is **[NOT VERIFIED]** against this API.
+Prefer `ovctl.py init-passphrase | unseal | status` (on the operations host at `<OPS_ROOT>/bin/ovctl.py`; **not in a repo**, copy it into your ops tooling) because it reads both from 600 files and prints neither. (`curl -H @file` is the equivalent; `$(cat admin_token)` inside a command line would show the token in `ps`.) The `-H @file` form is **[NOT VERIFIED]** against this API.
 
 ### 7.3 Adding a provider key
 
-Use the console on `127.0.0.1:3010` over an SSH tunnel, or the prompt-based script, which uses `getpass` and talks to loopback only:
+Use the console on `<LOOPBACK>:3010` from this host only, or the prompt-based script, which uses `getpass` and talks to loopback only:
 
 ```bash
 cd /opt/netie/openvault && uv run --project OpenMW python scripts/add_key.py --provider anthropic
@@ -650,7 +663,7 @@ chmod 600 /var/lib/netie/openvault-home/{master.key,.passphrase,admin_token}
 rm -rf /tmp/restore
 ```
 
-On Netie's own stack, `bootstrap.sh` automates the "box reset" case: it re-installs packages, recreates the `dms` roles and database, restores the newest `dms-YYYY-MM-DD.sql.gz`, re-owns objects, rebuilds the venvs and reinstalls the nginx site. `bootstrap.sh --check` only lists what is missing. It does **not** restore the OpenVault home; do that from the encrypted bundle (`/workspace/netie-stack-run/RESTORE.md`). **[V-live]**
+On Netie's own stack, `bootstrap.sh` automates the "box reset" case: it re-installs packages, recreates the `dms` roles and database, restores the newest `dms-YYYY-MM-DD.sql.gz`, re-owns objects, rebuilds the venvs and reinstalls the nginx site. `bootstrap.sh --check` only lists what is missing. It does **not** restore the OpenVault home; do that from the encrypted bundle (`<OPS_ROOT>/RESTORE.md`). **[V-live]**
 
 A restore you have not tested is not a backup. Run the scratch check after every change to the backup job.
 
@@ -674,13 +687,13 @@ Migration state on main at the time of writing: head is `0012_sign`. PRs #671 (`
 
 | Check | Command | Healthy |
 |-------|---------|---------|
-| Postgres | `pg_isready -h 127.0.0.1 -p 5432` | accepting connections |
-| OpenVault | `curl -fsS http://127.0.0.1:5000/api/healthz` | 200, `{"status":"ok","service":"openvault",...}` |
+| Postgres | `pg_isready -h <LOOPBACK> -p 5432` | accepting connections |
+| OpenVault | `curl -fsS http://<LOOPBACK>:5000/api/healthz` | 200, `{"status":"ok","service":"openvault",...}` |
 | Vault sealed? | `GET /api/vault/status` | `"sealed": false` |
-| Cortex | `curl -fsS http://127.0.0.1:8010/health` | 200 |
-| DMS | `curl -fsS http://127.0.0.1:8090/health` | 200, `"backend":"postgres"`, `"database_configured":true` (not `"memory"`) |
-| Gateway | `curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:3080/` | 200 or 401 (basic auth) |
-| Studio through the proxy | `https://<host>/api/health` | 200 |
+| Cortex | `curl -fsS http://<LOOPBACK>:8010/health` | 200 |
+| DMS | `curl -fsS http://<LOOPBACK>:8090/health` | 200, `"backend":"postgres"`, `"database_configured":true` (not `"memory"`) |
+| Gateway | `curl -fsS -o /dev/null -w '%{http_code}' http://<LOOPBACK>:3080/` | 200 or 401 (basic auth) |
+| Studio through the proxy | `https://<STUDIO_HOST>/api/health` | 200 |
 
 `/health` on DMS also reports Cortex and OpenVault reachability (`_probe` of their `/health`), the contract pin and the runtime self-check. **[V-repo]** Netie's `keepalive.sh` is a 30-second loop that restarts any of the above that returns the wrong code; on systemd use `Restart=always` plus an external probe. Watch: OpenVault spend per role against the cap (usage ledger), disk for the DuckDB lakes, and Postgres backups age.
 
@@ -704,7 +717,7 @@ Migration state on main at the time of writing: head is `0012_sign`. PRs #671 (`
 | API container build fails: `deploy/wheelhouse must hold exactly one cortex_contract wheel` | Put exactly one 1.2.x wheel there (section 4.1). |
 | 502 from nginx on long asks | Streaming responses need `proxy_buffering off` and a long `proxy_read_timeout` (3.7). |
 | Cortex refuses to start with `AUTH_DISABLED_WITHOUT_DEV_MODE` | `DMS_AUTH_DISABLED` is set without `CORTEX_DEV_MODE`. Remove it; never use it on a real host. |
-| OpenVault console or API reachable from outside | Misconfiguration: rebind to `127.0.0.1`, firewall `5000/3010`, and treat keys as exposed (rotate). |
+| OpenVault console or API reachable from outside | Misconfiguration: rebind to `<LOOPBACK>`, firewall `5000/3010`, and treat keys as exposed (rotate). |
 | After a reboot nothing answers a model call | Vault came up sealed. Unseal, then check `/api/vault/status`. |
 
 ## 14. What is not verified

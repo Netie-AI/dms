@@ -1,6 +1,17 @@
 # Handoff to Claude Code (slim)
 
-Written 2026-11-29 (SGT). The full version, with a per-PR table and the day plan, is kept on Netie's operations box at `/workspace/handoff/CLAUDE-HANDOFF.md`. This page is the part that belongs in the repo. It has no secrets and no hostnames. Regenerate live state with `python scripts/handoff/update_state.py`; read the pinned issue [#679](https://github.com/Netie-AI/dms/issues/679) and `handoff/CLAUDE_CONTINUE.md` first.
+Written 2026-11-29 (SGT). The full version, with a per-PR table and the day plan, is kept off this repo at `<HANDOFF_PATH>`. This page is the part that belongs in the repo. It has no secrets and no hostnames. Fill the placeholders from the table below. Regenerate live state with `python scripts/handoff/update_state.py`; read the pinned issue [#679](https://github.com/Netie-AI/dms/issues/679) and `handoff/CLAUDE_CONTINUE.md` first.
+
+## Fill these in from your private ops notes
+
+These placeholders are not values. Copy them from your private ops notes. Do not commit a filled-in copy.
+
+| Placeholder | Fill with |
+|-------------|-----------|
+| `<HANDOFF_PATH>` | Full handoff file kept off this repo |
+| `<STUDIO_HOST>` | DNS name clients use for Studio |
+| `<LOOPBACK>` | This host's loopback address only |
+| `<OPS_ROOT>` | Private ops documents, not in the git repo |
 
 ## Goal
 
@@ -39,7 +50,7 @@ Base `https://api.cursor.com`, HTTP Basic with the key as the user and an empty 
 
 ## Infrastructure
 
-The stack (Postgres 17, OpenVault, Cortex, DMS, nginx with basic auth) runs on loopback on one Linux host. `studio.netie.ai` reaches it through a Cloudflare tunnel on a small public VM and a reverse SSH link. A parallel copy is being stood up on that VM and the founder decides the cutover. Backups: an age-encrypted daily bundle of Postgres and the OpenVault home to a second server, with a restore check against a scratch database. Operator documents (not in the repo, on the operations hosts): the box README, `RESTORE.md`, and the NovaCloud operator guide. Deploying the three services elsewhere is `docs/DEPLOYMENT.md`.
+The stack (Postgres 17, OpenVault, Cortex, DMS, nginx with basic auth) runs on `<LOOPBACK>` on one Linux host. Clients use `<STUDIO_HOST>`. How that name is fronted stays in private ops notes. The founder decides any cutover. Backups: an age-encrypted daily bundle of Postgres and the OpenVault home to a second server, with a restore check against a scratch database. Operator documents stay off the repo under `<OPS_ROOT>` (the host README, `RESTORE.md`, and the cloud operator guide). Deploying the three services elsewhere is `docs/DEPLOYMENT.md`.
 
 ## Day plan
 
