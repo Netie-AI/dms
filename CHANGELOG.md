@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-SIGN: the single Alembic head is 0012_sign
+
+- **CI.** `test_single_alembic_head` and the action-writeback demo expected `0011_space_bench`. The sign migration is the one head now. The single-head check stays.
+
 ## 2026-11-28 - DMS-SIGN: documents can be signed, disclosed, and stored
 
 - **Flag.** `DMS_SIGN` is off unless the value is the digit 1. Off, `/v1/sign` is not mounted and the audit page renders no sign panel. On, typed, drawn, and uploaded signatures become a pyHanko PAdES. The tenant key comes from OpenVault (`signkey/{tenant}`, `signcert/{tenant}`). Tests use a self-signed cert that is not a production trust anchor.
