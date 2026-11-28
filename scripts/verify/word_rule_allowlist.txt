@@ -1,7 +1,7 @@
 # Question-text rule sites. This file may only shrink.
 # Do not add a key. Remove a line when that site is deleted.
 # A moved statement may replace its line number. Columns: path:line, kind, qualname, snippet.
-packages/cortex_client/cortex_client/compute.py:1087	in	question_with_examples	sql in question	#1
+packages/cortex_client/cortex_client/compute.py:1089	in	question_with_examples	sql in question	#1
 packages/cortex_client/cortex_client/qualifiers.py:432	regex	_by_phrase_tokens	_BY_PHRASE_RE.search(qn)	#1
 packages/cortex_client/cortex_client/qualifiers.py:309	regex	_entity_hits	pat.finditer(qn)	#1
 packages/cortex_client/cortex_client/qualifiers.py:324	regex	_excluded_noun	_EXCL_TOP_RE.search(qn)	#1
