@@ -441,9 +441,9 @@ def _insights_compute_seam(
                 return {"insights_fail": "serving_deadline_reserve"}
             kwargs["timeout"] = floor_timeout
         else:
-            from cortex_client.ask_clock import generate_budget_left_s
+            from cortex_client.ask_clock import model_leg_budget_s
 
-            left = generate_budget_left_s()
+            left = model_leg_budget_s()
             if left is not None and left <= 0:
                 # Do not spend the ask-back reserve on another generate. The
                 # existing unsure abstain is what offer_reconfirm turns into a card.
@@ -534,6 +534,9 @@ class Executor:
 
     def startup(self) -> None:
         """Fetch OpenVault intermediate signing key into memory only."""
+        from dms_executor.sql_parse import warm_serving_dialect
+
+        warm_serving_dialect(SERVING_DIALECT)
         ensure_demo_warehouse(self._warehouse)
         resolved, start_cmd = probe_openvault(preferred_url=self._preferred_openvault_url)
         if resolved:
@@ -1008,6 +1011,9 @@ class Executor:
         from dms_executor.route_stamp import freeze_route
 
         space_token = bind_ask_space(space_id) if onto_space_scope_enabled() else None
+        from dms_executor.sql_parse import bind_ask_parse, reset_ask_parse
+
+        parse_token = bind_ask_parse()
         try:
             from dms_executor.ai_first import ai_first_enabled, begin_example_turn
             from dms_executor.arbiter import arbiter_enabled
@@ -1211,6 +1217,7 @@ class Executor:
             end_grant_turn(grant_turn)
             if own_control and control_token is not None:
                 reset_ask_control(control_token)
+            reset_ask_parse(parse_token)
             reset_ask_deadline(deadline_tokens)
             release_clock(clock_token)
 

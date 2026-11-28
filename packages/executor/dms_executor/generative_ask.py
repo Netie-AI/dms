@@ -1217,7 +1217,12 @@ def validated_sql_reason(
         )
     if gap:
         return gap
-    ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
+    from dms_executor.sql_parse import one_statement
+
+    root = one_statement(sql, dialect or SERVING_DIALECT)
+    ccy_why = currency_mismatch_reason(
+        question, sql, warehouse=warehouse, tree=root
+    )
     if ccy_why:
         return ccy_why
     if sql_has_reserved_as_of(sql):
@@ -1228,7 +1233,11 @@ def validated_sql_reason(
     if space_onto is None or columns_of is None:
         return None
     join_why = unverified_join_reason(
-        sql, space_onto, list(declared_violations or ()), columns_of=columns_of
+        sql,
+        space_onto,
+        list(declared_violations or ()),
+        columns_of=columns_of,
+        root=root,
     )
     if join_why:
         return join_why

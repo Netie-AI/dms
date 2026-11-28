@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - SCALE-01: one ask budget, one parse, bounded scans
+
+- **Budget.** `DMS_SCALE_BUDGET` defaults off. Only the digit 1 turns it on. On, a model leg uses the time left on the ask deadline and is cancelled at that deadline. A suggestion call does not start once the budget is spent. Off, the leg timeout and the suggestion call stay as they were.
+- **Parse.** The serving dialect is loaded at startup. A statement is parsed once per ask and cached by `(sql, dialect)`. Later gates copy that tree.
+- **Lake.** Serving reads keep one read-only parent and a bounded cursor pool. A writer, and any other read-write connect in this process, closes that parent first when no serving cursor is out. Serving cursors set `memory_limit` (`DMS_LAKE_MEMORY_LIMIT`, default `1GB`) and `threads` (`DMS_LAKE_THREADS`, default 4).
+- **Index.** A text column's distinct count is `approx_count_distinct`. A column that might still fit the cap is confirmed by an exact read of at most 501 values. A wide column is not hashed in full.
+- **Smoke.** `scripts/verify/scale_smoke.py` times governed asks on a scratch DuckDB. CI runs it at 2000 rows. It does not open the demo warehouse.
+
 ## 2026-11-28 - DMS-CREATE-CONTEXT-01: chats, a questionnaire, or a project
 
 - **Flag.** `DMS_CREATE_CONTEXT` defaults off. Only the digit 1 turns it on. Off, Create status stays `{"enabled": true}` when Create itself is on, and `/v1/studio/create/context` is not found.

@@ -116,3 +116,18 @@ def _fresh_answer_model_calls() -> None:
     calling ``note_model_call``) otherwise carries into the next.
     """
     begin_answer_model_calls()
+
+
+@pytest.fixture(autouse=True)
+def _release_lake_and_parse() -> Iterator[None]:
+    """The read parent stays open between asks. Drop it after each test.
+
+    A later test that opens the same file itself, or the temp directory
+    cleanup, must not find the process still holding the file.
+    """
+    yield
+    from dms_executor.lake_registry import close_lakes
+    from dms_executor.sql_parse import release_ask_parse
+
+    release_ask_parse()
+    close_lakes()

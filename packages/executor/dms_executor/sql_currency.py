@@ -21,8 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import sqlglot
-from sqlglot import exp, parse_one
+from sqlglot import exp
 from sqlglot.lineage import lineage
 from sqlglot.optimizer.qualify import qualify
 from sqlglot.optimizer.scope import Scope, build_scope, traverse_scope
@@ -30,6 +29,13 @@ from sqlglot.optimizer.scope import Scope, build_scope, traverse_scope
 from dms_executor.demo_warehouse import SERVING_DIALECT, connect_serving
 
 _DIALECT = SERVING_DIALECT
+
+
+def _one(sql: str, dialect: str) -> exp.Expression:
+    """One cached statement. Callers keep their own failure policy."""
+    from dms_executor.sql_parse import parse_one_cached
+
+    return parse_one_cached(sql or "", dialect)
 
 # Unambiguous ISO 4217 tokens. Skip codes that are common English words (TRY, ALL, TOP).
 _ISO = frozenset(
@@ -250,6 +256,7 @@ def currency_mismatch_reason(
     sql: str,
     *,
     warehouse: Path | None,
+    tree: exp.Expression | None = None,
 ) -> str | None:
     """None if the question names no currency, or every numeric output matches.
 
@@ -266,7 +273,7 @@ def currency_mismatch_reason(
         )
     asked = next(iter(named))
     try:
-        tree = parse_one(sql or "", read=_DIALECT)
+        tree = tree.copy() if tree is not None else _one(sql, _DIALECT)
     except Exception:  # noqa: BLE001 — fail closed on any parse error
         return (
             f"currency_mismatch: SQL could not be parsed; "
@@ -915,6 +922,8 @@ def _lineage_leaves(node: Any) -> frozenset[str] | None:
 def served_column_sources(
     sql: str,
     schema: dict[str, Any] | None = None,
+    *,
+    tree: exp.Expression | None = None,
 ) -> dict[str, frozenset[str]]:
     """Outer output name -> source column names from sqlglot lineage.
 
@@ -928,7 +937,7 @@ def served_column_sources(
     No-SQL answers do not call this.
     """
     try:
-        tree = parse_one(sql or "", read=_DIALECT)
+        tree = tree.copy() if tree is not None else _one(sql, _DIALECT)
     except Exception:
         return {}
     sql_for_lineage = sql
@@ -969,7 +978,7 @@ def normalize_sql(sql: str, dialect: str) -> str | None:
     The caller passes the dialect. This does not assume a warehouse or a source.
     """
     try:
-        tree = parse_one(sql or "", read=dialect)
+        tree = _one(sql, dialect)
     except Exception:
         return None
     return tree.sql(dialect=dialect)
@@ -1039,7 +1048,7 @@ def top_level_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
     statement with no such predicate. Subquery predicates are not pulled out.
     """
     try:
-        tree = parse_one(sql or "", read=dialect)
+        tree = _one(sql, dialect)
     except Exception:
         return None
     found: set[str] = set()
@@ -1055,7 +1064,7 @@ def scoped_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
     not parse in ``dialect``. An empty set is a statement with no predicate.
     """
     try:
-        tree = parse_one(sql or "", read=dialect)
+        tree = _one(sql, dialect)
     except Exception:
         return None
     found: set[str] = set()
@@ -1066,10 +1075,10 @@ def scoped_conjuncts(sql: str, dialect: str) -> frozenset[str] | None:
 
 def is_multi_statement(sql: str, dialect: str) -> bool:
     """True when ``sql`` parses as more than one statement in ``dialect``."""
-    from sqlglot import parse
+    from dms_executor.sql_parse import parse_cached
 
     try:
-        trees = parse(sql or "", read=dialect)
+        trees = parse_cached(sql or "", dialect)
     except Exception:
         return False
     return len([tree for tree in trees if tree is not None]) > 1
@@ -1171,7 +1180,9 @@ def tables_read_checked(sql: str | None) -> tuple[tuple[str, ...], bool]:
     if len(text) > TABLES_PARSE_CAP:
         return _scan_tables(text), True
     try:
-        trees = [t for t in sqlglot.parse(text, dialect=_DIALECT) if t is not None]
+        from dms_executor.sql_parse import parse_cached
+
+        trees = [t for t in parse_cached(text, _DIALECT) if t is not None]
         seen: dict[str, str] = {}
         for tree in trees:
             cte_keys = _cte_alias_keys(tree)

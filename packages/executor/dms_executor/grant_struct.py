@@ -37,7 +37,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import sqlglot
 from sqlglot import exp
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.errors import SqlglotError
@@ -260,8 +259,10 @@ def _trees(sql: str, dialect: str | None) -> list[exp.Expression] | None:
     read = sqlglot_dialect(dialect)
     if read is None:
         return None
+    from dms_executor.sql_parse import parse_cached
+
     try:
-        trees = sqlglot.parse(sql or "", read=read)
+        trees = parse_cached(sql or "", read)
     except SqlglotError:
         return None
     if not trees or any(tree is None for tree in trees):
@@ -1050,8 +1051,10 @@ def _parsed_table(text: str, dialect_name: str, engine: Dialect) -> exp.Table | 
 
 
 def _parse_from(text: str, dialect_name: str) -> exp.Expression | None:
+    from dms_executor.sql_parse import parse_one_cached
+
     try:
-        return sqlglot.parse_one(f"SELECT * FROM {text}", read=dialect_name)
+        return parse_one_cached(f"SELECT * FROM {text}", dialect_name)
     except SqlglotError:
         return None
 

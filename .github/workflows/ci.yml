@@ -758,6 +758,10 @@ jobs:
         # BIRD-HARNESS-CI-01. Synthetic sqlite. Does not fetch Mini-Dev.
         run: python scripts/bench/bird/__main__.py self-check
 
+      - name: Scale smoke (scratch DuckDB, small N)
+        # SCALE-01. 2000 rows, concurrency 1/5/20. Not the live warehouse.
+        run: python scripts/verify/scale_smoke.py --rows 2000
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
