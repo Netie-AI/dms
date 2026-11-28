@@ -2028,19 +2028,20 @@ def _destructive_gate(
     space_id: str | None,
     session_id: str | None,
 ) -> dict[str, Any] | None:
-    """Hostile abstain, or None. Unknown parks a block so compile does not serve."""
-    status = _destructive_status(question)
-    if status == "hostile":
-        return _abstain(
-            question,
-            "hostile_sql",
-            space_id=space_id,
-            session_id=session_id,
-            plan_source=PLAN_SOURCE_OTHER,
-        )
-    if status == "unknown":
-        _note_honour_block(_CompileRefused(reason="compile_honour_unknown", sql=""))
-    return None
+    """Hostile abstain, or None.
+
+    Unknown is not a destructive verdict. The ask continues, and a compile
+    serve still has to pass the honour check.
+    """
+    if _destructive_status(question) != "hostile":
+        return None
+    return _abstain(
+        question,
+        "hostile_sql",
+        space_id=space_id,
+        session_id=session_id,
+        plan_source=PLAN_SOURCE_OTHER,
+    )
 
 
 def _measure_facts(onto: Ontology | None, name: str | None) -> dict[str, str] | None:
