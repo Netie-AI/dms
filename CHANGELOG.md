@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: slides stay on the page, type stays readable
+
+- **Geometry.** Every text box is the slide width minus the margins. A long title grows (at most two lines) and the body starts below it.
+- **Colour.** Pie wedges and extra series cycle a palette grown from the brand. Bar and column axes start at zero.
+- **Type.** Body text does not go below 9pt. A one-page doc that still will not fit is trimmed, and the model is asked once to shorten it.
+- **Doc.** A chart sits with its section. The table is the top rows, not every source row. Two tables with the same numbers collapse to one.
+- **Deck.** An unreadable long deck is an outline, then groups of four slides. The prompt says every cited figure is copied from a result row.
+
 ## 2026-11-28 - DMS-CREATE-01: one page stays one page
 
 - **Length.** A doc that asks for one page is one page, with charts scaled onto it. A named page count is that many pages. A deck is one page per slide.

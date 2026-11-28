@@ -1340,6 +1340,7 @@ def test_plain_prompt_states_the_schema_and_repairs_once(
         system = body["messages"][0]["content"]
         user = body["messages"][1]["content"]
         assert "one JSON object" in system
+        assert "result row" in system
         assert '"kind"' in system
         assert '"parts"' in system
         assert "Short title" in system
@@ -1379,10 +1380,14 @@ def test_pdf_wraps_and_keeps_every_line(tmp_path: Path) -> None:
     render_artifact(tmp_path, artifact, kind="doc", one_page=False, brand={"colours": "#112233"})
     pdf = (tmp_path / "doc.pdf").read_bytes()
     assert b"TAILTOKEN" in pdf
-    assert b"TAILREGION" in pdf
+    assert b"r01" in pdf
+    assert b"TAILREGION" not in pdf
     assert b"WRAPME" in pdf
     assert pdf.count(b"/Type /Page ") > 1
     assert b"/Subtype /Image" in pdf
+    start = pdf.find(b"line 0")
+    assert start > 0
+    assert b" Do" in pdf[start : pdf.find(b"endstream", start)]
     for block in re.findall(rb"BT\n(.*?)\nET", pdf, re.S):
         for line in re.findall(rb"\(([^)]*)\) Tj", block):
             assert len(line) <= 90
@@ -1677,6 +1682,205 @@ def test_chart_spec_pivots_a_long_table_and_axes_stay_plain(
     assert show is True
 
 
+def test_slide_boxes_stay_on_the_slide_and_charts_use_distinct_colours(tmp_path: Path) -> None:
+    from dms_executor.create_files import _palette, render_artifact
+    from pptx.dml.color import RGBColor
+    from pptx.util import Emu, Inches
+
+    long_title = "Quarterly revenue compared across every region in the book"
+    artifact = {
+        "kind": "slides",
+        "title": "Deck",
+        "parts": [
+            {
+                "id": "s1",
+                "title": long_title,
+                "body": "The bars start at zero.",
+                "charts": [
+                    {
+                        "label": "Regions",
+                        "type": "bar",
+                        "rows": [
+                            {"region": "North", "q1": 100, "q2": 120, "q3": 90, "q4": 110},
+                            {"region": "South", "q1": 80, "q2": 95, "q3": 70, "q4": 88},
+                        ],
+                    },
+                    {
+                        "label": "Share",
+                        "type": "pie",
+                        "rows": [
+                            {"region": "North", "amount": 40},
+                            {"region": "South", "amount": 25},
+                            {"region": "East", "amount": 20},
+                            {"region": "West", "amount": 15},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    render_artifact(
+        tmp_path, artifact, kind="slides", one_page=False, brand={"colours": "#112233"}
+    )
+    from pptx import Presentation
+
+    deck = Presentation(str(tmp_path / "slides.pptx"))
+    slide = deck.slides[0]
+    limit = int(deck.slide_width) + int(Emu(2000))
+    for shape in slide.shapes:
+        assert int(shape.left) + int(shape.width) <= limit
+        assert int(shape.width) < int(deck.slide_width)
+    title = slide.shapes[0]
+    body = next(
+        shape
+        for shape in slide.shapes
+        if shape.has_text_frame and "zero" in shape.text_frame.text
+    )
+    assert int(body.top) >= int(title.top) + int(title.height) - int(Inches(0.02))
+    assert int(title.height) > int(Inches(0.42))
+    charts = [shape.chart for shape in slide.shapes if shape.has_chart]
+    bars = next(chart for chart in charts if "PIE" not in str(chart.chart_type))
+    pie = next(chart for chart in charts if "PIE" in str(chart.chart_type))
+    assert bars.value_axis.minimum_scale == 0
+    series_colours = [series.format.fill.fore_color.rgb for series in bars.series]
+    assert len(set(series_colours)) == len(series_colours)
+    assert series_colours[0] == RGBColor(0x11, 0x22, 0x33)
+    wedges = [point.format.fill.fore_color.rgb for point in pie.series[0].points]
+    assert len(set(wedges)) == 4
+    assert pie.plots[0].vary_by_categories is True
+    colours = _palette({"colours": "#112233", "fonts": "", "logo": "", "tone": ""})
+    assert len(colours) >= 6
+    assert len(set(colours)) == len(colours)
+
+
+def test_one_page_body_stays_at_least_9pt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dms_executor.create_files import render_artifact
+
+    body = "\n".join(["Orders held steady."] * 80)
+    artifact = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [{"id": "a", "title": "Body", "body": body + "\nDROPTAIL"}],
+    }
+    render_artifact(tmp_path, artifact, kind="doc", one_page=True)
+    pdf = (tmp_path / "doc.pdf").read_bytes()
+    assert b"/F1 4 Tf" not in pdf
+    assert b"/F1 9 Tf" in pdf
+    assert b"Orders held steady" in pdf
+    assert b"DROPTAIL" not in pdf
+    client = _client(monkeypatch, tmp_path / "api", "1")
+    long = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [{"id": "a", "title": "Body", "body": body}],
+    }
+    short = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [{"id": "a", "title": "Body", "body": "Kept."}],
+    }
+    stub = _patch(monkeypatch, [long, short])
+    opened = client.post(
+        "/v1/studio/create/sessions",
+        json={
+            "space_id": SPACE,
+            "kind": "doc",
+            "goal": "Write a one page note",
+            "audience": "Founder",
+        },
+        headers=HEADERS,
+    )
+    assert opened.status_code == 200, opened.text
+    session_id = opened.json()["session_id"]
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is True, view
+    assert view["artifact"]["parts"][0]["body"] == "Kept."
+    assert len(stub.bodies) == 2
+    assert "layout:condense" in stub.bodies[1]["messages"][1]["content"]
+
+
+def test_html_drops_a_second_table_when_the_numbers_overlap(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+
+    artifact = {
+        "kind": "app",
+        "title": "Revenue",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Total",
+                "body": "Revenue for the year.",
+                "rows": [
+                    {"region": "North", "amount": 10},
+                    {"region": "South", "amount": 20},
+                ],
+                "charts": [
+                    {
+                        "label": "Same numbers",
+                        "rows": [
+                            {"amount": 10, "region": "North"},
+                            {"amount": 20, "region": "South"},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="app", one_page=False)
+    html = (tmp_path / "app.html").read_text(encoding="utf-8")
+    assert html.count("<table>") == 1
+    assert "data:image/png;base64," in html
+
+
+def test_a_broken_long_deck_is_built_in_batches(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    outline = {
+        "slides": [{"id": f"s{index}", "title": f"Slide {index}"} for index in range(1, 6)]
+    }
+    first = {
+        "kind": "slides",
+        "title": "Orders deck",
+        "parts": [
+            {"id": f"s{index}", "title": f"Slide {index}", "body": "Orders moved."}
+            for index in range(1, 5)
+        ],
+    }
+    second = {
+        "kind": "slides",
+        "title": "Orders deck",
+        "parts": [{"id": "s5", "title": "Slide 5", "body": "Orders moved."}],
+    }
+    stub = _patch(monkeypatch, ["not json", outline, first, second])
+    opened = client.post(
+        "/v1/studio/create/sessions",
+        json={
+            "space_id": SPACE,
+            "kind": "slides",
+            "goal": "A sixteen slide briefing",
+            "audience": "Founder",
+        },
+        headers=HEADERS,
+    )
+    session_id = opened.json()["session_id"]
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is True, view
+    assert len(view["artifact"]["parts"]) == 5
+    assert len(stub.bodies) == 4
+    outline_system = stub.bodies[1]["messages"][0]["content"]
+    batch_system = stub.bodies[2]["messages"][0]["content"]
+    assert "outline" in outline_system
+    assert "result row" in batch_system
+    assert "Only the slides named" in batch_system
+
+
 def test_chart_rows_past_forty_stay_and_a_sliced_part_is_marked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1720,9 +1924,14 @@ def test_chart_rows_past_forty_stay_and_a_sliced_part_is_marked(
         f"/v1/studio/create/sessions/{session_id}/confirm", headers=HEADERS
     )
     assert confirmed.status_code == 200, confirmed.text
-    html = (tmp_path / "store" / session_id / "slides.html").read_text(encoding="utf-8")
+    folder = tmp_path / "store" / session_id
+    html = (folder / "slides.html").read_text(encoding="utf-8")
+    pdf = (folder / "slides.pdf").read_bytes()
+    assert html.count("<table>") == 1
     assert "Showing 40 of 48." in html
-    assert "m48" in html
+    assert "m48" not in html
+    assert b"Showing 40 of 48." in pdf
+    assert b"m48" not in pdf
 
 
 def test_derived_percent_traces_within_one_point() -> None:

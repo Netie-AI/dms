@@ -266,7 +266,7 @@ def direct_prompt(
 ) -> str:
     """The plain Claude ask: JSON schema plus the same XML context. No tools."""
     xml = _system_and_xml(spec, data_context, style, prompt_version)[1]
-    system, cleaned = _plain_pair(xml)
+    system, cleaned = _plain_pair(xml, spec)
     return system + "\n" + cleaned
 
 
@@ -287,7 +287,7 @@ def request_body(
         ref = os.environ.get("DMS_CREATE_CURSOR_REF", "main").strip() or "main"
         if not repo:
             raise GeneratorError("cursor_repo_missing")
-        plain, cleaned = _plain_pair(xml)
+        plain, cleaned = _plain_pair(xml, spec)
         body = {
             "prompt": {"text": plain + "\n" + cleaned},
             "source": {"repository": repo, "ref": ref},
@@ -330,7 +330,7 @@ def request_body(
         return body, xml
     # Plain contract. OpenVault rejects ``tools`` and ignores a top-level system.
     # The library string still says call return_artifact. This path does not send it.
-    plain, cleaned = _plain_pair(xml)
+    plain, cleaned = _plain_pair(xml, spec)
     messages = [
         {"role": "system", "content": plain},
         {"role": "user", "content": cleaned},
@@ -857,21 +857,36 @@ def _check(schema: Mapping[str, Any], value: Any, path: str) -> list[str]:
     return []
 
 
-def _plain_pair(xml: str) -> tuple[str, str]:
+def _plain_pair(xml: str, spec: Mapping[str, Any] | None = None) -> tuple[str, str]:
     """Schema plus the context. Tool names stay on the tools-flag path only."""
-    return _plain_system(), _drop_tool_words(xml)
+    return _plain_system(spec), _drop_tool_words(xml)
 
 
-def _plain_system() -> str:
+def _plain_system(spec: Mapping[str, Any] | None = None) -> str:
+    deck = spec.get("deck") if isinstance(spec, Mapping) else None
+    figures = (
+        "Every cited figure must be copied from a result row "
+        "or an aggregate already in the data.\n"
+    )
+    if isinstance(deck, dict) and deck.get("step") == "outline":
+        return (
+            "Reply with one JSON object and no other text.\n"
+            'The object is an outline: {"slides":[{"id":"s1","title":"Short title"}]}.\n'
+            "No figures. No parts.\n"
+        )
     schema = tool_registry()[_OUTPUT_TOOL]["input_schema"]
-    return (
+    body = (
         "Reply with one JSON object and no other text.\n"
         "The object is the artifact itself. Do not wrap it.\n"
-        "JSON schema:\n"
+        + figures
+        + "JSON schema:\n"
         + json.dumps(schema, indent=2)
         + "\nExample:\n"
         + json.dumps(_SCHEMA_EXAMPLE, indent=2)
     )
+    if isinstance(deck, dict) and deck.get("step") == "slides":
+        body += "\nOnly the slides named in the task. One part each.\n"
+    return body
 
 
 def _drop_tool_words(text: str) -> str:

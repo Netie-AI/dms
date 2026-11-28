@@ -217,9 +217,7 @@ def confirm_final(*, session_id: str, actor: str) -> dict[str, Any]:
     folder = _store_dir() / session_id
     from dms_executor.create_files import page_budget, render_artifact
 
-    asked = " ".join(
-        [str(session.get("goal") or ""), str(session.get("style_prompt") or "")]
-    )
+    asked = " ".join([str(session.get("goal") or ""), str(session.get("style_prompt") or "")])
     kind = str(session.get("kind") or "")
     budget = page_budget(asked) if kind == "doc" else None
     session["files"] = render_artifact(
@@ -372,6 +370,27 @@ def _governed(
         _save(session)
         return _view(session)
     artifact, issues = _from_turn(session, turn, section_id)
+    if (
+        str(session.get("kind") or "") == "slides"
+        and _needs_batches(issues)
+        and not session.get("repaired")
+        and not _cursor_run()
+    ):
+        batched, batch_issues = _deck_in_batches(
+            session, api_key, instruction=instruction, section_id=section_id
+        )
+        if batched is not None:
+            artifact, issues = batched, batch_issues
+    elif (
+        not issues
+        and isinstance(artifact, dict)
+        and _doc_overflow(session, artifact)
+        and not session.get("repaired")
+        and not _cursor_run()
+    ):
+        from dms_executor.create_files import _CONDENSE
+
+        issues = [_CONDENSE]
     if issues and issues[0] in {"ungranted", "destructive"}:
         session["step"] = "abstain"
         session["shown"] = False
@@ -431,12 +450,13 @@ def _turn(
     instruction: str | None,
     section_id: str | None,
     judge_issues: list[str] | None = None,
+    deck: dict[str, Any] | None = None,
 ) -> Any:
     block = _budget_block(session)
     if block:
         _stop(session, block)
         return None
-    spec = _spec(session, instruction, section_id, judge_issues)
+    spec = _spec(session, instruction, section_id, judge_issues, deck)
     context = _context(session)
     style = _style(session)
     try:
@@ -561,9 +581,7 @@ def _from_turn(
     return traced, issues
 
 
-def _trace(
-    session: dict[str, Any], artifact: dict[str, Any]
-) -> tuple[dict[str, Any], list[str]]:
+def _trace(session: dict[str, Any], artifact: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
     for part in artifact.get("parts") or []:
         if not isinstance(part, dict):
@@ -695,6 +713,7 @@ def _spec(
     instruction: str | None,
     section_id: str | None,
     judge_issues: list[str] | None,
+    deck: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     spec = {
         "kind": session["kind"],
@@ -710,7 +729,159 @@ def _spec(
         }
     if judge_issues:
         spec["judge"] = {"issues": judge_issues}
+    if deck:
+        spec["deck"] = deck
     return spec
+
+
+def _needs_batches(issues: list[str]) -> bool:
+    if "model_unreadable" in issues:
+        return True
+    return any(item.startswith("schema:") or item.startswith("missing:") for item in issues)
+
+
+def _doc_overflow(session: dict[str, Any], artifact: Mapping[str, Any]) -> bool:
+    from dms_executor.create_files import content_overflow, page_budget
+
+    if str(session.get("kind") or "") != "doc":
+        return False
+    asked = " ".join([str(session.get("goal") or ""), str(session.get("style_prompt") or "")])
+    budget = page_budget(asked)
+    return content_overflow(
+        artifact,
+        kind="doc",
+        one_page=budget == 1,
+        page_budget=budget,
+    )
+
+
+def _deck_in_batches(
+    session: dict[str, Any],
+    api_key: str,
+    *,
+    instruction: str | None,
+    section_id: str | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Outline, then groups of slides. A broken 16-slide blob is not repaired whole."""
+    from dms_core.create_generator import ProviderTurn
+
+    outline = _turn(
+        session,
+        api_key,
+        role="generate",
+        instruction=instruction,
+        section_id=section_id,
+        deck={"step": "outline"},
+    )
+    if outline is None:
+        return None, ["model_unreadable"]
+    if _full_deck(outline.artifact):
+        return _from_turn(session, outline, section_id)
+    slides = _outline_items(outline.artifact)
+    if not slides:
+        outline = _turn(
+            session,
+            api_key,
+            role="improve",
+            instruction=instruction,
+            section_id=section_id,
+            judge_issues=["model_unreadable", "schema:required slides"],
+            deck={"step": "outline"},
+        )
+        if outline is None:
+            return None, ["model_unreadable"]
+        if _full_deck(outline.artifact):
+            return _from_turn(session, outline, section_id)
+        slides = _outline_items(outline.artifact)
+    if not slides:
+        return None, ["model_unreadable", _SCHEMA_ISSUE]
+    parts: list[dict[str, Any]] = []
+    for batch in _groups(slides, 4):
+        piece = _slide_batch(session, api_key, instruction, section_id, batch)
+        parts.extend(piece)
+    if not parts:
+        return None, ["model_unreadable", _SCHEMA_ISSUE]
+    title = str(session.get("goal") or slides[0]["title"])
+    assembled = ProviderTurn(
+        artifact={"kind": "slides", "title": title, "parts": parts},
+        tool_calls=[],
+        cost=None,
+        tokens=None,
+        prompt_tokens=None,
+        completion_tokens=None,
+        model=None,
+        prompt="",
+        provider="claude_api",
+        estimated_cost=None,
+    )
+    return _from_turn(session, assembled, section_id)
+
+
+def _slide_batch(
+    session: dict[str, Any],
+    api_key: str,
+    instruction: str | None,
+    section_id: str | None,
+    batch: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    deck = {"step": "slides", "slides": batch}
+    piece = _turn(
+        session,
+        api_key,
+        role="generate",
+        instruction=instruction,
+        section_id=section_id,
+        deck=deck,
+    )
+    parts = _part_dicts(piece.artifact if piece is not None else None)
+    if parts or piece is None:
+        return parts
+    piece = _turn(
+        session,
+        api_key,
+        role="improve",
+        instruction=instruction,
+        section_id=section_id,
+        judge_issues=["model_unreadable", _SCHEMA_ISSUE],
+        deck=deck,
+    )
+    return _part_dicts(piece.artifact if piece is not None else None)
+
+
+def _full_deck(artifact: Any) -> bool:
+    return (
+        isinstance(artifact, dict)
+        and artifact.get("kind") == "slides"
+        and isinstance(artifact.get("parts"), list)
+        and any(isinstance(item, dict) and item.get("title") for item in artifact["parts"])
+    )
+
+
+def _outline_items(artifact: Any) -> list[dict[str, str]]:
+    if not isinstance(artifact, dict):
+        return []
+    items = artifact.get("slides") or artifact.get("parts") or []
+    if not isinstance(items, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("title"):
+            continue
+        out.append({"id": str(item.get("id") or f"s{len(out) + 1}"), "title": str(item["title"])})
+    return out
+
+
+def _part_dicts(artifact: Any) -> list[dict[str, Any]]:
+    if not isinstance(artifact, dict):
+        return []
+    parts = artifact.get("parts")
+    if not isinstance(parts, list):
+        return []
+    return [item for item in parts if isinstance(item, dict) and item.get("title")]
+
+
+def _groups(items: list[dict[str, str]], size: int) -> list[list[dict[str, str]]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
 
 
 def _unknown_inputs(session: dict[str, Any]) -> str:
