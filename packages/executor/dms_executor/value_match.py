@@ -293,7 +293,7 @@ def take_clarify_envelope(
     space_id: str | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any] | None:
-    """A clarify card when this ask's retrieval tied. None when the flag is off or there is no tie."""
+    """Clarify card when retrieval tied. None when the flag is off or there is no tie."""
     if not value_match_enabled():
         return None
     readings = _READINGS.get()
@@ -388,9 +388,7 @@ def _admit(column: ColumnInput) -> bool:
             return False
         if column.description and classify_column(column.description, (), table=column.table):
             return False
-        if not _column_positively_cleared(
-            column.table, column.column, tagged=column.tagged
-        ):
+        if not _column_positively_cleared(column.table, column.column, tagged=column.tagged):
             return False
     except Exception as exc:  # noqa: BLE001 -- doubt: send nothing
         raise _Doubt from exc
@@ -443,9 +441,7 @@ def _spans(asked: str) -> list[tuple[str, str]]:
     return out
 
 
-def _hits(
-    corpora: Sequence[_Corpus], spans: Sequence[tuple[str, str]]
-) -> list[Candidate]:
+def _hits(corpora: Sequence[_Corpus], spans: Sequence[tuple[str, str]]) -> list[Candidate]:
     found: list[Candidate] = []
     for folded, _original in spans:
         query = _grams(folded)
@@ -462,9 +458,7 @@ def _hits(
                     score = max(score, 1.0)
                 if score <= 0.0 and recall < 1.0:
                     continue
-                found.append(
-                    Candidate(corp.table, corp.column, value, recall, score, folded)
-                )
+                found.append(Candidate(corp.table, corp.column, value, recall, score, folded))
     return found
 
 
@@ -697,11 +691,7 @@ def _resolve(column: Any, cited: set[str], folds: Mapping[str, set[str]]) -> lis
         direct = f"{table}.{name}"
         if direct in folds:
             return [direct]
-        hits = [
-            key
-            for key in folds
-            if key.lower() == direct.lower()
-        ]
+        hits = [key for key in folds if key.lower() == direct.lower()]
         return hits
     cited_l = {item.lower() for item in cited}
     hits = []

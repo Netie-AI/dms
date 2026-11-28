@@ -1211,6 +1211,17 @@ def _submit_validated(
 ) -> dict[str, Any]:
     def _sql_checks(statement: str) -> dict[str, Any] | None:
         """Qualifier, currency, and numeric checks. None means the SQL may be served."""
+        from dms_executor.value_match import value_match_enabled, value_not_found_reconfirm
+
+        if value_match_enabled():
+            missed = value_not_found_reconfirm(
+                statement,
+                asked=question,
+                space_id=space_id,
+                session_id=session_id,
+            )
+            if missed is not None:
+                return missed
         if not coverage_valid(coverage):
             return _abstain(
                 question,
@@ -2938,6 +2949,10 @@ def _maybe_generative_ask_impl(
     note_stage("retrieve_context", "done")
     envelope_prompt = ""
     index_stamp = ""
+    from dms_executor.value_match import publish_match, value_match_enabled
+
+    if value_match_enabled():
+        publish_match(None, ())
     if schema_context_enabled():
         note_stage("schema_context", "started")
         with span("schema_context"):
@@ -2958,6 +2973,13 @@ def _maybe_generative_ask_impl(
         held_stamp = ctx.pop(SCHEMA_INDEX_STAMP_KEY, "")
         if isinstance(held_stamp, str):
             index_stamp = held_stamp
+        from dms_executor.value_match import take_clarify_envelope
+
+        if value_match_enabled():
+            card = take_clarify_envelope(q, space_id=space_id, session_id=session_id)
+            if card is not None:
+                note_stage("schema_context", "done")
+                return card
         note_stage("schema_context", "done")
     # ONTO-DERIVE-01: a Space's own ontology (never the demo one) whose joins
     # generated SQL must follow. Measured against the lake as it is.

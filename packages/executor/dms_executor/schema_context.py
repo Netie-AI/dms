@@ -308,6 +308,11 @@ class SchemaContext:
     envelope_prompt: str
     # Evidence for the one masker. Not a prompt and not a wire field.
     name_mask: dict[str, list[str]] | None = None
+    # FEAT-VALUE-MATCH-01. Empty unless DMS_VALUE_MATCH is the digit 1.
+    value_match_stamp: str = ""
+    value_match_readings: tuple[tuple[str, str, str, str], ...] = ()
+    value_match_columns: tuple[str, ...] = ()
+    value_match_granted: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 # Popped off the compute catalog before Insights sees it. Not a wire field.
@@ -1745,6 +1750,77 @@ def _fallback_prompt(dialect: str) -> str:
     return "SCHEMA"
 
 
+def _has_row_filter(value: Any) -> bool:
+    """True when a row filter is set on a table or a column. An absent key is not one."""
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict)):
+        return len(value) > 0
+    return True
+
+
+def _attach_value_match(
+    prompt: str,
+    envelope: str,
+    *,
+    asked: str,
+    prepared: Sequence[Mapping[str, Any]],
+    index: Mapping[str, Sequence[str]],
+    embedder: Any,
+) -> tuple[
+    str,
+    str,
+    str,
+    tuple[tuple[str, str, str, str], ...],
+    tuple[str, ...],
+    tuple[tuple[str, tuple[str, ...]], ...],
+]:
+    """Append the candidate block when ``DMS_VALUE_MATCH`` is on. Off returns the same strings."""
+    from dms_executor.value_match import (
+        ColumnInput,
+        match_prompt,
+        publish_match,
+        value_match_enabled,
+    )
+
+    none_readings: tuple[tuple[str, str, str, str], ...] = ()
+    blank: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    if not value_match_enabled():
+        publish_match(None, ())
+        return prompt, envelope, "", none_readings, (), blank
+    try:
+        columns = [
+            ColumnInput(
+                table=str(item["table"]),
+                column=str(item["name"]),
+                values=tuple(index.get(f"{item['table']}.{item['name']}", ())),
+                tagged=bool(item.get("tagged")),
+                description=str(item.get("description") or ""),
+                masked=bool(item.get("masked")),
+                row_filtered=bool(item.get("row_filtered")),
+            )
+            for item in prepared
+        ]
+        result = match_prompt(columns, asked, embedder=embedder)
+    except Exception:  # noqa: BLE001 -- doubt: no candidates, the ask continues
+        publish_match(None, ())
+        return prompt, envelope, "", none_readings, (), blank
+    granted = tuple(sorted((key, tuple(vals)) for key, vals in result.granted.items()))
+    publish_match(result.granted, result.readings)
+    if not result.block:
+        return prompt, envelope, result.stamp, result.readings, result.columns, granted
+    return (
+        f"{prompt}\n{result.block}",
+        f"{envelope}\n{result.block}",
+        result.stamp,
+        result.readings,
+        result.columns,
+        granted,
+    )
+
+
 def build_schema_context(
     question: str,
     schema: Mapping[str, Any],
@@ -1754,6 +1830,7 @@ def build_schema_context(
     space_id: str | None = None,
     max_tokens: int = MAX_PROMPT_TOKENS,
     entity_spans: Any = None,
+    embedder: Any = None,
 ) -> SchemaContext:
     """Rank the connector description and render a prompt inside ``max_tokens``.
 
@@ -1834,6 +1911,9 @@ def build_schema_context(
                     "table_desc": table_desc,
                     "tagged": tagged,
                     "cleared": cleared,
+                    "masked": column.get("masked") is True,
+                    "row_filtered": _has_row_filter(dataset.get("row_filter"))
+                    or _has_row_filter(column.get("row_filter")),
                     "source_name": (
                         _text(column.get("source_name")) if unicode_ident_enabled() else ""
                     ),
@@ -2006,12 +2086,26 @@ def build_schema_context(
     if grantable is not None and sqlglot_dialect(dialect or "") is None:
         prompt = f"sql_dialect_unknown\n{prompt}"
         envelope_prompt = f"sql_dialect_unknown\n{envelope_prompt}"
+    prompt, envelope_prompt, vm_stamp, vm_readings, vm_columns, vm_granted = (
+        _attach_value_match(
+            prompt,
+            envelope_prompt,
+            asked="" if mask_failed else model_text,
+            prepared=prepared,
+            index=index,
+            embedder=embedder,
+        )
+    )
     return SchemaContext(
         prompt=prompt,
         samples_included=any(col.samples for col in chosen),
         dialect=dialect,
         envelope_prompt=envelope_prompt,
         name_mask=evidence,
+        value_match_stamp=vm_stamp,
+        value_match_readings=vm_readings,
+        value_match_columns=vm_columns,
+        value_match_granted=vm_granted,
     )
 
 
@@ -2993,6 +3087,7 @@ def prepare_generate_context(
     dialect: str | None = None,
     space_id: str | None = None,
     max_tokens: int = MAX_PROMPT_TOKENS,
+    embedder: Any = None,
 ) -> dict[str, Any]:
     """Attach the prompt when the flag is on. Do nothing when it is off.
 
@@ -3018,6 +3113,7 @@ def prepare_generate_context(
             grantable=grantable,
             space_id=space_id,
             max_tokens=max_tokens,
+            embedder=embedder,
         )
     except Exception:  # noqa: BLE001 -- schema context must not sink the ask
         return ctx
@@ -3030,6 +3126,10 @@ def prepare_generate_context(
     out[SCHEMA_CONTEXT_ENVELOPE_KEY] = built.envelope_prompt
     if built.name_mask is not None:
         out[NAME_MASK_KEY] = built.name_mask
+    if built.value_match_stamp:
+        stamp = (
+            f"{stamp},{built.value_match_stamp}" if stamp else built.value_match_stamp
+        )
     if stamp:
         out[SCHEMA_INDEX_STAMP_KEY] = stamp
     return out
