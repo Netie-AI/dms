@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - Slim: clean-tree stamp
+
+- **Suite.** On `1203707`, the grade52 stamp tests that refused the dirty tree, plus `tests/test_rules_legacy_01.py`: 49 passed.
+- **Stub.** `grade52 --main` at `1203707`: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. `DMS_RULES_LEGACY=0`: correct=0 wrong=0 reconfirm=34 abstain=10 refusal_ok=8 ai=0 rule=0.
+
 ## 2026-11-28 - Slim: DMS_RULES_LEGACY, attic for stale scripts and old findings
 
 - **Switch.** `DMS_RULES_LEGACY` defaults on. Unset, or any token other than the digit `0`, keeps today's rule serves. Digit `0` holds the L1 phrase pack, ontology compile, and the question-word lanes. Grants, abstain, ontology, and a model SQL leg stay. `DMS_AI_FIRST` is not redefined.
