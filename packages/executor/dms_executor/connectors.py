@@ -353,6 +353,14 @@ def plan_cost(con: Any, kind: str, statement: str) -> float | None:
             return None
         row = cur.fetchone()
     except Exception:
+        # A failed EXPLAIN aborts the transaction. Roll it back so the read
+        # still runs and the missing cost stays a warning.
+        rollback = getattr(con, "rollback", None)
+        if callable(rollback):
+            try:
+                rollback()
+            except Exception:
+                return None
         return None
     finally:
         cur.close()

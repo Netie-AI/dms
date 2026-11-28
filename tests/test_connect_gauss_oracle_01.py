@@ -2,7 +2,8 @@
 
 Flag off rejects both kinds with the same error an unknown kind gets, and the
 ask prompt, envelope, and route stay byte-identical. Flag on, recorded cursors
-cover introspect, keys, and typed errors. No live engine is required here.
+cover introspect, keys, and typed errors. The live openGauss round-trip runs
+only when CI has started the server.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from dms_core.control_plane.connect_store import (
 )
 from dms_executor import db_connector as dbc
 from dms_executor.connectors import (
-    ConnectProbeError,
     ConnectQueryError,
     guarded_reason,
     probe_source,
@@ -586,28 +586,47 @@ def _live(name: str) -> bool:
 
 
 @pytest.mark.skipif(not _live("DMS_CONNECT_GAUSS_LIVE"), reason="openGauss image unavailable")
-def test_live_gauss_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_live_gauss_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Schema introspect plus one read. CI creates public.dms_probe first."""
     monkeypatch.setenv("DMS_CONNECT_GAUSS", "1")
     password = os.environ["CONNECT_GAUSS_PASSWORD"]
-    try:
-        probed = probe_source(
-            kind="gauss",
-            host=os.environ.get("CONNECT_GAUSS_HOST", "127.0.0.1"),
-            port=int(os.environ.get("CONNECT_GAUSS_PORT", "5432")),
-            database=os.environ.get("CONNECT_GAUSS_DB", "postgres"),
-            user=os.environ.get("CONNECT_GAUSS_USER", "gaussdb"),
-            password=password,
-        )
-    except ConnectProbeError as exc:
-        assert exc.code == "auth_method_unsupported"
-        assert exc.doc == gauss.AUTH_DOC
-        assert password not in str(exc)
-        assert password not in exc.doc
-        return
+    common = {
+        "kind": "gauss",
+        "host": os.environ.get("CONNECT_GAUSS_HOST", "127.0.0.1"),
+        "port": int(os.environ.get("CONNECT_GAUSS_PORT", "5432")),
+        "database": os.environ.get("CONNECT_GAUSS_DB", "postgres"),
+        "user": os.environ.get("CONNECT_GAUSS_USER", "gaussdb"),
+        "password": password,
+    }
+    probed = probe_source(**common)
     dumped = json.dumps(probed)
     assert password not in dumped
     assert probed["dialect"] == "postgres"
     assert probed["prompt"].startswith("DIALECT: postgres")
+    version = str(probed["server_version"]).lower()
+    assert "opengauss" in version or "gaussdb" in version
+    assert "public.dms_probe" in probed["tables"]
+    page = run_live_select(
+        **common,
+        sql="SELECT n FROM public.dms_probe",
+        grantable={"public.dms_probe"},
+        confirm_runaway=True,
+        page_size=10,
+    )
+    body = json.dumps(page)
+    assert password not in body
+    assert page["ok"] is True
+    assert len(page["rows"]) == 1
+    assert list(page["rows"][0].values()) == [1]
+    with pytest.raises(ConnectQueryError) as raised:
+        run_live_select(
+            **common,
+            sql="DELETE FROM public.dms_probe",
+            grantable={"public.dms_probe"},
+            confirm_runaway=True,
+        )
+    assert raised.value.code == "statement_not_allowed"
+    assert password not in str(raised.value)
 
 
 @pytest.mark.skipif(not _live("DMS_CONNECT_ORACLE_LIVE"), reason="Oracle Free image unavailable")

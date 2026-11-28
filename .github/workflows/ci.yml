@@ -390,12 +390,13 @@ jobs:
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           python -m pytest tests/test_connect_v2.py -q --tb=short -p no:cacheprovider
 
-  # FEAT-CONNECT-GAUSS-01. Optional. Skips when the image will not pull.
-  # opengauss/opengauss is MulanPSL-2.0. gvenzl/oracle-free packages Oracle
-  # Database Free (Oracle Free Use Terms), not a paid edition.
+  # FEAT-CONNECT-GAUSS-01. openGauss must connect. A dead container fails
+  # this job and prints its logs. opengauss/opengauss is MulanPSL-2.0.
+  # gvenzl/oracle-free packages Oracle Database Free (Oracle Free Use Terms),
+  # not a paid edition, and still skips when that image will not pull.
   connect-gauss-oracle:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -428,47 +429,102 @@ jobs:
       - name: Probe when the images are available
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
-          gauss=0
-          oracle=0
-          if timeout 120 docker pull opengauss/opengauss:5.0.0; then
-            docker run -d --name opengauss -p 15432:5432 \
-              -e GS_PASSWORD=Ci_only_Gauss1 opengauss/opengauss:5.0.0 || true
-            gauss=1
-          else
-            echo "skipped: opengauss image unavailable"
+          # The 5.0.0 entrypoint exits unless GS_PASSWORD has upper, lower,
+          # digit, and one of #?!@$%^&*-. Generate it here. Never commit it.
+          python - << 'PY'
+          import secrets
+          import string
+          from pathlib import Path
+          special = "@"
+          chars = [
+              secrets.choice(string.ascii_uppercase),
+              secrets.choice(string.ascii_lowercase),
+              secrets.choice(string.digits),
+              special,
+          ]
+          pool = string.ascii_letters + string.digits + special
+          chars.extend(secrets.choice(pool) for _ in range(16))
+          secrets.SystemRandom().shuffle(chars)
+          path = Path("/tmp/dms-gs-password")
+          path.write_text("".join(chars), encoding="utf-8")
+          path.chmod(0o600)
+          PY
+          GS_PASSWORD="$(cat /tmp/dms-gs-password)"
+          export GS_PASSWORD
+          redact_gauss_logs() {
+            python - << 'PY'
+          import subprocess
+          from pathlib import Path
+          pw = ""
+          path = Path("/tmp/dms-gs-password")
+          if path.exists():
+              pw = path.read_text(encoding="utf-8")
+          proc = subprocess.run(["docker", "logs", "opengauss"], capture_output=True)
+          text = proc.stdout.decode("utf-8", "replace") + proc.stderr.decode("utf-8", "replace")
+          if pw:
+              text = text.replace(pw, "[redacted]")
+          print(text[-24000:])
+          PY
+          }
+          fail_gauss() {
+            echo "openGauss failed: $1"
+            redact_gauss_logs
+            docker inspect opengauss --format 'status={{.State.Status}} exit={{.State.ExitCode}}' || true
+            exit 1
+          }
+          if ! timeout 180 docker pull opengauss/opengauss:5.0.0; then
+            echo "openGauss image pull failed"
+            exit 1
           fi
+          docker rm -f opengauss >/dev/null 2>&1 || true
+          # Image listens on 5432. Host 15432 is the documented mapping.
+          # --privileged is the image's own start requirement.
+          # OTHER_PG_CONF is appended after the entrypoint's sha256 line, so
+          # the last value is MD5 and psycopg 3 can log in.
+          if ! docker run -d --name opengauss --privileged \
+            -p 15432:5432 \
+            -e GS_PASSWORD \
+            -e GS_HOST_AUTH_METHOD=md5 \
+            -e OTHER_PG_CONF='password_encryption_type = 0' \
+            opengauss/opengauss:5.0.0; then
+            fail_gauss "docker run failed"
+          fi
+          # Entrypoint initdb prints "ready for start up", then execs gaussdb.
+          # gs_ctl "server is running" is the signal after that. 240 * 2s covers
+          # a cold init on a GitHub runner. The loop returns as soon as it is up.
+          ready=0
+          for _ in $(seq 1 240); do
+            status="$(docker exec opengauss su - omm -c 'gs_ctl status -D /var/lib/opengauss/data' 2>/dev/null || true)"
+            case "$status" in
+              *"server is running"*) ready=1; break ;;
+            esac
+            running="$(docker inspect -f '{{.State.Running}}' opengauss 2>/dev/null || echo false)"
+            if [ "$running" != "true" ]; then
+              fail_gauss "container exited before gs_ctl reported the server running"
+            fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then
+            fail_gauss "gs_ctl did not report server is running within 8 minutes"
+          fi
+          if ! docker exec opengauss su - omm -c "gsql -d postgres -v ON_ERROR_STOP=1 -c 'CREATE TABLE public.dms_probe (n int); INSERT INTO public.dms_probe (n) VALUES (1); GRANT SELECT ON public.dms_probe TO gaussdb;'"; then
+            fail_gauss "could not create the probe table"
+          fi
+          export DMS_CONNECT_GAUSS_LIVE=1
+          export CONNECT_GAUSS_HOST=127.0.0.1
+          export CONNECT_GAUSS_PORT=15432
+          export CONNECT_GAUSS_USER=gaussdb
+          export CONNECT_GAUSS_DB=postgres
+          export CONNECT_GAUSS_PASSWORD="$GS_PASSWORD"
+          oracle=0
           if timeout 180 docker pull gvenzl/oracle-free:23-slim; then
             docker run -d --name oracle-free -p 1521:1521 \
               -e ORACLE_PASSWORD=Ci_only_Oracle1 gvenzl/oracle-free:23-slim || true
             oracle=1
           else
             echo "skipped: oracle free image unavailable"
-          fi
-          if [ "$gauss" != 1 ] && [ "$oracle" != 1 ]; then
-            echo "skipped: no engine image"
-            exit 0
-          fi
-          if [ "$gauss" = 1 ]; then
-            ready=0
-            for _ in $(seq 1 30); do
-              if python -c 'import socket; s=socket.create_connection(("127.0.0.1",15432),2); s.close()'; then
-                ready=1
-                break
-              fi
-              sleep 4
-            done
-            if [ "$ready" = 1 ]; then
-              export DMS_CONNECT_GAUSS_LIVE=1
-              export CONNECT_GAUSS_HOST=127.0.0.1
-              export CONNECT_GAUSS_PORT=15432
-              export CONNECT_GAUSS_USER=gaussdb
-              export CONNECT_GAUSS_DB=postgres
-              export CONNECT_GAUSS_PASSWORD=Ci_only_Gauss1
-            else
-              echo "skipped: opengauss did not accept connections"
-            fi
           fi
           if [ "$oracle" = 1 ]; then
             ready=0
@@ -490,11 +546,10 @@ jobs:
               echo "skipped: oracle free did not accept connections"
             fi
           fi
-          if [ "${DMS_CONNECT_GAUSS_LIVE:-}" != 1 ] && [ "${DMS_CONNECT_ORACLE_LIVE:-}" != 1 ]; then
-            echo "skipped: engines did not become ready"
-            exit 0
+          if ! python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k 'live_gauss or live_oracle'; then
+            redact_gauss_logs
+            exit 1
           fi
-          python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live
 
   lint-type-test:
     runs-on: ubuntu-latest

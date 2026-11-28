@@ -47,8 +47,10 @@ Gauss, `oracle` for Oracle.
 
 ## Live images
 
-The optional CI job skips when the image will not pull. Neither image is a paid
-service.
+The CI job must start openGauss. A pull failure or a server that never
+reports running fails the job and prints the container logs with the password
+removed. Oracle Free still skips when that image will not pull. Neither image
+is a paid service.
 
 - `opengauss/opengauss:5.0.0` is openGauss, license MulanPSL-2.0.
 - `gvenzl/oracle-free:23-slim` packages Oracle Database Free. The image scripts
