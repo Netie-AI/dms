@@ -124,27 +124,31 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-28 20:06 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-28 21:04 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `56f55f84` Slim rule serves behind DMS_RULES_LEGACY (#670)
+main: `e09b5069` AI-FLOOR-01: checked model SQL and live ask steps (#657)
 
-open PRs: 58 (cap 60)
+open PRs: 53 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #672 | y | `4f992a8e` | - | 8 ok, 2 FAIL, 1 running | SCIM-01: SCIM 2.0 user and group provisioning behind DMS_SCIM |
-| #671 | y | `6434b694` | - | 12 ok | DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE |
+| #678 | n | `102dded6` | - | 3 ok, 12 running | T2 FDE-SURVEY-CONNECT-01: site survey and connector setup tests |
+| #677 | y | `01e6b878` | - | no checks | T8 FDE-UPGRADE-01: upgrade precheck, verify, and rollback runbook |
+| #676 | y | `b5f88ebc` | - | 14 ok, 1 running | T3 FDE-SCAN-01: data quality and PII scan |
+| #675 | y | `a860e063` | - | 14 ok, 1 running | T1 FDE-KIT-01: launcher, engagement folder, and report schema |
+| #674 | y | `e3a1c91f` | - | 12 ok, 3 running | FDE-BUDGET-01: OpenVault cost and quota preflight |
+| #672 | y | `c8fc1ee8` | - | 11 ok, 1 running | SCIM-01: SCIM 2.0 user and group provisioning behind DMS_SCIM |
+| #671 | y | `5fe0e2cd` | - | 12 ok | DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE |
 | #668 | y | `568d0ee9` | - | 12 ok | Generality harness: one scoreboard, recorded slice in CI |
-| #667 | y | `690b0a16` | - | 12 ok | DMS-SIGN: sign, disclose, and store documents (flag off) |
+| #667 | y | `27039f8d` | - | 12 ok | DMS-SIGN: sign, disclose, and store documents (flag off) |
 | #665 | y | `6e87464b` | - | no checks | Accuracy levers on the AI floor, flags off |
 | #663 | y | `bf961850` | - | 16 ok | HARNESS-SEC-01: gate provider keys, SQL, and demo bearers |
 | #662 | y | `b94e6140` | - | no checks | BIG-SCHEMA-01: never send an empty schema |
 | #661 | y | `dab5f750` | - | 12 ok | Create doc and slides through the shared provider adapter |
 | #660 | y | `70173c66` | - | no checks | READY-07: AI sell profile for Studio ask |
-| #658 | y | `99ac6e71` | - | no checks | DMS-CREATE-01: harness for Claude and Cursor |
-| #657 | y | `9272f605` | - | 12 ok | AI-FLOOR-01: checked model SQL and live ask steps |
+| #658 | y | `c3d6c310` | - | no checks | DMS-CREATE-01: harness for Claude and Cursor |
 | #628 | y | `1c1de82c` | - | no checks | NL19-NO-SQL-GENERATE: retry one empty generate, then ask back |
 | #621 | y | `fec45062` | - | no checks | NL19-EXPLAIN-REPAIR: trace binder failures and repair within the call budget |
 | #616 | y | `d85a4171` | - | no checks | UX-CLARIFY-CARD-01: early clarify card before the SQL loop |
@@ -157,22 +161,13 @@ open PRs: 58 (cap 60)
 | #603 | y | `a4c02ce9` | - | 11 ok | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
 | #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
 | #596 | y | `8e548ab6` | - | 11 ok | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
-| #581 | n | `c136933b` | tier:fast | 12 ok | handoff: state refresh |
-| #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
+| #581 | n | `7f9695eb` | tier:fast | 12 ok | handoff: state refresh |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
 | #542 | y | `6195feb3` | - | 11 ok | T5 install hardening: #388 env sentinel, #387 IPv4 + numeric-host guard, #377 at |
 | #539 | y | `0b292401` | - | no checks | Answer fidelity: FIG-FIDELITY-01 (#508) E14, BIRD-ALLOWLIST-01 (#304) preflight, |
-| #538 | y | `3d972da8` | - | 5 ok, 2 FAIL | CONNECT-ASK-05: a join check that raises abstains check_unavailable (no 503, no  |
 | #536 | y | `befc5712` | - | 4 ok | ENV-EXAMPLE-SENTINEL: a placeholder left in a secret refuses boot, by name (Refs |
-| #535 | y | `7392a270` | - | 4 ok, 3 FAIL | CATALOG-SCHEMA-01: the catalog reads the schemas the grants name (Refs #518) |
-| #534 | y | `056908af` | - | 5 ok, 2 FAIL | fix(executor): ONTO-SCOPE-01 the ask reads the asking Space's ontology items, no |
-| #533 | y | `e9136d1b` | - | 4 ok, 3 FAIL | ONTO-PROFILE-03: steward review screen for a file Space's proposed keys and link |
 | #532 | y | `1fdc548b` | - | 5 ok, 2 FAIL | T1 track, do not merge: epic #178 answer-path P0s (#531, #527, #524, #528, #523, |
-| #529 | y | `6c0014d1` | - | 4 ok | JOIN-HOLE-01 (P0): the join allowlist counts every relation a FROM names |
-| #522 | y | `70fb535a` | - | 4 ok | CONNECT-ASK-03: a Space with no ontology answers one-table SQL only (unverified_ |
-| #521 | y | `a8b9c316` | - | 4 ok | ONTO-PROFILE-01: measure a file Space and propose keys and links (Refs #514) |
-| #519 | y | `77c3bbfc` | - | 4 ok | fix(deps): pin duckdb>=1.1,<2 to match the Cortex engine (F-TBD-28) |
 | #510 | y | `10f9761a` | - | 10 ok | IPHONE-PWA-01 to 05: installable iPhone app, one-handed use, one-row composer, p |
 | #509 | y | `4891318e` | - | 3 ok, 1 FAIL | feat(executor): "how full is each warehouse" serves the certified capacity metri |
 | #505 | y | `c5089449` | - | 4 ok | fix(ao): AO-MASK-01 - AO compile prompts carry only masked or non-personal sampl |
@@ -215,7 +210,7 @@ open PRs: 9 (cap 60)
 
 main: `ceab7c77` fix(freeroute): fail closed on uncapped paid hops and stamp downgrades (#198)
 
-open PRs: 8 (cap 60)
+open PRs: 7 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
@@ -225,7 +220,6 @@ open PRs: 8 (cap 60)
 | #173 | y | `24f495a5` | - | 9 ok | feat(freeroute): wire the Anthropic adapter as an opt-in tier (F110) |
 | #171 | y | `c5619981` | - | 3 ok, 1 FAIL | DRAFT (founder decision): superapp planner |
 | #170 | y | `371c4311` | tier:full | 9 ok | OV: site passwords and TOTP seeds are secrets, not LLM hops (F38, F39) |
-| #169 | y | `b842fbcb` | - | 8 ok, 1 FAIL | feat(vault): Anthropic Messages adapter module (unwired, opt-in tier, F110) |
 | #99 | y | `0bc13acb` | tier:full | 9 ok | Fork OmniRoute and Openship into OpenVault as FreeRoute and FreeBuild (DR-0018) |
 
 <!-- MACHINE:END -->
