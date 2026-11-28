@@ -91,6 +91,7 @@ from pydantic import BaseModel, ConfigDict
 from starlette.routing import Match
 from starlette.types import Scope
 
+from dms_api.auth_sso import bound_tenant_id
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 
@@ -256,7 +257,7 @@ def _commit(conn: psycopg.Connection) -> None:
 def _tenant_conn(settings: Any, *, role: AppRole) -> Iterator[tuple[psycopg.Connection, uuid.UUID]]:
     if not settings.database_url:
         raise _refuse(503, "database_unavailable")
-    tenant = uuid.UUID(str(settings.dms_tenant_id))
+    tenant = uuid.UUID(str(bound_tenant_id(settings.dms_tenant_id)))
     with psycopg.connect(settings.database_url) as conn:
         set_tenant_context(conn, tenant, role=role)
         yield conn, tenant

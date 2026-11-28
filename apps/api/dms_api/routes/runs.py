@@ -20,6 +20,7 @@ from cortex_client import compliance_gate
 from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter, Query
 
+from dms_api.auth_sso import bound_tenant_id
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 
@@ -96,11 +97,11 @@ def list_runs(
     if not settings.database_url:
         return {"configured": False, "hint": _NOT_CONFIGURED_HINT, "runs": []}
 
-    tenant = UUID(settings.dms_tenant_id)
+    tenant = UUID(bound_tenant_id(settings.dms_tenant_id))
     space_uuid = UUID(space_id) if space_id else None
     runs: list[dict[str, Any]] = []
     with psycopg.connect(settings.database_url) as conn:
-        set_tenant_context(conn, settings.dms_tenant_id, role="viewer")
+        set_tenant_context(conn, bound_tenant_id(settings.dms_tenant_id), role="viewer")
         if kind in (None, "ingest"):
             rows = conn.execute(
                 """

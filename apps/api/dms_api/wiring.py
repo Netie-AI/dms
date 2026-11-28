@@ -300,6 +300,18 @@ def sql_source_describe(
     return cfg.describe()
 
 
+def load_vault_secret(cred_ref: str) -> str:
+    """Reveal one OpenVault secret by reference. The value is not logged."""
+    from dms_api.settings import get_settings
+
+    settings = get_settings()
+    minter = dms_executor.ManifestMinter(openvault_url=settings.openvault_url)
+    try:
+        return minter.resolve_credential(cred_ref)
+    finally:
+        minter.close()
+
+
 def service_bearer_id(authorization: str | None) -> str | None:
     """Id of the configured OpenVault service bearer, or None.
 
@@ -688,9 +700,7 @@ def _persist_sql_data_source(
         UUID(tenant)
     except ValueError:
         return
-    meta = json.dumps(
-        {"connector_id": ref, "exposed_tables": exposed, "granted": False}
-    )
+    meta = json.dumps({"connector_id": ref, "exposed_tables": exposed, "granted": False})
     try:
         import psycopg
         from dms_core.control_plane.session import set_tenant_context

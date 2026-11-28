@@ -20,6 +20,7 @@ from cortex_client import compliance_gate
 from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter
 
+from dms_api.auth_sso import bound_tenant_id
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 
@@ -55,7 +56,7 @@ def admin_overview(settings: SettingsDep, cortex: CortexDep) -> dict[str, Any]:
         return {
             "configured": False,
             "hint": _NOT_CONFIGURED_HINT,
-            "tenant_id": settings.dms_tenant_id,
+            "tenant_id": bound_tenant_id(settings.dms_tenant_id),
             "actor_role": settings.dms_actor_role,
             "users": [],
             "departments": [],
@@ -64,9 +65,9 @@ def admin_overview(settings: SettingsDep, cortex: CortexDep) -> dict[str, Any]:
             "pools": [],
         }
 
-    tenant = UUID(settings.dms_tenant_id)
+    tenant = UUID(bound_tenant_id(settings.dms_tenant_id))
     with psycopg.connect(settings.database_url) as conn:
-        set_tenant_context(conn, settings.dms_tenant_id, role="admin")
+        set_tenant_context(conn, bound_tenant_id(settings.dms_tenant_id), role="admin")
         users = conn.execute(
             """
             SELECT u.id::text, u.email, u.display_name, r.name, d.name
@@ -112,7 +113,7 @@ def admin_overview(settings: SettingsDep, cortex: CortexDep) -> dict[str, Any]:
 
     return {
         "configured": True,
-        "tenant_id": settings.dms_tenant_id,
+        "tenant_id": bound_tenant_id(settings.dms_tenant_id),
         "actor_role": settings.dms_actor_role,
         "users": [
             {"id": r[0], "email": r[1], "display_name": r[2], "role": r[3], "department": r[4]}

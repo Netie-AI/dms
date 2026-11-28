@@ -19,6 +19,7 @@ from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from dms_api.auth_sso import bound_tenant_id
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 from dms_api.routes.actions import router as actions_router
@@ -90,7 +91,7 @@ def list_proposals(
         return []
     space_uuid = uuid.UUID(space_id) if space_id else None
     with _conn(settings) as conn:
-        set_tenant_context(conn, settings.dms_tenant_id, role="steward")
+        set_tenant_context(conn, bound_tenant_id(settings.dms_tenant_id), role="steward")
         rows = conn.execute(
             """
             SELECT p.id::text, p.space_id::text, p.created_at,
@@ -106,7 +107,7 @@ def list_proposals(
              ORDER BY p.created_at DESC
              LIMIT 50
             """,
-            (settings.dms_tenant_id, space_uuid, space_uuid),
+            (bound_tenant_id(settings.dms_tenant_id), space_uuid, space_uuid),
         ).fetchall()
         conn.commit()
     return [
@@ -146,7 +147,7 @@ def propose(
     if body.summary:
         diff["summary"] = body.summary
     with _conn(settings) as conn:
-        set_tenant_context(conn, settings.dms_tenant_id, role="steward")
+        set_tenant_context(conn, bound_tenant_id(settings.dms_tenant_id), role="steward")
         proposal_id = uuid.uuid4()
         space = uuid.UUID(body.space_id) if body.space_id else None
         conn.execute(
@@ -156,7 +157,7 @@ def propose(
             """,
             (
                 proposal_id,
-                uuid.UUID(settings.dms_tenant_id),
+                uuid.UUID(bound_tenant_id(settings.dms_tenant_id)),
                 space,
                 uuid.UUID(settings.dms_actor_user_id),
             ),
@@ -164,7 +165,7 @@ def propose(
         ver = create_proposal_version(
             conn,
             proposal_id=proposal_id,
-            tenant_id=uuid.UUID(settings.dms_tenant_id),
+            tenant_id=uuid.UUID(bound_tenant_id(settings.dms_tenant_id)),
             diff=diff,
         )
         conn.commit()
@@ -194,10 +195,10 @@ def confirm(
 
     try:
         with _conn(settings) as conn:
-            set_tenant_context(conn, settings.dms_tenant_id, role="steward")
+            set_tenant_context(conn, bound_tenant_id(settings.dms_tenant_id), role="steward")
             result = confirm_proposal_version(
                 conn,
-                tenant_id=uuid.UUID(settings.dms_tenant_id),
+                tenant_id=uuid.UUID(bound_tenant_id(settings.dms_tenant_id)),
                 idempotency_token=body.idempotency_token,
             )
             result["proposal_id"] = str(result.get("proposal_id", proposal_id))
@@ -232,7 +233,7 @@ def confirm(
                 VALUES (%s, %s)
                 ON CONFLICT DO NOTHING
                 """,
-                (uuid.UUID(settings.dms_tenant_id), appended.entry_id),
+                (uuid.UUID(bound_tenant_id(settings.dms_tenant_id)), appended.entry_id),
             )
             result["ledger_entry_id"] = appended.entry_id
             conn.commit()
