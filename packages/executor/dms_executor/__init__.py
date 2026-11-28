@@ -748,12 +748,36 @@ class Executor:
             ttl_seconds=900,
         )
 
+    def _mint_for_bind(self, acl: SessionAcl) -> Any:
+        """Mint the signed manifest. Flag on attaches the Space catalog off-signature.
+
+        The demo Space and the flag-off path return the minted object unchanged.
+        """
+        manifest = self._minter.mint_manifest(acl)
+        from dms_executor.space_catalog_manifest import (
+            load_space_catalog_ontology,
+            session_space_catalog,
+            space_catalog_enabled,
+            stamp_manifest,
+        )
+
+        if not space_catalog_enabled() or is_demo_space(acl.space_id):
+            return manifest
+        onto = load_space_catalog_ontology(acl.space_id)
+        catalog = session_space_catalog(onto, list(acl.row_predicates))
+        signature = self._minter.sign_space_catalog(
+            catalog,
+            space_id=acl.space_id or "",
+            session_id=acl.session_id,
+        )
+        return stamp_manifest(manifest, catalog, signature)
+
     def bind_session(self, session: SessionContext | SessionAcl) -> Any:
         """Mint + submit plan.kind=session_bind (C4-min)."""
         if self._cortex is None:
             raise RuntimeError("CortexClient required for bind_session")
         acl = session if isinstance(session, SessionAcl) else resolve_session_acl(session)
-        manifest = self._minter.mint_manifest(acl)
+        manifest = self._mint_for_bind(acl)
         req = SubmitRequest(
             pool=PoolSpec(id=acl.pool_id),
             plan={"kind": "session_bind"},
@@ -766,7 +790,7 @@ class Executor:
             err = classify_submit_error(exc)
             if should_rement(err.code):
                 self._minter.invalidate(acl.session_id)
-                manifest = self._minter.mint_manifest(acl)
+                manifest = self._mint_for_bind(acl)
                 req = SubmitRequest(
                     pool=PoolSpec(id=acl.pool_id),
                     plan={"kind": "session_bind"},
@@ -1475,6 +1499,21 @@ class Executor:
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
+        # The chooser runs inside the generative call, which is before the
+        # contract bind. Flag on binds first so that call sees this Space's
+        # catalog. A mint failure does not block SQL generation; the later
+        # bind still reports it. Flag off does not bind here.
+        from dms_executor.space_catalog_manifest import space_catalog_enabled
+
+        if space_catalog_enabled() and not is_demo_space(space_id):
+            try:
+                early = self.demo_acl(
+                    session_id=session_id, space_id=space_id, tables=tables
+                )
+                if early.session_id not in self._bound_sessions:
+                    self.bind_session(early)
+            except (AskServiceError, OpenVaultTokenError):
+                logger.warning("space_catalog_bind_skipped")
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -1601,6 +1640,20 @@ class Executor:
                 )
             else:
                 raise AskServiceError(err.code, err.detail) from exc
+        from dms_executor.space_catalog_manifest import space_catalog_after_ask
+
+        handed = space_catalog_after_ask(
+            resp,
+            question=question,
+            space_id=space_id,
+            session_id=session_id,
+            granted=readable,
+            ontology=space_onto,
+        )
+        if handed is not None:
+            env = attach_cascade(handed, cascade)
+            self._store_turn(session_id, space_id, env)
+            return env
         raw_sql = getattr(resp, "sql_used", None)
         sql_used = str(raw_sql or "")
         if sql_used.strip() and not getattr(resp, "abstained", False):

@@ -11,9 +11,11 @@ import hmac
 import logging
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 from cortex_contract.execution import Manifest, canonical_manifest_bytes
@@ -364,6 +366,21 @@ class ManifestMinter:
         self._cache[acl.session_id] = _CacheEntry(manifest=manifest, expires_at=expires)
         return manifest
 
+    def sign_space_catalog(
+        self,
+        catalog: Mapping[str, Any],
+        *,
+        space_id: str,
+        session_id: str,
+    ) -> str:
+        """Sign a Space catalog with the intermediate key that signs manifests."""
+        return sign_space_catalog_bytes(
+            self._ensure_key().private_key,
+            catalog,
+            space_id=space_id,
+            session_id=session_id,
+        )
+
 
 def _assert_minting_invariant(acl: SessionAcl) -> None:
     """Never grant both a raw path and a row predicate over the same data."""
@@ -386,6 +403,27 @@ def _assert_minting_invariant(acl: SessionAcl) -> None:
 
 def sign_manifest_bytes(private_key: Ed25519PrivateKey, manifest: Manifest) -> str:
     sig = private_key.sign(canonical_manifest_bytes(manifest))
+    return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
+
+
+def sign_space_catalog_bytes(
+    private_key: Ed25519PrivateKey,
+    catalog: Mapping[str, Any],
+    *,
+    space_id: str,
+    session_id: str,
+) -> str:
+    """Ed25519 over the 1.12 catalog bytes. Same key and encoding as the manifest.
+
+    The private key is the manifest issuer key already held by the minter.
+    It is not logged, and this does not open a second vault.
+    """
+    from dms_executor.space_catalog_manifest import canonical_space_catalog_bytes
+
+    signed = canonical_space_catalog_bytes(
+        catalog, space_id=space_id, session_id=session_id
+    )
+    sig = private_key.sign(signed)
     return base64.urlsafe_b64encode(sig).decode("ascii").rstrip("=")
 
 
