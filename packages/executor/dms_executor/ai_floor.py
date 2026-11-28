@@ -477,6 +477,10 @@ def run_floor(
         except Exception:
             payload = None
         body = payload if isinstance(payload, dict) else None
+        if body is not None:
+            from dms_executor.schema_context import note_openvault_context
+
+            note_openvault_context(body)
         sql = query_sql_from_payload(body)
         if not sql:
             last_reason = "no_sql"

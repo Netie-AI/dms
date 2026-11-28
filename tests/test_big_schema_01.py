@@ -8,10 +8,12 @@ database. WRONG stays 0 because this flag does not serve a rule lane.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
+from cortex_client.insights import schema_context_is_empty
 from cortex_contract.execution import QueryResult
 from dms_executor.ai_floor import run_floor
 from dms_executor.big_schema import (
@@ -25,6 +27,13 @@ from dms_executor.big_schema import (
 )
 from dms_executor.demo_warehouse import connect_file
 from dms_executor.envelope import assert_envelope_valid
+from dms_executor.schema_context import (
+    CONTEXT_HEADER,
+    build_schema_context,
+    estimate_tokens,
+    reset_openvault_context,
+    schema_token_budget,
+)
 
 FACT = "fact_revenue"
 DIM = "dim_account"
@@ -161,9 +170,103 @@ def test_300_tables_retrieve_the_three_and_stay_under_budget(
     assert "TOKENS join before=" in captured.out
 
 
-def test_tiny_budget_still_fits() -> None:
+HARBOR_CATALOG = (
+    Path(__file__).resolve().parents[1] / "docs" / "demo" / "harborline_catalog.json"
+)
+# Ranker at 480 before this packer. Measured on the Harborline catalog and the
+# 300-table catalog: the prompt was a header-only SCHEMA (schema_context.py
+# replaced the fitted text once table descriptions overflowed).
+_HARBOR_BEFORE = {
+    "late": (6, 0, 1),
+    "stock": (6, 0, 1),
+    "region": (6, 0, 2),
+}
+_RANK_BEFORE = {"join": (2, 0, 3), "ranking": (2, 0, 3), "trend": (2, 0, 3)}
+_HARBOR_Q = (
+    ("late", "which supplier has a late delivery problem", ("inbound_receipts",)),
+    ("stock", "which SKU had a stockout", ("inventory_snapshots",)),
+    ("region", "how did revenue break down by region", ("regions", "order_lines")),
+)
+
+
+def _hits(prompt: str, needed: tuple[str, ...]) -> int:
+    return sum(1 for name in needed if name in prompt)
+
+
+def test_openvault_context_sizes_the_schema_budget() -> None:
+    reset_openvault_context()
+    assert schema_token_budget() == 4000
+    assert schema_token_budget({"context_tokens": 32000}) == 4000
+    assert schema_token_budget({"context_window": 128000}) == 8000
+    assert schema_token_budget({"metadata": {"max_context_tokens": 4096}}) == 512
+    assert schema_token_budget(None, {CONTEXT_HEADER: "16000"}) == 2000
+    assert schema_token_budget({"context_tokens": 0}) == 4000
+    reset_openvault_context()
+
+
+def test_harborline_and_300_keep_tables(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Default budget keeps descriptions. A 480 budget keeps tables and keys."""
+    reset_openvault_context()
+    catalog = json.loads(HARBOR_CATALOG.read_text(encoding="utf-8"))
+    assert len(catalog["datasets"]) == 50
+    lines: list[str] = []
+    for label, question, needed in _HARBOR_Q:
+        before_tokens, before_hit, before_of = _HARBOR_BEFORE[label]
+        got = build_schema_context(question, catalog)
+        tight = build_schema_context(question, catalog, max_tokens=480)
+        assert not schema_context_is_empty(got.prompt)
+        assert not schema_context_is_empty(tight.prompt)
+        assert _hits(got.prompt, needed) == len(needed)
+        assert "description=" in got.prompt
+        assert estimate_tokens(got.prompt) <= schema_token_budget()
+        assert "- " in tight.prompt
+        after_tokens = estimate_tokens(got.prompt)
+        after_hit = _hits(got.prompt, needed)
+        tight_tokens = estimate_tokens(tight.prompt)
+        tight_hit = _hits(tight.prompt, needed)
+        lines.append(
+            f"HARBOR {label} before_tokens={before_tokens} "
+            f"before_recall={before_hit}/{before_of} "
+            f"after_tokens={after_tokens} after_recall={after_hit}/{len(needed)} "
+            f"at_480_tokens={tight_tokens} at_480_recall={tight_hit}/{len(needed)}"
+        )
+    wide = _catalog()
+    for label, question in (("join", JOIN_Q), ("ranking", RANK_Q), ("trend", TREND_Q)):
+        before_tokens, before_hit, before_of = _RANK_BEFORE[label]
+        got = build_schema_context(question, wide)
+        tight = build_schema_context(question, wide, max_tokens=480)
+        assert not schema_context_is_empty(got.prompt)
+        assert not schema_context_is_empty(tight.prompt)
+        assert _hits(got.prompt, NEEDED) == len(NEEDED)
+        assert estimate_tokens(got.prompt) <= schema_token_budget()
+        after_tokens = estimate_tokens(got.prompt)
+        after_hit = _hits(got.prompt, NEEDED)
+        tight_tokens = estimate_tokens(tight.prompt)
+        tight_hit = _hits(tight.prompt, NEEDED)
+        lines.append(
+            f"RANK {label} before_tokens={before_tokens} "
+            f"before_recall={before_hit}/{before_of} "
+            f"after_tokens={after_tokens} after_recall={after_hit}/{len(NEEDED)} "
+            f"at_480_tokens={tight_tokens} at_480_recall={tight_hit}/{len(NEEDED)}"
+        )
+    print("\n".join(lines))
+    captured = capsys.readouterr()
+    assert "HARBOR late before_tokens=6 before_recall=0/1" in captured.out
+    assert "RANK join before_tokens=2 before_recall=0/3" in captured.out
+    reset_openvault_context()
+
+
+def test_tiny_budget_keeps_key_columns() -> None:
+    """A budget smaller than the schema still sends top tables and their keys."""
     got = retrieve(JOIN_Q, _catalog(), max_tokens=40)
-    assert got.tokens <= 40
+    assert "table fact_revenue" in got.prompt
+    assert "rev_id" in got.prompt
+    assert "acct_id" in got.prompt
+    assert "left_key" in got.prompt
+    assert "revenue amount by month" not in got.prompt
+    assert "samples:" not in got.prompt
     assert SENTINEL not in got.prompt
 
 

@@ -397,14 +397,71 @@ def _render(
     return "\n".join(lines)
 
 
-def _truncate(text: str, budget: int) -> str:
-    cap = budget * _CHARS_PER_TOKEN
-    if len(text) <= cap:
-        return text
-    short = text[:cap]
-    if " " in short:
-        short = short.rsplit(" ", 1)[0]
-    return short
+def _budget(max_tokens: int | None) -> int:
+    """Caller budget, or the OpenVault context share. Never the old 480 cap."""
+    if max_tokens is not None:
+        return max(1, int(max_tokens))
+    from dms_executor.schema_context import schema_token_budget
+
+    return schema_token_budget()
+
+
+def _strip(table: _Table, *, keys_only: bool) -> _Table:
+    """Drop descriptions and samples. ``keys_only`` keeps primary and foreign keys."""
+    columns: list[_Col] = []
+    for col in table.columns:
+        if keys_only and not (col.primary_key or col.fk):
+            continue
+        columns.append(_Col(col.name, col.type_name, "", col.primary_key, (), col.fk))
+    if not columns and table.columns:
+        col = table.columns[0]
+        columns.append(_Col(col.name, col.type_name, "", col.primary_key, (), col.fk))
+    return _Table(table.name, "", tuple(columns))
+
+
+def _render_mode(
+    tables: list[_Table],
+    rels: list[_Rel],
+    measures: list[str],
+    *,
+    mode: str,
+    standing: bool,
+    also: set[str] | None = None,
+) -> str:
+    shown = tables
+    if mode == "names":
+        shown = [_strip(table, keys_only=False) for table in tables]
+    elif mode == "keys":
+        shown = [_strip(table, keys_only=True) for table in tables]
+    names = {table.name for table in shown}
+    return _render(
+        shown,
+        _join_lines(names, rels, also),
+        measures if mode == "full" else [],
+        standing=standing,
+    )
+
+
+def _fit_schema(
+    tables: list[_Table],
+    rels: list[_Rel],
+    measures: list[str],
+    budget: int,
+    *,
+    standing: bool,
+    also: set[str] | None = None,
+) -> str:
+    """Full text, then names only, then key columns. The last one is sent anyway."""
+    if not tables:
+        return ""
+    text = ""
+    for mode in ("full", "names", "keys"):
+        text = _render_mode(
+            tables, rels, measures, mode=mode, standing=standing, also=also
+        )
+        if estimate_tokens(text) <= budget:
+            return text
+    return text
 
 
 def _note_picked(names: list[str]) -> None:
@@ -423,7 +480,7 @@ def retrieve(
     embedder: Callable[[list[str]], Any] | None = None,
     ontology: Any = None,
     sample_fn: Callable[[str, str], list[str]] | None = None,
-    max_tokens: int = TOKEN_BUDGET,
+    max_tokens: int | None = None,
 ) -> SchemaSlice:
     """Top tables plus the FK bridge between them. The rest stays out."""
     described = catalog if isinstance(catalog, Mapping) else {}
@@ -464,25 +521,20 @@ def retrieve(
                 _keep_columns(by_name[name], question, embedder), sample_fn
             )
     chosen = list(lexical)
-    budget = max(1, int(max_tokens))
-    rendered_tables: list[_Table] = []
-    text = _STANDING
-    while True:
-        bridges = _bridges(chosen, edges)
-        order = chosen + [name for name in bridges if name not in chosen]
-        rendered_tables = [prepared[name] for name in order if name in prepared]
-        names = {table.name for table in rendered_tables}
-        text = _render(
-            rendered_tables,
-            _join_lines(names, rels),
-            _measures(described, ontology, names),
-            standing=True,
-        )
-        if estimate_tokens(text) <= budget or not chosen:
-            if estimate_tokens(text) > budget:
-                text = _truncate(text, budget)
-            break
-        chosen.pop()
+    bridges = [name for name in _bridges(chosen, edges) if name not in chosen]
+    order = chosen + bridges
+    rendered_tables = [prepared[name] for name in order if name in prepared]
+    if not rendered_tables and prepared:
+        rendered_tables = [next(iter(prepared.values()))]
+    names = {table.name for table in rendered_tables}
+    budget = _budget(max_tokens)
+    text = _fit_schema(
+        rendered_tables,
+        rels,
+        _measures(described, ontology, names),
+        budget,
+        standing=True,
+    )
     picked = [table.name for table in rendered_tables]
     sent = set(picked)
     next_names: list[str] = []
@@ -495,14 +547,14 @@ def retrieve(
     next_text = ""
     if next_tables:
         next_set = {table.name for table in next_tables}
-        next_text = _render(
+        next_text = _fit_schema(
             next_tables,
-            _join_lines(next_set, rels, sent),
+            rels,
             _measures(described, ontology, next_set),
+            budget,
             standing=False,
+            also=sent,
         )
-        if estimate_tokens(next_text) > budget:
-            next_text = _truncate(next_text, budget)
     tokens = estimate_tokens(text)
     _repair.set(next_text)
     _meta.set(

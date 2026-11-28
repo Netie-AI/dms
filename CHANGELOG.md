@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - BIG-SCHEMA-01: schema budget follows the model window
+
+- **Flag.** `DMS_BIG_SCHEMA` is off unless the value is the digit 1. Off, the rule lane is unchanged. On, the model gets a retrieved schema slice, SQL runs in the database, and at most 200 rows come back.
+- **Empty schema.** The ranker's 480-token cap turned a fitted Harborline prompt into a header-only SCHEMA once table descriptions were appended (`schema_context.py` pack). The default ask now reruns at one eighth of the OpenVault context window, or 4000 when OpenVault has not named one, capped at 8000. Names, then key columns, are kept before a prompt can go to zero tables.
+- **Measured.** Harborline late/stock/region before: 6 tokens, recall 0. After: 1934/2230/2037 tokens, recall 1/1, 1/1, 2/2. 300-table ranker before: 2 tokens, recall 0/3. After: 1259 tokens, recall 3/3. Slice vs full catalog: 277 vs 15611. Stub 52 `--main` at `9ca11fe`, flag off and on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43. Not PASS.
+
 ## 2026-11-28 - AI-FLOOR-01: checked model SQL and live ask steps
 
 - **Flag.** `DMS_AI_FLOOR` is off unless the value is the digit 1. Off, the ask is unchanged. On, fixed lanes are skipped. The model SQL is served only after grant, one read-only SELECT, EXPLAIN, and a column shape. One error is fed back, then `route_hint` escalate. No model id.

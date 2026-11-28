@@ -69,6 +69,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Collection, Iterator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -101,7 +102,23 @@ from dms_executor.ontology import Ontology, relation_tables
 # ponytail: 4 characters per token. Ceiling: a model tokenizer disagrees.
 # Upgrade: count with the tokenizer of the model that writes the SQL.
 CHARS_PER_TOKEN = 4
+# Old ranker cap. A fitted schema plus table descriptions overflowed this and
+# the prompt was replaced with a header-only SCHEMA. Callers that pass it
+# still get a schema: names, then key columns, never that header.
 MAX_PROMPT_TOKENS = 480
+# Schema uses one eighth of the model window. The rest is the question,
+# the SQL, and the rows. Cap matches the big-schema slice.
+# Swap: another vault that stamps the same integer under one of these keys.
+_CONTEXT_KEYS = ("context_tokens", "max_context_tokens", "context_window")
+CONTEXT_HEADER = "X-OpenVault-Context-Tokens"
+_SCHEMA_SHARE = 8
+_SCHEMA_CAP = 8000
+# Measured on a 50-table catalog: descriptions survive at 4000.
+_SCHEMA_WHEN_UNKNOWN = 4000
+_FLOOR_TABLES = 6
+_noted_context: ContextVar[int | None] = ContextVar(
+    "dms_schema_context_tokens", default=None
+)
 _SAMPLE_LIMIT = 3
 _SAMPLE_CHARS = 80
 # Partial hints on a tagged text column. Untagged columns never use this.
@@ -191,10 +208,78 @@ _WORKERS: list[threading.Thread] = []
 
 
 def estimate_tokens(text: str) -> int:
-    """Upper bound used to keep the schema prompt inside ``MAX_PROMPT_TOKENS``."""
+    """Upper bound used to keep the schema prompt inside its token budget."""
     if not text:
         return 0
     return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+
+
+def _as_context_tokens(value: Any) -> int | None:
+    if isinstance(value, bool) or isinstance(value, float):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        number = int(value.strip())
+        return number if number > 0 else None
+    return None
+
+
+def read_context_tokens(
+    metadata: Mapping[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> int | None:
+    """Context window from OpenVault metadata. No model id."""
+    if isinstance(metadata, Mapping):
+        for key in _CONTEXT_KEYS:
+            found = _as_context_tokens(metadata.get(key))
+            if found is not None:
+                return found
+        nested = metadata.get("metadata")
+        if isinstance(nested, Mapping):
+            for key in _CONTEXT_KEYS:
+                found = _as_context_tokens(nested.get(key))
+                if found is not None:
+                    return found
+    if headers:
+        want = CONTEXT_HEADER.lower()
+        for key, value in headers.items():
+            if str(key).lower() == want:
+                return _as_context_tokens(value)
+    return None
+
+
+def note_openvault_context(
+    metadata: Mapping[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> None:
+    """Remember a window OpenVault already returned, for the next schema pack."""
+    found = read_context_tokens(metadata, headers)
+    if found is not None:
+        _noted_context.set(found)
+
+
+def reset_openvault_context() -> None:
+    """Drop a remembered window. Tests use this so cases do not leak."""
+    _noted_context.set(None)
+
+
+def schema_token_budget(
+    metadata: Mapping[str, Any] | None = None,
+    headers: Mapping[str, str] | None = None,
+) -> int:
+    """Tokens of schema the model can hold.
+
+    OpenVault metadata wins. A missing window uses the size that keeps
+    table descriptions. It is not the old 480 cap.
+    """
+    window = read_context_tokens(metadata, headers)
+    if window is None:
+        window = _noted_context.get()
+    if window is not None:
+        share = max(window // _SCHEMA_SHARE, 1)
+        return min(_SCHEMA_CAP, share)
+    return _SCHEMA_WHEN_UNKNOWN
 
 
 def cached_value_index(space_id: str) -> dict[str, tuple[str, ...]]:
@@ -1745,6 +1830,82 @@ def _fallback_prompt(dialect: str) -> str:
     return "SCHEMA"
 
 
+def _bare_column(col: ColumnFact) -> ColumnFact:
+    """Name, type, and keys. Descriptions and samples are gone."""
+    return replace(col, description="", samples=(), distinct=None, reason="")
+
+
+def _key_columns(columns: Sequence[ColumnFact]) -> list[ColumnFact]:
+    """Key columns of the top tables. A table with no key keeps its best column."""
+    by_table: dict[str, list[ColumnFact]] = {}
+    for col in columns:
+        by_table.setdefault(col.table, []).append(col)
+    ranked = sorted(
+        by_table,
+        key=lambda name: (-max(item.score for item in by_table[name]), name),
+    )
+    out: list[ColumnFact] = []
+    for name in ranked[:_FLOOR_TABLES]:
+        cols = by_table[name]
+        keys = [item for item in cols if item.primary_key or item.foreign_key]
+        if not keys:
+            keys = [max(cols, key=lambda item: (item.score, item.name))]
+        out.extend(_bare_column(item) for item in keys)
+    return out
+
+
+def _pack_prompt(
+    dialect: str,
+    chosen: Sequence[ColumnFact],
+    facts: Sequence[ColumnFact],
+    joins: Sequence[JoinFact],
+    hints: Sequence[HintFact],
+    measures: Sequence[MeasureFact],
+    table_notes: Mapping[str, str],
+    max_tokens: int,
+) -> tuple[
+    str,
+    list[ColumnFact],
+    list[JoinFact],
+    list[HintFact],
+    list[MeasureFact],
+    dict[str, str],
+]:
+    """Full schema, then names only, then key columns.
+
+    A budget smaller than the key-column floor still sends those columns.
+    The header-only SCHEMA is only for a catalog that named no column.
+    """
+    columns = list(chosen) if chosen else _key_columns(facts)
+
+    def _emit(
+        cols: Sequence[ColumnFact],
+        use_notes: Mapping[str, str],
+        use_hints: Sequence[HintFact],
+        use_measures: Sequence[MeasureFact],
+    ) -> tuple[str, list[JoinFact]]:
+        kept = _joins_for(cols, joins)
+        text = _render(dialect, cols, kept, use_hints, use_measures, use_notes)
+        return text, kept
+
+    if columns:
+        prompt, kept_joins = _emit(columns, table_notes, hints, measures)
+        if estimate_tokens(prompt) <= max_tokens:
+            return prompt, columns, kept_joins, list(hints), list(measures), dict(table_notes)
+        prompt, kept_joins = _emit(columns, {}, hints, measures)
+        if estimate_tokens(prompt) <= max_tokens:
+            return prompt, columns, kept_joins, list(hints), list(measures), {}
+        bare = [_bare_column(col) for col in columns]
+        prompt, kept_joins = _emit(bare, {}, [], [])
+        if estimate_tokens(prompt) <= max_tokens:
+            return prompt, bare, kept_joins, [], [], {}
+        keys = _key_columns(bare or list(facts))
+        if keys:
+            prompt, kept_joins = _emit(keys, {}, [], [])
+            return prompt, keys, kept_joins, [], [], {}
+    return _fallback_prompt(dialect), [], [], [], [], {}
+
+
 def build_schema_context(
     question: str,
     schema: Mapping[str, Any],
@@ -1752,15 +1913,25 @@ def build_schema_context(
     ontology: Ontology | Mapping[str, Any] | None = None,
     grantable: set[str] | None = None,
     space_id: str | None = None,
-    max_tokens: int = MAX_PROMPT_TOKENS,
+    max_tokens: int | None = None,
     entity_spans: Any = None,
 ) -> SchemaContext:
-    """Rank the connector description and render a prompt inside ``max_tokens``.
+    """Rank the connector description and render a prompt inside the budget.
+
+    ``max_tokens`` omitted starts at ``MAX_PROMPT_TOKENS``. When that render
+    has no table, or the table descriptions push it over, the budget becomes
+    :func:`schema_token_budget` (OpenVault context, otherwise the size that
+    keeps descriptions) and the ranker runs again. A caller that passes
+    ``max_tokens`` is honored. Either way a catalog that has tables is not
+    sent as a header-only SCHEMA: descriptions drop, then key columns stay.
 
     ``entity_spans`` is not read. Hints come from the value index only, so a
     stub that returns a span cannot create one.
     """
     del entity_spans
+    caller_set = max_tokens is not None
+    if max_tokens is None:
+        max_tokens = MAX_PROMPT_TOKENS
     described = schema if isinstance(schema, Mapping) else {}
     dialect = _dialect(described.get("dialect"))
     question_vec = _trigrams(question or "")
@@ -1977,20 +2148,31 @@ def build_schema_context(
     chosen, kept_joins, kept_hints, kept_measures = _select(
         dialect, facts, joins, hint_out, measures, max_tokens
     )
+    if not caller_set:
+        described_prompt = _render(
+            dialect, chosen, kept_joins, kept_hints, kept_measures, table_desc_out
+        )
+        wider = schema_token_budget()
+        if wider > max_tokens and (
+            not chosen or estimate_tokens(described_prompt) > max_tokens
+        ):
+            max_tokens = wider
+            chosen, kept_joins, kept_hints, kept_measures = _select(
+                dialect, facts, joins, hint_out, measures, max_tokens
+            )
     chosen_ids = {(col.table, col.name) for col in chosen}
     chosen = [_fk_if_present(col, chosen_ids) for col in chosen]
-    prompt = _render(
+    prompt, chosen, kept_joins, kept_hints, kept_measures, sent_notes = _pack_prompt(
         dialect,
         chosen,
-        kept_joins,
+        facts,
+        joins,
         kept_hints,
         kept_measures,
         table_desc_out,
+        max_tokens,
     )
-    if estimate_tokens(prompt) > max_tokens:
-        prompt = _fallback_prompt(dialect)
-        envelope_prompt = prompt
-    else:
+    if kept_hints:
         token_hints = [
             HintFact(hint.table, hint.column, _envelope_hint(i), hint.fuzzy, hint.span_id)
             for i, hint in enumerate(kept_hints, start=1)
@@ -2001,8 +2183,10 @@ def build_schema_context(
             kept_joins,
             token_hints,
             kept_measures,
-            table_desc_out,
+            sent_notes,
         )
+    else:
+        envelope_prompt = prompt
     if grantable is not None and sqlglot_dialect(dialect or "") is None:
         prompt = f"sql_dialect_unknown\n{prompt}"
         envelope_prompt = f"sql_dialect_unknown\n{envelope_prompt}"
@@ -2992,7 +3176,7 @@ def prepare_generate_context(
     ontology: Ontology | Mapping[str, Any] | None = None,
     dialect: str | None = None,
     space_id: str | None = None,
-    max_tokens: int = MAX_PROMPT_TOKENS,
+    max_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Attach the prompt when the flag is on. Do nothing when it is off.
 
