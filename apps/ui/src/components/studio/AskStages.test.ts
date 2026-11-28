@@ -39,6 +39,25 @@ describe("AskStages", () => {
     expect(empty).toBe("");
   });
 
+  it("names the live floor steps and breathes on the open one", () => {
+    const live: AskStageEvent[] = [
+      { stage: "understand", t_ms: 20, status: "done" },
+      { stage: "fetch", t_ms: 40, status: "done", table: "inventory" },
+      { stage: "write", t_ms: 80, status: "started" },
+    ];
+    const markup = renderToStaticMarkup(createElement(AskStages, { stages: live }));
+    expect(markup).toContain("Understanding your question");
+    expect(markup).toContain("Fetching inventory");
+    expect(markup).toContain("Writing SQL");
+    expect(markup).toContain('data-testid="ask-breath"');
+    expect(stageLabel(live[1])).toBe("Fetching inventory");
+    expect(stageLabel({ stage: "escalate", t_ms: 1, status: "started" })).toBe(
+      "Retrying with stronger model",
+    );
+    expect(stageLabel({ stage: "check", t_ms: 1, status: "done" })).toBe("Checking result");
+    expect(stageLabel({ stage: "fetch", t_ms: 1, status: "done", table: "a b" })).toBe("Fetching");
+  });
+
   it("treats a flag-off end event as disabled, not a stage", () => {
     expect(isDisabledStreamEvent({ enabled: false })).toBe(true);
     expect(isDisabledStreamEvent({ stage: "plan", t_ms: 1, status: "done" })).toBe(false);
