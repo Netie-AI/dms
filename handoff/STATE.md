@@ -124,25 +124,25 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-29 00:03 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-29 01:07 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `5d9b383d` T2 FDE-SURVEY-CONNECT-01: site survey and connector setup tests (#678)
+main: `8307ba12` DMS-CREATE-CONTEXT-01: pack chats, a questionnaire, or a project (#681)
 
 open PRs: 47 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
+| #682 | y | `0a675a0c` | - | 8 ok, 3 running | CREATE-STYLE-V2: theme file and layout blocks for Create exports |
+| #680 | n | `e19d2858` | - | 12 ok | fix(studio): clickable demo walk for Ask, exports, and settings |
 | #672 | y | `0c177d5b` | - | 12 ok | SCIM-01: SCIM 2.0 user and group provisioning behind DMS_SCIM |
-| #671 | y | `c5820225` | - | 12 ok | DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE |
+| #671 | y | `f218e709` | - | 5 ok, 6 running | DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE |
 | #668 | y | `568d0ee9` | - | 12 ok | Generality harness: one scoreboard, recorded slice in CI |
 | #665 | y | `6e87464b` | - | no checks | Accuracy levers on the AI floor, flags off |
-| #663 | y | `c0b52fed` | - | 16 ok | HARNESS-SEC-01: gate provider keys, SQL, and demo bearers |
+| #663 | y | `065c5c9d` | - | 10 ok, 5 running | HARNESS-SEC-01: gate provider keys, SQL, and demo bearers |
 | #662 | y | `b94e6140` | - | no checks | BIG-SCHEMA-01: never send an empty schema |
-| #661 | y | `dab5f750` | - | 12 ok | Create doc and slides through the shared provider adapter |
 | #660 | y | `70173c66` | - | no checks | READY-07: AI sell profile for Studio ask |
-| #658 | y | `32f67dd2` | - | 12 ok | DMS-CREATE-01: harness for Claude and Cursor |
 | #628 | y | `1c1de82c` | - | no checks | NL19-NO-SQL-GENERATE: retry one empty generate, then ask back |
 | #621 | y | `fec45062` | - | no checks | NL19-EXPLAIN-REPAIR: trace binder failures and repair within the call budget |
 | #616 | y | `d85a4171` | - | no checks | UX-CLARIFY-CARD-01: early clarify card before the SQL loop |
@@ -155,7 +155,7 @@ open PRs: 47 (cap 60)
 | #603 | y | `a4c02ce9` | - | 11 ok | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
 | #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
 | #596 | y | `8e548ab6` | - | 11 ok | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
-| #581 | n | `28e1e059` | tier:fast | 12 ok | handoff: state refresh |
+| #581 | n | `1b8747f7` | tier:fast | 12 ok | handoff: state refresh |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
 | #542 | y | `6195feb3` | - | 11 ok | T5 install hardening: #388 env sentinel, #387 IPv4 + numeric-host guard, #377 at |
