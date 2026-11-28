@@ -1,12 +1,9 @@
 """Create doc and Create slides. Flag ``DMS_CREATE_DOCS``, default off.
 
-The provider writes the file. This route plans, then asks the shared Create
-adapter, then returns the judge, the versions, and the PDF sha256. It does
-not render and it does not call a model itself.
-
-Status stays mounted while the flag is off so the UI can hide the hook.
-Plan, generate, edit, and file are mutations: compliance_gate, then
-``gatekeeping.enforce`` (fail closed, 403).
+Generation, the tool registry, the prompt library, the brand fields, and the
+judge are ``dms_core.create_generator``. This route only plans the granted
+answers and calls that module. Status stays mounted while the flag is off.
+Plan, generate, and edit are mutations: compliance_gate, then enforce.
 """
 
 from __future__ import annotations
@@ -15,21 +12,20 @@ import threading
 from typing import Any
 
 from cortex_client import compliance_gate
-from create_docs.adapter import AdapterMissing
 from create_docs.flag import enabled
-from create_docs.harness import apply_style, edit, file_bytes, new_run, produce, public_view
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import Response
+from create_docs.harness import apply_style, edit, new_run, produce, public_view
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from dms_api.deps import CortexDep
 from dms_api.gatekeeping import enforce
+from dms_api.wiring import create_caller_key
 
 router = APIRouter(prefix="/v1/create-docs", tags=["create-docs"])
 status_router = APIRouter(prefix="/v1/create-docs", tags=["create-docs"])
 
-# ponytail: process-local, 32 runs, gone on restart. Two requests on one run
-# can interleave. The shared governance store replaces this when it lands.
+# ponytail: process-local, 32 runs, gone on restart. Their create store is the
+# durable session. This dict only holds a doc or slides run started from answers.
 _RUNS: dict[str, dict[str, Any]] = {}
 _ORDER: list[str] = []
 _LOCK = threading.Lock()
@@ -58,24 +54,24 @@ class FewShotIn(BaseModel):
 class BrandIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = ""
-    primary: str = ""
-    font: str = ""
-    notes: str = ""
+    colours: str = ""
+    fonts: str = ""
+    logo: str = ""
+    tone: str = ""
 
 
 class StyleIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    format: str = "pptx"
-    skill_id: str = ""
-    prompt_version: str = "draft"
+    kind: str = "slides"
+    prompt_version: str = "1"
     prompt_text: str = ""
-    super_guide: str = ""
-    template_id: str = ""
+    guide: str = ""
+    template: str = "plain"
     brand: BrandIn = Field(default_factory=BrandIn)
     few_shots: list[FewShotIn] = Field(default_factory=list)
-    route: str = "openvault"
+    tools: dict[str, bool] | None = None
+    workbook: bool = False
 
 
 class CreateIn(BaseModel):
@@ -83,16 +79,12 @@ class CreateIn(BaseModel):
 
     answers: list[AnswerIn] = Field(min_length=1, max_length=12)
     style: StyleIn = Field(default_factory=StyleIn)
-    max_steps: int = Field(default=8, ge=1, le=8)
-    max_usd: float | None = None
 
 
 class GenerateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     style: StyleIn | None = None
-    max_steps: int | None = Field(default=None, ge=1, le=8)
-    max_usd: float | None = None
 
 
 class EditIn(BaseModel):
@@ -110,6 +102,13 @@ def _gate(cortex: CortexDep, action: str, run_id: str | None) -> None:
         client=cortex,
     )
     enforce(decision)
+
+
+def _key(request: Request) -> str:
+    raw = create_caller_key(request.headers.get("x-openvault-key"))
+    if not raw.startswith("ov_") or " " in raw or len(raw) <= 3:
+        raise HTTPException(status_code=401, detail="ov_api_key_required")
+    return raw
 
 
 def _save(run: dict[str, Any]) -> None:
@@ -130,8 +129,8 @@ def _load(run_id: str) -> dict[str, Any]:
     return run
 
 
-def _answers(body: CreateIn) -> list[dict[str, Any]]:
-    return [item.model_dump() for item in body.answers]
+def _style(body: StyleIn) -> dict[str, Any]:
+    return body.model_dump()
 
 
 @status_router.get("/status")
@@ -143,12 +142,7 @@ def create_docs_status() -> dict[str, bool]:
 def create_docs_run(body: CreateIn, cortex: CortexDep) -> dict[str, Any]:
     _gate(cortex, "create_docs.plan", None)
     try:
-        run = new_run(
-            _answers(body),
-            body.style.model_dump(),
-            max_steps=body.max_steps,
-            max_usd=body.max_usd,
-        )
+        run = new_run([item.model_dump() for item in body.answers], _style(body.style))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     _save(run)
@@ -156,56 +150,32 @@ def create_docs_run(body: CreateIn, cortex: CortexDep) -> dict[str, Any]:
 
 
 @router.post("/runs/{run_id}/generate")
-def create_docs_generate(run_id: str, body: GenerateIn, cortex: CortexDep) -> dict[str, Any]:
+def create_docs_generate(
+    run_id: str, body: GenerateIn, request: Request, cortex: CortexDep
+) -> dict[str, Any]:
     _gate(cortex, "create_docs.generate", run_id)
+    key = _key(request)
     run = _load(run_id)
     try:
         if body.style is not None:
-            apply_style(run, body.style.model_dump())
-        if body.max_steps is not None:
-            run["budget"]["max_steps"] = body.max_steps
-        if body.max_usd is not None:
-            run["budget"]["max_usd"] = body.max_usd
-        view = produce(run)
+            apply_style(run, _style(body.style))
+        view = produce(run, api_key=key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except AdapterMissing:
-        raise HTTPException(status_code=503, detail="adapter_missing") from None
     _save(run)
     return view
 
 
 @router.post("/runs/{run_id}/edit")
-def create_docs_edit(run_id: str, body: EditIn, cortex: CortexDep) -> dict[str, Any]:
+def create_docs_edit(
+    run_id: str, body: EditIn, request: Request, cortex: CortexDep
+) -> dict[str, Any]:
     _gate(cortex, "create_docs.edit", run_id)
+    key = _key(request)
     run = _load(run_id)
     try:
-        view = edit(run, body.target, body.instruction)
+        view = edit(run, body.target, body.instruction, api_key=key)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except AdapterMissing:
-        raise HTTPException(status_code=503, detail="adapter_missing") from None
     _save(run)
     return view
-
-
-@router.post("/runs/{run_id}/file")
-def create_docs_file(
-    run_id: str,
-    cortex: CortexDep,
-    which: str = Query(...),
-    version: str | None = Query(None),
-) -> Response:
-    _gate(cortex, "create_docs.file", run_id)
-    if which not in {"artifact", "pdf"}:
-        raise HTTPException(status_code=400, detail="which")
-    run = _load(run_id)
-    try:
-        data, media, name = file_bytes(run, which=which, version_id=version)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return Response(
-        content=data,
-        media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="{name}"'},
-    )

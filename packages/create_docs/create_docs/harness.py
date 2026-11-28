@@ -1,371 +1,327 @@
-"""Plan, one provider call, one judge repair, section edits.
+"""Plan a doc or a deck, then call the shared ``generate``.
 
-Versions stay. A passing PDF is hashed and handed to ``sign_request``.
-The provider writes every byte of the file. This module does not.
+The model designs the artifact. The template and the style guide are context
+on that call. This module does not judge, does not store a brand kit, and
+does not draw charts.
 """
 
 from __future__ import annotations
 
-import hashlib
 import uuid
+from collections.abc import Callable
 from typing import Any
 
-from create_docs.adapter import ProviderStop, resolve_generate, resolve_sign
-from create_docs.context import FORMATS, allowed_numbers, build_spec, govern, skill_for, to_xml
-from create_docs.judge import judge
+from create_docs.adapter import governance
 
-MAX_STEPS = 8
-_MEDIA = {
-    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "pdf": "application/pdf",
-    "html": "text/html",
-    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-}
-DEFAULT_PROMPT = (
-    "Use the Anthropic skill named in the spec. "
-    "Write only figures that appear in data_context. "
-    "One insight per slide or section. "
-    "Put the source and the as_of timestamp on each figure. "
-    "Put the SQL in the appendix. "
-    "Do not name a model."
-)
+Transport = Callable[[dict[str, Any], str], Any]
+_KINDS = frozenset({"slides", "doc"})
+_BRAND = ("colours", "fonts", "logo", "tone")
 
 
-def new_run(
-    answers: list[dict[str, Any]],
-    style: dict[str, Any],
-    *,
-    max_steps: int = MAX_STEPS,
-    max_usd: float | None = None,
-) -> dict[str, Any]:
+def new_run(answers: list[dict[str, Any]], style: dict[str, Any]) -> dict[str, Any]:
     if not answers:
         raise ValueError("no_answers")
     if len(answers) > 12:
         raise ValueError("too_many_answers")
-    fmt = str(style.get("format") or "pptx")
-    if fmt not in FORMATS:
-        raise ValueError("format")
-    steps = int(max_steps)
-    if steps < 1 or steps > MAX_STEPS:
-        raise ValueError("max_steps")
-    if max_usd is not None and (max_usd < 0 or max_usd > 25):
-        raise ValueError("max_usd")
-    clean_style = _style(style, fmt)
-    governed = govern(answers)
-    spec = build_spec(governed, fmt, clean_style["skill_id"])
+    gov = governance()
+    kind = str(style.get("kind") or "slides")
+    if kind not in _KINDS:
+        raise ValueError("kind")
+    template = str(style.get("template") or "plain").strip() or "plain"
+    version = str(style.get("prompt_version") or "1").strip() or "1"
+    try:
+        template_body = gov.template_text(template)
+        library = gov.prompt_library(version)
+        skills = gov.skills_for(kind, workbook=bool(style.get("workbook")))
+    except gov.GeneratorError as exc:
+        raise ValueError(exc.code) from None
+    guides = library.get("guides") if isinstance(library.get("guides"), dict) else {}
+    guide = str(style.get("guide") or "").strip() or str(guides.get(kind) or "")
+    brand = {key: str((style.get("brand") or {}).get(key) or "").strip()[:80] for key in _BRAND}
+    governed = [_answer(item, index) for index, item in enumerate(answers)]
+    rows = [row for item in governed for row in item["rows"]]
+    spec = {
+        "kind": kind,
+        "goal": governed[0]["question"] if len(governed) == 1 else "Answers from this session",
+        "audience": "reader",
+        "workbook": bool(style.get("workbook")),
+    }
     data_context = {
-        "xml": to_xml(spec, governed, clean_style),
-        "answers": governed,
-        "granted_only": True,
+        "schema": [
+            {"name": item["source"] or item["id"], "columns": item["columns"]} for item in governed
+        ],
+        "data": [
+            {"name": item["source"] or item["id"], "rows": item["rows"], "sql": item["sql"]}
+            for item in governed
+        ],
+        "examples": _shots(style.get("few_shots")),
+        "choices": {"template": template},
+        "skills": skills,
+    }
+    sent_style = {
+        "prompt": str(style.get("prompt_text") or "").strip()[:2000],
+        "template": template_body,
+        "brand": brand,
+        "guide": guide[:4000],
     }
     return {
         "run_id": uuid.uuid4().hex,
         "spec": spec,
-        "style": clean_style,
+        "style": sent_style,
+        "template": template,
+        "prompt_version": version,
+        "tools": style.get("tools") if isinstance(style.get("tools"), dict) else None,
         "data_context": data_context,
-        "allowed": allowed_numbers(governed),
-        "budget": {"max_steps": steps, "max_usd": max_usd},
+        "inputs": answers,
+        "answers": governed,
+        "allowed": gov.allowed_from(rows, {}),
         "steps": 0,
-        "spend": {"prompt_tokens": None, "completion_tokens": None, "usd": None},
+        "repaired": False,
         "stopped": None,
+        "spend": {"prompt_tokens": None, "completion_tokens": None, "usd": None},
         "versions": [],
         "generated": False,
     }
 
 
 def apply_style(run: dict[str, Any], style: dict[str, Any]) -> None:
-    """User edits before the first provider call. The XML is rebuilt."""
     if run["generated"]:
         raise ValueError("already_generated")
-    fmt = str(style.get("format") or run["spec"]["format"])
-    clean = _style(style, fmt)
-    governed = run["data_context"]["answers"]
-    spec = build_spec(governed, fmt, clean["skill_id"])
-    run["style"] = clean
-    run["spec"] = spec
-    run["data_context"] = {
-        "xml": to_xml(spec, governed, clean),
-        "answers": governed,
-        "granted_only": True,
-    }
+    fresh = new_run(run["inputs"], style)
+    fresh["run_id"] = run["run_id"]
+    run.clear()
+    run.update(fresh)
 
 
-def produce(run: dict[str, Any]) -> dict[str, Any]:
-    """Build once. If the judge fails, one repair call. Both versions are kept."""
-    version = _call(run, dict(run["spec"]))
-    if version is None or version["judge"]["ok"] or run["stopped"]:
+def produce(
+    run: dict[str, Any],
+    *,
+    api_key: str,
+    transport: Transport | None = None,
+) -> dict[str, Any]:
+    version = _call(run, dict(run["spec"]), api_key, transport)
+    if version is None or not version["issues"] or run["stopped"]:
         run["generated"] = True
         return public_view(run)
+    run["repaired"] = True
     repair = dict(run["spec"])
-    repair["repair"] = version["judge"]["problems"]
-    repair["edit"] = None
-    _call(run, repair)
+    repair["judge"] = {"issues": version["issues"]}
+    _call(run, repair, api_key, transport)
     run["generated"] = True
     return public_view(run)
 
 
-def edit(run: dict[str, Any], target: str, instruction: str) -> dict[str, Any]:
-    """One slide or paragraph. The provider returns a new file. The judge runs again."""
+def edit(
+    run: dict[str, Any],
+    target: str,
+    instruction: str,
+    *,
+    api_key: str,
+    transport: Transport | None = None,
+) -> dict[str, Any]:
     if not run["generated"]:
         raise ValueError("generate_first")
-    known = {str(section.get("id")) for section in run["spec"].get("sections") or []}
-    if target not in known:
-        raise ValueError("target")
     text = instruction.strip()
     if not text:
         raise ValueError("instruction")
+    prior = _latest_artifact(run)
+    if prior is None:
+        raise ValueError("no_artifact")
+    known = {str(part.get("id")) for part in prior.get("parts") or [] if isinstance(part, dict)}
+    if target not in known:
+        raise ValueError("target")
     spec = dict(run["spec"])
-    spec["edit"] = {"target": target, "instruction": text[:400]}
-    spec["repair"] = None
-    spec["phase"] = "edit"
-    _call(run, spec)
+    spec["edit"] = {"section_id": target, "instruction": text[:400], "prior": prior}
+    _call(run, spec, api_key, transport, prior=prior, section_id=target)
     return public_view(run)
 
 
 def public_view(run: dict[str, Any]) -> dict[str, Any]:
     versions = []
     for version in run["versions"]:
+        artifact = version["artifact"]
         versions.append(
             {
                 "id": version["id"],
-                "filename": version["filename"],
-                "media_type": version["media_type"],
-                "pdf_sha256": version["pdf_sha256"],
-                "artifact_sha256": version["artifact_sha256"],
-                "judge": version["judge"],
+                "artifact": artifact,
+                "charts": _charts(artifact),
+                "issues": version["issues"],
                 "cost": version["cost"],
                 "sign": version["sign"],
                 "edit": version.get("edit"),
-                "repair": version.get("repair"),
             }
         )
+    latest = versions[-1]["artifact"] if versions else None
+    parts = latest.get("parts") if isinstance(latest, dict) else []
     return {
         "run_id": run["run_id"],
         "spec": run["spec"],
-        "style": run["style"],
-        "xml": run["data_context"]["xml"],
-        "budget": run["budget"],
+        "style": {
+            "prompt": run["style"].get("prompt") or "",
+            "template": run["template"],
+            "template_text": run["style"].get("template") or "",
+            "brand": run["style"].get("brand") or {},
+            "guide": run["style"].get("guide") or "",
+        },
+        "skills": (run["data_context"].get("skills") or {}).get("anthropic") or [],
         "steps": run["steps"],
         "spend": run["spend"],
         "stopped": run["stopped"],
         "generated": run["generated"],
         "versions": versions,
-        "sections": run["spec"].get("sections") or [],
+        "sections": [
+            {"id": part.get("id"), "title": part.get("title")}
+            for part in parts or []
+            if isinstance(part, dict)
+        ],
+        "charts": _charts(latest) if isinstance(latest, dict) else [],
     }
 
 
-def file_bytes(
-    run: dict[str, Any], *, which: str, version_id: str | None
-) -> tuple[bytes, str, str]:
-    version = _version(run, version_id)
-    if version is None:
-        raise ValueError("no_file")
-    if which == "pdf":
-        return version["pdf"], "application/pdf", "netie-answers.pdf"
-    return version["content"], version["media_type"], version["filename"]
-
-
-def _version(run: dict[str, Any], version_id: str | None) -> dict[str, Any] | None:
-    versions = run["versions"]
-    if not versions:
-        return None
-    if version_id is None:
-        return versions[-1]
-    for version in versions:
-        if version["id"] == version_id:
-            return version
-    return None
-
-
-def _call(run: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any] | None:
+def _call(
+    run: dict[str, Any],
+    spec: dict[str, Any],
+    api_key: str,
+    transport: Transport | None,
+    *,
+    prior: dict[str, Any] | None = None,
+    section_id: str | None = None,
+) -> dict[str, Any] | None:
     if run["stopped"]:
         return None
-    if run["steps"] >= int(run["budget"]["max_steps"]):
-        run["stopped"] = "max_steps"
-        return None
-    if _over_usd(run):
-        run["stopped"] = "budget_usd"
-        return None
-    data_context = dict(run["data_context"])
-    data_context["xml"] = to_xml(spec, data_context["answers"], run["style"])
+    gov = governance()
     try:
-        raw = resolve_generate()(spec, data_context, run["style"])
-    except ProviderStop as exc:
+        turn = gov.generate(
+            spec,
+            run["data_context"],
+            run["style"],
+            api_key=api_key,
+            prompt_version=run["prompt_version"],
+            enabled=run["tools"],
+            transport=transport,
+        )
+    except gov.GeneratorError as exc:
         run["steps"] += 1
         run["stopped"] = exc.code
         return None
     run["steps"] += 1
-    content, pdf, media, filename, cost = _artifact(raw, spec)
-    _add_cost(run, cost)
-    verdict = judge(content, media_type=media, spec=spec, allowed=run["allowed"])
-    pdf_verdict = judge(
-        pdf, media_type="application/pdf", spec=_pdf_spec(spec), allowed=run["allowed"]
+    _add_cost(run, turn)
+    artifact = turn.artifact if isinstance(turn.artifact, dict) else None
+    if section_id and prior is not None and isinstance(artifact, dict):
+        artifact = _splice(gov, prior, section_id, artifact)
+    if not isinstance(artifact, dict):
+        run["stopped"] = "model_unreadable"
+        return None
+    issues = gov.judge_artifact(
+        artifact,
+        kind=str(run["spec"]["kind"]),
+        brand=run["style"].get("brand") or {},
+        allowed_numbers=run["allowed"],
     )
-    if not pdf_verdict["ok"]:
-        verdict = {
-            "ok": False,
-            "problems": [
-                *verdict["problems"],
-                *[f"pdf:{item}" for item in pdf_verdict["problems"]],
-            ],
-            "text_chars": verdict["text_chars"],
-        }
-    pdf_sha = hashlib.sha256(pdf).hexdigest()
-    sign = _sign(run, pdf_sha) if verdict["ok"] else {"status": "withheld", "sha256": pdf_sha}
+    label_issues = gov.validate_call("sign_request", {"label": run["run_id"]})
+    sign = {
+        "tool": "sign_request",
+        "digest": gov.prompt_digest(turn.prompt),
+        "issues": label_issues,
+    }
     version = {
         "id": f"v{len(run['versions']) + 1}",
-        "content": content,
-        "pdf": pdf,
-        "media_type": media,
-        "filename": filename,
-        "pdf_sha256": pdf_sha,
-        "artifact_sha256": hashlib.sha256(content).hexdigest(),
-        "judge": verdict,
-        "cost": cost,
+        "artifact": artifact,
+        "issues": issues,
+        "cost": {
+            "prompt_tokens": turn.prompt_tokens,
+            "completion_tokens": turn.completion_tokens,
+            "usd": turn.cost,
+        },
         "sign": sign,
         "edit": spec.get("edit"),
-        "repair": spec.get("repair"),
     }
     run["versions"].append(version)
-    if _over_usd(run):
-        run["stopped"] = "budget_usd"
     return version
 
 
-def _pdf_spec(spec: dict[str, Any]) -> dict[str, Any]:
-    """The signable PDF must carry the same section titles and no extra figures."""
-    return {"format": "pdf", "sections": spec.get("sections") or []}
-
-
-def _sign(run: dict[str, Any], pdf_sha: str) -> dict[str, Any]:
-    payload = {
-        "tool": "sign_request",
-        "sha256": pdf_sha,
-        "filename": "netie-answers.pdf",
-        "media_type": "application/pdf",
-        "run_id": run["run_id"],
-        "version": f"v{len(run['versions']) + 1}",
-    }
-    fn = resolve_sign()
-    if fn is None:
-        return {"status": "adapter_missing", "sha256": pdf_sha}
+def _splice(
+    gov: Any,
+    prior: dict[str, Any],
+    section_id: str,
+    artifact: dict[str, Any],
+) -> dict[str, Any]:
+    part = next(
+        (
+            item
+            for item in artifact.get("parts") or []
+            if isinstance(item, dict) and item.get("id") == section_id
+        ),
+        None,
+    )
+    if not isinstance(part, dict):
+        return artifact
     try:
-        result = fn(payload)
-    except ProviderStop as exc:
-        run["stopped"] = exc.code
-        return {"status": exc.code, "sha256": pdf_sha}
-    if not isinstance(result, dict):
-        return {"status": "sign_unreadable", "sha256": pdf_sha}
-    result.setdefault("sha256", pdf_sha)
-    return result
+        return gov.splice_section(prior, section_id, part)
+    except gov.GeneratorError:
+        return artifact
 
 
-def _artifact(raw: Any, spec: dict[str, Any]) -> tuple[bytes, bytes, str, str, dict[str, Any]]:
-    if not isinstance(raw, dict):
-        raise ProviderStop("adapter_unreadable")
-    content = _bytes(raw.get("content") if "content" in raw else raw.get("artifact"))
-    pdf = _bytes(raw.get("pdf"))
-    if content is None or pdf is None:
-        raise ProviderStop("adapter_unreadable")
-    fmt = str(spec.get("format") or "pptx")
-    media = str(raw.get("media_type") or _MEDIA[fmt])
-    filename = str(raw.get("filename") or f"netie-answers.{fmt}")
-    cost_raw = raw.get("cost")
-    cost = cost_raw if isinstance(cost_raw, dict) else {}
-    return content, pdf, media, filename, _cost(cost)
+def _charts(artifact: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(artifact, dict):
+        return []
+    charts = artifact.get("charts")
+    if not isinstance(charts, list):
+        return []
+    return [item for item in charts if isinstance(item, dict)]
 
 
-def _bytes(value: Any) -> bytes | None:
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, str):
-        import base64
-
-        try:
-            return base64.b64decode(value, validate=True)
-        except ValueError:
-            return None
-    return None
-
-
-def _cost(raw: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "prompt_tokens": _opt_int(raw.get("prompt_tokens")),
-        "completion_tokens": _opt_int(raw.get("completion_tokens")),
-        "usd": _opt_float(raw.get("usd")),
-    }
-
-
-def _opt_int(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
+def _latest_artifact(run: dict[str, Any]) -> dict[str, Any] | None:
+    if not run["versions"]:
         return None
-    if value < 0:
-        return None
-    return value
+    artifact = run["versions"][-1]["artifact"]
+    return artifact if isinstance(artifact, dict) else None
 
 
-def _opt_float(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    if value < 0:
-        return None
-    return float(value)
-
-
-def _add_cost(run: dict[str, Any], cost: dict[str, Any]) -> None:
-    """Sum only when every call reported the figure. A gap stays null."""
+def _add_cost(run: dict[str, Any], turn: Any) -> None:
     spend = run["spend"]
-    gaps: set[str] = run.setdefault("_cost_gaps", set())
-    for key in ("prompt_tokens", "completion_tokens", "usd"):
-        if key in gaps:
-            continue
-        incoming = cost.get(key)
+    pairs = (
+        ("prompt_tokens", turn.prompt_tokens),
+        ("completion_tokens", turn.completion_tokens),
+        ("usd", turn.cost),
+    )
+    for key, incoming in pairs:
         if incoming is None:
-            gaps.add(key)
             spend[key] = None
+            continue
+        if spend.get(key) is None and run["steps"] > 1:
             continue
         spend[key] = (spend.get(key) or 0) + incoming
 
 
-def _over_usd(run: dict[str, Any]) -> bool:
-    ceiling = run["budget"].get("max_usd")
-    spent = run["spend"].get("usd")
-    if ceiling is None or spent is None:
-        return False
-    return float(spent) > float(ceiling)
+def _answer(answer: dict[str, Any], index: int) -> dict[str, Any]:
+    rows = []
+    for row in list(answer.get("rows") or [])[:20]:
+        if not isinstance(row, dict):
+            raise ValueError("row")
+        rows.append({str(key)[:80]: value for key, value in list(row.items())[:12]})
+    columns = sorted({key for row in rows for key in row})
+    sources = [str(item) for item in list(answer.get("sources") or [])[:4] if str(item).strip()]
+    return {
+        "id": f"s{index}",
+        "question": str(answer.get("question") or "").strip()[:180],
+        "text": str(answer.get("text") or "").strip()[:4000],
+        "sql": str(answer.get("sql") or "").strip()[:8000],
+        "source": sources[0] if sources else "",
+        "rows": rows,
+        "columns": columns,
+    }
 
 
-def _style(style: dict[str, Any], fmt: str) -> dict[str, Any]:
-    route = str(style.get("route") or "openvault")
-    if route not in {"openvault", "cursor"}:
-        raise ValueError("route")
+def _shots(raw: Any) -> list[dict[str, str]]:
     shots = []
-    for shot in list(style.get("few_shots") or [])[:4]:
-        if not isinstance(shot, dict):
+    for item in list(raw or [])[:4]:
+        if not isinstance(item, dict):
             raise ValueError("few_shot")
         shots.append(
             {
-                "title": str(shot.get("title") or "").strip()[:120],
-                "text": str(shot.get("text") or "").strip()[:1000],
+                "title": str(item.get("title") or "").strip()[:120],
+                "text": str(item.get("text") or "").strip()[:1000],
             }
         )
-    brand_raw = style.get("brand")
-    brand: dict[str, Any] = brand_raw if isinstance(brand_raw, dict) else {}
-    prompt = str(style.get("prompt_text") or "").strip()
-    return {
-        "format": fmt,
-        "skill_id": skill_for(fmt, str(style.get("skill_id") or "").strip() or None),
-        "prompt_version": str(style.get("prompt_version") or "draft").strip()[:40] or "draft",
-        "prompt_text": (prompt or DEFAULT_PROMPT)[:2000],
-        "super_guide": str(style.get("super_guide") or "").strip()[:4000],
-        "template_id": str(style.get("template_id") or "").strip()[:80],
-        "brand": {
-            "name": str(brand.get("name") or "").strip()[:80],
-            "primary": str(brand.get("primary") or "").strip()[:16],
-            "font": str(brand.get("font") or "").strip()[:40],
-            "notes": str(brand.get("notes") or "").strip()[:400],
-        },
-        "few_shots": shots,
-        "route": route,
-    }
+    return shots

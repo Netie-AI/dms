@@ -13,26 +13,28 @@ export type CreateDocsSeed = {
 };
 
 type FewShot = { title: string; text: string };
-type Section = { id: string; title: string; kind: string };
+type Chart = { id?: string; title?: string; sql?: string; mark?: string };
+type Part = { id?: string; title?: string; body?: string; sql?: string };
 type Version = {
   id: string;
-  filename: string;
-  pdf_sha256: string | null;
-  judge: { ok: boolean; problems: string[] };
+  artifact: { parts?: Part[]; charts?: Chart[]; title?: string };
+  charts: Chart[];
+  issues: string[];
   cost: { prompt_tokens: number | null; completion_tokens: number | null; usd: number | null };
-  sign: { status?: string; sha256?: string };
+  sign: { tool?: string; digest?: string };
 };
 type RunView = {
   run_id: string;
   steps: number;
   stopped: string | null;
   spend: { prompt_tokens: number | null; completion_tokens: number | null; usd: number | null };
-  sections: Section[];
-  xml: string;
+  sections: { id: string; title: string }[];
+  charts: Chart[];
+  skills: string[];
+  style: { guide: string; template: string; template_text: string };
   versions: Version[];
 };
 
-const SKILLS = ["pptx", "docx", "xlsx", "pdf"] as const;
 const field =
   "mt-1 w-full border border-[var(--color-line)] bg-[var(--color-paper)] px-2 py-1 text-sm text-[var(--color-ink)]";
 
@@ -106,24 +108,21 @@ export function CreateDocsPanel({
 }) {
   const [enabled, setEnabled] = useState(false);
   const [open, setOpen] = useState(startOpen);
-  const [format, setFormat] = useState("pptx");
-  const [skillId, setSkillId] = useState("pptx");
-  const [promptVersion, setPromptVersion] = useState("draft");
+  const [kind, setKind] = useState("slides");
+  const [promptVersion, setPromptVersion] = useState("1");
   const [promptText, setPromptText] = useState("");
-  const [superGuide, setSuperGuide] = useState("");
-  const [templateId, setTemplateId] = useState("");
-  const [brandName, setBrandName] = useState("");
-  const [brandPrimary, setBrandPrimary] = useState("");
-  const [brandFont, setBrandFont] = useState("");
-  const [brandNotes, setBrandNotes] = useState("");
-  const [route, setRoute] = useState("openvault");
+  const [guide, setGuide] = useState("");
+  const [template, setTemplate] = useState("plain");
+  const [colours, setColours] = useState("");
+  const [fonts, setFonts] = useState("");
+  const [logo, setLogo] = useState("");
+  const [tone, setTone] = useState("");
+  const [ovKey, setOvKey] = useState("");
   const [fewShots, setFewShots] = useState<FewShot[]>([{ title: "", text: "" }]);
-  const [maxSteps, setMaxSteps] = useState(8);
-  const [maxUsd, setMaxUsd] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [run, setRun] = useState<RunView | null>(null);
-  const [target, setTarget] = useState("s0");
+  const [target, setTarget] = useState("");
   const [instruction, setInstruction] = useState("");
 
   useEffect(() => {
@@ -142,38 +141,39 @@ export function CreateDocsPanel({
   if (!enabled) return null;
 
   const style = {
-    format,
-    skill_id: skillId,
+    kind,
     prompt_version: promptVersion,
     prompt_text: promptText,
-    super_guide: superGuide,
-    template_id: templateId,
-    brand: { name: brandName, primary: brandPrimary, font: brandFont, notes: brandNotes },
+    guide,
+    template,
+    brand: { colours, fonts, logo, tone },
     few_shots: fewShots.filter((shot) => shot.title || shot.text),
-    route,
   };
   const posted = seeds.map((seed) => ({
     ...seed,
     space_id: seed.space_id || spaceId || null,
   }));
 
+  async function send(path: string, payload: unknown): Promise<RunView> {
+    const res = await fetch(path, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(ovKey.trim() ? { "x-openvault-key": ovKey.trim() } : {}),
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(await readError(res));
+    return (await res.json()) as RunView;
+  }
+
   async function preview() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/v1/create-docs/runs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          answers: posted,
-          style,
-          max_steps: maxSteps,
-          max_usd: maxUsd.trim() === "" ? null : Number(maxUsd),
-        }),
-      });
-      if (!res.ok) throw new Error(await readError(res));
-      const body = (await res.json()) as RunView;
+      const body = await send("/api/v1/create-docs/runs", { answers: posted, style });
       setRun(body);
+      if (!guide && body.style?.guide) setGuide(body.style.guide);
       if (body.sections[0]) setTarget(body.sections[0].id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "preview failed");
@@ -187,17 +187,9 @@ export function CreateDocsPanel({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/v1/create-docs/runs/${run.run_id}/generate`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          style,
-          max_steps: maxSteps,
-          max_usd: maxUsd.trim() === "" ? null : Number(maxUsd),
-        }),
-      });
-      if (!res.ok) throw new Error(await readError(res));
-      setRun((await res.json()) as RunView);
+      const body = await send(`/api/v1/create-docs/runs/${run.run_id}/generate`, { style });
+      setRun(body);
+      if (body.sections[0]) setTarget(body.sections[0].id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "generate failed");
     } finally {
@@ -210,37 +202,17 @@ export function CreateDocsPanel({
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/v1/create-docs/runs/${run.run_id}/edit`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target, instruction: instruction.trim() }),
-      });
-      if (!res.ok) throw new Error(await readError(res));
-      setRun((await res.json()) as RunView);
+      setRun(
+        await send(`/api/v1/create-docs/runs/${run.run_id}/edit`, {
+          target,
+          instruction: instruction.trim(),
+        }),
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "edit failed");
     } finally {
       setBusy(false);
     }
-  }
-
-  async function download(which: "artifact" | "pdf", version: Version) {
-    if (!run) return;
-    const res = await fetch(
-      `/api/v1/create-docs/runs/${run.run_id}/file?which=${which}&version=${version.id}`,
-      { method: "POST" },
-    );
-    if (!res.ok) {
-      setError(await readError(res));
-      return;
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = which === "pdf" ? "netie-answers.pdf" : version.filename;
-    link.click();
-    URL.revokeObjectURL(url);
   }
 
   if (!open) {
@@ -250,8 +222,7 @@ export function CreateDocsPanel({
           type="button"
           className="text-xs text-[var(--color-accent)] underline-offset-2 hover:underline"
           onClick={() => {
-            setFormat("pptx");
-            setSkillId("pptx");
+            setKind("slides");
             setOpen(true);
           }}
         >
@@ -261,8 +232,7 @@ export function CreateDocsPanel({
           type="button"
           className="text-xs text-[var(--color-accent)] underline-offset-2 hover:underline"
           onClick={() => {
-            setFormat("docx");
-            setSkillId("docx");
+            setKind("doc");
             setOpen(true);
           }}
         >
@@ -272,35 +242,35 @@ export function CreateDocsPanel({
     );
   }
 
+  const latest = run?.versions[run.versions.length - 1];
+
   return (
-    <section className="mt-4 border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-3" data-testid="create-docs-panel">
+    <section
+      className="mt-4 border border-[var(--color-line)] bg-[var(--color-surface)] px-3 py-3"
+      data-testid="create-docs-panel"
+    >
       <h2 className="text-sm font-semibold">Create doc or slides</h2>
       <p className="mt-1 text-xs text-[var(--color-ink-muted)]">
-        The provider writes the file. OpenVault meters the cost. A 402 stops the run.
-        One repair if the judge fails. Pick a section to edit after that.
+        The model designs the deck. The template and the style guide are context only.
+        OpenVault meters the cost. A 402 stops the run.
       </p>
       {posted.length === 0 ? (
         <p className="mt-2 text-xs">Ask a question in this chat first. The file can only use those answers.</p>
       ) : null}
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <label className="text-xs">
-          Format
-          <select className={field} value={format} onChange={(e) => setFormat(e.target.value)}>
-            <option value="pptx">pptx</option>
-            <option value="docx">docx</option>
-            <option value="pdf">pdf</option>
-            <option value="html">html</option>
-            <option value="xlsx">xlsx</option>
+          Kind
+          <select className={field} value={kind} onChange={(e) => setKind(e.target.value)}>
+            <option value="slides">slides</option>
+            <option value="doc">doc</option>
           </select>
         </label>
         <label className="text-xs">
-          Skill
-          <select className={field} value={skillId} onChange={(e) => setSkillId(e.target.value)}>
-            {SKILLS.map((skill) => (
-              <option key={skill} value={skill}>
-                {skill}
-              </option>
-            ))}
+          Template
+          <select className={field} value={template} onChange={(e) => setTemplate(e.target.value)}>
+            <option value="plain">plain</option>
+            <option value="brief">brief</option>
+            <option value="bold">bold</option>
           </select>
         </label>
         <label className="text-xs">
@@ -308,54 +278,32 @@ export function CreateDocsPanel({
           <input className={field} value={promptVersion} onChange={(e) => setPromptVersion(e.target.value)} />
         </label>
         <label className="text-xs">
-          Template
-          <input className={field} value={templateId} onChange={(e) => setTemplateId(e.target.value)} />
+          OpenVault key
+          <input className={field} value={ovKey} onChange={(e) => setOvKey(e.target.value)} />
         </label>
         <label className="text-xs sm:col-span-2">
           Style prompt
-          <textarea className={field} rows={3} value={promptText} onChange={(e) => setPromptText(e.target.value)} />
+          <textarea className={field} rows={2} value={promptText} onChange={(e) => setPromptText(e.target.value)} />
         </label>
         <label className="text-xs sm:col-span-2">
-          Super guide
-          <textarea className={field} rows={3} value={superGuide} onChange={(e) => setSuperGuide(e.target.value)} />
+          Style guide
+          <textarea className={field} rows={2} value={guide} onChange={(e) => setGuide(e.target.value)} />
         </label>
         <label className="text-xs">
-          Brand name
-          <input className={field} value={brandName} onChange={(e) => setBrandName(e.target.value)} />
+          Colours
+          <input className={field} value={colours} onChange={(e) => setColours(e.target.value)} />
         </label>
         <label className="text-xs">
-          Primary color
-          <input className={field} value={brandPrimary} onChange={(e) => setBrandPrimary(e.target.value)} />
+          Fonts
+          <input className={field} value={fonts} onChange={(e) => setFonts(e.target.value)} />
         </label>
         <label className="text-xs">
-          Font
-          <input className={field} value={brandFont} onChange={(e) => setBrandFont(e.target.value)} />
+          Logo
+          <input className={field} value={logo} onChange={(e) => setLogo(e.target.value)} />
         </label>
         <label className="text-xs">
-          Brand notes
-          <input className={field} value={brandNotes} onChange={(e) => setBrandNotes(e.target.value)} />
-        </label>
-        <label className="text-xs">
-          Route
-          <select className={field} value={route} onChange={(e) => setRoute(e.target.value)}>
-            <option value="openvault">openvault</option>
-            <option value="cursor">cursor</option>
-          </select>
-        </label>
-        <label className="text-xs">
-          Max steps (1-8)
-          <input
-            className={field}
-            type="number"
-            min={1}
-            max={8}
-            value={maxSteps}
-            onChange={(e) => setMaxSteps(Math.min(8, Math.max(1, Number(e.target.value) || 1)))}
-          />
-        </label>
-        <label className="text-xs sm:col-span-2">
-          Max USD, optional. Blank leaves the stop to OpenVault.
-          <input className={field} value={maxUsd} onChange={(e) => setMaxUsd(e.target.value)} />
+          Tone
+          <input className={field} value={tone} onChange={(e) => setTone(e.target.value)} />
         </label>
       </div>
       <div className="mt-3">
@@ -415,37 +363,32 @@ export function CreateDocsPanel({
             {run.spend.completion_tokens != null ? ` | completion tokens ${run.spend.completion_tokens}` : ""}
             {run.spend.usd != null ? ` | USD ${run.spend.usd}` : " | USD from OpenVault"}
             {run.stopped ? ` | stopped ${run.stopped}` : ""}
+            {run.skills.length ? ` | skills ${run.skills.join(", ")}` : ""}
           </p>
-          <ul className="mt-2 list-disc pl-4">
-            {run.sections.map((section) => (
-              <li key={section.id}>
-                {section.id}: {section.title}
-              </li>
-            ))}
-          </ul>
-          <label className="mt-2 block">
-            Context sent to the provider
-            <textarea className={field} rows={4} readOnly value={run.xml} />
-          </label>
-          {run.versions.length > 0 ? (
-            <ul className="mt-3 space-y-2">
-              {run.versions.map((version) => (
-                <li key={version.id} className="border border-[var(--color-line)] px-2 py-2">
-                  <p>
-                    {version.id} | judge {version.judge.ok ? "pass" : version.judge.problems.join(", ")} | sha256{" "}
-                    {version.pdf_sha256} | sign {version.sign?.status || "none"}
-                  </p>
-                  <div className="mt-1 flex gap-2">
-                    <button type="button" className="underline" onClick={() => void download("artifact", version)}>
-                      Download file
-                    </button>
-                    <button type="button" className="underline" onClick={() => void download("pdf", version)}>
-                      Download PDF
-                    </button>
-                  </div>
+          {latest ? (
+            <ul className="mt-2 space-y-2">
+              {(latest.artifact.parts || []).map((part) => (
+                <li key={part.id} className="border border-[var(--color-line)] px-2 py-2">
+                  <p className="font-medium">{part.title}</p>
+                  <p className="mt-1">{part.body}</p>
+                  {part.sql ? <p className="mt-1 font-mono">{part.sql}</p> : null}
                 </li>
               ))}
             </ul>
+          ) : null}
+          {run.charts.length ? (
+            <ul className="mt-2 list-disc pl-4">
+              {run.charts.map((chart) => (
+                <li key={chart.id || chart.title}>
+                  {chart.title} ({chart.mark})
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {latest ? (
+            <p className="mt-2">
+              Judge {latest.issues.length ? latest.issues.join(", ") : "pass"} | sign {latest.sign.digest}
+            </p>
           ) : null}
           {run.versions.length > 0 ? (
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
