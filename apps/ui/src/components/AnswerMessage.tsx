@@ -24,7 +24,8 @@ import {
   type BiTarget,
 } from "@/lib/biExport";
 import { COPILOT_PROMPTS, copilotClipboard, copyText } from "@/lib/copilotPrompts";
-import { postAskConfirm, postClarifyPick } from "@/lib/api";
+import { describeApiError, postAskConfirm, postClarifyPick } from "@/lib/api";
+import { downloadDocx, downloadPptx, downloadXlsx } from "@/lib/officeExport";
 import {
   csvDownloadName,
   isSummaryExport,
@@ -196,6 +197,7 @@ export function AnswerMessage({
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const [shareNote, setShareNote] = useState<string | null>(null);
   const [exportErr, setExportErr] = useState<string | null>(null);
+  const [showApp, setShowApp] = useState(false);
   const [biPanel, setBiPanel] = useState<BiExportResponse | null>(null);
   const [biFocus, setBiFocus] = useState<BiTarget | null>(null);
   const [biNote, setBiNote] = useState<string | null>(null);
@@ -286,6 +288,10 @@ export function AnswerMessage({
   async function downloadRowsXlsx() {
     setExportErr(null);
     const exportRows = await rowsForExport();
+    if (!exportRows.length) {
+      setExportErr("This answer has no rows to export.");
+      return;
+    }
     const res = await fetch("/api/v1/chat/export.xlsx", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -294,7 +300,8 @@ export function AnswerMessage({
       }),
     });
     if (!res.ok) {
-      setExportErr(await res.text());
+      downloadXlsx(exportRows, xlsxDownloadName(envelope.answer_id));
+      setExportErr(`${describeApiError(await res.text())} Saved the rows on screen instead.`);
       return;
     }
     const blob = await res.blob();
@@ -461,6 +468,54 @@ export function AnswerMessage({
             Download Excel
           </button>
         ) : null}
+        <button
+          type="button"
+          data-testid="answer-word"
+          onClick={() => downloadDocx(envelope)}
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          Download Word
+        </button>
+        <button
+          type="button"
+          data-testid="answer-slides"
+          onClick={() => downloadPptx(envelope)}
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          Download slides
+        </button>
+        <button
+          type="button"
+          data-testid="answer-chart-button"
+          onClick={(event) => {
+            const chart = event.currentTarget.closest("article")?.querySelector("[data-answer-chart]");
+            if (chart instanceof HTMLElement) chart.scrollIntoView({ block: "nearest" });
+            else setExportErr("No chart. This answer has no rows to plot.");
+          }}
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          Chart
+        </button>
+        <button
+          type="button"
+          data-testid="answer-insights-button"
+          onClick={(event) => {
+            const block = event.currentTarget.closest("article")?.querySelector("[data-answer-insights]");
+            if (block instanceof HTMLElement) block.scrollIntoView({ block: "nearest" });
+            else setExportErr("No insights on this answer.");
+          }}
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          Insights
+        </button>
+        <button
+          type="button"
+          data-testid="answer-create-app"
+          onClick={() => setShowApp((open) => !open)}
+          className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+        >
+          Create app
+        </button>
         {envelope.answer_id ? (
           <button
             type="button"
@@ -625,7 +680,7 @@ export function AnswerMessage({
         {renderWithValues(prose, envelope.values, selectValue)}
       </p>
       {insights.length > 0 && (
-        <div className="mt-3">
+        <div className="mt-3" data-answer-insights>
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
             Insights
           </p>
@@ -694,8 +749,22 @@ export function AnswerMessage({
         </div>
       )}
       {rows.length > 0 && <AnswerRowsTable rows={rows} />}
+      {showApp && (
+        <section data-testid="answer-app" className="mt-4 border border-[var(--color-line)] bg-[var(--color-paper)] p-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
+            App
+          </p>
+          <p className="mt-2 text-sm text-[var(--color-ink)]">{prose}</p>
+          {rows.length > 0 ? <AnswerRowsTable rows={rows} /> : (
+            <p className="mt-2 text-xs text-[var(--color-ink-muted)]">This answer has no rows to show in the app.</p>
+          )}
+          {envelope.chart && rows.length > 0 ? <SimpleChart chart={envelope.chart} rows={rows} /> : null}
+        </section>
+      )}
       {envelope.chart && rows.length > 0 && (
-        <SimpleChart chart={envelope.chart} rows={rows} />
+        <div data-answer-chart>
+          <SimpleChart chart={envelope.chart} rows={rows} />
+        </div>
       )}
       {showCopilot && rows.length > 0 && (
         <div className="mt-4 border border-[var(--color-line)] bg-[var(--color-paper)] p-3">

@@ -90,7 +90,7 @@ export function SourcePanel() {
           className="flex min-h-11 min-w-11 items-center justify-center text-sm text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
           aria-label="Collapse sources"
         >
-          ⟩
+          Hide
         </button>
       </div>
 

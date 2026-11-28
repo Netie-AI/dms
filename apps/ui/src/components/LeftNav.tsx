@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import { featureForPath, useFeatures } from "@/lib/features";
 import { navIdsForMode } from "@/lib/productMode";
 import type { AppRole, NavId } from "@/lib/types";
 
@@ -90,14 +91,18 @@ function linkClass(isActive: boolean): string {
 
 export function LeftNav() {
   const { navCollapsed, role, setRole, productMode, closeNavDrawer } = useApp();
+  const features = useFeatures();
   const allowed = navIdsForMode(productMode);
   const visible = GROUPS.map((g) => ({
     ...g,
-    items: g.items.filter(
-      (i) =>
+    items: g.items.filter((i) => {
+      const feature = featureForPath(i.to);
+      if (feature && features?.[feature] !== true) return false;
+      return (
         (!ADMIN_ONLY.includes(i.id) || role === "admin") &&
-        (allowed == null || allowed.has(i.id)),
-    ),
+        (allowed == null || allowed.has(i.id))
+      );
+    }),
   })).filter((g) => g.items.length);
 
   if (navCollapsed) {

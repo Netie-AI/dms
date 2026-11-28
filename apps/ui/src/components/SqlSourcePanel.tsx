@@ -95,7 +95,7 @@ export function SqlSourcePanel({
       className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-4 py-4"
     >
       <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
-        SQL Server / MySQL / PostgreSQL
+        Connector
       </p>
       <p className="mt-2 max-w-2xl text-sm text-[var(--color-ink-muted)]">
         Point this Space at a database. Rows land in bronze with the source named.

@@ -30,6 +30,7 @@ from dms_api.routes import (
     auth_sso,
     chat,
     connect,
+    features,
     freeroute,
     health,
     insight_proof,
@@ -218,6 +219,7 @@ def create_app() -> FastAPI:
     install_tenant_errors(app)
 
     app.include_router(health.router, tags=["health"])
+    app.include_router(features.router)
     if sso_enabled():
         app.include_router(auth_sso.router)
     app.include_router(ping.router, tags=["skeleton"])

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useFeature } from "@/lib/features";
 
 export type ReadyStep = {
   n: number;
@@ -21,9 +22,10 @@ export type ReadyGuideBody = {
 export function ReadyGuide({ initial }: { initial?: ReadyGuideBody | null }) {
   const [guide, setGuide] = useState<ReadyGuideBody | null>(initial ?? null);
   const [demoMsg, setDemoMsg] = useState<string | null>(null);
+  const guideOn = useFeature("ready_guide");
 
   useEffect(() => {
-    if (initial) return;
+    if (initial || !guideOn) return;
     let cancelled = false;
     void fetch("/api/v1/ready/guide")
       .then(async (res) => (res.ok ? ((await res.json()) as ReadyGuideBody) : null))
@@ -34,7 +36,7 @@ export function ReadyGuide({ initial }: { initial?: ReadyGuideBody | null }) {
     return () => {
       cancelled = true;
     };
-  }, [initial]);
+  }, [initial, guideOn]);
 
   const startDemo = async () => {
     setDemoMsg(null);

@@ -33,6 +33,7 @@ def page_load_paths() -> list[tuple[str, str]]:
     ops = str(SPACE_MARGIN)
     return [
         ("/health", "/health"),
+        ("/v1/features", "/v1/features"),
         ("/v1/spaces", "/v1/spaces"),
         ("/v1/library/sources", "/v1/library/sources"),
         ("/v1/library/tree", "/v1/library/tree"),

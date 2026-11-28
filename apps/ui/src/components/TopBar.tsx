@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApp } from "@/context/AppContext";
+import { downloadDocx, downloadPptx } from "@/lib/officeExport";
 import { ceoSafeHref } from "@/lib/productMode";
 import type { AppRole } from "@/lib/types";
 
@@ -18,6 +19,7 @@ export function TopBar() {
     apiOnline,
     productMode,
     setProductMode,
+    latestAnswer,
   } = useApp();
   const navigate = useNavigate();
   const [newOpen, setNewOpen] = useState(false);
@@ -102,6 +104,70 @@ export function TopBar() {
               }}
             >
               New Space
+            </button>
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              onClick={() => {
+                setNewOpen(false);
+                navigate("/", { state: { deliverable: "app" } });
+              }}
+            >
+              Create app
+            </button>
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              onClick={() => {
+                setNewOpen(false);
+                if (latestAnswer) downloadDocx(latestAnswer);
+                navigate("/", {
+                  state: {
+                    deliverableNote: latestAnswer
+                      ? "Word file saved from this answer."
+                      : "Ask a question first. A document uses that answer and adds no figure.",
+                  },
+                });
+              }}
+            >
+              Create doc
+            </button>
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              onClick={() => {
+                setNewOpen(false);
+                if (latestAnswer) downloadPptx(latestAnswer);
+                navigate("/", {
+                  state: {
+                    deliverableNote: latestAnswer
+                      ? "Slides saved from this answer."
+                      : "Ask a question first. Slides use that answer and add no figure.",
+                  },
+                });
+              }}
+            >
+              Create slides
+            </button>
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              onClick={() => {
+                setNewOpen(false);
+                navigate("/studio#connector");
+              }}
+            >
+              Connect a database
+            </button>
+            <button
+              type="button"
+              className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[var(--color-paper-2)]"
+              onClick={() => {
+                setNewOpen(false);
+                navigate("/admin");
+              }}
+            >
+              Settings
             </button>
           </div>
         )}

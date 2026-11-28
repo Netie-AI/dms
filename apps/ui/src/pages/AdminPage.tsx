@@ -50,15 +50,15 @@ export function AdminPage() {
       )}
 
       <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="People" value={data?.users.length ?? "—"} />
-        <StatTile label="Departments" value={data?.departments.length ?? "—"} />
-        <StatTile label="Access grants" value={data?.grants.length ?? "—"} />
-        <StatTile label="Compute pools" value={data?.pools.length ?? "—"} />
+        <StatTile label="People" value={data?.users?.length ?? "—"} />
+        <StatTile label="Departments" value={data?.departments?.length ?? "—"} />
+        <StatTile label="Access grants" value={data?.grants?.length ?? "—"} />
+        <StatTile label="Compute pools" value={data?.pools?.length ?? "—"} />
       </div>
 
       <AsyncBoundary loading={loading} error={error} onRetry={reload}>
-        <Section title="People" count={data?.users.length}>
-          {data?.users.length ? (
+        <Section title="People" count={data?.users?.length}>
+          {data?.users?.length ? (
             <div className="overflow-x-auto border border-[var(--color-line)] bg-[var(--color-surface)]/60">
               <table className="w-full text-left text-sm">
                 <thead>
@@ -92,11 +92,11 @@ export function AdminPage() {
 
         <Section
           title="Roles"
-          count={data?.roles.length}
+          count={data?.roles?.length}
           description="Three, deliberately. A viewer reads, a steward proposes and confirms, an admin administers the tenant."
         >
           <ul className="divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
-            {(data?.roles.length
+            {(data?.roles?.length
               ? data.roles
               : [
                   { name: "viewer", description: "Read-only within tenant" },
@@ -114,10 +114,10 @@ export function AdminPage() {
 
         <Section
           title="Who can see this"
-          count={data?.grants.length}
+          count={data?.grants?.length}
           description="Every grant is a principal, a resource, and one of read / write / admin. The manifest each question runs under is derived from exactly this."
         >
-          {data?.grants.length ? (
+          {data?.grants?.length ? (
             <div className="overflow-x-auto border border-[var(--color-line)] bg-[var(--color-surface)]/60">
               <table className="w-full text-left text-sm">
                 <thead>
@@ -157,7 +157,7 @@ export function AdminPage() {
 
         <Section
           title="Compute pools"
-          count={data?.pools.length}
+          count={data?.pools?.length}
           description="Where a question is allowed to run."
         >
           <ul className="divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
@@ -172,7 +172,7 @@ export function AdminPage() {
                 </span>
               </li>
             ))}
-            {!data?.pools.length && (
+            {!data?.pools?.length && (
               <li className="px-3 py-4 text-sm text-[var(--color-ink-muted)]">
                 No pools defined. Questions run on the default read pool.
               </li>
