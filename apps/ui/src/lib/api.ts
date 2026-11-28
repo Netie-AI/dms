@@ -1,19 +1,11 @@
 /** DMS API client — browser talks only to DMS (proxied /api). Never Cortex. */
 
-import { ontologyReadPath } from "./ontologyRead";
+import { ontologyBundle, ontologyReadPath, type OntologyReadBody } from "./ontologyRead";
 import type {
   AdminOverview,
   AnswerEnvelope,
   LibrarySource,
-  OntologyAction,
   OntologyBundle,
-  OntologyFunction,
-  OntologyGraphEdge,
-  OntologyGraphNode,
-  OntologyLink,
-  OntologyMetric,
-  OntologyObject,
-  OntologySummary,
   RunsBody,
   SpaceSummary,
   TrustRunDetailItem,
@@ -281,50 +273,13 @@ async function getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
 
 /* ── Ontology ───────────────────────────────────────────────────────────── */
 
-type SectionBody<K extends string, T> = { ok: boolean; hint?: string; error?: string } & {
-  [P in K]?: T[];
-};
-
-function section<K extends string, T>(body: SectionBody<K, T>, key: K): T[] {
-  return (body[key] as T[] | undefined) ?? [];
-}
-
-/** One page, one round of fetches. The active Space id is on every request. */
+/** One GET. Counts and the lists are on that body, so a slow section cannot hold the tiles. */
 export async function fetchOntology(
   spaceId?: string | null,
   signal?: AbortSignal,
 ): Promise<OntologyBundle> {
-  const [summary, objects, links, actions, functions, metrics, graph] = await Promise.all([
-    getJson<OntologySummary>(ontologyReadPath("", spaceId), signal),
-    getJson<SectionBody<"object_types", OntologyObject>>(
-      ontologyReadPath("objects", spaceId),
-      signal,
-    ),
-    getJson<SectionBody<"link_types", OntologyLink>>(ontologyReadPath("links", spaceId), signal),
-    getJson<SectionBody<"action_types", OntologyAction>>(
-      ontologyReadPath("actions", spaceId),
-      signal,
-    ),
-    getJson<SectionBody<"functions", OntologyFunction>>(
-      ontologyReadPath("functions", spaceId),
-      signal,
-    ),
-    getJson<SectionBody<"metrics", OntologyMetric>>(ontologyReadPath("metrics", spaceId), signal),
-    getJson<{
-      ok: boolean;
-      nodes?: OntologyGraphNode[];
-      edges?: OntologyGraphEdge[];
-    }>(ontologyReadPath("graph", spaceId), signal),
-  ]);
-  return {
-    summary,
-    objects: section(objects, "object_types"),
-    links: section(links, "link_types"),
-    actions: section(actions, "action_types"),
-    functions: section(functions, "functions"),
-    metrics: section(metrics, "metrics"),
-    graph: { nodes: graph.nodes ?? [], edges: graph.edges ?? [] },
-  };
+  const body = await getJson<OntologyReadBody>(ontologyReadPath("", spaceId), signal);
+  return ontologyBundle(body);
 }
 
 /* ── Trust ──────────────────────────────────────────────────────────────── */

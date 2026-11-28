@@ -1,7 +1,8 @@
 """STREAM-STAGES-01. Stage events over SSE. Flag DMS_ASK_STREAM, default off.
 
-Flag off: the events route is not mounted and a POST /v1/chat/ask body matches
-the flag-on body. Flag on: events are {stage, t_ms, status} in ladder order.
+Flag off: the events route answers enabled false and stores nothing, and a
+POST /v1/chat/ask body matches the flag-on body. Flag on: events are
+{stage, t_ms, status} in ladder order.
 An attempt's SQL and row values are not copied into any event.
 """
 
@@ -92,12 +93,19 @@ def _app(monkeypatch: pytest.MonkeyPatch, flag: str | None) -> TestClient:
     return TestClient(app)
 
 
-def test_flag_off_route_is_not_mounted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_flag_off_events_are_empty_and_ask_bytes_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UX-TRUST-01. The route answers so the console is not a 404. No stages. Ask bytes match."""
     client = _app(monkeypatch, None)
     paths = client.app.openapi()["paths"]
-    assert not any(path.startswith("/v1/studio/ask/") for path in paths)
+    assert "/v1/studio/ask/{ask_id}/events" in paths
+    first = client.post("/v1/chat/ask", json={"question": "how many"}).content
     got = client.get(f"/v1/studio/ask/{_ASK}/events")
-    assert got.status_code == 404
+    assert got.status_code == 200
+    assert got.headers["content-type"].startswith("text/event-stream")
+    assert '"enabled":false' in got.text
+    assert "stage" not in got.text
+    second = client.post("/v1/chat/ask", json={"question": "how many"}).content
+    assert first == second
 
 
 def test_events_in_order_and_envelope_bytes_match(monkeypatch: pytest.MonkeyPatch) -> None:

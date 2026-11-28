@@ -1,6 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AsyncBoundary,
   DependencyNotice,
   Page,
   PageHeader,
@@ -10,7 +9,13 @@ import {
 } from "@/components/PageShell";
 import { useApp } from "@/context/AppContext";
 import { fetchOntology } from "@/lib/api";
-import { ontologyHonestCard } from "@/lib/ontologyRead";
+import {
+  ONTOLOGY_PAGE,
+  ontologyCountsMeasured,
+  ontologyHeldView,
+  ontologyHonestCard,
+  ontologyWindow,
+} from "@/lib/ontologyRead";
 import { useAsync } from "@/lib/useAsync";
 import type {
   OntologyBundle,
@@ -35,6 +40,23 @@ const TABS: { id: Tab; label: string }[] = [
  * deterministic picture is one a steward can point at twice and get the same
  * shape. Node size carries property count; the ring keeps every edge visible.
  */
+function WindowNote({ label, onMore }: { label: string | null; onMore: () => void }) {
+  if (!label) return null;
+  return (
+    <p data-testid="ontology-window" className="mt-2 text-sm text-[var(--color-ink-muted)]">
+      {label}{" "}
+      <button
+        type="button"
+        data-testid="ontology-load-more"
+        onClick={onMore}
+        className="border border-[var(--color-line)] px-2 py-0.5 text-xs hover:border-[var(--color-accent)]"
+      >
+        Load more
+      </button>
+    </p>
+  );
+}
+
 function OntologyMap({
   nodes,
   edges,
@@ -299,30 +321,45 @@ export function OntologyPage() {
     (signal) => fetchOntology(activeSpaceId, signal),
     [activeSpaceId],
   );
+  const held = useRef<OntologyBundle | null>(null);
+  const heldSpace = useRef(activeSpaceId);
+  if (heldSpace.current !== activeSpaceId) {
+    heldSpace.current = activeSpaceId;
+    held.current = null;
+  }
+  const view = ontologyHeldView(data, held.current, loading);
+  if (data?.summary.ok) held.current = data;
   const [tab, setTab] = useState<Tab>("objects");
   const [query, setQuery] = useState("");
+  const [shown, setShown] = useState(ONTOLOGY_PAGE);
+  useEffect(() => {
+    setShown(ONTOLOGY_PAGE);
+  }, [activeSpaceId, tab, query]);
+  const showMore = () => setShown((n) => n + ONTOLOGY_PAGE);
   const [openObject, setOpenObject] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
-  const counts = data?.summary.counts;
+  const counts = ontologyCountsMeasured(view?.summary) ? view?.summary.counts : undefined;
   const honest = ontologyHonestCard(data?.summary);
+  const unread = data?.summary.reason === "store_unreadable" || Boolean(error);
+  const listsOk = view?.summary.ok === true;
 
   const q = query.trim().toLowerCase();
-  const objects = (data?.objects ?? []).filter(
+  const objects = (view?.objects ?? []).filter(
     (o) =>
       !q ||
       o.id.includes(q) ||
       o.description.toLowerCase().includes(q) ||
       o.properties.some((p) => p.name.includes(q)),
   );
-  const metrics = (data?.metrics ?? []).filter(
+  const metrics = (view?.metrics ?? []).filter(
     (m) =>
       !q ||
       m.id.includes(q) ||
       m.object_types.some((o) => o.includes(q)) ||
       m.synonyms.some((s) => s.toLowerCase().includes(q)),
   );
-  const actions = data?.actions ?? [];
+  const actions = view?.actions ?? [];
   const tools = actions.filter((a) => a.kind === "tool");
   const events = actions.filter((a) => a.kind !== "tool");
 
@@ -343,6 +380,55 @@ export function OntologyPage() {
         }
       />
 
+      {loading && !view ? (
+        <p
+          data-testid="ontology-loading"
+          className="mt-6 border border-[var(--color-line)] bg-[var(--color-surface)]/50 px-3 py-6 text-sm text-[var(--color-ink-muted)]"
+        >
+          Loading…
+        </p>
+      ) : error && !view ? (
+        <div className="mt-6 border border-[var(--color-danger)]/40 bg-[var(--color-surface)] px-3 py-4">
+          <p className="text-sm text-[var(--color-danger)]">{error}</p>
+          <button
+            type="button"
+            data-testid="ontology-retry"
+            onClick={reload}
+            className="mt-2 border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+      <>
+      {loading && view ? (
+        <p data-testid="ontology-loading" className="mt-6 text-sm text-[var(--color-ink-muted)]">
+          Loading…
+        </p>
+      ) : null}
+      {counts ? (
+      <div
+        data-testid="ontology-counts"
+        className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6"
+      >
+        <StatTile label="Object types" value={counts.object_types} />
+        <StatTile label="Links" value={counts.link_types} />
+        <StatTile
+          label="Governed actions"
+          value={counts.action_tools}
+          hint="invocable writes"
+        />
+        <StatTile label="Ledger events" value={counts.action_events} />
+        <StatTile label="Functions" value={counts.functions} />
+        <StatTile
+          label="Withheld props"
+          value={counts.sensitive_properties}
+          tone={counts.sensitive_properties ? "warn" : "neutral"}
+          hint="never sent to a model"
+        />
+      </div>
+      ) : null}
+
       {honest && (
         <DependencyNotice
           data-testid="ontology-honest-card"
@@ -352,31 +438,23 @@ export function OntologyPage() {
           hint={honest.hint}
         />
       )}
+      {unread && (
+        <button
+          type="button"
+          data-testid="ontology-retry"
+          onClick={reload}
+          className="mt-3 border border-[var(--color-line)] px-2.5 py-1 text-xs hover:border-[var(--color-accent)]"
+        >
+          Try again
+        </button>
+      )}
 
-      {!honest && (
+      {listsOk && (
       <>
-      <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-        <StatTile label="Object types" value={counts?.object_types ?? "—"} />
-        <StatTile label="Links" value={counts?.link_types ?? "—"} />
-        <StatTile
-          label="Governed actions"
-          value={counts?.action_tools ?? "—"}
-          hint="invocable writes"
-        />
-        <StatTile label="Ledger events" value={counts?.action_events ?? "—"} />
-        <StatTile label="Functions" value={counts?.functions ?? "—"} />
-        <StatTile
-          label="Withheld props"
-          value={counts?.sensitive_properties ?? "—"}
-          tone={counts?.sensitive_properties ? "warn" : "neutral"}
-          hint="never sent to a model"
-        />
-      </div>
-
-      {data?.summary.objects_without_metrics?.length ? (
+      {view?.summary.objects_without_metrics?.length ? (
         <DependencyNotice
-          title={`${data.summary.objects_without_metrics.length} object type(s) have no governed metric`}
-          hint={`${data.summary.objects_without_metrics.join(", ")} — questions about these fall through L1 to generation or abstain. Add a metric in the pack's semantic layer to make them answerable under a governed badge.`}
+          title={`${view.summary.objects_without_metrics.length} object type(s) have no governed metric`}
+          hint={`${view.summary.objects_without_metrics.join(", ")} — questions about these fall through L1 to generation or abstain. Add a metric in the pack's semantic layer to make them answerable under a governed badge.`}
         />
       ) : null}
 
@@ -404,11 +482,10 @@ export function OntologyPage() {
         />
       </div>
 
-      <AsyncBoundary loading={loading} error={error} onRetry={reload}>
         {tab === "objects" && (
           <Section title="Object types" count={objects.length}>
             <ul className="flex flex-col gap-2">
-              {objects.map((o) => (
+              {ontologyWindow(objects, shown).rows.map((o) => (
                 <ObjectCard
                   key={o.id}
                   object={o}
@@ -426,6 +503,7 @@ export function OntologyPage() {
                 </li>
               )}
             </ul>
+            <WindowNote label={ontologyWindow(objects, shown).label} onMore={showMore} />
           </Section>
         )}
 
@@ -435,13 +513,13 @@ export function OntologyPage() {
             description="Click an object to reveal the join keys and cardinality on its links."
           >
             <OntologyMap
-              nodes={data?.graph.nodes ?? []}
-              edges={data?.graph.edges ?? []}
+              nodes={view?.graph.nodes ?? []}
+              edges={view?.graph.edges ?? []}
               selected={selectedNode}
               onSelect={setSelectedNode}
             />
             <ul className="mt-3 divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
-              {(data?.links ?? []).map((l) => (
+              {ontologyWindow(view?.links ?? [], shown).rows.map((l) => (
                 <li key={l.id} className="flex flex-wrap justify-between gap-2 px-3 py-2">
                   <span className="font-mono text-xs">
                     {l.from_object}.{l.from_property} → {l.to_object}.{l.to_property}
@@ -450,6 +528,7 @@ export function OntologyPage() {
                 </li>
               ))}
             </ul>
+            <WindowNote label={ontologyWindow(view?.links ?? [], shown).label} onMore={showMore} />
           </Section>
         )}
 
@@ -460,7 +539,7 @@ export function OntologyPage() {
             description="What the answer engine compiles deterministically at L1. If a question does not reach one of these, it is generated and checked, or it abstains."
           >
             <ul className="flex flex-col gap-1.5">
-              {metrics.map((m) => (
+              {ontologyWindow(metrics, shown).rows.map((m) => (
                 <MetricRow key={m.id} metric={m} />
               ))}
               {!metrics.length && (
@@ -469,6 +548,7 @@ export function OntologyPage() {
                 </li>
               )}
             </ul>
+            <WindowNote label={ontologyWindow(metrics, shown).label} onMore={showMore} />
           </Section>
         )}
 
@@ -480,7 +560,7 @@ export function OntologyPage() {
               description="The only write paths that exist. Each one names the role it needs and whether a human has to confirm before it runs."
             >
               <ul className="flex flex-col gap-1.5">
-                {tools.map((a) => (
+                {ontologyWindow(tools, shown).rows.map((a) => (
                   <li
                     key={a.id}
                     className="border border-[var(--color-line)] bg-[var(--color-surface)]/60 px-3.5 py-2.5"
@@ -506,6 +586,7 @@ export function OntologyPage() {
                   </li>
                 )}
               </ul>
+              <WindowNote label={ontologyWindow(tools, shown).label} onMore={showMore} />
             </Section>
             <Section
               title="Registered ledger events"
@@ -513,7 +594,7 @@ export function OntologyPage() {
               description="Event types the ledger already writes, named here so the audit namespace is one describable list rather than string literals scattered through the pack."
             >
               <ul className="divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60 text-sm">
-                {events.map((a) => (
+                {ontologyWindow(events, shown).rows.map((a) => (
                   <li key={a.id} className="flex flex-wrap justify-between gap-2 px-3 py-2">
                     <span className="font-mono text-xs">{a.id}</span>
                     <span className="max-w-md text-right text-xs text-[var(--color-ink-muted)]">
@@ -522,6 +603,7 @@ export function OntologyPage() {
                   </li>
                 ))}
               </ul>
+              <WindowNote label={ontologyWindow(events, shown).label} onMore={showMore} />
             </Section>
           </>
         )}
@@ -529,11 +611,11 @@ export function OntologyPage() {
         {tab === "functions" && (
           <Section
             title="Functions"
-            count={data?.functions.length ?? 0}
+            count={view?.functions.length}
             description="Business logic an agent or pipeline may call. Registered so capability is discoverable without reading the pack source."
           >
             <ul className="divide-y divide-[var(--color-line)] border border-[var(--color-line)] bg-[var(--color-surface)]/60">
-              {(data?.functions ?? []).map((f) => (
+              {ontologyWindow(view?.functions ?? [], shown).rows.map((f) => (
                 <li key={f.id} className="px-3.5 py-2.5">
                   <p className="font-mono text-sm">{f.id}</p>
                   <p className="mt-0.5 text-sm text-[var(--color-ink-muted)]">{f.description}</p>
@@ -543,9 +625,11 @@ export function OntologyPage() {
                 </li>
               ))}
             </ul>
+            <WindowNote label={ontologyWindow(view?.functions ?? [], shown).label} onMore={showMore} />
           </Section>
         )}
-      </AsyncBoundary>
+      </>
+      )}
       </>
       )}
     </Page>
