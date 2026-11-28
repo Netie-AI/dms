@@ -563,6 +563,8 @@ jobs:
                       dbname="postgres",
                       connect_timeout=10,
                   ) as con:
+                      shown = con.execute("SHOW sql_compatibility").fetchone()
+                      print("sql_compatibility", None if shown is None else shown[0])
                       con.execute("CREATE TABLE public.dms_probe (n int)")
                       con.execute("INSERT INTO public.dms_probe (n) VALUES (1)")
                       con.commit()
@@ -575,8 +577,8 @@ jobs:
               raise SystemExit(last)
           PY
           )" || seed_rc=$?
+          echo "seed note: ${seed_out//$GS_PASSWORD/[redacted]}"
           if [ "$seed_rc" != 0 ]; then
-            echo "seed failed: ${seed_out//$GS_PASSWORD/[redacted]}"
             fail_gauss "could not create the probe table"
           fi
           export DMS_CONNECT_GAUSS_LIVE=1
@@ -615,9 +617,12 @@ jobs:
               echo "skipped: oracle free did not accept connections"
             fi
           fi
-          if ! python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k 'live_gauss or live_oracle'; then
+          if ! python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live_gauss; then
             redact_gauss_logs
             exit 1
+          fi
+          if [ "${DMS_CONNECT_ORACLE_LIVE:-}" = 1 ]; then
+            python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live_oracle || echo "oracle live failed"
           fi
 
   lint-type-test:

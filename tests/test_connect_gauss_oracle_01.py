@@ -590,6 +590,20 @@ def test_live_gauss_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     """Schema introspect plus one read. CI creates public.dms_probe first."""
     monkeypatch.setenv("DMS_CONNECT_GAUSS", "1")
     password = os.environ["CONNECT_GAUSS_PASSWORD"]
+    import psycopg
+
+    with psycopg.connect(
+        host=os.environ.get("CONNECT_GAUSS_HOST", "127.0.0.1"),
+        port=int(os.environ.get("CONNECT_GAUSS_PORT", "5432")),
+        user=os.environ.get("CONNECT_GAUSS_USER", "gaussdb"),
+        password=password,
+        dbname=os.environ.get("CONNECT_GAUSS_DB", "postgres"),
+        connect_timeout=10,
+    ) as raw:
+        shown = raw.execute("SHOW sql_compatibility").fetchone()
+    assert shown is not None
+    assert password not in str(shown[0])
+    print("sql_compatibility", shown[0])
     common = {
         "kind": "gauss",
         "host": os.environ.get("CONNECT_GAUSS_HOST", "127.0.0.1"),

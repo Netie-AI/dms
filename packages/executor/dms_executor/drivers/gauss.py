@@ -120,6 +120,15 @@ def lock_read_only(con: Any) -> None:
 
 
 def inspect(con: Any) -> dict[str, str]:
+    # The read-only transaction is already open. Roll it back so the
+    # setting read is not the statement that sees an aborted transaction.
+    # The session stays read-only for the next transaction.
+    rollback = getattr(con, "rollback", None)
+    if callable(rollback):
+        try:
+            rollback()
+        except Exception:
+            pass
     version = _scalar(con, "SELECT version()")
     if _product(version) == "":
         raise DriverError("product_not_gauss")
@@ -187,13 +196,25 @@ def _product(version: str) -> str:
 
 
 def _compat(con: Any) -> str:
-    try:
-        return _scalar(con, "SELECT current_setting('sql_compatibility')")
-    except Exception as exc:
-        sqlstate = getattr(exc, "sqlstate", None)
-        if sqlstate == "42704" or "undefined" in type(exc).__name__.lower():
-            return ""
-        raise DriverError("compat_mode_unknown") from None
+    last: BaseException | None = None
+    for sql in (
+        "SELECT current_setting('sql_compatibility')",
+        "SHOW sql_compatibility",
+    ):
+        try:
+            return _scalar(con, sql)
+        except Exception as exc:
+            last = exc
+            sqlstate = getattr(exc, "sqlstate", None)
+            if sqlstate == "42704" or "undefined" in type(exc).__name__.lower():
+                continue
+            continue
+    if last is None:
+        return ""
+    sqlstate = getattr(last, "sqlstate", None)
+    if sqlstate == "42704" or "undefined" in type(last).__name__.lower():
+        return ""
+    raise DriverError("compat_mode_unknown") from None
 
 
 def _auth_method_unsupported(exc: BaseException) -> bool:
