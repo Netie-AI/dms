@@ -22,6 +22,8 @@ ROUTE_MODEL = "model"
 # DMS_AI_ARBITER (default off) writes these. Flag off never does.
 ROUTE_AI = "ai"
 ROUTE_AI_EXAMPLE = "ai_with_example"
+# The model chose the cube plan. The compiler wrote the SQL. Counts as AI.
+ROUTE_AI_CUBE = "ai_cube_plan"
 ROUTE_CERTIFIED = "certified_metric"
 ROUTE_RULE = "rule"
 
@@ -33,6 +35,7 @@ ROUTES = (
     ROUTE_MODEL,
     ROUTE_AI,
     ROUTE_AI_EXAMPLE,
+    ROUTE_AI_CUBE,
     ROUTE_CERTIFIED,
     ROUTE_RULE,
 )
@@ -82,6 +85,7 @@ _PROFILES: dict[str, tuple[str, bool]] = {
     ROUTE_MODEL: ("generate_sql", True),
     ROUTE_AI: ("generate_sql", True),
     ROUTE_AI_EXAMPLE: ("generate_sql", True),
+    ROUTE_AI_CUBE: ("ai_cube_plan", False),
     ROUTE_CERTIFIED: ("l1", False),
     ROUTE_RULE: ("compile", False),
 }
@@ -94,6 +98,7 @@ _ROUTE_CLASS = {
     "model_sql": "ai",
     "ai": "ai",
     "ai_with_example": "ai",
+    "ai_cube_plan": "ai",
     "certified_metric": "l1",
     "rule": "compile",
     "ontology_compile": "compile",
@@ -199,7 +204,8 @@ def stamp_route(
     env["ladder_rung"] = rung
     # A rule path built these rows. "generated" would claim the model did.
     # AI stamps keep "generated": the model wrote the SQL.
-    if route not in {ROUTE_MODEL, ROUTE_AI, ROUTE_AI_EXAMPLE} and env.get("route") == "generated":
+    kept = {ROUTE_MODEL, ROUTE_AI, ROUTE_AI_EXAMPLE, ROUTE_AI_CUBE}
+    if route not in kept and env.get("route") == "generated":
         env["route"] = rung
     return env
 

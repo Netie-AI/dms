@@ -125,6 +125,7 @@ from dms_executor.ontology import (
     try_compile_multi_grain,
 )
 from dms_executor.route_stamp import (
+    ROUTE_AI_CUBE,
     ROUTE_COMPILE,
     ROUTE_LADDER,
     ROUTE_MODEL,
@@ -3068,6 +3069,12 @@ def _maybe_generative_ask_impl(
             insights_ctx["sql_vote_prompt"] = reading_prompt(q, reading=1)
             insights_ctx["sql_vote_kind"] = "direct"
         vote_budget = AskCallBudget()
+    # Flag off: this stays None and the prompt dict is not copied.
+    cube_pack: list[Any] | None = None
+    if os.environ.get("DMS_METRIC_CUBE", "0").strip() == "1":
+        from dms_executor.cube.offer import arm_metric_cubes
+
+        insights_ctx, cube_pack = arm_metric_cubes(insights_ctx, space_id=space_id)
     try:
         if held_preview is not None:
             payload = None
@@ -3194,6 +3201,49 @@ def _maybe_generative_ask_impl(
             if isinstance(served, dict) and served.get("abstained") is not True:
                 return _stamp(served)
         return _stamp(None)
+
+    if cube_pack is not None and isinstance(payload, dict):
+        from dms_executor.cube.offer import accept_metric_cube
+
+        def _serve_cube(sql: str) -> dict[str, Any]:
+            if submit is None or ledger_append is None:
+                return _abstain(
+                    q,
+                    "cube_serve_rejected",
+                    space_id=space_id,
+                    session_id=session_id,
+                    plan_source=PLAN_SOURCE_OTHER,
+                )
+            return _submit_validated(
+                sql,
+                question=q,
+                space_id=space_id,
+                session_id=session_id,
+                submit=submit,
+                ledger_append=ledger_append,
+                notes=("metric_cube",),
+                plan_source=PLAN_SOURCE_OTHER,
+                coverage=coverage_from_sql_path(sql=sql),
+                warehouse=lake,
+                plan_origin="",
+                served_route=ROUTE_AI_CUBE,
+                grantable=set(allowed),
+            )
+
+        decided = accept_metric_cube(
+            payload,
+            cubes=cube_pack,
+            serve_sql=_serve_cube,
+            asked=q,
+            space_id=space_id,
+            session_id=session_id,
+            dialect=dialect or "",
+            grantable=set(allowed),
+            warehouse=lake,
+        )
+        if decided is not None:
+            decided["plan_origin"] = "ai_cube_plan"
+            return _stamp(decided)
 
     if held_preview is not None:
         return _stamp(with_plan_origin(held_preview, PLAN_ORIGIN_ONTOLOGY_COMPILE))
