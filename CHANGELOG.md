@@ -13,6 +13,11 @@ Append-only. Never edited, only added to. Newest first.
 - **Destructive.** A typed non-SELECT statement, or a destructive verdict from role `reason`, refuses before compile. No keyword list. An unknown verdict is not a destructive abstain.
 - **Stub 52.** `grade52 --main` at `12326dd`, base `3752fb4`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed grade52 and pack H were not run. Not PASS.
 
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: rebase onto 05bc1e7
+
+- **Base.** Rebased onto `05bc1e7` (#610, #611). `STATUS.md` and `docs/subagents_findings/INDEX.md` keep both this row and the onto-space-scope row.
+- **Stub 52.** `grade52 --main` at `fa8849f`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
 ## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: join parse uses SERVING_DIALECT
 
 - **Dialect.** `reads_two_base_tables` parses with `dialect or SERVING_DIALECT`. No `duckdb` literal. The grant-dialect scan stays as it was.
