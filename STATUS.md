@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-27, SCALE-MISS-01
+**Last updated:** 2026-11-28, NL19-EXPLAIN-REPAIR
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_SCALE_MISS` default off (`363b1aa`, base `d4e414c`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, the same stub stays correct=43 wrong=0 reconfirm=5 ai=0 rule=43: the stub returns no SQL, so compile is not replaced. That stays above `DMS_RULES_OFF` 23/0/18. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_EXPLAIN_REPAIR_TRACE` default off (`2a9018a`, base `f5b9517`). Off and on, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. The stub returns no model SQL, so the repair does not run. Rule-served did not grow. Armed grade52, pack H, and the 18-id rerun are unmeasured. Not PASS.
 
 ## Direction
 
@@ -44,7 +44,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
-| SCALE-MISS-01: generate first, repair EXPLAIN, ask back. Flag off. | this branch |
+| NL19-EXPLAIN-REPAIR: binder trace, budget repair, ask-back. Flag off. | this branch |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |

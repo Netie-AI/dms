@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - NL19-EXPLAIN-REPAIR: binder trace and budget repair
+
+- **Flag.** `DMS_EXPLAIN_REPAIR_TRACE` defaults off. Only the digit 1 turns it on. Off, prompt bytes, the envelope, and the served route stay as they were.
+- **Trace.** On, an EXPLAIN failure stores the failing SQL hash, the DuckDB class, the scrubbed message, and the repair count on the envelope debug field and the audit receipt. SQL text is not on that viewer surface. A non-viewer audit row keeps the SQL only when the statement is granted.
+- **Repair.** The repair turn carries the binder error, the granted table.column types, low-cardinality enum values, and the ask-ladder rung. Repairs stop when the insights call budget is spent or the SQL repeats. A repeat asks back with a suggested question. Ungranted and destructive SQL still abstain.
+- **Stub 52.** `grade52 --main` at `2a9018a`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52, pack H, and the 18-id rerun were not run. Not PASS.
+
 ## 2026-11-27 - SCALE-MISS-01: rename the SQL check, use the serving dialect
 
 - **Boundary.** The nested helper is `_sql_checks`. The names gate, policy, authorize, and check_compliance stay reserved for cortex_client. The invariant file is unchanged.
