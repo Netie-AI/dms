@@ -558,7 +558,7 @@ jobs:
                   with psycopg.connect(
                       host="127.0.0.1",
                       port=15432,
-                      user="opengauss",
+                      user="gaussdb",
                       password=password,
                       dbname="postgres",
                       connect_timeout=10,
@@ -582,7 +582,9 @@ jobs:
           export DMS_CONNECT_GAUSS_LIVE=1
           export CONNECT_GAUSS_HOST=127.0.0.1
           export CONNECT_GAUSS_PORT=15432
-          export CONNECT_GAUSS_USER=opengauss
+          # Remote login as the initial user is refused:
+          # "Forbid remote connection with initial user".
+          export CONNECT_GAUSS_USER=gaussdb
           export CONNECT_GAUSS_DB=postgres
           export CONNECT_GAUSS_PASSWORD="$GS_PASSWORD"
           oracle=0
