@@ -32,6 +32,7 @@ import httpx
 from dms_core.pii import NAME_MASK_KEY, fail_closed_mask_payload
 
 from cortex_client.ask_clock import (
+    deadline_adaptive_enabled,
     deadline_already_passed,
     generate_budget_left_s,
     give_up,
@@ -39,6 +40,7 @@ from cortex_client.ask_clock import (
     model_slot,
     note_generate_leg,
     note_prompt_body,
+    note_rate_limit_retry,
     register_inflight,
     unregister_inflight,
 )
@@ -931,6 +933,33 @@ def _insights_ontology_get(
     return _insights_envelope(res)
 
 
+#: Extra posts after HTTP 429 when ``DMS_DEADLINE_ADAPTIVE`` is on.
+#: Two failures then a success fit under this cap. Not a clock.
+RATE_LIMIT_RETRIES = 4
+
+
+def rate_limit_delay_s(attempt: int) -> float:
+    """Seconds after a 429. ``attempt`` is 1-based.
+
+    Doubles from 0.2s and stops at 2s, then adds jitter in ``[0, 0.05)``.
+    The transport body is not an input.
+    """
+    import random
+
+    base = min(2.0, 0.2 * (2 ** max(0, attempt - 1)))
+    return base + random.uniform(0.0, 0.05)
+
+
+def _stamp_rate_limits(
+    payload: dict[str, Any] | None, retries: int
+) -> dict[str, Any] | None:
+    """Record how many 429s were backed off. Never copies a response body."""
+    if not retries or not deadline_adaptive_enabled() or not isinstance(payload, dict):
+        return payload
+    payload["rate_limit_retries"] = retries
+    return payload
+
+
 def _insights_generate_post(
     http: httpx.Client,
     root: str,
@@ -939,8 +968,10 @@ def _insights_generate_post(
 ) -> dict[str, Any] | None:
     """POST /v1/insights generate. None on transport miss.
 
-    One post. A caller-error pin does not go out. A 503 ``pin_unavailable``
-    returns a named abstain and does not retry.
+    One post when ``DMS_DEADLINE_ADAPTIVE`` is off. A caller-error pin does
+    not go out. A 503 ``pin_unavailable`` returns a named abstain and does
+    not retry. On, HTTP 429 backs off and posts again. The response text
+    is not stored.
     """
     from cortex_client.strict_pin import (
         abstain_payload,
@@ -959,13 +990,28 @@ def _insights_generate_post(
     note_model_call()
     note_prompt_body("insights_generate", body)
     started = time.perf_counter()
+    retries = 0
+    res: httpx.Response | None = None
     try:
         with model_slot(voting=cloop_b_enabled()):
-            post_kwargs: dict[str, Any] = {"json": body, "headers": hdr}
-            left = generate_budget_left_s()
-            if left is not None:
-                post_kwargs["timeout"] = left
-            res = http.post(f"{root}{INSIGHTS_PATH}", **post_kwargs)
+            while True:
+                post_kwargs: dict[str, Any] = {"json": body, "headers": hdr}
+                left = generate_budget_left_s()
+                if left is not None:
+                    post_kwargs["timeout"] = left
+                res = http.post(f"{root}{INSIGHTS_PATH}", **post_kwargs)
+                status_now = int(getattr(res, "status_code", 0) or 0)
+                if (
+                    status_now == 429
+                    and deadline_adaptive_enabled()
+                    and retries < RATE_LIMIT_RETRIES
+                ):
+                    # Do not read the body. A 429 is not a deadline miss.
+                    retries += 1
+                    note_rate_limit_retry()
+                    time.sleep(rate_limit_delay_s(retries))
+                    continue
+                break
     except httpx.HTTPError as exc:
         if isinstance(exc, httpx.TimeoutException):
             give_up("timeout")
@@ -973,6 +1019,8 @@ def _insights_generate_post(
         return None
     finally:
         note_generate_leg((time.perf_counter() - started) * 1000.0)
+    if res is None:
+        return None
     try:
         payload = res.json()
     except ValueError:
@@ -984,15 +1032,15 @@ def _insights_generate_post(
         getattr(res, "headers", None),
     )
     if shot.kind == "unavailable":
-        return abstain_payload(shot)
+        return _stamp_rate_limits(abstain_payload(shot), retries)
     # 401/403 stay the named unauthorized envelope. Other 4xx/5xx, including
     # a validation 422, are an AI-call error. A quiet miss is what the
     # ontology GET used to compile.
     if status in {401, 403}:
-        return _insights_envelope(res)
+        return _stamp_rate_limits(_insights_envelope(res), retries)
     if status >= 400:
-        return ai_call_error_payload(status)
-    return _insights_envelope(res)
+        return _stamp_rate_limits(ai_call_error_payload(status), retries)
+    return _stamp_rate_limits(_insights_envelope(res), retries)
 
 
 def insights_fail_reason(payload: dict[str, Any] | None) -> str | None:

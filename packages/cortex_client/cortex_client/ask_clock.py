@@ -115,6 +115,8 @@ class AskClock:
         self.abandoned: list[dict[str, str]] = []
         self.prompts: list[dict[str, Any]] = []
         self.skipped: list[str] = []
+        self.progress: list[str] = []
+        self.rate_limit_retries = 0
         self.inflight: list[_Inflight] = []
         self._lock = threading.Lock()
         self._model_inflight = 0
@@ -203,8 +205,11 @@ def note_deadline(deadline: float) -> None:
 
 
 def deadline_already_passed() -> bool:
-    """True only when the cancel cut is on and this ask is past its deadline."""
-    if not ask_lean_cancel():
+    """True only when the cancel cut is on and this ask is past its deadline.
+
+    ``DMS_DEADLINE_ADAPTIVE`` does not treat the clock as a stop.
+    """
+    if deadline_adaptive_enabled() or not ask_lean_cancel():
         return False
     clock = _clock.get()
     if clock is None or clock.deadline is None:
@@ -213,8 +218,11 @@ def deadline_already_passed() -> bool:
 
 
 def http_timeout(timeout: float) -> float:
-    """HTTP timeout. The cancel cut caps it at the time left on the ask."""
-    if not ask_lean_cancel():
+    """HTTP timeout. The cancel cut caps it at the time left on the ask.
+
+    ``DMS_DEADLINE_ADAPTIVE`` leaves the caller timeout alone.
+    """
+    if deadline_adaptive_enabled() or not ask_lean_cancel():
         return timeout
     clock = _clock.get()
     if clock is None or clock.deadline is None:
@@ -236,14 +244,26 @@ def deadline_askback_enabled() -> bool:
     return os.environ.get(ASKBACK_ENV, "0").strip() == "1"
 
 
+# BIRD-SERVING-DEADLINE-01. Off unless the digit 1. On, a fixed reserve does
+# not end the ask. The client cancels. A progressing ladder keeps going.
+ADAPTIVE_ENV = "DMS_DEADLINE_ADAPTIVE"
+_PROGRESS_KINDS = frozenset({"sql", "gate"})
+
+
+def deadline_adaptive_enabled() -> bool:
+    """True only when ``DMS_DEADLINE_ADAPTIVE`` is the digit 1. Unset is off."""
+    return os.environ.get(ADAPTIVE_ENV, "0").strip() == "1"
+
+
 def generate_budget_left_s() -> float | None:
     """Seconds left for a generate or retry leg, or None when the flag is off.
 
     None means the caller keeps today's timeout. Zero means do not start a
     leg: the remaining time is the ask-back reserve. A lake query does not
     read this. It still interrupts at the full deadline minus the deliver margin.
+    ``DMS_DEADLINE_ADAPTIVE`` also returns None: that flag does not keep a reserve.
     """
-    if not deadline_askback_enabled():
+    if deadline_adaptive_enabled() or not deadline_askback_enabled():
         return None
     clock = _clock.get()
     if clock is None or clock.deadline is None:
@@ -255,8 +275,9 @@ def askback_window_open() -> bool:
     """True when the flag is on and only the reserved ask-back time remains.
 
     Past the full deadline this is false: the named deadline abstain stands.
+    ``DMS_DEADLINE_ADAPTIVE`` does not open this window.
     """
-    if not deadline_askback_enabled():
+    if deadline_adaptive_enabled() or not deadline_askback_enabled():
         return False
     clock = _clock.get()
     if clock is None or clock.deadline is None:
@@ -304,6 +325,10 @@ def attach_timings(env: dict[str, Any] | None) -> dict[str, Any] | None:
         _published = snap
     if ask_timings_enabled() and isinstance(env, dict):
         env["timings"] = snap
+    if deadline_adaptive_enabled() and isinstance(env, dict):
+        env["stage_ms"] = _stage_ms(snap)
+        if clock.rate_limit_retries:
+            env["rate_limit_retries"] = clock.rate_limit_retries
     return env
 
 
@@ -333,6 +358,52 @@ def note_skipped(stage: str) -> None:
     clock = _clock.get()
     if clock is not None:
         clock.note_skipped(stage)
+
+
+def note_progress(kind: str) -> None:
+    """A ladder step produced a SQL candidate (``sql``) or a gate result (``gate``).
+
+    Flag off returns before any stream call, so prompt bytes stay put.
+    """
+    if not deadline_adaptive_enabled() or kind not in _PROGRESS_KINDS:
+        return
+    clock = _clock.get()
+    if clock is not None:
+        clock.progress.append(kind)
+    from dms_core.ask_stream import note_stage
+
+    note_stage("generate" if kind == "sql" else "validate", "done")
+
+
+def note_rate_limit_retry() -> None:
+    """One HTTP 429 was backed off. The transport body is not stored."""
+    if not deadline_adaptive_enabled():
+        return
+    clock = _clock.get()
+    if clock is not None:
+        clock.rate_limit_retries += 1
+
+
+def _stage_ms(snap: Mapping[str, Any]) -> dict[str, float]:
+    """Per-stage milliseconds from a clock snapshot. ``total`` is the ask."""
+    spans = snap.get("spans_ms")
+    if not isinstance(spans, Mapping):
+        return {"total": 0.0}
+    out: dict[str, float] = {}
+    for name, ms in spans.items():
+        if name == "total":
+            continue
+        try:
+            value = float(ms)
+        except (TypeError, ValueError):
+            continue
+        out[str(name)] = round(max(0.0, value), 3)
+    try:
+        total = float(spans.get("total", 0.0))
+    except (TypeError, ValueError):
+        total = 0.0
+    out["total"] = round(max(0.0, total), 3)
+    return out
 
 
 def note_generate_leg(ms: float) -> None:
