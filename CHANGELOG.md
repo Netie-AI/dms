@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - NL19-NO-SQL-GENERATE: one more generate, then an ask-back
+
+- **Flag.** `DMS_GENERATE_RETRY_ASKBACK` defaults off. Only the digit 1 turns it on. Off, the generate prompt, the envelope, and the served route stay as they are.
+- **Retry.** On, a generate that returns no SQL runs once more. The prompt carries the refusal reason and every granted table's physical column names and enum values. SQL from that call is checked and served. Ungranted, PII, and destructive SQL do not retry.
+- **Ask-back.** A second empty generate asks back with a non-empty suggestion. That card replaces a bare certify refusal. It does not replace a compile that already served, or an ungranted refusal.
+- **Audit.** The envelope records `generate_audit` with legs, rung, and the refusal class. The question, the SQL, and row values stay out of that log.
+- **Not a word rule.** No phrase list. The suggestion comes from an ontology measure name or a granted table name.
+- **Stub 52.** `grade52 --main` at `8c7a493`, base `f5b9517`. Flag off: correct=43 wrong=0 reconfirm=5 refusal_ok=4 ai=0 rule=43 L1=23 compile=20. Flag on: correct=43 wrong=0 reconfirm=7 refusal_ok=2 ai=0 rule=43 L1=23 compile=20. Rule-served does not grow. The 36-id rerun, p50, and armed grade52 were not run. Not PASS.
+
 ## 2026-11-27 - SCALE-MISS-01: rename the SQL check, use the serving dialect
 
 - **Boundary.** The nested helper is `_sql_checks`. The names gate, policy, authorize, and check_compliance stay reserved for cortex_client. The invariant file is unchanged.
