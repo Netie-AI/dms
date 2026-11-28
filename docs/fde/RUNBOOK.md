@@ -61,6 +61,8 @@ Done when the receipt has 0 truncated tables and 0 skipped tables, and the untyp
    - Objects come from tables and keys. Links come from declared FKs. Each link starts `unverified` and is measured against the landed rows; only verified links are used to join.
    - Check that the link count matches what the DBA says they declared. If it is zero on PostgreSQL with a read-only login, you are hitting the INFORMATION_SCHEMA blind spot that #545 fixes.
 2. AI-assisted compile (flag `DMS_AO_COMPILE`, needs an OpenVault-issued key for DMS): `POST /v1/ontology/data/compile?space_id=...`, then `GET /v1/ontology/data/diff`. This proposes grains, measures and descriptions. See the PII note in the security section before turning it on.
+   - FDE setting: `DMS_AO_RESPONSE_FORMAT=1`. That sends a JSON schema on the ontology role. The product default stays off. Do not flip it in a tenant sheet unless you meant to. Record it with the other flags.
+   - `DMS_AO_COMPILE_RESILIENT=1` (default off) keeps one bad table call from failing the POST. The route returns 200 with `status` `partial` or `refused` and a `gaps` list, or a typed 4xx/503. It compiles only that Space's granted tables. `DMS_AO_COMPILE_DEADLINE_S` is the caller budget in seconds. Unset means no fixed client timeout. A timeout is `ao_ov_timeout`.
 
 ## 3. Steward review (day 1, afternoon, with the customer)
 
@@ -84,6 +86,8 @@ The levers, in the order to try them. Measure after each one (step 5); keep a ch
 4. **Flags**: turn on only what you measured helps. Record the exact flag set in the tenant sheet:
    - `DMS_AI_FIRST`
    - `DMS_GRAIN_AI`
+   - `DMS_AO_RESPONSE_FORMAT` (FDE compile: send a JSON schema)
+   - `DMS_AO_COMPILE_RESILIENT`
    - `DMS_ONTO_FROM_DATA`
    - `DMS_DEF_VALIDATE`
    - `DMS_VQ_RAG`
