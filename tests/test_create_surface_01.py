@@ -257,6 +257,12 @@ def test_request_has_no_model_or_provider(
     assert stub.bodies
     assert set(stub.bodies[0]) == {"role", "messages", "schema"}
     assert stub.bodies[0]["role"] == "create_plan"
+    payload = json.loads(stub.bodies[0]["messages"][1]["content"])
+    overview = payload["overview"][0]
+    assert overview["name"] == "orders"
+    assert len(overview["sample"]) <= 20
+    assert overview["stats"]
+    assert "rows" not in payload
     assert "model" not in stub.bodies[0]
     assert "provider" not in stub.bodies[0]
     assert "strict" not in stub.bodies[0]
@@ -624,6 +630,7 @@ def test_css_keeps_the_breathing_light() -> None:
     ui = Path("apps/ui/src/components/studio/CreateSurface.tsx").read_text(encoding="utf-8")
     assert "create-spend" in ui
     assert "create-estimate" in ui
+    assert "create-warn" in ui
     ask = Path("packages/executor/dms_executor/generative_ask.py").read_text(encoding="utf-8")
     assert "DMS_CREATE" not in ask
 
@@ -642,11 +649,7 @@ def _drive(session_id: str) -> dict[str, Any]:
     return last
 
 
-def test_budget_hit_stops_with_the_partial(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    _env(monkeypatch, tmp_path, "1")
-    monkeypatch.setenv("DMS_CREATE_MAX_STEPS", "2")
+def _two_piece_card(**extra: Any) -> dict[str, Any]:
     card = {
         **PLAN_CARD,
         "outline": [
@@ -654,7 +657,12 @@ def test_budget_hit_stops_with_the_partial(
             {"id": "two", "title": "Two"},
         ],
     }
-    stub = _patch_transport(monkeypatch, [card, APP, APP])
+    card.update(extra)
+    return card
+
+
+def _open_app(monkeypatch: pytest.MonkeyPatch, script: list[Any]) -> tuple[_Stub, dict[str, Any]]:
+    stub = _patch_transport(monkeypatch, script)
     opened = start_session(
         space_id=SPACE,
         kind="app",
@@ -663,95 +671,112 @@ def test_budget_hit_stops_with_the_partial(
         api_key=OV_KEY,
         actor="api_admin",
     )
-    stopped = _drive(opened["session_id"])
-    assert stopped["stopped"] == "budget_steps"
-    assert "step limit" in stopped["message"]
-    assert stopped["shown"] is True
+    return stub, _drive(opened["session_id"])
+
+
+def test_full_build_ignores_the_old_caps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _env(monkeypatch, tmp_path, "1")
+    monkeypatch.setenv("DMS_CREATE_MAX_TOKENS", "1")
+    monkeypatch.setenv("DMS_CREATE_BUDGETS", json.dumps({"tenant-a": {"max_steps": 1}}))
+    card = _two_piece_card()
+    stub, built = _open_app(monkeypatch, [card, APP, APP])
+    assert built["stopped"] is None
+    assert built["message"] is None
+    assert len(built["outline"]) == 2
+    assert len(built["artifact"]["widgets"]) == 2
+    assert stub.script == []
+    assert len(stub.bodies) == 3
+
+
+def test_runaway_guard_stops_with_a_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _env(monkeypatch, tmp_path, "1")
+    monkeypatch.setenv("DMS_CREATE_MAX_STEPS", "2")
+    card = _two_piece_card()
+    stub, stopped = _open_app(monkeypatch, [card, APP, APP])
+    assert stopped["stopped"] == "runaway_steps"
+    assert "runaway" in stopped["message"]
+    assert len(stopped["outline"]) == 2
     assert len(stopped["artifact"]["widgets"]) == 1
     assert len(stub.bodies) == 2
     assert stub.script
-    assert stopped["log"]["stopped"] == "budget_steps"
 
-    monkeypatch.setenv("DMS_CREATE_MAX_STEPS", "8")
-    monkeypatch.setenv("DMS_CREATE_MAX_TOKENS", "30")
-    stub = _patch_transport(
-        monkeypatch,
-        [_usage(card, 10, 0.01), _usage(APP, 40, 0.01), _usage(APP, 4, 0.01)],
-    )
-    opened = start_session(
-        space_id=SPACE,
-        kind="app",
-        goal="See order trend",
-        audience="Founder",
-        api_key=OV_KEY,
-        actor="api_admin",
-    )
-    capped = _drive(opened["session_id"])
-    assert capped["stopped"] == "budget_tokens"
-    assert "token limit" in capped["message"]
-    assert len(capped["artifact"]["widgets"]) == 1
-    assert len(stub.bodies) == 2
-
-    monkeypatch.delenv("DMS_CREATE_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("DMS_CREATE_MAX_STEPS", "60")
     monkeypatch.setenv("DMS_CREATE_MAX_USD", "0.03")
-    stub = _patch_transport(
+    stub, priced = _open_app(
         monkeypatch,
         [_usage(card, 4, 0.02), _usage(APP, 4, 0.02), _usage(APP, 4, 0.01)],
     )
-    opened = start_session(
-        space_id=SPACE,
-        kind="app",
-        goal="See order trend",
-        audience="Founder",
-        api_key=OV_KEY,
-        actor="api_admin",
-    )
-    priced = _drive(opened["session_id"])
-    assert priced["stopped"] == "budget_usd"
-    assert "cost limit" in priced["message"]
+    assert priced["stopped"] == "runaway_usd"
+    assert "runaway" in priced["message"]
+    assert len(priced["outline"]) == 2
     assert len(priced["artifact"]["widgets"]) == 1
     assert len(stub.bodies) == 2
 
     monkeypatch.delenv("DMS_CREATE_MAX_USD", raising=False)
     from dms_executor.create_surface import CreateCallError
 
-    stub = _patch_transport(
+    stub, blocked = _open_app(
         monkeypatch,
         [card, APP, CreateCallError("budget_exceeded"), APP],
     )
-    opened = start_session(
-        space_id=SPACE,
-        kind="app",
-        goal="See order trend",
-        audience="Founder",
-        api_key=OV_KEY,
-        actor="api_admin",
-    )
-    blocked = _drive(opened["session_id"])
     assert blocked["stopped"] == "budget_exceeded"
     assert "402" in blocked["message"]
     assert len(blocked["artifact"]["widgets"]) == 1
     assert len(stub.bodies) == 3
     assert stub.script
 
-    monkeypatch.setenv(
-        "DMS_CREATE_BUDGETS",
-        json.dumps({"tenant-a": {"max_steps": 1}}),
+
+def test_twice_the_estimate_warns_and_continues(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _env(monkeypatch, tmp_path, "1")
+    card = _two_piece_card(estimated_cost=0.01)
+    stub, built = _open_app(
+        monkeypatch,
+        [_usage(card, 4, 0.02), _usage(APP, 4, 0.02), _usage(APP, 4, 0.01)],
     )
-    stub = _patch_transport(monkeypatch, [card, APP])
-    opened = start_session(
+    assert built["stopped"] is None
+    assert "twice the estimate" in built["warning"]
+    assert len(built["artifact"]["widgets"]) == 2
+    assert stub.script == []
+
+
+def test_overview_is_aggregates_and_a_sample(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    lake = _env(monkeypatch, tmp_path, "1")
+    con = duckdb.connect(str(lake))
+    con.execute(
+        "INSERT INTO orders VALUES "
+        + ", ".join(f"('m{i:02d}', 1)" for i in range(40))
+    )
+    counted = con.execute("SELECT count(*), sum(amount) FROM orders").fetchone()
+    con.close()
+    assert counted is not None
+    stub = _patch_transport(monkeypatch, [PLAN_CARD])
+    start_session(
         space_id=SPACE,
         kind="app",
         goal="See order trend",
         audience="Founder",
         api_key=OV_KEY,
         actor="api_admin",
-        tenant_id="tenant-a",
     )
-    tenant = _drive(opened["session_id"])
-    assert tenant["stopped"] == "budget_steps"
-    assert tenant["artifact"] is None
-    assert all(body["role"] != "create_generate" for body in stub.bodies)
+    payload = json.loads(stub.bodies[0]["messages"][1]["content"])
+    overview = payload["overview"][0]
+    amount = next(row for row in overview["stats"] if row["column"] == "amount")
+    month = next(row for row in overview["groups"] if row["column"] == "month")
+    assert overview["row_count"] == counted[0]
+    assert amount["n"] == counted[0]
+    assert amount["sum_v"] == counted[1]
+    assert len(overview["sample"]) <= 20
+    assert len(overview["sample"]) < overview["row_count"]
+    assert len(month["values"]) <= 8
+    assert "rows" not in payload
 
 
 def test_piece_retry_stops_at_one(

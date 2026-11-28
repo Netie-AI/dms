@@ -8,11 +8,11 @@ PREFLIGHT: PARTIAL. ADJUST-SQL-VQ-01 already stores steward SQL that lookup does
 
 `DMS_CREATE` defaults off. On, Studio can create an app for a Space. The caller sends a DMS API key and an OpenVault key. DMS sends `create_plan`, then `create_generate` for one component at a time. It does not send a model, a provider, or `strict`.
 
-One cheap plan returns intent, an outline, and an estimate. The build waits for confirm. A failed component is retried once and is not rebuilt as a whole app. The run stops when steps, tokens, or USD hit the tenant budget, or when OpenVault returns 402. The pieces already checked stay. Doc and slides raise `kind_required`.
+One cheap plan returns intent, an outline, and an estimate. The user confirms once, then every component is built. A failed component is retried once. OpenVault 402 stops the run. The runaway guard is 60 steps or `DMS_CREATE_MAX_USD` (default 10) and it says why. Twice the estimate warns and the build continues. The model gets the schema, SQL aggregates, and a sample of at most 20 rows. Doc and slides raise `kind_required`.
 
 ## Review
 
-A missing usage field is null, not 0. The plan estimate is stored beside the log and is not written as measured cost. Stub orders lake: seconds=0.299799, tokens=null, cost=null. Defaults are 8 steps, 8000 tokens, and 1 USD. `DMS_CREATE_BUDGETS` overrides one tenant.
+A missing usage field is null, not 0. The plan estimate is stored beside the log and is not written as measured cost. Stub orders lake: seconds=0.353159, tokens=null, cost=null. No live OpenVault key. The old 8-step, 8000-token, and $1 stops are not applied.
 
 ## Not a word rule
 

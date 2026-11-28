@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: finish the app after one confirm
+
+- **Build.** One cheap plan shows the estimate. The user confirms once. Every component is then built. A failed component is still retried once.
+- **Stop.** The 8-step, 8000-token, and $1 caps are gone. OpenVault 402 stops the run. A runaway guard stops at 60 steps or `DMS_CREATE_MAX_USD` (default 10) and says so. Twice the estimate warns and the build continues. The outline is not shortened in silence.
+- **Context.** The model gets the schema, SQL aggregates, and a sample of at most 20 rows. It does not get the raw table.
+- **Measured.** Stub orders lake, no usage in the response: seconds=0.353159, tokens=null, cost=null. No live OpenVault key. Not a live bill. Not PASS.
+
 ## 2026-11-28 - DMS-CREATE-01: Create app behind a default-off flag
 
 - **Flag.** `DMS_CREATE` defaults off. Only the digit 1 turns it on. Off, the status body is `{"enabled": false}` and the action routes are not mounted.

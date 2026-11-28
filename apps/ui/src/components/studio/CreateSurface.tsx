@@ -55,6 +55,7 @@ type Session = {
   estimate?: { tokens?: number | null; cost?: number | null };
   spend?: Spend;
   message?: string | null;
+  warning?: string | null;
   outline?: { id: string; title: string }[];
 };
 
@@ -64,6 +65,7 @@ type LiveEvent = {
   status: string;
   session?: Session;
   spend?: Spend;
+  warning?: string;
 };
 
 function meter(spend?: Spend): string {
@@ -248,6 +250,11 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
               <span className="create-spend" data-testid="create-spend">
                 {meter(row.spend)}
               </span>
+              {row.warning ? (
+                <span className="create-spend" data-testid="create-warn">
+                  {row.warning}
+                </span>
+              ) : null}
             </li>
           ))}
         </ol>
@@ -332,6 +339,11 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
           {(session.outline ?? []).map((piece) => (
             <p key={piece.id}>{piece.title}</p>
           ))}
+          {session.warning ? (
+            <p className="create-note" data-testid="create-warn">
+              {session.warning}
+            </p>
+          ) : null}
           {session.message ? (
             <p className="create-note" data-testid="create-budget">
               {session.message}

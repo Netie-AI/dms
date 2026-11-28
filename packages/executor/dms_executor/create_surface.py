@@ -3,10 +3,13 @@
 ``DMS_CREATE`` is on only when it is the digit 1. Off, every entry raises
 ``CreateDisabled`` before a model call, a read, or a write.
 
-On, the harness builds a live app: one cheap plan, then one component at a
-time, then the user confirms the file. Doc and slides are not this module.
-OpenVault sees a role string and the
-caller key. DMS does not name a model or a provider. Figures come from
+On, the harness builds a live app: one cheap plan, the user confirms once,
+then every component is built. Doc and slides are not this module.
+OpenVault 402 is the budget. A runaway guard is 60 steps or
+``DMS_CREATE_MAX_USD`` (default 10). Twice the estimate warns and continues.
+The model sees the schema, SQL aggregates, and a short sample.
+OpenVault sees a role string and the caller key. DMS does not name a model
+or a provider. Figures come from
 executed SQL or from ``forecast_series``, and each one keeps its SQL and
 source row. A claim that is not in those figures is not shown. One log row
 per run records the model, tokens, and cost only when the response included
@@ -108,24 +111,24 @@ _GENERATE_SYSTEM = (
     "seasonal_naive also has period. "
     "One insight per slide. Keep every title and insight inside one slide."
 )
-_STOP_CODES = frozenset(
-    {"budget_steps", "budget_tokens", "budget_usd", "budget_exceeded"}
-)
+_STOP_CODES = frozenset({"runaway_steps", "runaway_usd", "budget_exceeded"})
+_RUNAWAY_STEPS = 60
+_SAMPLE_CAP = 20
 _BUDGET_TEXT = {
-    "budget_steps": (
-        "Stopped. This run reached its step limit. The pieces already checked are kept."
+    "runaway_steps": (
+        "Stopped. This run hit the runaway step guard. "
+        "The pieces already checked are kept."
     ),
-    "budget_tokens": (
-        "Stopped. This run reached its token limit. The pieces already checked are kept."
-    ),
-    "budget_usd": (
-        "Stopped. This run reached its cost limit. The pieces already checked are kept."
+    "runaway_usd": (
+        "Stopped. This run hit the runaway cost ceiling. "
+        "The pieces already checked are kept."
     ),
     "budget_exceeded": (
         "Stopped. OpenVault returned 402 budget_exceeded. "
         "The pieces already checked are kept."
     ),
 }
+_WARN_ESTIMATE = "Spend is past twice the estimate. The build continues."
 _LIMITS = {
     "title": 60,
     "insight": 140,
@@ -296,6 +299,7 @@ def start_session(
         "outline": [],
         "stopped": None,
         "message": None,
+        "warning": None,
         "trace": [],
         "intent": None,
         "plan": None,
@@ -1404,6 +1408,7 @@ def _context(session: dict[str, Any]) -> dict[str, Any]:
             }
             for row in catalog
         ],
+        "overview": [_table_overview(row) for row in catalog],
         "ontology": ontology,
         "examples": examples,
         "skills": skills,
@@ -1436,6 +1441,67 @@ def _catalog(session: dict[str, Any]) -> list[dict[str, Any]]:
             count = _as_int(counted[0].get("n"))
         out.append({"name": name, "columns": cols, "row_count": count})
     return out
+
+
+def _table_overview(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Schema plus SQL aggregates and a short sample. Not the raw table."""
+    from dms_executor.sql_loop import run_readonly
+
+    name = str(row.get("name") or "")
+    warehouse = _warehouse()
+    table = _q(name)
+    stats: list[dict[str, Any]] = []
+    groups: list[dict[str, Any]] = []
+    for col in row.get("columns") or []:
+        if not isinstance(col, Mapping):
+            continue
+        col_name = col.get("name")
+        typ = col.get("type")
+        if not isinstance(col_name, str) or not _IDENT.fullmatch(col_name):
+            continue
+        quoted = _q(col_name)
+        if isinstance(typ, str) and _numeric_type(typ):
+            found, err = run_readonly(
+                f"SELECT count({quoted}) AS n, min({quoted}) AS min_v, "
+                f"max({quoted}) AS max_v, sum({quoted}) AS sum_v FROM {table}",
+                warehouse,
+            )
+            if err or not found:
+                continue
+            stats.append({"column": col_name, **_json_row(found[0])})
+            continue
+        found, err = run_readonly(
+            f"SELECT {quoted} AS value, count(*) AS n FROM {table} "
+            "GROUP BY 1 ORDER BY n DESC LIMIT 8",
+            warehouse,
+        )
+        if err or not found:
+            continue
+        groups.append(
+            {"column": col_name, "values": [_json_row(item) for item in found[:8]]}
+        )
+    sample_rows, err = run_readonly(
+        f"SELECT * FROM {table} LIMIT {_SAMPLE_CAP}",
+        warehouse,
+    )
+    sample: list[dict[str, Any]] = []
+    if not err and sample_rows:
+        sample = [_json_row(item) for item in sample_rows[:_SAMPLE_CAP]]
+    return {
+        "name": name,
+        "row_count": row.get("row_count"),
+        "stats": stats,
+        "groups": groups,
+        "sample": sample,
+        "sample_limit": _SAMPLE_CAP,
+    }
+
+
+def _numeric_type(typ: str) -> bool:
+    text = typ.upper()
+    if any(token in text for token in ("CHAR", "TEXT", "DATE", "TIME", "BOOL", "BLOB")):
+        return False
+    return any(token in text for token in ("INT", "DECIMAL", "NUMERIC", "DOUBLE", "FLOAT", "REAL"))
 
 
 def _examples(session: dict[str, Any]) -> list[dict[str, str]]:
@@ -1525,7 +1591,7 @@ def _cheap_plan(
         session["outline"] = []
         _trace(session, "plan", "abstain")
         return
-    outline = _fit_outline(session, _outline_from(raw))
+    outline = _outline_from(raw)
     plan["outline"] = outline
     session["plan"] = plan
     session["outline"] = outline
@@ -1561,11 +1627,6 @@ def _outline_from(raw: Mapping[str, Any]) -> list[dict[str, str]]:
     return found
 
 
-def _fit_outline(session: dict[str, Any], outline: list[dict[str, str]]) -> list[dict[str, str]]:
-    del session
-    return outline[: int(_LIMITS["slides"])]
-
-
 def _optional_num(value: Any) -> int | float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         return None
@@ -1573,29 +1634,12 @@ def _optional_num(value: Any) -> int | float | None:
 
 
 def _budget(tenant_id: str) -> dict[str, int | float]:
-    budget: dict[str, int | float] = {
-        "max_tokens": int(_env_num("DMS_CREATE_MAX_TOKENS", 8000, True)),
-        "max_usd": float(_env_num("DMS_CREATE_MAX_USD", 1.0, False)),
-        "max_steps": int(_env_num("DMS_CREATE_MAX_STEPS", 8, True)),
+    """Runaway ceiling only. OpenVault 402 is the real budget."""
+    del tenant_id
+    return {
+        "max_usd": float(_env_num("DMS_CREATE_MAX_USD", 10.0, False)),
+        "max_steps": int(_env_num("DMS_CREATE_MAX_STEPS", _RUNAWAY_STEPS, True)),
     }
-    raw = os.environ.get("DMS_CREATE_BUDGETS", "").strip()
-    if not raw or not tenant_id:
-        return budget
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return budget
-    if not isinstance(parsed, dict):
-        return budget
-    row = parsed.get(tenant_id)
-    if not isinstance(row, dict):
-        return budget
-    for key, whole in (("max_tokens", True), ("max_usd", False), ("max_steps", True)):
-        value = row.get(key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-            continue
-        budget[key] = int(value) if whole else float(value)
-    return budget
 
 
 def _env_num(name: str, default: int | float, whole: bool) -> int | float:
@@ -1614,17 +1658,24 @@ def _env_num(name: str, default: int | float, whole: bool) -> int | float:
 def _budget_block(session: dict[str, Any]) -> str | None:
     budget = session.get("budget") or _budget(str(session.get("tenant_id") or ""))
     if int(session.get("steps_used") or 0) >= int(budget["max_steps"]):
-        return "budget_steps"
-    calls = [row for row in (session.get("usage_calls") or []) if isinstance(row, dict)]
-    tokens = _total_usage(calls, "total_tokens")
-    if isinstance(tokens, (int, float)) and not isinstance(tokens, bool):
-        if tokens >= float(budget["max_tokens"]):
-            return "budget_tokens"
-    cost = _total_usage(calls, "cost")
+        return "runaway_steps"
+    cost = _spend(session)["usd"]
     if isinstance(cost, (int, float)) and not isinstance(cost, bool):
         if cost >= float(budget["max_usd"]):
-            return "budget_usd"
+            return "runaway_usd"
     return None
+
+
+def _warn_over_estimate(session: dict[str, Any]) -> None:
+    estimate = session.get("estimate") or {}
+    est = estimate.get("cost") if isinstance(estimate, dict) else None
+    if isinstance(est, bool) or not isinstance(est, (int, float)) or est <= 0:
+        return
+    cost = _spend(session)["usd"]
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)):
+        return
+    if cost >= (2 * float(est)):
+        session["warning"] = _WARN_ESTIMATE
 
 
 def _count_step(session: dict[str, Any]) -> None:
@@ -1655,6 +1706,8 @@ def _stop(session: dict[str, Any], code: str) -> None:
 
 def _event(owner: dict[str, Any], **fields: Any) -> dict[str, Any]:
     fields["spend"] = _spend(owner)
+    if owner.get("warning"):
+        fields["warning"] = owner["warning"]
     return fields
 
 
@@ -1704,7 +1757,7 @@ def _try_piece(
             session["issues"] = issues or ["piece_failed"]
             return False
         if _budget_block(session):
-            _stop(session, _budget_block(session) or "budget_steps")
+            _stop(session, _budget_block(session) or "runaway_steps")
             session["issues"] = issues or ["piece_failed"]
             return False
         retries[piece_id] = 1
@@ -1836,6 +1889,7 @@ def _call_model(
             raise CreateProblem("model_unreadable")
         session.setdefault("usage_calls", []).append(usage)
         session["metered"] = True
+        _warn_over_estimate(session)
         return parsed
     raise CreateProblem(last)
 
@@ -2095,6 +2149,7 @@ def _view(session: dict[str, Any]) -> dict[str, Any]:
         "spend": _spend(session),
         "stopped": session.get("stopped"),
         "message": session.get("message"),
+        "warning": session.get("warning"),
         "outline": list(session.get("outline") or []),
     }
 
