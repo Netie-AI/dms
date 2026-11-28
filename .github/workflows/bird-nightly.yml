@@ -1,0 +1,75 @@
+# BIRD-HARNESS-CI-01. Off unless the repo variable DMS_BIRD_HARNESS is 1.
+# Cron and manual dispatch both no-op while that variable is unset.
+# The corpus is downloaded into the runner temp. It is not committed.
+name: bird-nightly
+
+on:
+  schedule:
+    - cron: "15 18 * * *"
+  workflow_dispatch:
+    inputs:
+      arm:
+        description: dms posts /v1/chat/ask. baseline is one OpenVault role sql call.
+        type: choice
+        options:
+          - dms
+          - baseline
+        default: dms
+      evidence:
+        description: append the dataset evidence field
+        type: choice
+        options:
+          - "off"
+          - "on"
+        default: "off"
+
+concurrency:
+  group: bird-nightly
+  cancel-in-progress: false
+
+jobs:
+  mini-dev:
+    if: vars.DMS_BIRD_HARNESS == '1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      DMS_BIRD_HARNESS: ${{ vars.DMS_BIRD_HARNESS }}
+      DMS_API_BASE: ${{ secrets.DMS_API_BASE }}
+      OPENVAULT_URL: ${{ secrets.OPENVAULT_URL }}
+      OPENVAULT_API_KEY: ${{ secrets.OPENVAULT_API_KEY }}
+      DMS_SQLITE_SOURCE_ROOT: ${{ secrets.DMS_SQLITE_SOURCE_ROOT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Refuse when this runner has no box settings
+        if: env.DMS_API_BASE == '' && env.OPENVAULT_URL == ''
+        shell: bash
+        run: |
+          set +e
+          arm="${{ github.event.inputs.arm }}"
+          if [ -z "$arm" ]; then arm=dms; fi
+          python scripts/bench/bird/__main__.py nightly --dest "$RUNNER_TEMP/bird" --arm "$arm"
+          code=$?
+          echo "nightly exit $code (2 means the box settings are absent, which is this runner)"
+          test "$code" -eq 2
+
+      - name: Download the 2024-06 release and leave a score for the box
+        if: env.DMS_API_BASE != '' || env.OPENVAULT_URL != ''
+        shell: bash
+        run: |
+          set +e
+          arm="${{ github.event.inputs.arm }}"
+          evidence="${{ github.event.inputs.evidence }}"
+          if [ -z "$arm" ]; then arm=dms; fi
+          if [ -z "$evidence" ]; then evidence=off; fi
+          python scripts/bench/bird/__main__.py nightly \
+            --dest "$RUNNER_TEMP/bird" --arm "$arm" --evidence "$evidence"
+          code=$?
+          echo "nightly exit $code (0 scored with pass=false, 2 is CONFIG and not a score)"
+          test "$code" -eq 0 -o "$code" -eq 2
