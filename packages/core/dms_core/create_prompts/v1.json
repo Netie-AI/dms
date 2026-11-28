@@ -5,6 +5,6 @@
   "guides": {
     "app": "One screen. Each figure comes from a tool result.",
     "slides": "One idea in each section. A long deck is an outline of titles, then each group of slides. Every cited figure is copied from a result row. The provider pptx skill makes the file.",
-    "doc": "The provider docx skill makes the file. pdf is available when the task needs it."
+    "doc": "The provider docx skill makes the file. pdf is available when the task needs it. A named page count is a budget. Stay inside the section, chart, and table caps in the prompt."
   }
 }

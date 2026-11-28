@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: pages share one plan
+
+- **Doc.** A heading starts below the previous block. A table header stays with its next row, above the footer.
+- **Budget.** A named page count tells the model the section, chart, and table caps. One repair asks it to compact. The layout does not delete sections.
+- **Slides.** pdf, html, and pptx use one page plan. Two charts share a page. A text-only first page is a cover. A text-only last page is a close. A half-width legend sits to the right of the axis title.
+
 ## 2026-11-28 - DMS-CREATE-01: charts sit under the heading
 
 - **Doc.** Each chart is drawn under its own heading, at the bitmap's aspect. Rows are a table with a header. Headings are larger and bold. A section that does not fit is kept. After one condense, a doc that still overflows is not shown.

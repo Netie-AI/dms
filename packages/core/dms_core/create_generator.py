@@ -282,6 +282,9 @@ def request_body(
 ) -> tuple[dict[str, Any], str]:
     library = prompt_library(prompt_version)
     system, xml = _system_and_xml(spec, data_context, style, prompt_version)
+    line = _fit_line(spec)
+    if line:
+        system = system + "\n" + line
     if provider == "cursor_api":
         repo = os.environ.get("DMS_CREATE_CURSOR_REPO", "").strip()
         ref = os.environ.get("DMS_CREATE_CURSOR_REF", "main").strip() or "main"
@@ -887,7 +890,28 @@ def _plain_system(spec: Mapping[str, Any] | None = None) -> str:
     )
     if isinstance(deck, dict) and deck.get("step") == "slides":
         body += "\nOnly the slides named in the task. One part each.\n"
+    line = _fit_line(spec)
+    if line:
+        body += "\n" + line + "\n"
     return body
+
+
+def _fit_line(spec: Mapping[str, Any] | None) -> str:
+    if not isinstance(spec, Mapping):
+        return ""
+    fit = spec.get("fit")
+    if not isinstance(fit, dict):
+        return ""
+    pages = int(fit.get("pages") or 1)
+    sections = int(fit.get("sections") or 1)
+    charts = int(fit.get("charts") or 1)
+    tables = int(fit.get("tables") or 1)
+    noun = "page" if pages == 1 else "pages"
+    return (
+        f"Page budget: {pages} {noun}. "
+        f"At most {sections} sections, {charts} charts, and {tables} tables. "
+        "Compact to that budget before you reply."
+    )
 
 
 def _drop_tool_words(text: str) -> str:

@@ -39,14 +39,61 @@ _MIN_BODY_PT = 9
 _MIN_LEADING = 12
 _USABLE = 700
 _TOP_N = 8
-_CONDENSE = (
-    "layout:condense: shorten the narrative so every section fits at 9pt or larger; "
-    "keep every section heading; keep only figures copied from result rows"
-)
 _PAGE_BASELINE = 730.0
 _PAGE_FLOOR = 42.0
 _PAGE_LEFT = 40.0
 _PAGE_TEXT_W = 532.0
+_BLOCK_GAP = 6.0
+_CHARTS_PER_SLIDE = 2
+# Half-width legend sits to the right of the plot. The axis title keeps the
+# band under the plot. Fractions of the chart box, edge origin, top-left.
+_LEGEND_RIGHT = (0.74, 0.12, 0.24, 0.72)
+_PLOT_BESIDE_LEGEND = (0.08, 0.10, 0.62, 0.68)
+
+
+def _glyph(pt: int) -> tuple[float, float]:
+    """Ascent and descent for a font size. The cursor is the top of free space."""
+    return pt * 0.80, pt * 0.20
+
+
+def page_capacity(pages: int) -> tuple[int, int, int]:
+    """Sections, charts, and tables that fit together on this many pages.
+
+    The first layout pass spends a page on a title, one row of two charts,
+    one table (header plus three rows), and sections of a heading plus four
+    body lines. The three caps are that pass, so they fit at the same time.
+    """
+    count = max(1, int(pages))
+    usable = (_PAGE_BASELINE - _PAGE_FLOOR - 22.0) * count
+    chart_rows = 168.0 * count
+    tables_h = 14.0 * 4 * count
+    section_h = 18.0 + 14.0 * 4
+    sections = max(1, int((usable - chart_rows - tables_h) // section_h))
+    return sections, _CHARTS_PER_SLIDE * count, count
+
+
+def condense_issue(pages: int) -> str:
+    """One repair. The model compacts. The layout does not delete sections."""
+    sections, charts, tables = page_capacity(pages)
+    noun = "page" if pages == 1 else "pages"
+    return (
+        "layout:condense: compact to at most "
+        f"{sections} sections, {charts} charts, and {tables} tables "
+        f"on {pages} {noun}. Shorten the narrative so it fits at 9pt or larger. "
+        "Keep only figures copied from result rows."
+    )
+
+
+def budget_text(pages: int) -> str:
+    sections, charts, tables = page_capacity(pages)
+    noun = "page" if pages == 1 else "pages"
+    return (
+        f"Page budget: {pages} {noun}. "
+        f"At most {sections} sections, {charts} charts, and {tables} tables. "
+        "Compact to that budget before you reply."
+    )
+
+
 _FALLBACK_FONT = Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf")
 _FONT_FILES: dict[str, Path | None] = {}
 
@@ -655,11 +702,58 @@ def content_overflow(
     return len(pages) > budget
 
 
-def _layout_slides(artifact: Mapping[str, Any], images: Mapping[int, Bitmap]) -> list[Page]:
-    """One page per part. Charts sit under that part's heading."""
+def _slide_plan(artifact: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """One entry per page. pdf, html, and pptx all use this list.
+
+    A part with more than two charts continues on the next page. A text-only
+    first page is a cover. A text-only last page is a close.
+    """
     parts = _parts(artifact) or [{"title": artifact.get("title") or "Empty", "body": ""}]
-    pages: list[Page] = []
+    slides: list[dict[str, Any]] = []
     for part in parts:
+        charts = _charts(part)
+        groups = [
+            charts[index : index + _CHARTS_PER_SLIDE]
+            for index in range(0, len(charts), _CHARTS_PER_SLIDE)
+        ] or [[]]
+        for index, group in enumerate(groups):
+            shown = dict(part)
+            shown["charts"] = list(group)
+            if index:
+                shown["body"] = ""
+                shown["rows"] = []
+                shown.pop("truncated", None)
+            slides.append({"part": shown, "role": ""})
+    if slides and not _charts(slides[0]["part"]):
+        slides[0]["role"] = "cover"
+    if len(slides) > 1 and not _charts(slides[-1]["part"]):
+        slides[-1]["role"] = "close"
+    return slides
+
+
+def _layout_slides(artifact: Mapping[str, Any], images: Mapping[int, Bitmap]) -> list[Page]:
+    """The shared slide plan. Each entry is one page."""
+    pages: list[Page] = []
+    for item in _slide_plan(artifact):
+        part = item["part"]
+        role = str(item["role"] or "")
+        if role in {"cover", "close"}:
+            pages.extend(
+                _flow_parts(
+                    None,
+                    [part],
+                    {},
+                    16,
+                    20,
+                    40.0,
+                    columns=1,
+                    origin=500.0 if role == "cover" else 440.0,
+                    title_pt=28 if role == "cover" else 22,
+                    title_step=36 if role == "cover" else 28,
+                    rule_after_title=True,
+                )
+            )
+            continue
         packed: list[Page] = []
         for chart_h in (180.0, 110.0, 64.0):
             packed = _flow_parts(None, [part], images, 11, 14, chart_h, columns=2)
@@ -700,9 +794,16 @@ def _flow_parts(
     lead: int,
     chart_h: float,
     columns: int,
+    *,
+    origin: float | None = None,
+    title_pt: int = 14,
+    title_step: int = 18,
+    rule_after_title: bool = False,
 ) -> list[Page]:
     pages: list[Page] = []
     current = _fresh(size, lead)
+    if origin is not None:
+        current["y"] = origin
 
     def break_page() -> None:
         nonlocal current
@@ -718,10 +819,13 @@ def _flow_parts(
         if not cleaned:
             return
         wrap = 90 if pt <= 12 else 64
+        ascent, descent = _glyph(pt)
+        advance = max(float(step), ascent + descent)
         for piece in textwrap.wrap(cleaned, width=wrap) or [cleaned]:
-            if step > room():
+            if ascent + descent > room():
                 break_page()
-            baseline = float(current["y"])
+            top = float(current["y"])
+            baseline = top - ascent
             current["blocks"].append(
                 {
                     "kind": "text",
@@ -734,7 +838,23 @@ def _flow_parts(
                 }
             )
             current["lines"].append(piece)
-            current["y"] = baseline - step
+            # The next top sits below this glyph, not on its baseline.
+            current["y"] = baseline - max(descent, advance - ascent)
+
+    def add_rule(width: float, height: float) -> None:
+        if height + _BLOCK_GAP > room():
+            break_page()
+        top = float(current["y"])
+        current["blocks"].append(
+            {
+                "kind": "rule",
+                "x": _PAGE_LEFT,
+                "y": top - height,
+                "w": width,
+                "h": height,
+            }
+        )
+        current["y"] = top - height - _BLOCK_GAP
 
     def add_charts(bitmaps: list[Bitmap]) -> None:
         if not bitmaps:
@@ -746,9 +866,9 @@ def _flow_parts(
             col_w = (_PAGE_TEXT_W - gap * (len(group) - 1)) / len(group)
             fitted = [_fit_aspect(item, col_w, chart_h) for item in group]
             row_h = max(height for _width, height in fitted)
-            if row_h > room():
+            if row_h + _BLOCK_GAP > room():
                 break_page()
-                cap = max(32.0, room() - 8)
+                cap = max(32.0, room() - _BLOCK_GAP)
                 fitted = [_fit_aspect(item, col_w, min(chart_h, cap)) for item in group]
                 row_h = max(height for _width, height in fitted)
             top = float(current["y"])
@@ -760,7 +880,7 @@ def _flow_parts(
                     }
                 )
                 current["images"].append(bitmap)
-            current["y"] = top - row_h - 8
+            current["y"] = top - row_h - _BLOCK_GAP
 
     def add_table(part: Mapping[str, Any]) -> None:
         rows, total = _top_rows(part)
@@ -772,10 +892,11 @@ def _flow_parts(
         col_w = _PAGE_TEXT_W / len(keys)
         row_h = 14.0
         header = [_human(key) for key in keys]
+        ascent, descent = _glyph(9)
 
         def draw(cells: list[str], *, bold: bool) -> None:
-            baseline = float(current["y"]) - 11
             top = float(current["y"])
+            baseline = top - (row_h - (ascent + descent)) / 2 - ascent
             current["blocks"].append(
                 {
                     "kind": "rule",
@@ -800,23 +921,26 @@ def _flow_parts(
                 current["lines"].append(cell)
             current["y"] = top - row_h
 
-        def ensure() -> None:
-            if row_h <= room():
-                return
+        # Header stays with the next row. A header alone does not sit on the footer.
+        if row_h * 2 > room():
             break_page()
-            draw(header, bold=True)
-
         draw(header, bold=True)
         for row in rows:
-            ensure()
+            if row_h > room():
+                break_page()
+                draw(header, bold=True)
             draw([_fmt(row.get(key, "")) for key in keys], bold=False)
+        if _BLOCK_GAP <= room():
+            current["y"] = float(current["y"]) - _BLOCK_GAP
         if total > len(rows):
             add_text(f"Showing {len(rows)} of {total}.", 9, 12, bold=False, brand=False)
 
     if doc_title:
         add_text(doc_title, 18, 22, bold=True, brand=True)
     for part in parts:
-        add_text(str(part.get("title") or ""), 14, 18, bold=True, brand=True)
+        add_text(str(part.get("title") or ""), title_pt, title_step, bold=True, brand=True)
+        if rule_after_title:
+            add_rule(96.0, 3.0)
         add_charts(_part_images(part, images))
         for line in str(part.get("body") or "").splitlines():
             add_text(line, size, lead, bold=False, brand=False)
@@ -891,6 +1015,8 @@ def _html(
     images: Mapping[int, Bitmap],
     kit: Mapping[str, str],
 ) -> str:
+    if str(artifact.get("kind") or "") == "slides":
+        return _slides_html(artifact, images, kit)
     palette = _palette(kit)
     accent = _hex(palette[0])
     ink = _hex(palette[min(2, len(palette) - 1)])
@@ -938,6 +1064,67 @@ def _html(
         f"<title>{_esc(str(artifact.get('title') or ''))}</title>"
         f"<style>{css}</style></head><body>\n" + "\n".join(blocks) + "\n</body></html>\n"
     )
+
+
+def _slides_html(
+    artifact: Mapping[str, Any],
+    images: Mapping[int, Bitmap],
+    kit: Mapping[str, str],
+) -> str:
+    """One section per shared slide plan entry, including cover and close."""
+    palette = _palette(kit)
+    accent = _hex(palette[0])
+    ink = _hex(palette[min(2, len(palette) - 1)])
+    font = _esc(_font_name(kit))
+    blocks = [f"<h1>{_esc(_present_prose(str(artifact.get('title') or '')))}</h1>"]
+    for item in _slide_plan(artifact):
+        part = item["part"]
+        role = str(item["role"] or "slide")
+        chunks = [f'<section class="page {role}">', _part_body(part, images)]
+        chunks.append("</section>")
+        blocks.append("\n".join(chunks))
+    css = (
+        f"body{{font-family:{font},Calibri,sans-serif;color:{ink};background:#fff;margin:2rem}}"
+        f"h1,h2,figcaption{{color:{accent}}}"
+        "section.page{break-after:page;min-height:640px}"
+        "section.cover,section.close{display:flex;flex-direction:column;justify-content:center}"
+        "section.cover h2{font-size:2.4rem}"
+        "section.close h2{font-size:2rem}"
+        "table{border-collapse:collapse;margin:1rem 0}"
+        f"th{{background:{accent};color:#fff;text-align:left;font-weight:600}}"
+        "td,th{border:1px solid #e4e0d8;padding:0.4rem 0.6rem}"
+        "td.num{text-align:right;font-variant-numeric:tabular-nums}"
+        "img{max-width:100%;height:auto}"
+        "figure{margin:1rem 0}"
+    )
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8">'
+        f"<title>{_esc(str(artifact.get('title') or ''))}</title>"
+        f"<style>{css}</style></head><body>\n" + "\n".join(blocks) + "\n</body></html>\n"
+    )
+
+
+def _part_body(part: Mapping[str, Any], images: Mapping[int, Bitmap]) -> str:
+    chunks = [
+        f"<h2>{_esc(_present_prose(str(part.get('title') or '')))}</h2>",
+        f"<p>{_esc(_present_prose(str(part.get('body') or '')))}</p>",
+    ]
+    note = _trunc_line(part.get("truncated"))
+    if note:
+        chunks.append(f"<p>{_esc(note)}</p>")
+    part_rows = [row for row in part.get("rows") or [] if isinstance(row, dict)]
+    shown: list[list[dict[str, Any]]] = []
+    if part_rows:
+        shown.append(part_rows)
+        chunks.append(_table(part_rows))
+    for chart in _charts(part):
+        chart_rows = _rows(chart)
+        duplicate = any(_rows_overlap(chart_rows, prior) for prior in shown)
+        include = bool(chart_rows) and not duplicate and not shown
+        if include:
+            shown.append(chart_rows)
+        chunks.append(_chart_html(chart, images.get(id(chart)), table=include))
+    return "\n".join(chunks)
 
 
 def _chart_html(chart: Mapping[str, Any], image: Bitmap | None, *, table: bool) -> str:
@@ -1389,52 +1576,99 @@ def _pptx(artifact: Mapping[str, Any], kit: Mapping[str, str]) -> bytes:
     box_w = slide_w - (margin * 2)
     foot_h = int(Inches(0.32))
     foot_top = slide_h - margin - foot_h
-    parts = _parts(artifact)
-    if not parts:
-        parts = [{"title": artifact.get("title") or "", "body": "", "charts": []}]
-    slides: list[tuple[Mapping[str, Any], list[Mapping[str, Any]], bool]] = []
-    for part in parts:
-        charts = _charts(part)
-        groups = [charts[index : index + 2] for index in range(0, len(charts), 2)] or [[]]
-        for group_at, group in enumerate(groups):
-            slides.append((part, group, group_at == 0))
-    total = max(len(slides), 1)
-    for index, (part, charts, first) in enumerate(slides, start=1):
+    chart_bottom = foot_top - int(Inches(0.12))
+    plan = _slide_plan(artifact)
+    total = max(len(plan), 1)
+    for index, item in enumerate(plan, start=1):
         slide = deck.slides.add_slide(blank)
         _fade(slide, parse_xml)
-        title = str(part.get("title") or artifact.get("title") or "")
-        if logo:
-            title = f"{logo}   {title}".strip()
-        title_text, title_pt, title_h = _title_box(title, box_w)
-        top = int(Inches(0.28))
-        box = slide.shapes.add_textbox(Emu(margin), Emu(top), Emu(box_w), Emu(title_h))
-        box.text_frame.word_wrap = True
-        box.text_frame.text = title_text
-        _face(box.text_frame, font, title_pt, bold=True, colour=colour)
-        cursor = top + title_h + int(Inches(0.12))
-        body = str(part.get("body") or "") if first else ""
-        if body:
-            body_h = int(Inches(0.72))
-            text = slide.shapes.add_textbox(Emu(margin), Emu(cursor), Emu(box_w), Emu(body_h))
-            text.text_frame.word_wrap = True
-            text.text_frame.text = body
-            _face(text.text_frame, font, 14, bold=False, colour=None)
-            cursor += body_h + int(Inches(0.08))
-        note = _trunc_line(part.get("truncated")) if first else ""
-        if note:
-            note_h = int(Inches(0.28))
-            flag = slide.shapes.add_textbox(Emu(margin), Emu(cursor), Emu(box_w), Emu(note_h))
-            flag.text_frame.text = note
-            _face(flag.text_frame, font, 12, bold=False, colour=None)
-            cursor += note_h
-        if charts:
-            _place_charts(slide, charts, margin, cursor, box_w, foot_top, palette, font)
+        part = item["part"]
+        role = str(item["role"] or "")
+        if role in {"cover", "close"}:
+            _poster_slide(
+                slide, part, role, margin, slide_w, slide_h, box_w, foot_top, font, colour
+            )
+        else:
+            title = str(part.get("title") or artifact.get("title") or "")
+            if logo:
+                title = f"{logo}   {title}".strip()
+            title_text, title_pt, title_h = _title_box(title, box_w)
+            top = int(Inches(0.28))
+            box = slide.shapes.add_textbox(Emu(margin), Emu(top), Emu(box_w), Emu(title_h))
+            box.text_frame.word_wrap = True
+            box.text_frame.text = title_text
+            _face(box.text_frame, font, title_pt, bold=True, colour=colour)
+            cursor = top + title_h + int(Inches(0.12))
+            body = str(part.get("body") or "")
+            if body:
+                body_h = int(Inches(0.72))
+                text = slide.shapes.add_textbox(Emu(margin), Emu(cursor), Emu(box_w), Emu(body_h))
+                text.text_frame.word_wrap = True
+                text.text_frame.text = body
+                _face(text.text_frame, font, 14, bold=False, colour=None)
+                cursor += body_h + int(Inches(0.08))
+            note = _trunc_line(part.get("truncated"))
+            if note:
+                note_h = int(Inches(0.28))
+                flag = slide.shapes.add_textbox(Emu(margin), Emu(cursor), Emu(box_w), Emu(note_h))
+                flag.text_frame.text = note
+                _face(flag.text_frame, font, 12, bold=False, colour=None)
+                cursor += note_h
+            charts = _charts(part)
+            if charts:
+                _place_charts(slide, charts, margin, cursor, box_w, chart_bottom, palette, font)
         foot = slide.shapes.add_textbox(Emu(margin), Emu(foot_top), Emu(box_w), Emu(foot_h))
         foot.text_frame.text = f"{logo}  {index} / {total}".strip()
         _face(foot.text_frame, font, 12, bold=False, colour=colour)
     buf = io.BytesIO()
     deck.save(buf)
     return buf.getvalue()
+
+
+def _poster_slide(
+    slide: Any,
+    part: Mapping[str, Any],
+    role: str,
+    margin: int,
+    slide_w: int,
+    slide_h: int,
+    box_w: int,
+    foot_top: int,
+    font: str,
+    colour: Any,
+) -> None:
+    """A cover or a close. A bar, a large title, and a rule, not a bare text slide."""
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Emu, Inches
+
+    bar_h = int(Inches(0.16))
+    bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, Emu(0), Emu(0), Emu(slide_w), Emu(bar_h))
+    bar.fill.solid()
+    bar.fill.fore_color.rgb = colour
+    bar.line.fill.background()
+    top = int(slide_h * (0.32 if role == "cover" else 0.40))
+    top = max(top, bar_h + int(Inches(0.35)))
+    title_h = int(Inches(1.05 if role == "cover" else 0.85))
+    box = slide.shapes.add_textbox(Emu(margin), Emu(top), Emu(box_w), Emu(title_h))
+    box.text_frame.word_wrap = True
+    box.text_frame.text = str(part.get("title") or "")
+    _face(box.text_frame, font, 36 if role == "cover" else 28, bold=True, colour=colour)
+    cursor = top + title_h + int(Inches(0.08))
+    rule_h = int(Inches(0.06))
+    rule = slide.shapes.add_shape(
+        MSO_SHAPE.RECTANGLE, Emu(margin), Emu(cursor), Emu(int(Inches(1.5))), Emu(rule_h)
+    )
+    rule.fill.solid()
+    rule.fill.fore_color.rgb = colour
+    rule.line.fill.background()
+    cursor += rule_h + int(Inches(0.16))
+    body = str(part.get("body") or "")
+    if body and cursor < foot_top - int(Inches(0.4)):
+        body_h = min(int(Inches(1.3)), foot_top - cursor - int(Inches(0.08)))
+        text = slide.shapes.add_textbox(Emu(margin), Emu(cursor), Emu(box_w), Emu(body_h))
+        text.text_frame.word_wrap = True
+        text.text_frame.text = body
+        _face(text.text_frame, font, 18, bold=False, colour=None)
 
 
 def _title_box(title: str, width_emu: int) -> tuple[str, int, int]:
@@ -1493,6 +1727,7 @@ def _place_charts(
             palette,
             font,
             Emu,
+            half=cols >= 2,
         )
 
 
@@ -1517,6 +1752,8 @@ def _add_chart(
     palette: list[tuple[int, int, int]],
     font: str,
     emu: Any,
+    *,
+    half: bool = False,
 ) -> None:
     from pptx.chart.data import CategoryChartData
     from pptx.dml.color import RGBColor
@@ -1564,13 +1801,7 @@ def _add_chart(
         plot.data_labels.font.size = Pt(10)
         plot.data_labels.font.name = font
     if mark != "pie" and len(series) > 1:
-        from pptx.enum.chart import XL_LEGEND_POSITION
-
-        drawn.has_legend = True
-        drawn.legend.position = XL_LEGEND_POSITION.BOTTOM
-        drawn.legend.include_in_layout = True
-        drawn.legend.font.size = Pt(10)
-        drawn.legend.font.name = font
+        _reserve_legend(drawn, half=half, font=font)
     if mark == "pie":
         drawn.plots[0].vary_by_categories = True
         for index, point in enumerate(drawn.series[0].points):
@@ -1585,6 +1816,46 @@ def _add_chart(
             _paint(item.format, colour)
             for point in item.points:
                 _paint(point.format, colour)
+
+
+def _reserve_legend(drawn: Any, *, half: bool, font: str) -> None:
+    """Keep the legend off the axis title. Half-width charts put it on the right."""
+    from pptx.enum.chart import XL_LEGEND_POSITION
+    from pptx.oxml import parse_xml
+    from pptx.util import Pt
+
+    drawn.has_legend = True
+    # False: the legend takes its own box instead of painting over the plot.
+    drawn.legend.include_in_layout = False
+    drawn.legend.font.size = Pt(10)
+    drawn.legend.font.name = font
+    if not half:
+        drawn.legend.position = XL_LEGEND_POSITION.BOTTOM
+        return
+    drawn.legend.position = XL_LEGEND_POSITION.RIGHT
+    _write_layout(drawn.legend._element, _LEGEND_RIGHT, parse_xml)
+    _write_layout(drawn._chartSpace.chart.plotArea, _PLOT_BESIDE_LEGEND, parse_xml)
+
+
+def _write_layout(element: Any, box: tuple[float, float, float, float], parse_xml: Any) -> None:
+    ns = "{http://schemas.openxmlformats.org/drawingml/2006/chart}"
+    for child in list(element):
+        if child.tag == f"{ns}layout":
+            element.remove(child)
+    x, y, width, height = box
+    layout = parse_xml(
+        '<c:layout xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+        "<c:manualLayout>"
+        '<c:xMode val="edge"/><c:yMode val="edge"/>'
+        f'<c:x val="{x:.3f}"/><c:y val="{y:.3f}"/>'
+        f'<c:w val="{width:.3f}"/><c:h val="{height:.3f}"/>'
+        "</c:manualLayout></c:layout>"
+    )
+    pos = element.find(f"{ns}legendPos")
+    if pos is not None:
+        pos.addnext(layout)
+    else:
+        element.insert(0, layout)
 
 
 def _paint(fmt: Any, colour: Any) -> None:

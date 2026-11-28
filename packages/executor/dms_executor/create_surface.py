@@ -388,9 +388,9 @@ def _governed(
         and not session.get("repaired")
         and not _cursor_run()
     ):
-        from dms_executor.create_files import _CONDENSE
+        from dms_executor.create_files import condense_issue
 
-        issues = [_CONDENSE]
+        issues = [condense_issue(_asked_pages(session))]
     if issues and issues[0] in {"ungranted", "destructive"}:
         session["step"] = "abstain"
         session["shown"] = False
@@ -707,11 +707,17 @@ def _style(session: dict[str, Any]) -> dict[str, Any]:
     custom = _guide(str(session.get("tenant_id") or "")).get("guides") or {}
     if isinstance(custom, dict):
         guides.update(custom)
+    guide = str(guides.get(str(session["kind"]), "") or "")
+    fit = _fit(session)
+    if fit is not None:
+        from dms_executor.create_files import budget_text
+
+        guide = f"{guide} {budget_text(int(fit['pages']))}".strip()
     return {
         "prompt": session.get("style_prompt") or "",
         "template": template_text(str(session.get("template") or "plain")),
         "brand": session.get("brand") or {},
-        "guide": guides.get(str(session["kind"]), ""),
+        "guide": guide,
     }
 
 
@@ -728,6 +734,9 @@ def _spec(
         "audience": session["audience"],
         "workbook": bool(session.get("workbook")),
     }
+    fit = _fit(session)
+    if fit is not None:
+        spec["fit"] = fit
     if instruction:
         spec["edit"] = {
             "section_id": section_id,
@@ -745,6 +754,26 @@ def _needs_batches(issues: list[str]) -> bool:
     if "model_unreadable" in issues:
         return True
     return any(item.startswith("schema:") or item.startswith("missing:") for item in issues)
+
+
+def _asked_pages(session: Mapping[str, Any]) -> int:
+    from dms_executor.create_files import page_budget
+
+    asked = " ".join([str(session.get("goal") or ""), str(session.get("style_prompt") or "")])
+    return page_budget(asked) or 1
+
+
+def _fit(session: Mapping[str, Any]) -> dict[str, int] | None:
+    from dms_executor.create_files import page_budget, page_capacity
+
+    if str(session.get("kind") or "") != "doc":
+        return None
+    asked = " ".join([str(session.get("goal") or ""), str(session.get("style_prompt") or "")])
+    budget = page_budget(asked)
+    if not budget:
+        return None
+    sections, charts, tables = page_capacity(budget)
+    return {"pages": budget, "sections": sections, "charts": charts, "tables": tables}
 
 
 def _doc_overflow(session: dict[str, Any], artifact: Mapping[str, Any]) -> bool:

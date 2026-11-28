@@ -1438,6 +1438,9 @@ def test_pptx_multi_series_brand_and_extra_slide(tmp_path: Path) -> None:
     )
     deck = Presentation(str(tmp_path / "slides.pptx"))
     assert len(deck.slides) == 3
+    pdf_pages = (tmp_path / "slides.pdf").read_bytes().count(b"/Type /Page ")
+    html_pages = (tmp_path / "slides.html").read_text(encoding="utf-8").count('class="page')
+    assert pdf_pages == len(deck.slides) == html_pages
     first = [shape.chart for shape in deck.slides[0].shapes if shape.has_chart]
     assert len(first) == 2
     drawn = [shape.chart for slide in deck.slides for shape in slide.shapes if shape.has_chart]
@@ -2020,7 +2023,16 @@ def test_one_page_pdf_keeps_every_section_or_the_draft_fails(
     ).json()
     assert view["shown"] is False
     assert "layout:overflow" in view["issues"]
-    assert "layout:condense" in stub.bodies[1]["messages"][1]["content"]
+    repair = stub.bodies[1]["messages"][1]["content"]
+    assert "layout:condense" in repair
+    from dms_executor.create_files import page_capacity
+
+    sections, charts, tables = page_capacity(1)
+    system = stub.bodies[0]["messages"][0]["content"]
+    for text in (system, repair):
+        assert f"{sections} sections" in text
+        assert f"{charts} charts" in text
+        assert f"{tables} tables" in text
 
 
 def test_numbers_are_formatted_in_the_prompt_and_the_app(tmp_path: Path) -> None:
@@ -2380,3 +2392,347 @@ def test_log_seconds_are_the_job_not_the_session(
         f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
     ).json()
     assert view["log"]["seconds"] < 30
+
+
+Box = tuple[float, float, float, float]
+
+
+def _intersects(left: Box, right: Box) -> bool:
+    lx, ly, lw, lh = left
+    rx, ry, rw, rh = right
+    return lx < rx + rw and rx < lx + lw and ly < ry + rh and ry < ly + lh
+
+
+def _contains(outer: Box, inner: Box, slop: float = 2.0) -> bool:
+    ox, oy, ow, oh = outer
+    ix, iy, iw, ih = inner
+    return (
+        ix >= ox - slop
+        and iy >= oy - slop
+        and ix + iw <= ox + ow + slop
+        and iy + ih <= oy + oh + slop
+    )
+
+
+def _glyph_box(x: float, baseline: float, size: int, text: str) -> Box:
+    ascent = size * 0.8
+    descent = size * 0.2
+    width = min(532.0, max(4.0, len(text) * size * 0.5))
+    return (x, baseline - descent, width, ascent + descent)
+
+
+def _pdf_ink(pdf: bytes) -> list[tuple[list[tuple[str, Box]], list[Box]]]:
+    import re
+
+    pages = []
+    for match in re.finditer(rb"stream\n(.*?)endstream", pdf, re.S):
+        blob = match.group(1)
+        if b"Tj" not in blob and b"re S" not in blob:
+            continue
+        content: list[tuple[str, Box]] = []
+        footer: list[Box] = []
+        size = 11
+        pending: tuple[float, float, int] | None = None
+        in_footer = False
+        foot_y = 26.0
+        for raw in blob.decode("latin-1").splitlines():
+            line = raw.strip()
+            if line.startswith("/F1 ") and line.endswith(" Tf"):
+                size = int(line.split()[1])
+                continue
+            if line == "40 26 Td":
+                in_footer = True
+                foot_y = 26.0
+                footer.append(_glyph_box(40, foot_y, size, "f"))
+                continue
+            if in_footer and line == "0 -11 Td":
+                foot_y -= 11
+                footer.append(_glyph_box(40, foot_y, size, "f"))
+                continue
+            image = re.match(r"q ([\d.]+) 0 0 ([\d.]+) ([\d.]+) ([\d.]+) cm", line)
+            if image and not in_footer:
+                width, height, x, y = (float(item) for item in image.groups())
+                content.append(("image", (x, y, width, height)))
+                continue
+            rule = re.match(r"([\d.]+) ([\d.]+) ([\d.]+) ([\d.]+) re S", line)
+            if rule:
+                x, y, width, height = (float(item) for item in rule.groups())
+                content.append(("rule", (x, y, width, height)))
+                continue
+            placed = re.match(r"([\d.]+) ([\d.]+) Td", line)
+            if placed and not in_footer:
+                pending = (float(placed.group(1)), float(placed.group(2)), size)
+                continue
+            if line.endswith(") Tj") and line.startswith("(") and pending and not in_footer:
+                text = line[1:-4]
+                x, y, pt = pending
+                content.append((text, _glyph_box(x, y, pt, text)))
+                pending = None
+        pages.append((content, footer))
+    return pages
+
+
+def _assert_boxes_clear(pdf: bytes) -> None:
+    pages = _pdf_ink(pdf)
+    assert pages
+    for content, footer in pages:
+        boxes = [box for _label, box in content]
+        for index, box in enumerate(boxes):
+            for other in boxes[index + 1 :]:
+                if not _intersects(box, other):
+                    continue
+                left = content[index]
+                right = next(item for item in content[index + 1 :] if item[1] == other)
+                pair = {left[0], right[0]}
+                if "rule" in pair and pair != {"rule"}:
+                    text = left if left[0] != "rule" else right
+                    rule = left if left[0] == "rule" else right
+                    if _contains(rule[1], text[1]):
+                        continue
+                raise AssertionError(f"overlap {left[0]} {right[0]}")
+        for box in boxes:
+            for foot in footer:
+                assert not _intersects(box, foot)
+
+
+def test_heading_does_not_cover_the_last_table_row(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+
+    artifact = {
+        "kind": "doc",
+        "title": "Brief",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Channels",
+                "body": "Web leads.",
+                "rows": [
+                    {"channel": "Store", "revenue": 100},
+                    {"channel": "Web", "revenue": 1606773},
+                    {"channel": "Web", "revenue": 529414},
+                ],
+                "charts": [
+                    {
+                        "label": "Channels",
+                        "type": "bar",
+                        "rows": [
+                            {"channel": "Store", "revenue": 100},
+                            {"channel": "Web", "revenue": 1606773},
+                        ],
+                    }
+                ],
+            },
+            {"id": "b", "title": "NEXTHEAD", "body": "The heading sits under the table."},
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="doc", one_page=False)
+    pdf = (tmp_path / "doc.pdf").read_bytes()
+    _assert_boxes_clear(pdf)
+    pages = _pdf_ink(pdf)
+    heading = None
+    number = None
+    for content, _footer in pages:
+        for label, box in content:
+            if label == "NEXTHEAD":
+                heading = box
+            if label == "529,414":
+                number = box
+    assert heading is not None and number is not None
+    assert not _intersects(heading, number)
+
+
+def test_table_header_stays_off_the_footer(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+
+    saw_header = False
+    for count in range(24, 52):
+        artifact = {
+            "kind": "doc",
+            "title": "Note",
+            "parts": [
+                {
+                    "id": "a",
+                    "title": "Body",
+                    "body": "\n".join(f"line {index} of the note" for index in range(count)),
+                    "rows": [
+                        {"region": "North", "amount": 10},
+                        {"region": "South", "amount": 12},
+                    ],
+                }
+            ],
+        }
+        render_artifact(tmp_path / str(count), artifact, kind="doc", one_page=False)
+        pdf = (tmp_path / str(count) / "doc.pdf").read_bytes()
+        _assert_boxes_clear(pdf)
+        for content, _footer in _pdf_ink(pdf):
+            rules = [box for label, box in content if label == "rule"]
+            headers = [
+                rule
+                for label, box in content
+                if label == "Region"
+                for rule in rules
+                if _contains(rule, box)
+            ]
+            if not headers:
+                continue
+            saw_header = True
+            for header in headers:
+                assert any(rule[1] < header[1] - 1 for rule in rules)
+    assert saw_header
+
+
+def test_half_width_legend_stays_off_the_axis_and_the_footer(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+    from pptx import Presentation
+    from pptx.enum.chart import XL_LEGEND_POSITION
+
+    def chart(label: str) -> dict[str, Any]:
+        return {
+            "label": label,
+            "type": "column",
+            "x": "quarter",
+            "series": ["north", "south"],
+            "rows": [
+                {"quarter": "Q1", "north": 10, "south": 12},
+                {"quarter": "Q2", "north": 8, "south": 14},
+            ],
+        }
+
+    artifact = {
+        "kind": "slides",
+        "title": "Deck",
+        "parts": [
+            {
+                "id": "s1",
+                "title": "Quarterly",
+                "body": "Two charts.",
+                "charts": [chart("Left"), chart("Right")],
+            }
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="slides", one_page=False)
+    deck = Presentation(str(tmp_path / "slides.pptx"))
+    assert len(deck.slides) == 1
+    slide = deck.slides[0]
+    ns = "{http://schemas.openxmlformats.org/drawingml/2006/chart}"
+    footer = next(
+        shape
+        for shape in slide.shapes
+        if shape.has_text_frame and "/" in shape.text_frame.text
+    )
+    boxes = [
+        (int(shape.left), int(shape.top), int(shape.width), int(shape.height))
+        for shape in slide.shapes
+    ]
+    for index, box in enumerate(boxes):
+        for other in boxes[index + 1 :]:
+            assert not _intersects(box, other)
+    charts = [shape for shape in slide.shapes if shape.has_chart]
+    assert len(charts) == 2
+    for shape in charts:
+        drawn = shape.chart
+        assert drawn.legend.position == XL_LEGEND_POSITION.RIGHT
+        assert drawn.legend.include_in_layout is False
+        assert drawn.category_axis.axis_title.text_frame.text == "Quarter"
+
+        def frac(element: Any) -> Box:
+            layout = element.find(f"{ns}layout/{ns}manualLayout")
+            assert layout is not None
+
+            def val(name: str) -> float:
+                node = layout.find(f"{ns}{name}")
+                assert node is not None
+                return float(node.get("val"))
+
+            return val("x"), val("y"), val("w"), val("h")
+
+        plot = frac(drawn._chartSpace.chart.plotArea)
+        legend = frac(drawn.legend._element)
+        axis = (plot[0], plot[1] + plot[3], plot[2], max(0.05, 0.98 - (plot[1] + plot[3])))
+        assert not _intersects(plot, legend)
+        assert not _intersects(axis, legend)
+
+        def slide_box(item: Box) -> Box:
+            x, y, width, height = item
+            return (
+                int(shape.left) + x * int(shape.width),
+                int(shape.top) + y * int(shape.height),
+                width * int(shape.width),
+                height * int(shape.height),
+            )
+
+        foot = (int(footer.left), int(footer.top), int(footer.width), int(footer.height))
+        assert not _intersects(slide_box(legend), foot)
+        assert not _intersects(slide_box(axis), foot)
+
+
+def test_slide_page_counts_match_and_the_ends_are_a_cover_and_a_close(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Pt
+
+    def chart(index: int) -> dict[str, int | str | list[dict[str, int | str]]]:
+        return {
+            "label": f"Chart {index}",
+            "rows": [
+                {"region": "North", "amount": index + 1},
+                {"region": "South", "amount": index + 2},
+            ],
+        }
+
+    artifact = {
+        "kind": "slides",
+        "title": "Deck",
+        "parts": [
+            {"id": "cover", "title": "COVER", "body": "Open the briefing."},
+            {
+                "id": "four",
+                "title": "FOUR",
+                "body": "Four charts.",
+                "charts": [chart(index) for index in range(4)],
+            },
+            {"id": "close", "title": "CLOSE", "body": "That is the briefing."},
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="slides", one_page=False)
+    pdf = (tmp_path / "slides.pdf").read_bytes()
+    html = (tmp_path / "slides.html").read_text(encoding="utf-8")
+    deck = Presentation(str(tmp_path / "slides.pptx"))
+    pdf_pages = pdf.count(b"/Type /Page ")
+    html_pages = html.count('class="page')
+    assert pdf_pages == len(deck.slides) == html_pages == 4
+    assert 'class="page cover"' in html
+    assert 'class="page close"' in html
+    _assert_boxes_clear(pdf)
+    cover_y = [
+        box[1]
+        for content, _footer in _pdf_ink(pdf)
+        for label, box in content
+        if label == "COVER"
+    ]
+    assert cover_y and cover_y[0] < 560
+    first = deck.slides[0]
+    last = deck.slides[-1]
+    assert any(shape.shape_type == MSO_SHAPE.RECTANGLE for shape in first.shapes)
+    assert any(shape.shape_type == MSO_SHAPE.RECTANGLE for shape in last.shapes)
+    cover_title = next(
+        shape
+        for shape in first.shapes
+        if shape.has_text_frame and "COVER" in shape.text_frame.text
+    )
+    close_title = next(
+        shape
+        for shape in last.shapes
+        if shape.has_text_frame and "CLOSE" in shape.text_frame.text
+    )
+    assert cover_title.text_frame.paragraphs[0].font.size >= Pt(28)
+    assert close_title.text_frame.paragraphs[0].font.size >= Pt(28)
+    for slide in deck.slides:
+        boxes = [
+            (int(shape.left), int(shape.top), int(shape.width), int(shape.height))
+            for shape in slide.shapes
+        ]
+        for index, box in enumerate(boxes):
+            for other in boxes[index + 1 :]:
+                assert not _intersects(box, other)
