@@ -40,9 +40,13 @@ _MIN_LEADING = 12
 _USABLE = 700
 _TOP_N = 8
 _CONDENSE = (
-    "layout:condense: shorten the narrative so body text stays at least 9pt; "
-    "keep only figures copied from result rows"
+    "layout:condense: shorten the narrative so every section fits at 9pt or larger; "
+    "keep every section heading; keep only figures copied from result rows"
 )
+_PAGE_BASELINE = 730.0
+_PAGE_FLOOR = 42.0
+_PAGE_LEFT = 40.0
+_PAGE_TEXT_W = 532.0
 _FALLBACK_FONT = Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf")
 _FONT_FILES: dict[str, Path | None] = {}
 
@@ -122,11 +126,9 @@ def _prepare(
     images = _images(artifact, kit)
     budget = 1 if one_page else page_budget
     if kind == "slides":
-        pages = _slide_pages(artifact, images)
-    elif budget is not None:
-        pages = _budget_pages(artifact, images, budget)
+        pages = _layout_slides(artifact, images)
     else:
-        pages = _flow_pages(artifact, images)
+        pages = _layout_doc(artifact, images, budget)
     count = len(pages) or 1
     for index, page in enumerate(pages, start=1):
         page["index"] = index
@@ -158,26 +160,44 @@ def _palette(kit: Mapping[str, str]) -> list[tuple[int, int, int]]:
 
 
 def _categorical(seeds: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+    """Brand seeds first. Later colours stay far from navy-on-purple at small sizes."""
     out: list[tuple[int, int, int]] = []
     for colour in seeds:
         if colour not in out:
             out.append(colour)
     hue, sat, _light = _hsl(out[0])
-    sat = min(0.72, max(0.45, sat))
+    sat = min(0.78, max(0.55, sat))
     step = 0
     while len(out) < 8 and step < 24:
-        light = 0.34 if len(out) % 2 == 0 else 0.48
-        colour = _rgb((hue + 47 * (step + 1)) % 360, sat, light)
+        light = 0.30 if len(out) % 2 == 0 else 0.56
+        colour = _rgb((hue + 72 * (step + 1)) % 360, sat, light)
         step += 1
-        if colour in out or not _readable(colour):
+        if colour in out or not _readable(colour) or not _apart(colour, out):
             continue
         out.append(colour)
     for colour in _DEFAULT_PALETTE:
         if len(out) >= 8:
             break
-        if colour not in out:
+        if colour not in out and _apart(colour, out):
             out.append(colour)
     return out[:8]
+
+
+def _apart(colour: tuple[int, int, int], others: list[tuple[int, int, int]]) -> bool:
+    """True when this colour is not both a near hue and a near RGB of one already chosen."""
+    for other in others:
+        if _hue_gap(colour, other) < 32 and _rgb_gap(colour, other) < 100:
+            return False
+    return True
+
+
+def _rgb_gap(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
+    return math.sqrt(sum((a - b) ** 2 for a, b in zip(left, right, strict=True)))
+
+
+def _hue_gap(left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
+    gap = abs(_hsl(left)[0] - _hsl(right)[0]) % 360
+    return min(gap, 360 - gap)
 
 
 def _hsl(colour: tuple[int, int, int]) -> tuple[float, float, float]:
@@ -246,7 +266,18 @@ def _hex(colour: tuple[int, int, int]) -> str:
     return "#{:02x}{:02x}{:02x}".format(*colour)
 
 
+_BARE_NUMBER = re.compile(r"(?<![\w.])(-?\d+\.\d+|-?\d{4,})(?!\w)")
+
+
 def _fmt(value: Any) -> str:
+    if isinstance(value, str):
+        bare = value.strip().replace(",", "")
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", bare):
+            try:
+                return _fmt(float(bare))
+            except ValueError:
+                return value
+        return value
     if isinstance(value, bool) or value is None:
         return ""
     if isinstance(value, float):
@@ -256,6 +287,22 @@ def _fmt(value: Any) -> str:
     if isinstance(value, int):
         return f"{value:,}"
     return str(value)
+
+
+def _present_prose(text: str) -> str:
+    """Thousands separators, and no trailing .0, wherever a figure is drawn."""
+
+    def repl(match: re.Match[str]) -> str:
+        raw = match.group(1)
+        try:
+            number = float(raw)
+        except ValueError:
+            return raw
+        if "." not in raw and number.is_integer() and 1900 <= int(number) <= 2100:
+            return raw
+        return _fmt(number)
+
+    return _BARE_NUMBER.sub(repl, text)
 
 
 def _human(name: str) -> str:
@@ -283,10 +330,6 @@ def _trunc_line(note: Any) -> str:
     if not isinstance(shown, int) or not isinstance(total, int):
         return ""
     return f"Showing {shown} of {total}."
-
-
-def _row_line(row: Mapping[str, Any]) -> str:
-    return " | ".join(f"{_human(str(key))} {_fmt(value)}" for key, value in row.items())
 
 
 def _parts(artifact: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -487,25 +530,35 @@ def _chart_bitmap(
     import matplotlib.pyplot as plt
     from matplotlib.ticker import FuncFormatter
 
-    fig, ax = plt.subplots(figsize=(6.4, 3.2), dpi=80)
+    square = mark == "pie"
+    fig, ax = plt.subplots(figsize=(4.2, 4.2) if square else (6.4, 3.6), dpi=80)
     fig.patch.set_facecolor("white")
     slots = list(range(len(categories)))
     title_colour = _hex(palette[0])
     if mark == "pie":
         _draw_pie(ax, categories, series[0][1], palette)
+        ax.set_aspect("equal")
     elif mark == "line":
         _draw_lines(ax, slots, series, palette, show)
     else:
         _draw_bars(ax, slots, categories, series, palette, show)
     if mark != "pie":
-        ax.set_xticks(slots, categories, rotation=30 if len(categories) > 6 else 0)
-        ax.set_xlabel(cat_name)
+        rotation = 0 if len(categories) <= 6 else 25
+        ax.set_xticks(slots, categories, rotation=rotation)
+        ax.tick_params(axis="both", labelsize=10)
+        ax.set_xlabel(cat_name, labelpad=14 if rotation else 6)
         ax.set_ylabel(series[0][0] if len(series) == 1 else "Value")
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _pos: _tick_label(float(value))))
         if mark == "bar":
             ax.set_ylim(bottom=0)
         if len(series) > 1:
-            ax.legend()
+            ax.legend(
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.22),
+                ncol=min(len(series), 4),
+                fontsize=9,
+                frameon=False,
+            )
     ax.set_title(str(chart.get("label") or "Chart"), color=title_colour, fontname=_mpl_font(font))
     fig.tight_layout()
     canvas: Any = fig.canvas
@@ -550,7 +603,7 @@ def _draw_bars(
             [slot + offset for slot in slots], values, width=width, label=name, color=colour
         )
         if show:
-            ax.bar_label(container, labels=[_tick_label(value) for value in values], fontsize=7)
+            ax.bar_label(container, labels=[_tick_label(value) for value in values], fontsize=9)
 
 
 def _draw_lines(
@@ -571,7 +624,7 @@ def _draw_lines(
                     textcoords="offset points",
                     xytext=(0, 4),
                     ha="center",
-                    fontsize=7,
+                    fontsize=9,
                 )
 
 
@@ -585,18 +638,6 @@ def _draw_pie(
     ax.pie(values, labels=categories, colors=colours)
 
 
-def _slide_pages(artifact: Mapping[str, Any], images: Mapping[int, Bitmap]) -> list[Page]:
-    """One page per part. Every chart on that part stays on that page."""
-    pages = [
-        _fit_page(_slide_lines(artifact, part), _part_images(part, images), fit=True)
-        for part in _parts(artifact)
-    ]
-    if pages:
-        return pages
-    title = str(artifact.get("title") or "Empty")
-    return [_fit_page([title], [], fit=True)]
-
-
 def content_overflow(
     artifact: Mapping[str, Any],
     *,
@@ -604,114 +645,223 @@ def content_overflow(
     one_page: bool,
     page_budget: int | None = None,
 ) -> bool:
-    """True when a fitted doc cannot keep 9pt body text without losing narrative."""
+    """True when a doc still needs more pages than the request named."""
     if kind != "doc":
         return False
     budget = 1 if one_page else page_budget
     if not budget:
         return False
-    lines = _wrap(_doc_lines(artifact))
-    images = sum(len(_charts(part)) for part in _parts(artifact))
-    return len(lines) > _line_cap(images, _MIN_LEADING) * max(1, budget)
+    pages = _layout_doc(artifact, _images(artifact, _kit(None, artifact)), budget)
+    return len(pages) > budget
 
 
-def _budget_pages(
-    artifact: Mapping[str, Any], images: Mapping[int, Bitmap], budget: int
-) -> list[Page]:
-    """Fit the doc into the number of pages the request named."""
-    sections = _doc_sections(artifact, images)
-    budget = max(1, budget)
-    groups: list[list[tuple[list[str], list[Bitmap]]]] = [[] for _index in range(budget)]
-    for index, section in enumerate(sections):
-        groups[min(budget - 1, index * budget // max(len(sections), 1))].append(section)
+def _layout_slides(artifact: Mapping[str, Any], images: Mapping[int, Bitmap]) -> list[Page]:
+    """One page per part. Charts sit under that part's heading."""
+    parts = _parts(artifact) or [{"title": artifact.get("title") or "Empty", "body": ""}]
     pages: list[Page] = []
-    for group in groups:
-        lines: list[str] = []
-        charts: list[Bitmap] = []
-        for sec_lines, sec_charts in group:
-            lines.extend(sec_lines)
-            charts.extend(sec_charts)
-        pages.append(_fit_page(_wrap(lines) or [""], charts, fit=True))
+    for part in parts:
+        packed: list[Page] = []
+        for chart_h in (180.0, 110.0, 64.0):
+            packed = _flow_parts(None, [part], images, 11, 14, chart_h, columns=2)
+            if len(packed) <= 1:
+                break
+        pages.extend(packed)
     return pages
 
 
-def _flow_pages(artifact: Mapping[str, Any], images: Mapping[int, Bitmap]) -> list[Page]:
-    """Each section keeps its chart on the first page of that section."""
+def _layout_doc(
+    artifact: Mapping[str, Any], images: Mapping[int, Bitmap], budget: int | None
+) -> list[Page]:
+    """Sections in order. A chart follows its heading. Nothing is dropped."""
+    title = str(artifact.get("title") or "")
+    parts = _parts(artifact)
+    if not parts:
+        parts = [{"title": title or "Empty", "body": ""}]
+        title = ""
+    if budget is None:
+        return _flow_parts(title, parts, images, 11, 14, 180.0, columns=1)
     pages: list[Page] = []
-    for lines, charts in _doc_sections(artifact, images):
-        chunks = _flow(lines)
-        for index, chunk in enumerate(chunks):
-            pages.append(_fit_page(chunk, charts if index == 0 else [], fit=False))
-    if pages:
-        return pages
-    title = str(artifact.get("title") or "Empty")
-    return [_fit_page([title], [], fit=False)]
+    for size, lead, chart_h, columns in (
+        (11, 14, 160.0, 2),
+        (9, 12, 110.0, 2),
+        (9, 12, 64.0, 4),
+    ):
+        pages = _flow_parts(title, parts, images, size, lead, chart_h, columns)
+        if len(pages) <= budget:
+            return pages
+    return pages
 
 
-def _doc_sections(
-    artifact: Mapping[str, Any], images: Mapping[int, Bitmap]
-) -> list[tuple[list[str], list[Bitmap]]]:
-    sections: list[tuple[list[str], list[Bitmap]]] = []
-    title = str(artifact.get("title") or "")
-    if title:
-        sections.append((_wrap([title]), []))
-    for part in _parts(artifact):
-        sections.append((_wrap(_section_lines(part)), _part_images(part, images)))
-    return sections or [([title or "Empty"], [])]
+def _flow_parts(
+    doc_title: str | None,
+    parts: list[Mapping[str, Any]],
+    images: Mapping[int, Bitmap],
+    size: int,
+    lead: int,
+    chart_h: float,
+    columns: int,
+) -> list[Page]:
+    pages: list[Page] = []
+    current = _fresh(size, lead)
+
+    def break_page() -> None:
+        nonlocal current
+        if current["blocks"] or current["images"]:
+            pages.append(current)
+        current = _fresh(size, lead)
+
+    def room() -> float:
+        return float(current["y"]) - _PAGE_FLOOR
+
+    def add_text(text: str, pt: int, step: int, *, bold: bool, brand: bool) -> None:
+        cleaned = _present_prose(text).strip()
+        if not cleaned:
+            return
+        wrap = 90 if pt <= 12 else 64
+        for piece in textwrap.wrap(cleaned, width=wrap) or [cleaned]:
+            if step > room():
+                break_page()
+            baseline = float(current["y"])
+            current["blocks"].append(
+                {
+                    "kind": "text",
+                    "text": piece,
+                    "size": pt,
+                    "bold": bold,
+                    "brand": brand,
+                    "x": _PAGE_LEFT,
+                    "y": baseline,
+                }
+            )
+            current["lines"].append(piece)
+            current["y"] = baseline - step
+
+    def add_charts(bitmaps: list[Bitmap]) -> None:
+        if not bitmaps:
+            return
+        cols = 1 if columns == 1 or len(bitmaps) == 1 else min(columns, len(bitmaps))
+        gap = 8.0
+        for start_at in range(0, len(bitmaps), cols):
+            group = bitmaps[start_at : start_at + cols]
+            col_w = (_PAGE_TEXT_W - gap * (len(group) - 1)) / len(group)
+            fitted = [_fit_aspect(item, col_w, chart_h) for item in group]
+            row_h = max(height for _width, height in fitted)
+            if row_h > room():
+                break_page()
+                cap = max(32.0, room() - 8)
+                fitted = [_fit_aspect(item, col_w, min(chart_h, cap)) for item in group]
+                row_h = max(height for _width, height in fitted)
+            top = float(current["y"])
+            for index, (bitmap, (width, height)) in enumerate(zip(group, fitted, strict=True)):
+                current["blocks"].append(
+                    {
+                        "kind": "image",
+                        "box": (_PAGE_LEFT + index * (col_w + gap), top - height, width, height),
+                    }
+                )
+                current["images"].append(bitmap)
+            current["y"] = top - row_h - 8
+
+    def add_table(part: Mapping[str, Any]) -> None:
+        rows, total = _top_rows(part)
+        if not rows:
+            return
+        keys = _keys(rows)
+        if not keys:
+            return
+        col_w = _PAGE_TEXT_W / len(keys)
+        row_h = 14.0
+        header = [_human(key) for key in keys]
+
+        def draw(cells: list[str], *, bold: bool) -> None:
+            baseline = float(current["y"]) - 11
+            top = float(current["y"])
+            current["blocks"].append(
+                {
+                    "kind": "rule",
+                    "x": _PAGE_LEFT,
+                    "y": top - row_h,
+                    "w": _PAGE_TEXT_W,
+                    "h": row_h,
+                }
+            )
+            for index, cell in enumerate(cells):
+                current["blocks"].append(
+                    {
+                        "kind": "text",
+                        "text": cell,
+                        "size": 9,
+                        "bold": bold,
+                        "brand": False,
+                        "x": _PAGE_LEFT + 4 + index * col_w,
+                        "y": baseline,
+                    }
+                )
+                current["lines"].append(cell)
+            current["y"] = top - row_h
+
+        def ensure() -> None:
+            if row_h <= room():
+                return
+            break_page()
+            draw(header, bold=True)
+
+        draw(header, bold=True)
+        for row in rows:
+            ensure()
+            draw([_fmt(row.get(key, "")) for key in keys], bold=False)
+        if total > len(rows):
+            add_text(f"Showing {len(rows)} of {total}.", 9, 12, bold=False, brand=False)
+
+    if doc_title:
+        add_text(doc_title, 18, 22, bold=True, brand=True)
+    for part in parts:
+        add_text(str(part.get("title") or ""), 14, 18, bold=True, brand=True)
+        add_charts(_part_images(part, images))
+        for line in str(part.get("body") or "").splitlines():
+            add_text(line, size, lead, bold=False, brand=False)
+        add_table(part)
+    if current["blocks"] or current["images"] or not pages:
+        pages.append(current)
+    return pages
 
 
-def _doc_lines(artifact: Mapping[str, Any]) -> list[str]:
-    lines: list[str] = []
-    title = str(artifact.get("title") or "")
-    if title:
-        lines.append(title)
-    for part in _parts(artifact):
-        lines.extend(_section_lines(part))
-    return [line for line in lines if line]
+def _fresh(size: int, lead: int) -> Page:
+    return {
+        "blocks": [],
+        "images": [],
+        "lines": [],
+        "y": _PAGE_BASELINE,
+        "font": size,
+        "leading": lead,
+    }
 
 
-def _slide_lines(artifact: Mapping[str, Any], part: Mapping[str, Any]) -> list[str]:
-    lines = [str(part.get("title") or artifact.get("title") or "")]
-    body = str(part.get("body") or "")
-    if body:
-        lines.append(body)
-    note = _trunc_line(part.get("truncated"))
-    if note:
-        lines.append(note)
-    for chart in _charts(part):
-        label = str(chart.get("label") or "")
-        if label:
-            lines.append(label)
-        note = _trunc_line(chart.get("truncated"))
-        if note:
-            lines.append(note)
-    return _wrap([line for line in lines if line])
+def _fit_aspect(bitmap: Bitmap, max_w: float, max_h: float) -> tuple[float, float]:
+    """Scale uniformly. A pie stays a circle instead of stretching into the cell."""
+    px_w = max(int(bitmap[2]), 1)
+    px_h = max(int(bitmap[3]), 1)
+    aspect = px_w / px_h
+    width = max(1.0, max_w)
+    height = width / aspect
+    if height > max_h and max_h > 0:
+        height = max_h
+        width = height * aspect
+    return width, height
 
 
-def _section_lines(part: Mapping[str, Any]) -> list[str]:
-    """Narrative, the chart label, then a short table. Not every source row."""
-    lines = [str(part.get("title") or ""), str(part.get("body") or "")]
-    for chart in _charts(part):
-        label = str(chart.get("label") or "")
-        if label:
-            lines.append(label)
+def _top_rows(part: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int]:
     rows = [row for row in part.get("rows") or [] if isinstance(row, dict)]
     total = len(rows)
-    if not rows:
-        for chart in _charts(part):
-            rows = _rows(chart)
-            if rows:
-                break
-        total = len(rows)
     note = part.get("truncated")
     if isinstance(note, dict) and isinstance(note.get("total"), int):
         total = max(total, int(note["total"]))
-    top = rows[:_TOP_N]
-    for row in top:
-        lines.append(_row_line(row))
-    if total > len(top):
-        lines.append(f"Showing {len(top)} of {total}.")
-    return [line for line in lines if line]
+    if not rows:
+        for chart in _charts(part):
+            found = _rows(chart)
+            if found:
+                return found[:_TOP_N], len(found)
+    return rows[:_TOP_N], total
 
 
 def _part_images(part: Mapping[str, Any], images: Mapping[int, Bitmap]) -> list[Bitmap]:
@@ -732,65 +882,8 @@ def _wrap(lines: list[str]) -> list[str]:
     return wrapped
 
 
-def _flow(lines: list[str]) -> list[list[str]]:
-    wrapped = _wrap(lines) or [""]
-    return [
-        wrapped[index : index + _LINES_PER_PAGE]
-        for index in range(0, len(wrapped), _LINES_PER_PAGE)
-    ]
-
-
-def _fit_page(lines: list[str], images: list[Bitmap], *, fit: bool) -> Page:
-    kept = lines or [""]
-    if fit:
-        font, leading = _fit_metrics(len(kept), len(images))
-        kept = kept[: _line_cap(len(images), leading)] or [""]
-    else:
-        font, leading = 11, 14
-    return {"lines": kept, "images": images, "font": font, "leading": leading}
-
-
-def _chart_band(n_images: int) -> int:
-    if not n_images:
-        return 0
-    cols = 1 if n_images == 1 else 2 if n_images <= 4 else 3
-    rows = math.ceil(n_images / cols)
-    return max(28, min(160, int(_USABLE * 0.55 / rows))) * rows
-
-
-def _line_cap(n_images: int, leading: int) -> int:
-    room = max(leading, _USABLE - _chart_band(n_images))
-    return max(1, room // max(leading, 1))
-
-
-def _fit_metrics(n_lines: int, n_images: int) -> tuple[int, int]:
-    """11pt when it fits, otherwise 9pt. Never smaller."""
-    if n_lines <= _line_cap(n_images, 14):
-        return 11, 14
-    return _MIN_BODY_PT, _MIN_LEADING
-
-
 def _boxes(page: Page) -> list[tuple[float, float, float, float]]:
-    images: list[Bitmap] = page["images"]
-    count = len(images)
-    if count == 0:
-        return []
-    text_h = int(page["leading"]) * max(len(page["lines"]), 1)
-    top = 760 - text_h - 10
-    bottom = 42.0
-    avail = max(12.0, top - bottom)
-    cols = 1 if count == 1 else 2 if count <= 4 else 3
-    rows = math.ceil(count / cols)
-    gap = 6.0
-    cell_w = (612 - 80 - gap * (cols - 1)) / cols
-    cell_h = max(8.0, (avail - gap * (rows - 1)) / rows)
-    boxes: list[tuple[float, float, float, float]] = []
-    for index in range(count):
-        row, col = divmod(index, cols)
-        x = 40 + col * (cell_w + gap)
-        y = bottom + (rows - 1 - row) * (cell_h + gap)
-        boxes.append((x, y, cell_w, cell_h))
-    return boxes
+    return [block["box"] for block in page.get("blocks") or [] if block.get("kind") == "image"]
 
 
 def _html(
@@ -803,14 +896,14 @@ def _html(
     ink = _hex(palette[min(2, len(palette) - 1)])
     font = _esc(_font_name(kit))
     logo = _esc(kit.get("logo") or "")
-    blocks = [f"<h1>{_esc(str(artifact.get('title') or ''))}</h1>"]
+    blocks = [f"<h1>{_esc(_present_prose(str(artifact.get('title') or '')))}</h1>"]
     if logo:
         blocks.append(f'<p class="logo">{logo}</p>')
     for part in _parts(artifact):
         chunks = [
             "<section>",
-            f"<h2>{_esc(str(part.get('title') or ''))}</h2>",
-            f"<p>{_esc(str(part.get('body') or ''))}</p>",
+            f"<h2>{_esc(_present_prose(str(part.get('title') or '')))}</h2>",
+            f"<p>{_esc(_present_prose(str(part.get('body') or '')))}</p>",
         ]
         note = _trunc_line(part.get("truncated"))
         if note:
@@ -967,28 +1060,42 @@ def _page_obj(content_id: int, image_ids: list[int], font_id: int) -> bytes:
 
 def _content(page: Page, colour: tuple[int, int, int], logo: str) -> bytes:
     red, green, blue = (channel / 255 for channel in colour)
-    tint = f"{red:.3f} {green:.3f} {blue:.3f} rg"
-    size = int(page["font"])
-    leading = int(page["leading"])
-    lines: list[str] = page["lines"] or [""]
-    commands = [
-        tint,
-        "0 786 612 6 re f",
-        "BT",
-        f"/F1 {size} Tf",
-        "40 760 Td",
-        f"({_pdf_text(lines[0])}) Tj",
-        "ET",
-    ]
-    if len(lines) > 1:
-        commands.extend(["0 0 0 rg", "BT", f"/F1 {size} Tf", f"40 {760 - leading} Td"])
-        first = True
-        for line in lines[1:]:
-            if not first:
-                commands.append(f"0 -{leading} Td")
-            first = False
-            commands.append(f"({_pdf_text(line)}) Tj")
-        commands.append("ET")
+    tint = f"{red:.3f} {green:.3f} {blue:.3f}"
+    commands = [f"{tint} rg", "0 786 612 6 re f"]
+    image_at = 0
+    for block in page.get("blocks") or []:
+        kind = block.get("kind")
+        if kind == "rule":
+            commands.append("0.75 0.75 0.75 RG")
+            commands.append("0.6 w")
+            commands.append(
+                f"{block['x']:.2f} {block['y']:.2f} {block['w']:.2f} {block['h']:.2f} re S"
+            )
+            continue
+        if kind == "image":
+            x, y, width, height = block["box"]
+            commands.append(f"q {width:.2f} 0 0 {height:.2f} {x:.2f} {y:.2f} cm /Im{image_at} Do Q")
+            image_at += 1
+            continue
+        if kind != "text":
+            continue
+        if block.get("brand"):
+            commands.append(f"{tint} rg {tint} RG")
+        else:
+            commands.append("0 0 0 rg 0 0 0 RG")
+        if block.get("bold"):
+            commands.extend(["2 Tr", "0.6 w"])
+        commands.extend(
+            [
+                "BT",
+                f"/F1 {int(block['size'])} Tf",
+                f"{float(block['x']):.2f} {float(block['y']):.2f} Td",
+                f"({_pdf_text(str(block['text']))}) Tj",
+                "ET",
+            ]
+        )
+        if block.get("bold"):
+            commands.append("0 Tr")
     foot = _wrap([_footer(page, logo)]) or [""]
     commands.extend(["0.35 0.35 0.35 rg", "BT", "/F1 9 Tf", "40 26 Td"])
     for index, line in enumerate(foot):
@@ -996,8 +1103,6 @@ def _content(page: Page, colour: tuple[int, int, int], logo: str) -> bytes:
             commands.append("0 -11 Td")
         commands.append(f"({_pdf_text(line)}) Tj")
     commands.append("ET")
-    for index, (x, y, width, height) in enumerate(_boxes(page)):
-        commands.append(f"q {width:.2f} 0 0 {height:.2f} {x:.2f} {y:.2f} cm /Im{index} Do Q")
     stream = "\n".join(commands).encode("latin-1", errors="replace")
     header = b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n"
     return header + stream + b"\nendstream"
@@ -1285,10 +1390,16 @@ def _pptx(artifact: Mapping[str, Any], kit: Mapping[str, str]) -> bytes:
     foot_h = int(Inches(0.32))
     foot_top = slide_h - margin - foot_h
     parts = _parts(artifact)
-    total = max(len(parts), 1)
     if not parts:
         parts = [{"title": artifact.get("title") or "", "body": "", "charts": []}]
-    for index, part in enumerate(parts, start=1):
+    slides: list[tuple[Mapping[str, Any], list[Mapping[str, Any]], bool]] = []
+    for part in parts:
+        charts = _charts(part)
+        groups = [charts[index : index + 2] for index in range(0, len(charts), 2)] or [[]]
+        for group_at, group in enumerate(groups):
+            slides.append((part, group, group_at == 0))
+    total = max(len(slides), 1)
+    for index, (part, charts, first) in enumerate(slides, start=1):
         slide = deck.slides.add_slide(blank)
         _fade(slide, parse_xml)
         title = str(part.get("title") or artifact.get("title") or "")
@@ -1301,7 +1412,7 @@ def _pptx(artifact: Mapping[str, Any], kit: Mapping[str, str]) -> bytes:
         box.text_frame.text = title_text
         _face(box.text_frame, font, title_pt, bold=True, colour=colour)
         cursor = top + title_h + int(Inches(0.12))
-        body = str(part.get("body") or "")
+        body = str(part.get("body") or "") if first else ""
         if body:
             body_h = int(Inches(0.72))
             text = slide.shapes.add_textbox(Emu(margin), Emu(cursor), Emu(box_w), Emu(body_h))
@@ -1309,14 +1420,13 @@ def _pptx(artifact: Mapping[str, Any], kit: Mapping[str, str]) -> bytes:
             text.text_frame.text = body
             _face(text.text_frame, font, 14, bold=False, colour=None)
             cursor += body_h + int(Inches(0.08))
-        note = _trunc_line(part.get("truncated"))
+        note = _trunc_line(part.get("truncated")) if first else ""
         if note:
             note_h = int(Inches(0.28))
             flag = slide.shapes.add_textbox(Emu(margin), Emu(cursor), Emu(box_w), Emu(note_h))
             flag.text_frame.text = note
             _face(flag.text_frame, font, 12, bold=False, colour=None)
             cursor += note_h
-        charts = _charts(part)
         if charts:
             _place_charts(slide, charts, margin, cursor, box_w, foot_top, palette, font)
         foot = slide.shapes.add_textbox(Emu(margin), Emu(foot_top), Emu(box_w), Emu(foot_h))
@@ -1442,12 +1552,25 @@ def _add_chart(
         drawn.value_axis.axis_title.text_frame.text = series[0][0] if len(series) == 1 else "Value"
         _face(drawn.value_axis.axis_title.text_frame, font, 10, bold=False, colour=None)
         drawn.value_axis.tick_labels.number_format = "#,##0"
+        for axis in (drawn.category_axis, drawn.value_axis):
+            axis.tick_labels.font.size = Pt(10)
+            axis.tick_labels.font.name = font
+        # A smaller offset keeps category labels off the axis title.
+        drawn.category_axis.tick_labels.offset = 40
     if show:
         plot = drawn.plots[0]
         plot.has_data_labels = True
         plot.data_labels.number_format = "#,##0"
-        plot.data_labels.font.size = Pt(8)
+        plot.data_labels.font.size = Pt(10)
         plot.data_labels.font.name = font
+    if mark != "pie" and len(series) > 1:
+        from pptx.enum.chart import XL_LEGEND_POSITION
+
+        drawn.has_legend = True
+        drawn.legend.position = XL_LEGEND_POSITION.BOTTOM
+        drawn.legend.include_in_layout = True
+        drawn.legend.font.size = Pt(10)
+        drawn.legend.font.name = font
     if mark == "pie":
         drawn.plots[0].vary_by_categories = True
         for index, point in enumerate(drawn.series[0].points):

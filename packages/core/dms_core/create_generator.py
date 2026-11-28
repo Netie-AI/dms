@@ -247,7 +247,7 @@ def render_context(
     return "\n".join(
         [
             _tag("schema", data_context.get("schema")),
-            _tag("data", data_context.get("data")),
+            _tag("data", _shown_numbers(data_context.get("data"))),
             _tag("choices", {"spec": dict(spec), "choices": data_context.get("choices")}),
             _tag("style", style),
             _tag("examples", examples),
@@ -867,6 +867,7 @@ def _plain_system(spec: Mapping[str, Any] | None = None) -> str:
     figures = (
         "Every cited figure must be copied from a result row "
         "or an aggregate already in the data.\n"
+        "Write every number with thousands separators and no trailing .0.\n"
     )
     if isinstance(deck, dict) and deck.get("step") == "outline":
         return (
@@ -947,6 +948,25 @@ def _score_check(
     return False
 
 
+def _shown_numbers(value: Any) -> Any:
+    """Figures in the prompt use thousands separators and no trailing .0."""
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        if abs(value) >= 1000 and not 1900 <= value <= 2100:
+            return f"{value:,}"
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return _shown_numbers(int(value))
+        return f"{value:,.2f}"
+    if isinstance(value, list):
+        return [_shown_numbers(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _shown_numbers(item) for key, item in value.items()}
+    return value
+
+
 def _tag(name: str, value: Any) -> str:
     text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
     escaped = text.replace("&", "&amp;").replace("<", "&lt;")
@@ -977,9 +997,7 @@ def _unsupported(
     for match in _NUM.finditer(prose):
         if _is_list_marker(prose, match):
             continue
-        forms = _match_forms(
-            match.group("body"), bool(match.group("pct")), match.group("suffix")
-        )
+        forms = _match_forms(match.group("body"), bool(match.group("pct")), match.group("suffix"))
         if not forms.isdisjoint(allowed):
             continue
         if match.group("suffix") and _suffix_near(match, pool):

@@ -413,6 +413,13 @@ def _governed(
             _save(session)
             return _view(session)
         artifact, issues = _from_turn(session, repair, section_id)
+        if (
+            not issues
+            and isinstance(artifact, dict)
+            and _doc_overflow(session, artifact)
+            and not _cursor_run()
+        ):
+            issues = ["layout:overflow"]
     scored = _score_pair(session, artifact) if isinstance(artifact, dict) else None
     if scored is not None:
         session["score"] = {

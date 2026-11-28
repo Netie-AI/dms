@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: charts sit under the heading
+
+- **Doc.** Each chart is drawn under its own heading, at the bitmap's aspect. Rows are a table with a header. Headings are larger and bold. A section that does not fit is kept. After one condense, a doc that still overflows is not shown.
+- **Slides.** Tick labels are 10pt. Data labels are at least 9pt. A slide holds two charts. The legend sits at the bottom.
+- **Numbers.** The prompt and the rendered app write figures with thousands separators and no trailing `.0`.
+- **Colour.** A generated palette colour is not both a near hue and a near RGB of one already chosen.
+
 ## 2026-11-28 - DMS-CREATE-01: slides stay on the page, type stays readable
 
 - **Geometry.** Every text box is the slide width minus the margins. A long title grows (at most two lines) and the body starts below it.

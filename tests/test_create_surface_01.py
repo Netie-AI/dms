@@ -1209,7 +1209,9 @@ def test_confirm_writes_pptx_pdf_and_a_one_page_doc(
     close_lakes()
     client.post(f"/v1/studio/create/sessions/{many_id}/confirm", headers=HEADERS)
     many_pdf = (tmp_path / "store" / many_id / "doc.pdf").read_bytes()
-    assert many_pdf.count(b"/Type /Page ") == 3
+    assert b"First" in many_pdf
+    assert b"Second" in many_pdf
+    assert many_pdf.count(b"/Type /Page ") == 1
 
 
 def test_share_claim_must_match_the_computed_shares() -> None:
@@ -1341,6 +1343,7 @@ def test_plain_prompt_states_the_schema_and_repairs_once(
         user = body["messages"][1]["content"]
         assert "one JSON object" in system
         assert "result row" in system
+        assert "thousands separators" in system
         assert '"kind"' in system
         assert '"parts"' in system
         assert "Short title" in system
@@ -1387,7 +1390,10 @@ def test_pdf_wraps_and_keeps_every_line(tmp_path: Path) -> None:
     assert b"/Subtype /Image" in pdf
     start = pdf.find(b"line 0")
     assert start > 0
-    assert b" Do" in pdf[start : pdf.find(b"endstream", start)]
+    stream_at = pdf.rfind(b"stream\n", 0, start)
+    assert b" Do" in pdf[stream_at : pdf.find(b"endstream", start)]
+    assert b"(Region) Tj" in pdf
+    assert b" | " not in pdf
     for block in re.findall(rb"BT\n(.*?)\nET", pdf, re.S):
         for line in re.findall(rb"\(([^)]*)\) Tj", block):
             assert len(line) <= 90
@@ -1431,7 +1437,9 @@ def test_pptx_multi_series_brand_and_extra_slide(tmp_path: Path) -> None:
         brand={"colours": "#112233 #445566", "fonts": "Source Sans"},
     )
     deck = Presentation(str(tmp_path / "slides.pptx"))
-    assert len(deck.slides) == 1
+    assert len(deck.slides) == 3
+    first = [shape.chart for shape in deck.slides[0].shapes if shape.has_chart]
+    assert len(first) == 2
     drawn = [shape.chart for slide in deck.slides for shape in slide.shapes if shape.has_chart]
     assert len(drawn) == 6
     assert len(drawn[0].series) == 4
@@ -1610,6 +1618,11 @@ def test_one_page_doc_fits_charts_and_a_deck_is_one_page_per_slide(tmp_path: Pat
     assert "p:fade" in show.slides[0]._element.xml
     drawn = next(shape.chart for shape in show.slides[0].shapes if shape.has_chart)
     assert drawn.plots[0].has_data_labels
+    assert drawn.plots[0].data_labels.font.size is not None
+    assert drawn.plots[0].data_labels.font.size.pt >= 9
+    assert drawn.value_axis.tick_labels.font.size is not None
+    assert drawn.value_axis.tick_labels.font.size.pt == 10
+    assert drawn.category_axis.tick_labels.font.size.pt == 10
     assert drawn.value_axis.tick_labels.number_format == "#,##0"
 
 
@@ -1664,6 +1677,14 @@ def test_chart_spec_pivots_a_long_table_and_axes_stay_plain(
     assert [series.name for series in drawn.series] == ["North", "South"]
     assert list(drawn.plots[0].categories) == ["Q1", "Q2", "Q3"]
     assert drawn.category_axis.axis_title.text_frame.text == "Quarter"
+    from pptx.enum.chart import XL_LEGEND_POSITION
+    from pptx.util import Pt
+
+    assert drawn.has_legend
+    assert drawn.legend.position == XL_LEGEND_POSITION.BOTTOM
+    assert drawn.value_axis.tick_labels.font.size == Pt(10)
+    assert drawn.category_axis.tick_labels.offset == 40
+    assert drawn.plots[0].data_labels.font.size.pt >= 9
     assert "1,000,000" in seen
     assert all("e" not in item.lower() for item in seen)
     wide = {
@@ -1751,11 +1772,17 @@ def test_slide_boxes_stay_on_the_slide_and_charts_use_distinct_colours(tmp_path:
     colours = _palette({"colours": "#112233", "fonts": "", "logo": "", "tone": ""})
     assert len(colours) >= 6
     assert len(set(colours)) == len(colours)
+    from dms_executor.create_files import _hue_gap, _rgb_gap
+
+    assert _rgb_gap(colours[0], colours[1]) >= 90
+    assert _hue_gap(colours[0], colours[1]) >= 40
 
 
 def test_one_page_body_stays_at_least_9pt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    import re
+
     from dms_executor.create_files import render_artifact
 
     body = "\n".join(["Orders held steady."] * 80)
@@ -1766,10 +1793,11 @@ def test_one_page_body_stays_at_least_9pt(
     }
     render_artifact(tmp_path, artifact, kind="doc", one_page=True)
     pdf = (tmp_path / "doc.pdf").read_bytes()
-    assert b"/F1 4 Tf" not in pdf
-    assert b"/F1 9 Tf" in pdf
+    sizes = [int(item) for item in re.findall(rb"/F1 (\d+) Tf", pdf)]
+    assert sizes
+    assert min(sizes) >= 9
     assert b"Orders held steady" in pdf
-    assert b"DROPTAIL" not in pdf
+    assert b"DROPTAIL" in pdf
     client = _client(monkeypatch, tmp_path / "api", "1")
     long = {
         "kind": "doc",
@@ -1881,6 +1909,148 @@ def test_a_broken_long_deck_is_built_in_batches(
     assert "Only the slides named" in batch_system
 
 
+def test_pdf_puts_each_chart_under_its_heading(tmp_path: Path) -> None:
+    import re
+
+    from dms_executor.create_files import render_artifact
+
+    def part(title: str, body: str, label: str) -> dict[str, Any]:
+        return {
+            "id": title,
+            "title": title,
+            "body": body,
+            "rows": [
+                {"region": "North", "revenue": "1606773.0"},
+                {"region": "South", "revenue": 12},
+            ],
+            "charts": [
+                {
+                    "label": label,
+                    "type": "pie",
+                    "rows": [
+                        {"region": "North", "revenue": 40},
+                        {"region": "South", "revenue": 25},
+                        {"region": "East", "revenue": 20},
+                        {"region": "West", "revenue": 15},
+                    ],
+                }
+            ],
+        }
+
+    artifact = {
+        "kind": "doc",
+        "title": "Brief",
+        "parts": [
+            part("ALPHAHEAD", "Alpha stays with its chart.", "Alpha pie"),
+            part("BETAHEAD", "Beta stays with its chart.", "Beta pie"),
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="doc", one_page=False)
+    pdf = (tmp_path / "doc.pdf").read_bytes()
+    alpha = pdf.find(b"ALPHAHEAD")
+    beta = pdf.find(b"BETAHEAD")
+    first = pdf.find(b"/Im0 Do")
+    second = pdf.find(b"/Im1 Do")
+    assert 0 < alpha < first < beta < second
+    assert b"/F1 14 Tf" in pdf
+    assert b"/F1 18 Tf" in pdf
+    assert b"2 Tr" in pdf
+    assert b"(Region) Tj" in pdf
+    assert b"(Revenue) Tj" in pdf
+    assert b"1,606,773" in pdf
+    assert b"1606773.0" not in pdf
+    assert b" | " not in pdf
+    dims = [
+        (int(width), int(height))
+        for width, height in re.findall(rb"/Width (\d+) /Height (\d+)", pdf)
+    ]
+    placed = re.findall(
+        rb"q ([\d.]+) 0 0 ([\d.]+) ([\d.]+) ([\d.]+) cm /Im(\d+) Do",
+        pdf,
+    )
+    assert len(placed) == 2
+    for draw_w, draw_h, _x, y, index in placed:
+        px_w, px_h = dims[int(index)]
+        assert abs((float(draw_w) / float(draw_h)) - (px_w / px_h)) < 0.05
+        assert float(y) >= 42
+    bases = [float(item) for item in re.findall(rb"40 ([\d.]+) Td", pdf)]
+    assert bases
+    assert all(item >= 42 or abs(item - 26) < 0.1 for item in bases)
+
+
+def test_one_page_pdf_keeps_every_section_or_the_draft_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dms_executor.create_files import render_artifact
+
+    long = "\n".join(["Orders held steady."] * 70)
+    artifact = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [
+            {"id": "a", "title": "Opened", "body": long},
+            {"id": "b", "title": "Returns", "body": "The returns stay."},
+            {"id": "c", "title": "What this means", "body": "MEANINGTOKEN"},
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="doc", one_page=True)
+    pdf = (tmp_path / "doc.pdf").read_bytes()
+    for title in (b"Opened", b"Returns", b"What this means", b"MEANINGTOKEN"):
+        assert title in pdf
+    client = _client(monkeypatch, tmp_path / "api", "1")
+    huge = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [{"id": "a", "title": "Opened", "body": "\n".join(["Orders held steady."] * 200)}],
+    }
+    stub = _patch(monkeypatch, [huge, huge])
+    opened = client.post(
+        "/v1/studio/create/sessions",
+        json={
+            "space_id": SPACE,
+            "kind": "doc",
+            "goal": "Write a one page note",
+            "audience": "Founder",
+        },
+        headers=HEADERS,
+    )
+    session_id = opened.json()["session_id"]
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is False
+    assert "layout:overflow" in view["issues"]
+    assert "layout:condense" in stub.bodies[1]["messages"][1]["content"]
+
+
+def test_numbers_are_formatted_in_the_prompt_and_the_app(tmp_path: Path) -> None:
+    from dms_core.create_generator import direct_prompt
+    from dms_executor.create_files import render_artifact
+
+    spec = {"kind": "app", "goal": "See the total", "audience": "Founder"}
+    context = {"data": [{"name": "orders", "stats": [{"column": "amount", "sum_v": 1606773.0}]}]}
+    text = direct_prompt(spec, context, {})
+    assert "1,606,773" in text
+    assert "1606773.0" not in text
+    assert "thousands separators" in text
+    artifact = {
+        "kind": "app",
+        "title": "Revenue",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Total",
+                "body": "The total is 1606773.0.",
+                "rows": [{"region": "North", "amount": "1606773.0"}],
+            }
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="app", one_page=False)
+    html = (tmp_path / "app.html").read_text(encoding="utf-8")
+    assert "1,606,773" in html
+    assert "1606773.0" not in html
+
+
 def test_chart_rows_past_forty_stay_and_a_sliced_part_is_marked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1930,7 +2100,7 @@ def test_chart_rows_past_forty_stay_and_a_sliced_part_is_marked(
     assert html.count("<table>") == 1
     assert "Showing 40 of 48." in html
     assert "m48" not in html
-    assert b"Showing 40 of 48." in pdf
+    assert b"Showing 8 of 48." in pdf
     assert b"m48" not in pdf
 
 
