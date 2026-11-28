@@ -18,6 +18,7 @@ export const REASON_COPY: Record<string, string> = {
   ambiguous_measure: "More than one measure fits, so no figure was given until you choose.",
   ambiguous_path: "More than one way to join the tables fits, so no figure was given.",
   arbiter_disagree: "The checked results disagree, so no figure was given.",
+  ask_failed: "The answer service did not return a result, so no figure was given.",
   as_of: "The as-of date could not be applied, so no figure was given.",
   budget: "This question used the time allowed for one answer, so it stopped.",
   budget_askback: "There is a choice to continue or to narrow the question before a figure is given.",
