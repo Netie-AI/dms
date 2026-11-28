@@ -46,14 +46,147 @@ def enabled() -> bool:
 
 
 def grounded_generate_prompt(turn: Any) -> str:
-    """SQL instruction that includes this question and the granted schema."""
+    """SQL instruction. Schema is already on it. Kept for callers that want the text."""
+    return str(generate_request(turn)["sql_vote_prompt"])
+
+
+def generate_request(turn: Any) -> dict[str, Any]:
+    """SCALE_MISS generate body. Context is attached before the model is called.
+
+    The question text carries the schema, because this call replaces the asked
+    text. ``schema_context`` is the same prompt, so the insights shortlist is
+    the granted schema. ``vq_examples`` is what the seam appends. A second
+    copy of the schema in the question is the ceiling: the shortlist field is
+    dropped when ``DMS_SCHEMA_CONTEXT`` is off. Upgrade: drop the question
+    copy once that field is the only prompt the engine shows the model.
+    """
+    from cortex_client.insights import SCHEMA_CONTEXT_FIELD
+
     question = str(getattr(turn, "question", "") or "")
-    return (
+    schema, onto, examples = _writer_context(turn)
+    parts = [
         "Write one SELECT that answers the question. "
-        "Use only the granted schema. Return the SQL.\n"
-        f"Granted schema:\n{schema_block(turn)}\n"
-        f"Question:\n{question}"
+        "Use only the granted schema. Return the SQL.",
+    ]
+    if schema:
+        parts.append(schema)
+    if onto:
+        parts.append("Ontology:\n" + onto)
+    parts.append(f"Question:\n{question}")
+    ctx: dict[str, Any] = {
+        "sql_vote_prompt": "\n".join(parts),
+        "sql_vote_kind": "direct",
+    }
+    if schema:
+        ctx[SCHEMA_CONTEXT_FIELD] = schema
+    if examples:
+        ctx["vq_examples"] = examples
+    for key, value in _catalog_fields(turn).items():
+        ctx.setdefault(key, value)
+    return ctx
+
+
+def _writer_context(turn: Any) -> tuple[str, str, str]:
+    return _schema_prompt(turn), _ontology_prompt(turn), _examples_prompt(turn)
+
+
+def _schema_prompt(turn: Any) -> str:
+    """Granted schema prompt. Column names when the catalog cannot be built."""
+    from dms_executor.schema_context import (
+        build_schema_context,
+        lookup_schema,
+        schema_context_is_empty,
     )
+
+    grantable = set(getattr(turn, "grantable", None) or ())
+    warehouse = getattr(turn, "warehouse", None)
+    path = warehouse if isinstance(warehouse, Path) else None
+    dialect = str(getattr(turn, "dialect", "") or "") or None
+    space_id = getattr(turn, "space_id", None)
+    question = str(getattr(turn, "question", "") or "")
+    ontology = getattr(turn, "ontology", None)
+    try:
+        described, _stamp = lookup_schema(path, grantable, dialect, space_id)
+        built = build_schema_context(
+            question,
+            described,
+            ontology=ontology,
+            grantable=grantable,
+            space_id=space_id,
+        )
+    except Exception as exc:
+        if type(exc).__name__ in _RAISE:
+            raise
+        return schema_block(turn)
+    if schema_context_is_empty(built.prompt):
+        return schema_block(turn)
+    return built.prompt
+
+
+def _ontology_prompt(turn: Any) -> str:
+    ontology = getattr(turn, "ontology", None)
+    if ontology is None:
+        return ""
+    try:
+        from dms_executor.shape_check import ontology_slice
+
+        text = json.dumps(ontology_slice(ontology), sort_keys=True, default=str)
+    except Exception as exc:
+        if type(exc).__name__ in _RAISE:
+            raise
+        return ""
+    if text in ("", "{}"):
+        return ""
+    return text[:4000]
+
+
+def _examples_prompt(turn: Any) -> str:
+    """Retrieved verified examples. Empty when that store has none for this ask."""
+    from dms_executor.verified_queries import examples_text, retrieve_verified_examples
+
+    question = str(getattr(turn, "question", "") or "")
+    warehouse = getattr(turn, "warehouse", None)
+    path = warehouse if isinstance(warehouse, Path) else None
+    grantable = set(getattr(turn, "grantable", None) or ())
+    dialect = str(getattr(turn, "dialect", "") or "") or None
+    try:
+        rows = retrieve_verified_examples(
+            question,
+            space_id=getattr(turn, "space_id", None),
+            warehouse=path,
+            grantable=grantable,
+            dialect=dialect,
+        )
+    except Exception as exc:
+        if type(exc).__name__ in _RAISE:
+            raise
+        return ""
+    return examples_text(rows)
+
+
+def _catalog_fields(turn: Any) -> dict[str, Any]:
+    """Space ontology keys the insights body already accepts. Empty otherwise."""
+    ontology = getattr(turn, "ontology", None)
+    grantable = set(getattr(turn, "grantable", None) or ())
+    try:
+        from dms_executor.space_ontology import Ontology, space_catalog
+    except Exception as exc:
+        if type(exc).__name__ in _RAISE:
+            raise
+        return {}
+    if not isinstance(ontology, Ontology):
+        return {}
+    try:
+        block = space_catalog(ontology, [], grantable)
+    except Exception as exc:
+        if type(exc).__name__ in _RAISE:
+            raise
+        return {}
+    return {
+        key: block[key]
+        for key in ("objects", "links", "measures")
+        if key in block
+    }
 
 
 def schema_block(turn: Any) -> str:

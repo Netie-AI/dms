@@ -374,5 +374,64 @@ def test_flag_on_generate_prompt_names_the_schema(
     prompt = calls[0]["sql_vote_prompt"]
     assert prompt != reading_prompt(_Q, reading=1)
     assert _Q in prompt
-    assert "lots.sku" in prompt
+    assert "SCHEMA" in prompt
+    assert "lots" in prompt
+    assert "sku" in prompt
+    assert calls[0]["schema_context"] in prompt
     assert calls[0].get("route_hint") not in {"gpt", "claude", "openai"}
+    assert calls[0].get("vq_examples") in (None, "")
+
+
+def test_scale_miss_generate_attaches_schema_before_sql(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The generate call sees schema, ontology, and a retrieved example.
+
+    SQL from that call is kept. The readings ask-back runs only when it is empty.
+    """
+    from dms_executor.scale_miss import begin, bind_turn, reset_turn
+
+    db = _db(tmp_path)
+    calls: list[dict[str, Any]] = []
+    example_sql = "SELECT count(*) FROM lots"
+    ontology = {
+        "grain_keys": [{"object": "lots", "keys": ["sku"]}],
+        "measures": [{"name": "on_hand", "grain": "lots", "expression": "sum(qty)"}],
+    }
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(ctx))
+        return {"query_sql": "SELECT sum(qty) FROM lots"}
+
+    def _examples(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [{"question": _Q, "sql": example_sql}]
+
+    monkeypatch.setattr(
+        "dms_executor.verified_queries.retrieve_verified_examples",
+        _examples,
+    )
+    _flag(monkeypatch, True)
+    token = bind_turn(None)
+    try:
+        stopped = begin(
+            question=_Q,
+            compute=compute,
+            ontology=ontology,
+            warehouse=db,
+            grantable={"lots"},
+            dialect="duckdb",
+            space_id="space-lots",
+            session_id=None,
+        )
+    finally:
+        reset_turn(token)
+    assert stopped is None
+    prompt = calls[0]["sql_vote_prompt"]
+    assert "SCHEMA" in prompt
+    assert "- lots " in prompt or prompt.startswith("SCHEMA") or "\n- lots" in prompt
+    assert "sku" in prompt
+    assert "on_hand" in prompt
+    assert _Q in prompt
+    assert calls[0]["schema_context"] in prompt
+    assert example_sql in calls[0]["vq_examples"]
+    assert len(calls) == 1
