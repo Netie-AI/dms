@@ -12,4 +12,6 @@ A refusal whose code is parent_rows_repeat, fan_trap, join_kind, or subquery_sha
 
 Unit file `tests/test_bird_join_gate_01.py`: 12 passed. Word-rule ceiling and boundary invariants stayed green. Synthetic schemas only. The BIRD corpus was not read.
 
-Stub 52, `grade52 --main`, product `b0580b3`, base `515f7a5`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20 stamp_contradiction=0. Both flags on: the same counts. Rule-served answers did not grow. Armed grade52 was not run. Not PASS.
+The spaces route records the ratio through `dms_core`. It does not import the executor.
+
+Stub 52, `grade52 --main`, rebased onto `05bc1e7`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20 stamp_contradiction=0. Both flags on: the same counts. Rule-served answers did not grow. Armed grade52 was not run. Not PASS.
