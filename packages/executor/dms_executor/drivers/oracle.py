@@ -270,7 +270,12 @@ def governed_ask(
         except Exception:
             pass
         mapped = schema_map(con)
-        wrapped = page_sql(_one_statement(sql), ROW_CAP, 0)
+        # ROWNUM is the cap Oracle Free accepts on a grouped inline view.
+        # OFFSET/FETCH came back bad_request on that image.
+        wrapped = (
+            f"SELECT * FROM ({_one_statement(sql)}) dms_cap "
+            f"WHERE ROWNUM <= {int(ROW_CAP) + 1}"
+        )
         cur = con.cursor()
         try:
             cur.execute(wrapped)
@@ -284,6 +289,9 @@ def governed_ask(
     except Exception as exc:
         if _call_timed_out(exc):
             raise DriverError("timeout") from None
+        digits = _ora_digits(exc)
+        if digits:
+            raise DriverError(f"ora-{digits}") from None
         raise DriverError("bad_request") from None
     finally:
         _close(con)
