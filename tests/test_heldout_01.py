@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from bench.bird import baseline, gold, heldout, run  # noqa: E402
+from bench.bird import memory as heldout_memory  # noqa: E402
 from bench.bird.__main__ import main  # noqa: E402
 
 
@@ -165,6 +166,67 @@ def test_spider_sqlite_slice_skips_cloud_and_missing_gold(tmp_path: Path) -> Non
     assert "how many items" not in blob
     assert "SELECT" not in blob
     assert "traffic" not in blob
+
+
+def test_memory_is_context_and_budget_is_the_daily_cap(tmp_path: Path) -> None:
+    summary = heldout_memory.run_compare_check(tmp_path)
+    assert summary["equal_wrong"] == 0
+    assert summary["replay_treatment"] == "abstain"
+    assert summary["clarify_treatment"] == "abstain"
+    assert summary["control_wrong_on_clarify_case"] == 1
+    assert summary["budget_default"] == 500
+    assert summary["calls_on_cap_2"] == 2
+    assert heldout_memory.memory_on({"DMS_HELDOUT_MEMORY": "1"})
+    assert not heldout_memory.memory_on({"DMS_HELDOUT_MEMORY": "true"})
+    assert not heldout_memory.memory_on({})
+
+
+def test_compare_without_key_is_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv(run.FLAG, "1")
+    monkeypatch.setenv(heldout_memory.FLAG, "1")
+    monkeypatch.setenv("OPENVAULT_URL", "http://ov.example")
+    monkeypatch.delenv("OPENVAULT_API_KEY", raising=False)
+    monkeypatch.delenv("CORTEX_API_KEY", raising=False)
+    sessions = tmp_path / "sessions.jsonl"
+    sessions.write_text(
+        '{"kind":"confirmed","db_id":"archive","question":"count items","sql":"SELECT 1"}\n',
+        encoding="utf-8",
+    )
+    code = main(
+        [
+            "compare",
+            "--dataset",
+            "bird",
+            "--sessions",
+            str(sessions),
+            "--questions",
+            str(tmp_path / "q.json"),
+            "--db-root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "out.jsonl"),
+            "--limit",
+            "1",
+        ]
+    )
+    captured = capsys.readouterr().out
+    assert code == run.EXIT_CONFIG
+    assert "ov_ key" in captured
+    assert "PASS" not in captured
+    assert "Not a live pass" in captured
+
+
+def test_same_database_sessions_are_not_retrieved() -> None:
+    memory = {
+        "examples": [
+            {"question": "count items", "sql": "SELECT 1", "db_id": "shop", "note": ""},
+        ],
+        "notes": [],
+    }
+    pack = heldout_memory.retrieve(memory, "count items", exclude_db="shop")
+    assert pack["examples"] == []
 
 
 def test_stub_abstain_ignores_question_text(tmp_path: Path) -> None:

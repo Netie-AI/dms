@@ -175,6 +175,118 @@ def cmd_run(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
+def cmd_compare_check() -> int:
+    import tempfile
+
+    from bench.bird.heldout import keys_present
+    from bench.bird.memory import DAILY_CAP, run_compare_check
+
+    with tempfile.TemporaryDirectory(prefix="heldout-compare-") as tmp:
+        try:
+            summary = run_compare_check(Path(tmp))
+        except AssertionError as exc:
+            print(f"FAIL: {exc}")
+            return EXIT_FAIL
+    keys = "present" if keys_present() else "absent"
+    print(
+        "CONTROL WRONG=0 heldout_correct=1 n=1 "
+        "TREATMENT WRONG=0 heldout_correct=1 n=1"
+    )
+    print(
+        f"replay_treatment={summary['replay_treatment']} "
+        f"clarify_treatment={summary['clarify_treatment']} "
+        f"control_wrong_on_clarify_case={summary['control_wrong_on_clarify_case']}"
+    )
+    print(f"budget_default={summary['budget_default']} daily_cap={DAILY_CAP}")
+    print(f"provider=stub live=not_run keys={keys} improvement=unmeasured")
+    print("pass=false target=null")
+    print("compare-check ok")
+    return EXIT_PASS
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    from bench.bird.corpus import load_questions, validate_full
+    from bench.bird.heldout import HeldoutConfig, live_block, load_spider
+    from bench.bird.memory import (
+        DAILY_CAP,
+        Budget,
+        arm_summary,
+        format_compare,
+        memory_on,
+        mine_sessions,
+        run_pairs,
+        write_pairs,
+    )
+    from bench.bird.run import post_json
+
+    blocked = _need_flag()
+    if blocked is not None:
+        return blocked
+    if not memory_on():
+        return _config("DMS_HELDOUT_MEMORY is off. No compare. Not a score.")
+    code = live_block()
+    if code == "openvault_url":
+        return _config("compare needs OPENVAULT_URL. No score. Not a live pass.")
+    if code == "openvault_key":
+        return _config("compare needs an ov_ key. No score. Not a live pass.")
+    found = _ov_headers()
+    if not found:
+        return _config("compare needs an ov_ key. No score. Not a live pass.")
+    if not args.sessions:
+        return _config("compare needs --sessions. No score.")
+    try:
+        memory = mine_sessions(Path(args.sessions))
+    except (OSError, ValueError):
+        return _config("sessions file is unreadable. No score.")
+    if not memory["examples"] and not memory["notes"]:
+        return _config("sessions file has no confirmed or wrong rows. No score.")
+    budget_n = args.budget if args.budget is not None else DAILY_CAP
+    if budget_n > DAILY_CAP:
+        budget_n = DAILY_CAP
+        print(f"budget clamped to daily_cap={DAILY_CAP}")
+    try:
+        if args.dataset == "spider2":
+            if not args.root:
+                return _config("spider2 needs --root. No download and no score.")
+            loaded = load_spider(Path(args.root))
+            questions = [row for row in loaded.questions if not row.get("gold_missing")]
+            db_root = loaded.db_root
+        else:
+            if not args.questions or not args.db_root:
+                return _config("bird needs --questions and --db-root.")
+            questions = load_questions(Path(args.questions))
+            problem = validate_full(questions, limit=args.limit)
+            if problem:
+                return _config(problem + ". Pass --limit for a smoke run. Not a Mini-Dev score.")
+            if args.limit is not None:
+                questions = questions[: args.limit]
+            db_root = Path(args.db_root)
+    except HeldoutConfig as exc:
+        return _config(str(exc.code) + ". No score.")
+    if not questions:
+        return _config("no questions to score.")
+
+    ov_url = (args.openvault or os.environ.get("OPENVAULT_URL") or "").strip()
+
+    def post(url: str, body: dict, headers: dict) -> tuple:
+        merged = dict(found)
+        merged.update(headers)
+        return post_json(url, body, merged)
+
+    spent = Budget(budget_n)
+    rows = run_pairs(questions, db_root, memory, post, spent, ov_url=ov_url)
+    control = arm_summary(rows, "control")
+    treatment = arm_summary(rows, "treatment")
+    write_pairs(Path(args.out), rows)
+    print(format_compare(control, treatment))
+    print(
+        f"calls={spent.used} budget={budget_n} pairs={len(rows)} "
+        "provider_sent=false route=openvault"
+    )
+    print("live=ran improvement=unmeasured pass=false")
+    return EXIT_PASS
+
+
 def cmd_heldout_check() -> int:
     import tempfile
 
@@ -380,6 +492,18 @@ def main(argv: list[str] | None = None) -> int:
     score.add_argument("--jsonl", required=True)
 
     sub.add_parser("heldout-check")
+    sub.add_parser("compare-check")
+
+    compare = sub.add_parser("compare")
+    compare.add_argument("--dataset", choices=("bird", "spider2"), required=True)
+    compare.add_argument("--sessions", required=True)
+    compare.add_argument("--out", required=True)
+    compare.add_argument("--questions", default=None)
+    compare.add_argument("--db-root", default=None)
+    compare.add_argument("--root", default=None)
+    compare.add_argument("--limit", type=int, default=None)
+    compare.add_argument("--budget", type=int, default=None)
+    compare.add_argument("--openvault", default=None)
 
     held = sub.add_parser("heldout")
     held.add_argument("--dataset", choices=("bird", "spider2"), required=True)
@@ -412,6 +536,8 @@ def main(argv: list[str] | None = None) -> int:
         "nightly": lambda: cmd_nightly(args),
         "heldout-check": lambda: cmd_heldout_check(),
         "heldout": lambda: cmd_heldout(args),
+        "compare-check": lambda: cmd_compare_check(),
+        "compare": lambda: cmd_compare(args),
     }
     return commands[args.cmd]()
 

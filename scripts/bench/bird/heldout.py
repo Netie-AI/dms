@@ -62,6 +62,8 @@ FAIL_STAGES = (
     "sql_generation",
     "self_correction",
     "rule_served",
+    "intent",
+    "stored_replay",
     "unknown",
 )
 SPIDER_LICENCE = "MIT"
@@ -147,6 +149,10 @@ def failure_stage(row: Mapping[str, Any]) -> str:
         return "self_correction"
     if label == "wrong" or code in SQL_GEN:
         return "sql_generation"
+    if code == "clarify" or row.get("reason") == "clarify":
+        return "intent"
+    if code == "stored_replay" or row.get("reason") == "stored_replay":
+        return "stored_replay"
     return "unknown"
 
 

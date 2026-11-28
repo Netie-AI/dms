@@ -763,6 +763,11 @@ jobs:
         # BIRD or Spider, and does not call OpenVault.
         run: python scripts/bench/bird/__main__.py heldout-check
 
+      - name: Held-out compare check (stub arms, not a live score)
+        # DMS-ACC-HELDOUT-01. Memory is context. A copied example is not served.
+        # Does not call OpenVault. Default budget is the 500/day cap.
+        run: python scripts/bench/bird/__main__.py compare-check
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

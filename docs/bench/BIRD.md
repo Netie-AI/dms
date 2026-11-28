@@ -215,5 +215,37 @@ Each JSONL line stores ids, the held-out label, the stage, execution
 accuracy, latency, cost when OpenVault sent a usage number, and the
 escalation step. It does not store the question, the SQL, row values, or
 the key. Stages are schema retrieval, ontology mapping, SQL generation,
-and self-correction, plus rule_served. A code that is not one of those
-stays unknown. This tally does not change `POST /v1/chat/ask`.
+and self-correction, plus rule_served, intent, and stored_replay. A code
+that is not one of those stays unknown. This tally does not change
+`POST /v1/chat/ask`.
+
+## Compare
+
+`DMS_HELDOUT_MEMORY` defaults off. Only the digit `1` turns the treatment
+on. `true` stays off.
+
+`compare-check` is local. It does not call OpenVault. A matched stub reply
+scores the same on both arms. A reply that copies a retrieved example is
+`stored_replay` and is not executed. A `CLARIFY` reply is an abstain
+(`intent`), not a WRONG number. The default budget is 500 calls, the daily
+cap. The check prints `improvement=unmeasured`.
+
+`compare` is the live pair: plain control (schema and question, role
+`sql`) versus treatment (retrieved examples, failure notes, and a clarify
+instruction). OpenVault routes. No provider and no model id are sent.
+Sessions are a JSONL the operator supplies (`kind` `confirmed` or
+`wrong`, plus `question`, `sql`, `db_id`). Rows from the database under
+test are not retrieved. The call budget defaults to 500 and is clamped to
+500. A missing URL or `ov_` key exits 2 before any call. That exit is not
+a live pass, and it is not an accuracy gain.
+
+```
+python scripts/bench/bird/__main__.py compare-check
+
+DMS_BIRD_HARNESS=1 DMS_HELDOUT_MEMORY=1 \
+python scripts/bench/bird/__main__.py compare \
+    --dataset bird --sessions /tmp/sessions.jsonl \
+    --questions /tmp/bird/minidev/MINIDEV/mini_dev_sqlite.json \
+    --db-root /tmp/bird/minidev/MINIDEV/dev_databases \
+    --out /tmp/bird/compare.jsonl
+```
