@@ -1,6 +1,13 @@
 # PARKING_LOT.md — DMS
 
 **Deferred until condition is met.**
+
+## READY-02 leftover: SAML 2.0 and SCIM (#634)
+
+`DMS_SSO` (default off, digit 1 only) covers password login, roles, and OIDC for Google, Microsoft Entra, and a generic Okta issuer. SAML 2.0 and SCIM group sync, including IdP deprovision, are not in that change.
+
+**Unlock:** a buyer names the SAML identity provider or asks for SCIM deprovision, and the founder GO for auth is still in force. Do not store an IdP secret in the repo. Use an OpenVault `cred_ref`.
+
 **Ledger updated:** 2026-08-05 afternoon — F29 NEEDS-YOU closed **A** (thin EPIC-023 deferred SURFACE; B/H6 rejected; P-DMS-30 stays parked). Accuracy RUN NOW = residual EPIC-017/018 completeness (#33/#35), then EPIC-019. EPIC-023 not ticketed.
 
 ## WORD-RULES-OUT-01 - keyword measure locks behind DMS_NO_WORD_RULES

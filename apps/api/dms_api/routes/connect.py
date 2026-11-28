@@ -23,6 +23,7 @@ from dms_core.control_plane.connect_store import ConnectStoreError, allowed_kind
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from dms_api.auth_sso import bound_tenant_id
 from dms_api.deps import (
     AskServiceDep,
     CortexDep,
@@ -205,7 +206,7 @@ async def connect_source(
                 store=store,
                 ask=ask,
                 database_url=settings.database_url,
-                tenant_id=settings.dms_tenant_id,
+                tenant_id=bound_tenant_id(settings.dms_tenant_id),
                 connector_id=connector_id.strip(),
                 space_name=space_name.strip(),
                 credential_ref=credential_ref.strip(),
@@ -264,7 +265,7 @@ async def grant_source(
         if settings.dms_connect_v2:
             return connect_v2_set_granted(
                 database_url=settings.database_url or "",
-                tenant_id=settings.dms_tenant_id,
+                tenant_id=bound_tenant_id(settings.dms_tenant_id),
                 source_id=source_id,
                 tables=tables,
                 granted=True,
@@ -305,7 +306,7 @@ async def revoke_source(
         if settings.dms_connect_v2:
             return connect_v2_set_granted(
                 database_url=settings.database_url or "",
-                tenant_id=settings.dms_tenant_id,
+                tenant_id=bound_tenant_id(settings.dms_tenant_id),
                 source_id=source_id,
                 tables=tables,
                 granted=False,
@@ -369,7 +370,7 @@ def list_sources(
     try:
         return connect_v2_list(
             database_url=_store_url(settings),
-            tenant_id=settings.dms_tenant_id,
+            tenant_id=bound_tenant_id(settings.dms_tenant_id),
             actor=settings.dms_actor_user_id,
             token_id=token_id,
         )
@@ -421,7 +422,7 @@ async def test_source(
         actor=settings.dms_actor_user_id,
         token_id=token_id,
         database_url=settings.database_url,
-        tenant_id=settings.dms_tenant_id,
+        tenant_id=bound_tenant_id(settings.dms_tenant_id),
     )
 
 
@@ -446,7 +447,7 @@ def source_schema(
         return connect_v2_schema(
             ask,
             database_url=_store_url(settings),
-            tenant_id=settings.dms_tenant_id,
+            tenant_id=bound_tenant_id(settings.dms_tenant_id),
             source_id=source_id,
         )
     except (KeyError, ValueError, ConnectCredentialError, ConnectStoreError) as exc:
@@ -492,7 +493,7 @@ async def query_source(
             query_id, iterator = connect_v2_export(
                 ask,
                 database_url=database_url,
-                tenant_id=settings.dms_tenant_id,
+                tenant_id=bound_tenant_id(settings.dms_tenant_id),
                 source_id=source_id,
                 sql=sql,
                 confirm_runaway=confirm,
@@ -514,7 +515,7 @@ async def query_source(
         return connect_v2_query(
             ask,
             database_url=database_url,
-            tenant_id=settings.dms_tenant_id,
+            tenant_id=bound_tenant_id(settings.dms_tenant_id),
             source_id=source_id,
             sql=sql,
             offset=offset,

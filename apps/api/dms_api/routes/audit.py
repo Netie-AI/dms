@@ -20,6 +20,7 @@ from dms_core.control_plane.session import set_tenant_context
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response
 
+from dms_api.auth_sso import bound_tenant_id, export_actor_basis
 from dms_api.deps import AskAuditDep, CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 
@@ -44,7 +45,7 @@ def list_ledger_refs(settings: SettingsDep, cortex: CortexDep) -> list[dict[str,
     if not settings.database_url:
         return []
     with psycopg.connect(settings.database_url) as conn:
-        set_tenant_context(conn, settings.dms_tenant_id, role="viewer")
+        set_tenant_context(conn, bound_tenant_id(settings.dms_tenant_id), role="viewer")
         rows = conn.execute(
             """
             SELECT seq, cortex_entry_id, created_at
@@ -53,7 +54,7 @@ def list_ledger_refs(settings: SettingsDep, cortex: CortexDep) -> list[dict[str,
              ORDER BY seq DESC
              LIMIT 100
             """,
-            (UUID(settings.dms_tenant_id),),
+            (UUID(bound_tenant_id(settings.dms_tenant_id)),),
         ).fetchall()
         conn.commit()
     return [
@@ -230,7 +231,7 @@ def export_asks(
             "X-Audit-Export-Verified": "true" if verification.verified else "false",
             "X-Audit-Ledger-Verify": verification.status,
             "X-Audit-Verify-Scope": verification.scope,
-            "X-Audit-Actor-Basis": ACTOR_BASIS,
+            "X-Audit-Actor-Basis": export_actor_basis(ACTOR_BASIS),
             "X-Audit-Store": audit.backend,
             "X-Audit-Unrecorded-Asks": str(audit.dropped),
         },

@@ -2,6 +2,31 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - READY-02: rebase onto fa0eeef
+
+- **Base.** Rebased onto `fa0eeef` (#655). READY-04 flags stay default off. `DMS_SSO` stays default off. `POST /v1/auth/login` still calls `compliance_gate` before a session is minted.
+- **Stub 52.** `grade52 --main` at `2982960`. correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. mode=stub-exec. stamp_contradiction=0. Unchanged. Armed grade52 and pack H were not run. Not PASS.
+
+## 2026-11-28 - READY-02: login calls the compliance gate
+
+- **Gate.** `POST /v1/auth/login` calls `compliance_gate` before a session is minted. No Cortex is 403 `gate_unavailable`. The password is not sent to the gate and not copied into the refusal.
+- **Ask path.** Unchanged. Stub 52 stays the `24f7abb` split: correct=43 wrong=0 reconfirm=5 ai=0 rule=43.
+
+## 2026-11-28 - READY-02: rebase onto b1af74c
+
+- **Base.** Rebased onto `b1af74c` (#622, #627, #600, #623). `STATUS.md` and the findings index keep those rows.
+- **Flag.** `DMS_SSO` is exactly `1`. A padded ` 1 ` stays off.
+- **Stub 52.** `grade52 --main` at `24f7abb`. correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. mode=stub-exec. stamp_contradiction=0. Unchanged. Armed grade52 and pack H were not run. Not PASS.
+
+## 2026-11-28 - READY-02: login, OIDC, and company scope behind DMS_SSO
+
+- **Flag.** `DMS_SSO` defaults off. Only the exact digit 1 turns it on. A padded value such as ` 1 ` stays off. Off, auth routes are not mounted and the auth middleware is not added. Spaces, OpenAPI, and the audit export actor basis stay as they were.
+- **Auth.** On, every GET except `/health` and the OIDC start and callback paths is 401. Roles are admin, steward, analyst, and viewer. Analyst may POST `/v1/chat`. Viewer is read-only. Identity headers stay a 400 (DR-0004). `POST /v1/auth/login` calls `compliance_gate` before a session is minted.
+- **OIDC.** Google, Microsoft Entra, and a generic Okta issuer. The client secret is an OpenVault `cred_ref`. No secret is in the source or in the authorize URL.
+- **Companies.** One install can hold more than one company. A user sees that company's spaces, library files, and ask-audit rows. The OpenVault service bearer still uses the deployment tenant.
+- **Stub 52.** Re-measure on this rebase onto `fa0eeef`. The ask path was not switched. Armed grade52 and pack H were not run. Not PASS.
+- **Not in this change.** SAML 2.0 and SCIM (#634) stay parked.
+
 ## 2026-11-28 - READY-04: a new company can connect, confirm, and count
 
 - **Flags.** `DMS_READY_HEALTH`, `DMS_READY_TENANT`, `DMS_READY_GRANT`, `DMS_READY_JOINS`, `DMS_READY_GUIDE`, and `DMS_READY_DEMO` default off. Only the digit 1 turns each one on.

@@ -18,6 +18,7 @@ from cortex_client import compliance_gate
 from dms_core.control_plane.onto_data import _public_item, ontology_data_store
 from fastapi import APIRouter, HTTPException
 
+from dms_api.auth_sso import bound_tenant_id
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 from dms_api.wiring import read_live_ontology
@@ -85,7 +86,7 @@ def compile_ontology_data(
 
     return compile_ontology_proposal(
         actor=settings.dms_actor_user_id,
-        tenant_id=settings.dms_tenant_id,
+        tenant_id=bound_tenant_id(settings.dms_tenant_id),
         space_id=space_id,
         tenant_wide=tenant_wide,
     )

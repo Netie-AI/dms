@@ -23,6 +23,7 @@ from typing import Any
 from dms_core.ask import ExecutedTrace
 from dms_core.control_plane.ask_audit import (
     DEPLOYMENT_ACTOR_KIND,
+    ActorKind,
     AskAuditStorePort,
     has_sql_statement,
     record_from_envelope,
@@ -103,17 +104,31 @@ def _evidence(
 
 
 def _recorded_actor(settings: Settings) -> str:
-    """The deployment actor, unless this call is an MCP tool for a mapped key.
+    """The deployment actor, unless this call is an MCP tool or a logged-in user.
 
-    The context var is unset on every HTTP route, so those rows stay the
-    deployment actor. It is set only for the duration of one /mcp call.
+    The MCP context var is unset on every HTTP route. ``DMS_SSO`` off leaves
+    this as the deployment actor. On, a verified user is that person. The
+    service bearer stays the deployment actor.
     """
+    from dms_api.auth_sso import verified_user_actor
     from dms_api.mcp_server.auth import current_mcp_actor
 
+    user = verified_user_actor()
+    if user:
+        return user
     found = current_mcp_actor()
     if found:
         return found
     return settings.dms_actor_user_id
+
+
+def _recorded_kind() -> ActorKind:
+    """``person`` only for a verified SSO user. Flag off stays ``deployment``."""
+    from dms_api.auth_sso import verified_user_actor
+
+    if verified_user_actor() is not None:
+        return "person"
+    return DEPLOYMENT_ACTOR_KIND
 
 
 def record_ask(
@@ -143,7 +158,7 @@ def record_ask(
                 envelope,
                 question=question,
                 actor=_recorded_actor(settings),
-                actor_kind=DEPLOYMENT_ACTOR_KIND,
+                actor_kind=_recorded_kind(),
                 space_id=space_id,
                 executed_sql=executed_sql,
                 tables_read=tables_read,
@@ -157,7 +172,7 @@ def record_ask(
                 question=question,
                 reason=_error_reason(error) if error is not None else "error:unknown",
                 actor=_recorded_actor(settings),
-                actor_kind=DEPLOYMENT_ACTOR_KIND,
+                actor_kind=_recorded_kind(),
                 space_id=space_id,
                 executed_sql=executed_sql,
                 tables_read=tables_read,
