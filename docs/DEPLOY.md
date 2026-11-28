@@ -57,34 +57,26 @@ Not done here: HSTS, client certificates, rate limiting, per-user authentication
 
 ## Presets
 
-| File | Use |
-|------|-----|
-| `deploy/presets/local-appliance.yaml` | Single node / SME laptop |
-| `deploy/presets/company-server.yaml` | Shared server, replicas |
-| `deploy/presets/airgap.yaml` | No external LLM |
-| `deploy/presets/hpc-slurm.yaml` | Batch jobs via Slurm worker |
-
-Env companions: `*.env` next to presets where needed.
+Not shipped. This repository has no `deploy/presets/` directory. Do not install
+from `deploy/presets/local-appliance.yaml`, `company-server.yaml`, `airgap.yaml`,
+or `hpc-slurm.yaml`. The compose file in `deploy/compose/` is the install that
+exists today. Upgrade and rollback: `docs/fde/UPGRADE.md`.
 
 ## Company server (Helm)
 
-```bash
-helm upgrade --install dms deploy/helm/dms \
-  -f deploy/presets/company-server.yaml \
-  -n dms --create-namespace
-```
-
-Ingress terminates TLS; API/web Deployments; Postgres (or external DSN); lake PVC or MinIO.
+Not shipped. This repository has no `deploy/helm/dms` chart. There is no
+`helm upgrade --install` path. Use the compose appliance above until a chart
+is added.
 
 ## Load balancer
 
-- Compose: **Caddy** on `:8080`, TLS only → Studio from `apps/ui/dist`; `/health`, `/v1/*` and `/api/*` to api `:8080` (see "Appliance (Compose)" above)  
-- K8s: Ingress controller (+ cloud LB / MetalLB)
+- Compose: **Caddy** on `:8080`, TLS only → Studio from `apps/ui/dist`; `/health`, `/v1/*` and `/api/*` to api `:8080` (see "Appliance (Compose)" above)
+- A Kubernetes ingress is not shipped. There is no chart in this repository.
 
 ## Slurm
 
-Only with `hpc-slurm` preset. Worker submits ingest/pipeline batch jobs. Web/API stay on K8s or Compose — Slurm is **not** the HTTP control plane.
+Not shipped. There is no `hpc-slurm` preset in this repository. Slurm is not the HTTP control plane.
 
 ## External deps
 
-Set `CORTEX_URL` and `OPENVAULT_URL` to reachable siblings. Charts do not embed Cortex/OpenVault images by default.
+Set `CORTEX_URL` and `OPENVAULT_URL` to reachable siblings. The compose file does not embed Cortex or OpenVault images.
