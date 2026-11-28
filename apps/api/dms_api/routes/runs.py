@@ -22,6 +22,7 @@ from fastapi import APIRouter, Query
 
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
+from dms_api.wiring import attach_feedback_runs
 
 router = APIRouter(prefix="/v1/runs", tags=["runs"])
 
@@ -94,7 +95,9 @@ def list_runs(
     # refusing legitimate work (R-0005), not a boundary holding.
     enforce(decision, mutation=False)
     if not settings.database_url:
-        return {"configured": False, "hint": _NOT_CONFIGURED_HINT, "runs": []}
+        return attach_feedback_runs(
+            {"configured": False, "hint": _NOT_CONFIGURED_HINT, "runs": []}
+        )
 
     tenant = UUID(settings.dms_tenant_id)
     space_uuid = UUID(space_id) if space_id else None
@@ -160,9 +163,11 @@ def list_runs(
     counts: dict[str, int] = {}
     for run in runs:
         counts[run["status"]] = counts.get(run["status"], 0) + 1
-    return {
-        "configured": True,
-        "runs": runs[:limit],
-        "counts": counts,
-        "scope": f"space:{space_id}" if space_id else "all-spaces",
-    }
+    return attach_feedback_runs(
+        {
+            "configured": True,
+            "runs": runs[:limit],
+            "counts": counts,
+            "scope": f"space:{space_id}" if space_id else "all-spaces",
+        }
+    )

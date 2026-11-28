@@ -20,6 +20,7 @@ from dms_core.ports import ServingEnginePort
 
 from dms_executor import action_keys as action_keys
 from dms_executor import executed_trace
+from dms_executor import feedback_loop as feedback_loop
 from dms_executor.abstain import (
     backstop_missing_ticket,
     build_abstain,

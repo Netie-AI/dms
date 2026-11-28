@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -27,6 +28,29 @@ from dms_api.settings import Settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
+
+
+def _note_feedback(
+    *,
+    question: str,
+    space_id: str | None,
+    envelope: dict[str, Any] | None,
+    error: BaseException | None,
+) -> None:
+    """UX-FEEDBACK-01. Flag off returns before any import. The envelope is not written."""
+    if os.environ.get("DMS_FEEDBACK_LOOP", "0").strip() != "1":
+        return
+    try:
+        from dms_api.wiring import note_ask_outcome
+
+        note_ask_outcome(
+            question=question,
+            space_id=space_id,
+            envelope=envelope,
+            error=error,
+        )
+    except Exception:
+        logger.warning("feedback_note_failed")
 
 _SOFT_GATE = frozenset({"gate_unavailable", "gate_task_unknown"})
 
@@ -374,6 +398,12 @@ def chat_ask(
                 error=exc,
                 executed=take_executed(ask),
             )
+            _note_feedback(
+                question=body.question,
+                space_id=body.space_id,
+                envelope=None,
+                error=exc,
+            )
             raise
         if isinstance(env, dict):
             attach_timings(env)
@@ -385,6 +415,12 @@ def chat_ask(
             asked_at=asked_at,
             envelope=env,
             executed=take_executed(ask),
+        )
+        _note_feedback(
+            question=body.question,
+            space_id=body.space_id,
+            envelope=env if isinstance(env, dict) else None,
+            error=None,
         )
         return env
     finally:
@@ -724,6 +760,14 @@ def chat_ask_confirm(
                 error=exc,
                 executed=take_executed(ask),
             )
+            _note_feedback(
+                question=str(pending.get("question") or ""),
+                space_id=pending.get("space_id")
+                if isinstance(pending.get("space_id"), str)
+                else None,
+                envelope=None,
+                error=exc,
+            )
             raise
         record_ask(
             audit,
@@ -733,6 +777,12 @@ def chat_ask_confirm(
             asked_at=asked_at,
             envelope=env,
             executed=take_executed(ask),
+        )
+        _note_feedback(
+            question=str(env.get("question") or ""),
+            space_id=env.get("space_id") if isinstance(env.get("space_id"), str) else None,
+            envelope=env if isinstance(env, dict) else None,
+            error=None,
         )
         return env
     finally:

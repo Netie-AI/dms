@@ -39,6 +39,16 @@ function RunRow({ run }: { run: RunRecord }) {
             {run.space_name && <span className="text-[var(--color-ink-muted)]">{run.space_name}</span>}
           </p>
           <p className="mt-1 break-words text-sm text-[var(--color-ink)]">{run.detail || "—"}</p>
+          {run.question ? (
+            <p data-testid="run-question" className="mt-1 break-words text-sm text-[var(--color-ink)]">
+              {run.question}
+            </p>
+          ) : null}
+          {run.stage || run.reason ? (
+            <p data-testid="run-failure" className="mt-0.5 text-xs text-[var(--color-ink-muted)]">
+              {[run.stage, run.reason].filter(Boolean).join(" · ")}
+            </p>
+          ) : null}
           <p className="mt-0.5 font-mono text-[10px] text-[var(--color-ink-muted)]">
             {run.created_at ?? "no timestamp"} · {run.id}
             {run.ledger_seq != null ? ` · ledger #${run.ledger_seq}` : ""}

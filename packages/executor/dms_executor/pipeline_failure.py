@@ -67,6 +67,7 @@ _TOKEN = re.compile(r"^[a-z][a-z0-9_]*$")
 _CODES = frozenset(
     {
         "abstain",
+        "ask_failed",
         "as_of",
         "checker",
         "clarify_ambiguous",
@@ -101,8 +102,10 @@ _CODES = frozenset(
         "ambiguous_column",
         "function_missing",
         "missing_column",
+        "missing_data",
         "missing_table",
         "other",
+        "report_problem",
         "retry",
         "schema_repair_exhausted",
         "syntax",
@@ -123,6 +126,9 @@ _CODES = frozenset(
         "vague_question",
         "value_exists_pending",
         "warehouse_missing",
+        "wrong_grain",
+        "wrong_number",
+        "too_slow",
         "year_not_certified",
         "predictive",
         "compute_unsure",

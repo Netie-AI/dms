@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useApp } from "@/context/AppContext";
+import { FeedbackReviewList } from "@/components/FeedbackLoop";
 import {
   fetchAmendProposals,
   postAmendProposal,
@@ -120,6 +121,7 @@ export function AmendPage() {
           </li>
         ))}
       </ul>
+      <FeedbackReviewList />
     </div>
   );
 }

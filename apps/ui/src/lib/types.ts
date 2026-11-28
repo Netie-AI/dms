@@ -353,13 +353,16 @@ export type TrustRunDetailItem = {
 
 export type RunRecord = {
   id: string;
-  kind: "ingest" | "query";
+  kind: "ingest" | "query" | "pipeline_failure";
   status: string;
   created_at: string | null;
   space_name: string | null;
   detail: string;
   ledger_seq?: number | null;
   reasons: { file: string; reason: string; fix: string }[];
+  question?: string;
+  stage?: string;
+  reason?: string;
 };
 
 export type RunsBody = {

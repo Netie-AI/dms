@@ -55,6 +55,10 @@ describe("Studio result view", () => {
     expect(markup).not.toContain("<textarea");
     expect(markup).not.toContain("studio-adjust-open");
     expect(markup).not.toContain("Adjust SQL");
+    expect(markup).not.toContain('data-testid="feedback-bar"');
+    expect(markup).not.toContain("Fix it");
+    expect(markup).not.toContain("Request review");
+    expect(markup).not.toContain("Report a problem");
     expect(markup).toContain('data-testid="studio-insight"');
     expect(markup).toContain("Spend is higher in MY.");
     expect(markup).toContain("Check the KL lane");

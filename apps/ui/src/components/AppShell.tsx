@@ -1,5 +1,6 @@
 import { Outlet, useLocation } from "react-router-dom";
 import { ActivityToast } from "@/components/ActivityToast";
+import { ReportProblem } from "@/components/FeedbackLoop";
 import { ApiOfflineBanner } from "@/components/ApiOfflineBanner";
 import { DemoFallbackBanner } from "@/components/DemoFallbackBanner";
 import { LeftNav } from "@/components/LeftNav";
@@ -35,6 +36,7 @@ export function AppShell() {
         ) : null}
       </div>
       <ActivityToast />
+      <ReportProblem />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ConstraintTracePanel } from "@/components/ConstraintTracePanel";
+import { FeedbackAuditList } from "@/components/FeedbackLoop";
 import { useApp } from "@/context/AppContext";
 
 type Ref = { seq: number; cortex_entry_id: string; created_at?: string | null };
@@ -59,6 +60,7 @@ export function AuditPage() {
         ))}
       </ul>
       <ConstraintTracePanel trace={latestAnswer?.constraint_trace} />
+      <FeedbackAuditList />
     </div>
   );
 }

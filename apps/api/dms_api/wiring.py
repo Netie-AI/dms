@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 import dms_executor
@@ -221,6 +222,78 @@ def save_steward_adjusted(
         actor=actor,
         dialect=dms_executor.SERVING_DIALECT,
     )
+
+
+def _feedback_on() -> bool:
+    return os.environ.get("DMS_FEEDBACK_LOOP", "0").strip() == "1"
+
+
+def feedback_enabled() -> bool:
+    return dms_executor.feedback_loop.enabled()
+
+
+def note_ask_outcome(
+    *,
+    question: str,
+    space_id: str | None,
+    envelope: dict[str, Any] | None,
+    error: BaseException | None,
+) -> None:
+    if not _feedback_on():
+        return
+    dms_executor.feedback_loop.note_ask_outcome(
+        question=question, space_id=space_id, envelope=envelope, error=error
+    )
+
+
+def attach_feedback_runs(body: dict[str, Any]) -> dict[str, Any]:
+    if not _feedback_on():
+        return body
+    return dms_executor.feedback_loop.attach_runs(body)
+
+
+def feedback_governed(
+    *,
+    space_id: str,
+    question: str,
+    sql: str,
+    audit_rows: list[Any],
+) -> bool:
+    return dms_executor.feedback_loop.governed_match(
+        space_id=space_id, question=question, sql=sql, audit_rows=audit_rows
+    )
+
+
+def feedback_thumb(**kwargs: Any) -> dict[str, Any]:
+    return dms_executor.feedback_loop.record_thumb(
+        **kwargs, dialect=dms_executor.SERVING_DIALECT
+    )
+
+
+def feedback_fix(**kwargs: Any) -> dict[str, Any]:
+    return dms_executor.feedback_loop.run_fix(**kwargs, dialect=dms_executor.SERVING_DIALECT)
+
+
+def feedback_queue(**kwargs: Any) -> dict[str, Any]:
+    return dms_executor.feedback_loop.queue_review(**kwargs)
+
+
+def feedback_approve(**kwargs: Any) -> dict[str, Any]:
+    return dms_executor.feedback_loop.approve_review(
+        **kwargs, dialect=dms_executor.SERVING_DIALECT
+    )
+
+
+def feedback_report(**kwargs: Any) -> dict[str, Any]:
+    return dms_executor.feedback_loop.report_problem(**kwargs)
+
+
+def feedback_audits() -> list[dict[str, Any]]:
+    return dms_executor.feedback_loop.audit_rows()
+
+
+def feedback_reviews() -> list[dict[str, Any]]:
+    return dms_executor.feedback_loop.review_rows()
 
 
 def sql_source_describe(

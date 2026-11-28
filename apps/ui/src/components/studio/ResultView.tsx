@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
+import { FeedbackBar } from "@/components/FeedbackLoop";
 import { SimpleChart } from "@/components/SimpleChart";
 import { copyText } from "@/lib/copilotPrompts";
 import { postAskConfirm } from "@/lib/api";
@@ -49,6 +50,7 @@ export type StudioAskEnvelope = AbstainFields & {
   /** CHART-SPEC-01. Absent when DMS_CHART_SPEC is off. */
   chart_spec?: unknown;
   chart_adjust?: unknown;
+  audit_id?: string | null;
 };
 
 const PAGE_SIZE = 10;
@@ -411,6 +413,12 @@ export function ResultView({ envelope, stages, onCancel, question, spaceId, role
         </div>
       ) : null}
 
+      <FeedbackBar
+        question={question ?? ""}
+        sql={sql}
+        spaceId={spaceId ?? null}
+        auditId={typeof shown.audit_id === "string" ? shown.audit_id : ""}
+      />
       <StampsPanel envelope={shown} />
     </section>
   );

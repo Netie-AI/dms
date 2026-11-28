@@ -25,6 +25,7 @@ from dms_api.routes import (
     audit,
     chat,
     connect,
+    feedback,
     freeroute,
     health,
     insight_proof,
@@ -208,6 +209,8 @@ def create_app() -> FastAPI:
         app.include_router(insight_proof.router)
     if studio_adjust.enabled():
         app.include_router(studio_adjust.router)
+    if feedback.enabled():
+        app.include_router(feedback.router)
     return app
 
 

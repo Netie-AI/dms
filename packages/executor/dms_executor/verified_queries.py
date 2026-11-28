@@ -61,7 +61,13 @@ _FLAG = "DMS_VQ_RAG"
 _FLAG_ON = frozenset({"1", "true", "yes", "on"})
 _SAVE_PROVENANCE = frozenset({"yes:reconfirm", "yes:vote"})
 _ADJUST_FLAG = "DMS_STUDIO_ADJUST"
+_FEEDBACK_FLAG = "DMS_FEEDBACK_LOOP"
 PROVENANCE_STEWARD_ADJUSTED = "steward_adjusted"
+PROVENANCE_FEEDBACK_YES = "feedback_yes"
+PROVENANCE_FEEDBACK_APPROVED = "feedback_approved"
+_FEEDBACK_PROVENANCE = frozenset(
+    {PROVENANCE_FEEDBACK_YES, PROVENANCE_FEEDBACK_APPROVED}
+)
 # ponytail: fixed preview size. Upgrade: the ask page size, still read-only.
 _ADJUST_PREVIEW_CAP = 200
 _SKIP_ROUTES = frozenset({"verified_query", "l1_governed_metric"})
@@ -92,6 +98,11 @@ def vq_rag_enabled() -> bool:
 def studio_adjust_enabled() -> bool:
     """``DMS_STUDIO_ADJUST`` is off unless it is the digit 1."""
     return os.environ.get(_ADJUST_FLAG, "0").strip() == "1"
+
+
+def feedback_examples_enabled() -> bool:
+    """``DMS_FEEDBACK_LOOP`` is off unless it is the digit 1."""
+    return os.environ.get(_FEEDBACK_FLAG, "0").strip() == "1"
 
 
 class AdjustDisabled(RuntimeError):
@@ -549,10 +560,16 @@ def retrieve_verified_examples(
     """Similar Space examples for the SQL writer. Never an answer to execute.
 
     Off when ``DMS_VQ_RAG`` is off, unless ``force`` (the ask ladder's context
-    rung). Revoked rows and scored-pack rows are absent.
+    rung) or ``DMS_FEEDBACK_LOOP`` is on. The feedback flag, with retrieval
+    otherwise off, returns only ``feedback_yes`` and ``feedback_approved``.
+    Revoked rows and scored-pack rows are absent.
     """
-    if not force and not vq_rag_enabled():
-        return []
+    rag = vq_rag_enabled()
+    feedback_only = False
+    if not force and not rag:
+        if not feedback_examples_enabled():
+            return []
+        feedback_only = True
     q = (question or "").strip()
     if not q:
         return []
@@ -561,6 +578,8 @@ def retrieve_verified_examples(
         db = warehouse or warehouse_path()
         allowed = grantable if grantable is not None else _grantable(space_id, db)
         rows = [row for row in _rows_for_space(db, sid) if _example_ok(row, allowed, dialect)]
+        if feedback_only:
+            rows = [row for row in rows if row.get("provenance") in _FEEDBACK_PROVENANCE]
     except Exception as exc:
         from dms_executor.lake_registry import SERVING_ERRORS
 
@@ -744,10 +763,13 @@ def revoke_verified_example(
 
 
 def _replayable(row: dict[str, Any]) -> bool:
-    """Exact-match replay. ``steward_adjusted`` is a writer example, never an answer."""
+    """Exact-match replay. Feedback and steward rows are examples, never answers."""
     if row.get("revoked_at"):
         return False
-    return row.get("provenance") != PROVENANCE_STEWARD_ADJUSTED
+    provenance = row.get("provenance")
+    if provenance == PROVENANCE_STEWARD_ADJUSTED or provenance in _FEEDBACK_PROVENANCE:
+        return False
+    return True
 
 
 def _hit(question: str, row: dict[str, Any]) -> bool:
@@ -772,7 +794,8 @@ def lookup_verified_query(
     """Return ``{asset_id, sql}`` for a Space hit. Does not run SQL as the answer.
 
     ``DMS_VQ_RAG`` on: always None. The row is a few-shot example, not a replay.
-    ``steward_adjusted`` is never a hit, even when that flag is off.
+    ``steward_adjusted``, ``feedback_yes``, and ``feedback_approved`` are never
+    a hit, even when those flags are off.
     """
     if vq_rag_enabled() or tables:
         return None
@@ -961,22 +984,19 @@ def _mask_adjust_rows(sql: str, rows: list[dict[str, Any]]) -> list[dict[str, An
     return [row for row in out if isinstance(row, dict)]
 
 
-def preview_adjusted_sql(
+def run_gated_sql(
     *,
     sql: str,
     space_id: str | None,
     path: Path | None = None,
     dialect: str | None = None,
 ) -> dict[str, Any]:
-    """Run steward SQL through the model SQL gates and return masked rows.
+    """Model SQL gates, then one read-only run. No feature flag of its own.
 
     ``validate_compiled_sql`` is the grant, hostile, statement-count, and
     EXPLAIN check. ``run_readonly`` is the read-only execute. A refusal is
-    ``ValueError`` whose text is that checker code. The flag off raises
-    ``AdjustDisabled`` before any read.
+    ``ValueError`` whose text is that checker code. Rows are masked.
     """
-    if not studio_adjust_enabled():
-        raise AdjustDisabled()
     sql_text = (sql or "").strip()
     if not sql_text:
         raise ValueError("sql_required")
@@ -1004,6 +1024,22 @@ def preview_adjusted_sql(
         "row_count": len(masked),
         "truncated": len(masked) > _ADJUST_PREVIEW_CAP,
     }
+
+
+def preview_adjusted_sql(
+    *,
+    sql: str,
+    space_id: str | None,
+    path: Path | None = None,
+    dialect: str | None = None,
+) -> dict[str, Any]:
+    """Run steward SQL through the model SQL gates and return masked rows.
+
+    The flag off raises ``AdjustDisabled`` before any read.
+    """
+    if not studio_adjust_enabled():
+        raise AdjustDisabled()
+    return run_gated_sql(sql=sql, space_id=space_id, path=path, dialect=dialect)
 
 
 def save_steward_adjusted(

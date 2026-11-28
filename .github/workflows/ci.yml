@@ -504,7 +504,7 @@ jobs:
         working-directory: apps/ui
         run: |
           npm ci
-          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/ontologyRead.test.ts src/components/studio/clarifyCards.test.tsx src/lib/clarifyAsk.test.ts
+          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/ontologyRead.test.ts src/components/studio/clarifyCards.test.tsx src/lib/clarifyAsk.test.ts src/components/FeedbackLoop.test.ts
           npx playwright install --with-deps chromium
           npx playwright test e2e/clarify.spec.ts
 
