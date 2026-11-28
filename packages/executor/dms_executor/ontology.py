@@ -834,6 +834,62 @@ class Ontology:
             f"{obj.name} would be counted more than once",
         )
 
+    def _orphan_decision(
+        self,
+        con: Any,
+        link: LinkType,
+        *,
+        orphan_rows: int,
+        orphan_keys: int,
+        parent_unique: bool,
+    ) -> str | None:
+        """``use`` discloses the orphans. ``hold`` asks the steward. None keeps fk_intact.
+
+        Flag off returns None before any extra read, so the refusal text stays
+        the one verify() already writes.
+        """
+        from dms_executor.join_flags import fk_orphan_disclose_enabled, orphan_threshold_ratio
+
+        if not fk_orphan_disclose_enabled():
+            return None
+        threshold = orphan_threshold_ratio()
+        if threshold <= 0:
+            return None
+        child = self.objects[link.from_object]
+        try:
+            child_rows = int(
+                con.execute(f"SELECT COUNT(*) FROM {child.relation}").fetchone()[0] or 0
+            )
+        except Exception:  # noqa: BLE001 - unreadable child stays the old refusal
+            return None
+        if child_rows <= 0:
+            return None
+        ratio = orphan_rows / child_rows
+        leaf = link.from_object.rsplit(".", 1)[-1]
+        parent_leaf = link.to_object.rsplit(".", 1)[-1]
+        info = {
+            "orphan_rows": orphan_rows,
+            "orphan_keys": orphan_keys,
+            "child_rows": child_rows,
+            "ratio": ratio,
+            "threshold": threshold,
+            "child": link.from_object,
+            "parent": link.to_object,
+            "child_leaf": leaf,
+            "parent_leaf": parent_leaf,
+            "line": (
+                f"{orphan_rows} {leaf} rows reference a missing parent "
+                "and are excluded by the join"
+            ),
+        }
+        if ratio < threshold and parent_unique:
+            self.__dict__.setdefault("_orphan_links", {})[link.name] = info
+            return "use"
+        if ratio >= threshold:
+            self.__dict__.setdefault("_orphan_holds", {})[link.name] = info
+            return "hold"
+        return None
+
     def verify(self, con: Any) -> list[Violation]:
         """Execute every claim. Nothing may be used until this has passed.
 
@@ -872,6 +928,11 @@ class Ontology:
                 violations.append(
                     Violation("relation_readable", obj.name, f"{type(exc).__name__}: {exc}")
                 )
+                continue
+            if not obj.key:
+                # No primary key was declared, so there is no row-identity
+                # claim. Links are measured below. Flag off never builds
+                # an object with an empty key.
                 continue
             cols = ", ".join(_ident(c) for c in obj.key)
             nulls = " OR ".join(f"{_ident(c)} IS NULL" for c in obj.key)
@@ -995,6 +1056,43 @@ class Ontology:
                 )
                 continue
             if orphan_rows:
+                # BIRD-FK-ORPHANS-01. Flag off, or a steward ratio of 0, keeps
+                # the refusal below. A ratio the steward set can disclose a
+                # small orphan set, or hold the link for a reconfirm.
+                decision = self._orphan_decision(
+                    con,
+                    link,
+                    orphan_rows=int(orphan_rows),
+                    orphan_keys=int(orphan_keys),
+                    parent_unique=int(pn) == int(pdistinct),
+                )
+                if decision == "use":
+                    self.links[name] = LinkType(
+                        link.name,
+                        link.from_object,
+                        link.from_columns,
+                        link.to_object,
+                        link.to_columns,
+                        "many_to_one",
+                        1,
+                        link.one_to_one,
+                    )
+                    continue
+                if decision == "hold":
+                    info = (self.__dict__.get("_orphan_holds") or {}).get(name) or {}
+                    violations.append(
+                        Violation(
+                            "fk_orphan_hold",
+                            name,
+                            f"{link.from_object} -> {link.to_object}: "
+                            f"{int(info.get('orphan_rows') or orphan_rows)} rows "
+                            f"({int(info.get('orphan_keys') or orphan_keys)} distinct keys) "
+                            f"of {int(info.get('child_rows') or 0)} reference a missing "
+                            "parent. Above the steward threshold, so the link is not "
+                            "approved.",
+                        )
+                    )
+                    continue
                 # Do not set cardinality. A unique parent with missing keys is
                 # not a safe many-to-one: LEFT JOIN would misattribute the
                 # orphans (named groups shrink, the unmatched bucket grows,
@@ -2574,10 +2672,32 @@ def from_manifest(
             (str(fk["name"]), str(fk["from_table"]), str(fk["to_table"])), []
         ).append(fk)
 
+    # BIRD-JOIN-GATE-01. A junction or fact table often declares foreign keys
+    # and no primary key. Flag off keeps today's drop. Flag on, the child is
+    # an object with no row identity; verify() still measures the parent side.
+    from dms_executor.join_flags import join_declared_fk_enabled
+
+    if join_declared_fk_enabled():
+        added: set[str] = set()
+        for (_name, child, parent), _cols in grouped.items():
+            if child in onto.objects or parent not in onto.objects or child not in paths:
+                continue
+            if child in added:
+                continue
+            added.add(child)
+            schema, _, name = child.partition(".")
+            onto.add_object(
+                child,
+                relation(schema, name),
+                (),
+                truncated=truncated_by_table.get(child, False),
+            )
+
     for (name, child, parent), cols in grouped.items():
         if child not in onto.objects or parent not in onto.objects:
             # An end of this link has no primary key or was not extracted. A link
-            # to an object that cannot identify a row is not a link.
+            # to an object that cannot identify a row is not a link. Flag on,
+            # a key-less child of a keyed parent was added above and is kept.
             continue
         from_cols = [str(c["from_column"]) for c in cols]
         onto.add_link(

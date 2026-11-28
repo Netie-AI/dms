@@ -1,0 +1,69 @@
+{
+  "benchmarks": [],
+  "description": "",
+  "entities": [
+    {
+      "columns": [
+        {
+          "data_type": "VARCHAR",
+          "description": "Label",
+          "expr": "status",
+          "name": "full_label",
+          "role": "dimension",
+          "synonyms": []
+        },
+        {
+          "data_type": "INTEGER",
+          "description": "Order id",
+          "expr": "order_id",
+          "name": "order_id",
+          "role": "dimension",
+          "synonyms": []
+        },
+        {
+          "data_type": "VARCHAR",
+          "description": "Order status",
+          "expr": "status",
+          "name": "status",
+          "role": "dimension",
+          "synonyms": []
+        }
+      ],
+      "description": "",
+      "name": "orders",
+      "primary_key": [
+        "order_id"
+      ],
+      "table": "wren.public.orders"
+    }
+  ],
+  "filters": [],
+  "format": "wren",
+  "instructions": [],
+  "measures": [],
+  "name": "wren",
+  "onboarding": [],
+  "relationships": [
+    {
+      "cardinality": "many_to_one",
+      "from_columns": [
+        "customer_id"
+      ],
+      "from_table": "orders",
+      "join_type": "many_to_one",
+      "name": "orders_customers",
+      "to_columns": [
+        "customer_id"
+      ],
+      "to_table": "customers"
+    }
+  ],
+  "unsupported": [
+    {
+      "name": "odd_view",
+      "path": "views",
+      "reason": "wren_view"
+    }
+  ],
+  "verified_queries": []
+}

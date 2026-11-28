@@ -234,6 +234,30 @@ def _bronze_origin(env: dict[str, Any] | None) -> dict[str, Any] | None:
     return env
 
 
+def _qualifier_hold(
+    question: str,
+    gap: str | None,
+    *,
+    space_id: str | None,
+    session_id: str | None,
+) -> dict[str, Any] | None:
+    """The lexical named-filter gap. Flag on reconfirms. Flag off abstains."""
+    if not gap:
+        return None
+    import os
+
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        from dms_executor.qualifier_ai import is_candidate_note, note_reconfirm
+
+        if is_candidate_note(gap):
+            return note_reconfirm(
+                question, space_id=space_id, session_id=session_id, notes=(gap,)
+            )
+    return bronze_grant_abstain(
+        question, reason=gap, space_id=space_id, session_id=session_id
+    )
+
+
 def _dropped_value(
     question: str, *, workbook: str, sheet: str, sql: str, db: Path, table: str
 ) -> str | None:
@@ -270,10 +294,9 @@ def _grouped_top_n(
         db=db,
         table=table,
     )
-    if gap:
-        return bronze_grant_abstain(
-            question, reason=gap, space_id=space_id, session_id=session_id
-        )
+    held = _qualifier_hold(question, gap, space_id=space_id, session_id=session_id)
+    if held is not None:
+        return held
     con = connect_serving(db)
     try:
         cols = _cols(con, ident)
@@ -351,10 +374,9 @@ def _eq_filter_total(
         db=db,
         table=table,
     )
-    if gap:
-        return bronze_grant_abstain(
-            question, reason=gap, space_id=space_id, session_id=session_id
-        )
+    held = _qualifier_hold(question, gap, space_id=space_id, session_id=session_id)
+    if held is not None:
+        return held
     con = connect_serving(db)
     try:
         cols = _cols(con, ident)

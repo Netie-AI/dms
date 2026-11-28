@@ -201,12 +201,68 @@ def list_verified_queries(*, space_id: str) -> list[dict[str, Any]]:
     return dms_executor.list_verified_queries(space_id=space_id)
 
 
+def propose_space_knowledge(
+    *,
+    space_id: str,
+    body: str,
+    sql_fragment: str | None,
+    actor: str,
+) -> dict[str, Any]:
+    return dms_executor.propose_space_knowledge_note(
+        space_id=space_id,
+        body=body,
+        sql_fragment=sql_fragment,
+        actor=actor,
+    )
+
+
+def approve_space_knowledge(*, note_id: str, actor: str) -> dict[str, Any]:
+    return dms_executor.approve_space_knowledge_note(note_id=note_id, actor=actor)
+
+
+def revise_space_knowledge(
+    *,
+    note_id: str,
+    body: str,
+    sql_fragment: str | None,
+    actor: str,
+) -> dict[str, Any]:
+    return dms_executor.revise_space_knowledge_note(
+        note_id=note_id,
+        body=body,
+        sql_fragment=sql_fragment,
+        actor=actor,
+    )
+
+
+def list_space_knowledge(*, space_id: str) -> list[dict[str, Any]]:
+    return dms_executor.list_space_knowledge_notes(space_id=space_id)
+
+
 def preview_adjusted_sql(*, space_id: str, sql: str) -> dict[str, Any]:
     return dms_executor.preview_adjusted_sql(
         space_id=space_id,
         sql=sql,
         dialect=dms_executor.SERVING_DIALECT,
     )
+
+
+def import_semantic_file(
+    raw: bytes,
+    *,
+    space_id: str,
+    dry_run: bool,
+    actor: str,
+) -> dict[str, Any]:
+    return dms_executor.import_semantic_file(raw, space_id=space_id, dry_run=dry_run, actor=actor)
+
+
+def export_semantic_space(*, space_id: str, export_format: str) -> dict[str, Any]:
+    return dms_executor.export_semantic_space(space_id=space_id, export_format=export_format)
+
+
+def approve_semantic_examples(*, space_id: str, actor: str) -> int:
+    return dms_executor.approve_semantic_examples(space_id=space_id, actor=actor)
 
 
 def save_steward_adjusted(
@@ -402,9 +458,7 @@ def grant_connected_tables(
     src = source_for(source_id)
     if src is None:
         raise KeyError(source_id)
-    granted = grant_book(
-        source_id=source_id, tables=tables, actor=actor, token_id=token_id
-    )
+    granted = grant_book(source_id=source_id, tables=tables, actor=actor, token_id=token_id)
     return {
         "source_id": source_id,
         "space_id": src.space_id,
@@ -424,9 +478,7 @@ def revoke_connected_tables(
     src = source_for(source_id)
     if src is None:
         raise KeyError(source_id)
-    revoked = revoke_tables(
-        source_id=source_id, tables=tables, actor=actor, token_id=token_id
-    )
+    revoked = revoke_tables(source_id=source_id, tables=tables, actor=actor, token_id=token_id)
     return {
         "source_id": source_id,
         "space_id": src.space_id,
@@ -757,7 +809,7 @@ def _rederive(
             ref = str(pull.get("ref") or "")
             if not ref.startswith(prefix):
                 continue
-            schema, _, name = ref[len(prefix):].partition(".")
+            schema, _, name = ref[len(prefix) :].partition(".")
             tables.append(
                 {
                     "schema": schema,
@@ -795,9 +847,7 @@ def _rederive(
             dms_executor.derive_and_store(
                 catalog,
                 space_id=canon,
-                identity=dms_executor.source_identity(
-                    cfg.kind, cfg.host, cfg.database, catalog
-                ),
+                identity=dms_executor.source_identity(cfg.kind, cfg.host, cfg.database, catalog),
                 warehouse=warehouse,
             )
         )
@@ -1468,8 +1518,12 @@ def prove_insights(
     settings.dms_actor_user_id (DR-0004 Option A), the identity the gate names.
     """
     return dms_executor.prove_for_space(
-        ask, space_id=space_id, session_id=session_id, top=top,
-        ledger_append=_ledger_append(cortex), actor=actor,
+        ask,
+        space_id=space_id,
+        session_id=session_id,
+        top=top,
+        ledger_append=_ledger_append(cortex),
+        actor=actor,
     )
 
 
@@ -1493,9 +1547,7 @@ def confirm_pin(ask: Any, cortex: CortexClient, *, token: str, actor: str) -> di
 
 
 def replay_pin(ask: Any, cortex: CortexClient, asset_id: str, *, actor: str) -> dict[str, Any]:
-    return dms_executor.replay_pin(
-        ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex)
-    )
+    return dms_executor.replay_pin(ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex))
 
 
 def demote_replay(
@@ -1506,9 +1558,7 @@ def demote_replay(
 
 
 def revoke_pin(ask: Any, cortex: CortexClient, asset_id: str, *, actor: str) -> dict[str, Any]:
-    return dms_executor.revoke_pin(
-        ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex)
-    )
+    return dms_executor.revoke_pin(ask, asset_id, actor=actor, ledger_append=_ledger_append(cortex))
 
 
 def list_pinned(ask: Any, *, space_id: str | None) -> list[dict[str, Any]]:
@@ -1553,9 +1603,7 @@ def _group_tables(names: list[str], granted: set[str]) -> list[dict[str, Any]]:
         schema, dot, table = qualified.partition(".")
         if not dot:
             schema, table = "main", qualified
-        buckets.setdefault(schema, []).append(
-            {"name": table, "granted": qualified in granted}
-        )
+        buckets.setdefault(schema, []).append({"name": table, "granted": qualified in granted})
     return [{"name": schema, "tables": tables} for schema, tables in buckets.items()]
 
 
@@ -1928,9 +1976,7 @@ def connect_v2_set_granted(
     if row is None:
         raise KeyError(source_id)
     _rehydrate([row], actor=actor, token_id=token_id)
-    names = store.set_granted(
-        source_id, tables, granted=granted, actor=actor, token_id=token_id
-    )
+    names = store.set_granted(source_id, tables, granted=granted, actor=actor, token_id=token_id)
     try:
         if granted:
             grant_book(source_id=source_id, tables=names, actor=actor, token_id=token_id)

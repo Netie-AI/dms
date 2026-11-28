@@ -1,0 +1,46 @@
+{
+  "catalog": "wren",
+  "schema": "public",
+  "models": [
+    {
+      "name": "orders",
+      "tableReference": {
+        "catalog": "wren",
+        "schema": "public",
+        "table": "orders"
+      },
+      "primaryKey": "order_id",
+      "columns": [
+        {
+          "name": "order_id",
+          "type": "INTEGER",
+          "isPrimaryKey": true,
+          "properties": {"description": "Order id"}
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR",
+          "properties": {"description": "Order status"}
+        },
+        {
+          "name": "full_label",
+          "type": "VARCHAR",
+          "isCalculated": true,
+          "expression": "status",
+          "properties": {"description": "Label"}
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "orders_customers",
+      "models": ["orders", "customers"],
+      "joinType": "MANY_TO_ONE",
+      "condition": "orders.customer_id = customers.customer_id"
+    }
+  ],
+  "views": [
+    {"name": "odd_view", "statement": "select 1"}
+  ]
+}

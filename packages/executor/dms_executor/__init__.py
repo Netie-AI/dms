@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -184,6 +185,18 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.space_knowledge import (
+    approve_note as approve_space_knowledge_note,  # noqa: F401 - re-exported
+)
+from dms_executor.space_knowledge import (
+    list_notes as list_space_knowledge_notes,  # noqa: F401 - re-exported
+)
+from dms_executor.space_knowledge import (
+    propose_note as propose_space_knowledge_note,  # noqa: F401 - re-exported
+)
+from dms_executor.space_knowledge import (
+    revise_note as revise_space_knowledge_note,  # noqa: F401 - re-exported
+)
 from dms_executor.space_ontology import (
     REASON_STORE_UNAVAILABLE,
     bronze_catalog,
@@ -290,6 +303,7 @@ def _insights_compute_seam(
     asked = question
     examples = ""
     defs = ""
+    knowledge = ""
     ai_rows: list[dict[str, Any]] = []
     # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
     # stays quiet because the key is removed before the POST.
@@ -302,6 +316,7 @@ def _insights_compute_seam(
         "sql_vote_kind",
         "vq_examples",
         "governed_definitions",
+        "space_knowledge",
         "route_hint",
     }
     if isinstance(ontology, dict) and (
@@ -325,6 +340,9 @@ def _insights_compute_seam(
             raw_defs = lifted.get("governed_definitions")
             if isinstance(raw_defs, str) and raw_defs.strip():
                 defs = raw_defs.strip()
+            raw_knowledge = lifted.get("space_knowledge")
+            if isinstance(raw_knowledge, str) and raw_knowledge.strip():
+                knowledge = raw_knowledge
             onto = {k: v for k, v in lifted.items() if k not in _hidden}
         else:
             onto = lifted
@@ -342,6 +360,10 @@ def _insights_compute_seam(
         from dms_executor.ai_first import understand_question
 
         asked = str(understand_question(asked, examples=ai_rows)["question"])
+    if knowledge:
+        # After the question, the examples, and any AI-first rewrite. The
+        # posted ontology does not carry this key.
+        asked = f"{asked.rstrip()}{knowledge}"
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
@@ -831,6 +853,7 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
         plan_sql_confirm: Literal["yes", "no"] | None = None,
+        ask_context: str | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
 
@@ -904,6 +927,7 @@ class Executor:
                         ask_path=ask_path,
                         seen=seen,
                         plan_sql_confirm=plan_sql_confirm,
+                        ask_context=ask_context,
                     )
                     if serving_deadline_missed():
                         raise ServingDeadlineExceeded()
@@ -1066,6 +1090,7 @@ class Executor:
         ask_path: str | None = None,
         seen: list[dict[str, Any] | None],
         plan_sql_confirm: Literal["yes", "no"] | None = None,
+        ask_context: str | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -1496,6 +1521,7 @@ class Executor:
                     dialect=SERVING_DIALECT,
                     embedder=openvault_embedder(self._cortex),
                     demo_gate=not armed_product,
+                    ask_context=ask_context,
                 )
             gen_env = arbitrate_generative(
                 gen_env,
@@ -1652,6 +1678,59 @@ class Executor:
             join_why = check_sql_against_space(
                 sql_used, space_onto, self._warehouse or warehouse_path(), readable
             )
+            if join_why and os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1":
+                from dms_executor.generative_ask import _submit_validated
+                from dms_executor.join_repair import resolve_join_repair
+                from dms_executor.ontology import coverage_from_sql_path
+
+                decided = resolve_join_repair(
+                    join_why,
+                    sql_used,
+                    question=question,
+                    space_onto=space_onto,
+                    violations=[],
+                    warehouse=self._warehouse or warehouse_path(),
+                    grantable=set(readable),
+                    dialect=SERVING_DIALECT,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if isinstance(decided, dict):
+                    env = attach_cascade(decided, cascade)
+                    self._store_turn(session_id, space_id, env)
+                    return env
+                if isinstance(decided, str):
+                    repaired = _submit_validated(
+                        decided,
+                        question=question,
+                        space_id=space_id,
+                        session_id=session_id,
+                        submit=lambda sql: self._submit_verified_sql(
+                            sql,
+                            space_id=space_id,
+                            session_id=session_id,
+                            tables=tables,
+                        ),
+                        ledger_append=lambda payload: self._ledger_verified_query(
+                            asset_sql=str(payload.get("sql") or ""),
+                            run_id=str(payload.get("run_id") or ""),
+                            space_id=space_id,
+                            session_id=session_id,
+                            event_type="ask.generated_ontology",
+                        ),
+                        notes=("join repair",),
+                        plan_source="ontology_plan",
+                        coverage=coverage_from_sql_path(sql=decided),
+                        warehouse=self._warehouse or warehouse_path(),
+                        grantable=set(readable),
+                    )
+                    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+                        from dms_executor.join_repair import stamp_orphan_exclusion
+
+                        stamp_orphan_exclusion(repaired, onto=space_onto)
+                    env = attach_cascade(repaired, cascade)
+                    self._store_turn(session_id, space_id, env)
+                    return env
             if join_why:
                 env = path_miss_envelope(
                     question,
@@ -1688,6 +1767,10 @@ class Executor:
             ),
             cascade,
         )
+        if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1" and space_onto is not None:
+            from dms_executor.join_repair import stamp_orphan_exclusion
+
+            stamp_orphan_exclusion(env, onto=space_onto)
         self._store_turn(session_id, space_id, env)
         return env
 
@@ -1973,6 +2056,26 @@ class Executor:
             warehouse=self._warehouse,
             grantable=grantable,
         )
+        if not blocked:
+            from dms_executor.qualifier_ai import qualifier_ai_enabled, review_candidate
+
+            if qualifier_ai_enabled():
+                reviewed = review_candidate(
+                    question,
+                    sql,
+                    warehouse=self._warehouse,
+                    grantable=grantable,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if reviewed["action"] == "reconfirm" and isinstance(
+                    reviewed.get("envelope"), dict
+                ):
+                    return reviewed["envelope"]
+                if reviewed["action"] == "abstain":
+                    blocked = str(reviewed.get("reason") or "qualifier_ai")
+                else:
+                    return None
         if not blocked:
             return None
         held = build_abstain(
@@ -2511,4 +2614,51 @@ __all__ = [
     "replay_pin",
     "revoke_pin",
     "token_space",
+    "import_semantic_file",
+    "export_semantic_space",
+    "approve_semantic_examples",
 ]
+
+
+def import_semantic_file(
+    raw: bytes,
+    *,
+    space_id: str,
+    dry_run: bool = True,
+    actor: str,
+    warehouse: Path | None = None,
+    grantable: set[str] | None = None,
+    dialect: str | None = None,
+) -> dict[str, Any]:
+    from dms_executor.semantic_import.service import import_file
+
+    return import_file(
+        raw,
+        space_id=space_id,
+        dry_run=dry_run,
+        actor=actor,
+        warehouse=warehouse,
+        grantable=grantable,
+        dialect=dialect,
+    )
+
+
+def export_semantic_space(
+    *,
+    space_id: str,
+    export_format: str = "osi",
+    warehouse: Path | None = None,
+) -> dict[str, Any]:
+    from dms_executor.semantic_import.service import export_space
+
+    return export_space(
+        space_id=space_id, export_format=export_format, warehouse=warehouse
+    )
+
+
+def approve_semantic_examples(
+    *, space_id: str, actor: str, warehouse: Path | None = None
+) -> int:
+    from dms_executor.semantic_import.service import approve_import_examples
+
+    return approve_import_examples(space_id=space_id, actor=actor, warehouse=warehouse)

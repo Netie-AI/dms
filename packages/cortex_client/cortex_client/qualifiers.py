@@ -901,6 +901,7 @@ def unhonored_qualifier_reason(
     *,
     sql: str | None = None,
     plan: dict[str, Any] | None = None,
+    skip_kinds: frozenset[str] | None = None,
 ) -> str | None:
     """First uncovered qualifier as ``unhonored_qualifier:<kind>=<value>``.
 
@@ -908,15 +909,20 @@ def unhonored_qualifier_reason(
     and ``unrequested_offset:<n>`` when a plan or SQL carries OFFSET and the
     question asked for no rank window. Main dropped that offset; keeping it
     and serving it is a different question than the one asked.
+
+    ``skip_kinds`` leaves those kinds out of the decision. Unset is every kind.
     """
+    skipped = skip_kinds or frozenset()
     win = parse_rank_window(question)
     if win is None:
         n = _positive_offset(plan, sql)
         if n is not None:
             return f"unrequested_offset:{n}"
-    elif win.limit is None:
+    elif win.limit is None and KIND_RANK_WINDOW not in skipped:
         return "rank_window_open_ended"
     for kind, value in extract_qualifiers(question):
+        if kind in skipped:
+            continue
         ok = False
         if kind == KIND_RANK_WINDOW:
             ok = _honors_rank_window(question, sql=sql, plan=plan)

@@ -20,7 +20,7 @@ import copy
 import json
 import os
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1140,6 +1140,10 @@ def _l2_envelope(
         *list(env.get("assumptions") or []),
         *stamped.assumption_lines(),
     ]
+    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+        from dms_executor.join_repair import stamp_orphan_exclusion
+
+        stamp_orphan_exclusion(env)
     assert_envelope_valid(env)
     env = with_plan_origin(with_plan_source(env, plan_source), plan_origin)
     if where_paths:
@@ -1172,16 +1176,29 @@ def validated_sql_reason(
     question: str,
     warehouse: Path | None,
     grantable: set[str] | None,
+    space_onto: Ontology | None = None,
+    declared_violations: Sequence[Violation] | None = None,
+    columns_of: Mapping[str, set[str]] | None = None,
+    dialect: str | None = None,
 ) -> str | None:
     """Pre-execute gates shared with ``_submit_validated``.
 
     Qualifier, a stated value, currency, reserved ``$as_of``, and an untyped
     numeric. None means those gates passed. Coverage and the compile-only
     hold stay with the caller.
+
+    A join repair passes ``space_onto`` so this same call also re-runs the
+    join rule and ``validate_compiled_sql``. Callers that omit it keep the
+    previous checks only.
     """
-    gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
-        question, sql, warehouse, grantable=grantable
-    )
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        from dms_executor.qualifier_ai import deciding_qualifier_reason
+
+        gap = deciding_qualifier_reason(question, sql, warehouse, grantable)
+    else:
+        gap = unhonored_qualifier_reason(question, sql=sql) or dropped_stated_value_reason(
+            question, sql, warehouse, grantable=grantable
+        )
     if gap:
         return gap
     ccy_why = currency_mismatch_reason(question, sql, warehouse=warehouse)
@@ -1189,7 +1206,21 @@ def validated_sql_reason(
         return ccy_why
     if sql_has_reserved_as_of(sql):
         return RESERVED_PARAM_AS_OF
-    return untyped_numeric_reason(sql, warehouse)
+    numeric = untyped_numeric_reason(sql, warehouse)
+    if numeric:
+        return numeric
+    if space_onto is None or columns_of is None:
+        return None
+    join_why = unverified_join_reason(
+        sql, space_onto, list(declared_violations or ()), columns_of=columns_of
+    )
+    if join_why:
+        return join_why
+    if grantable is None:
+        return None
+    return validate_compiled_sql(
+        sql, grantable=set(grantable), warehouse=warehouse, dialect=dialect
+    )
 
 
 def _submit_validated(
@@ -1211,6 +1242,8 @@ def _submit_validated(
     lead: str = "",
     served_route: str = "",
     grantable: set[str] | None = None,
+    hint: str = "",
+    qualifier_notes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     def _sql_checks(statement: str) -> dict[str, Any] | None:
         """Qualifier, currency, and numeric checks. None means the SQL may be served."""
@@ -1283,6 +1316,42 @@ def _submit_validated(
             plan_origin = PLAN_ORIGIN_GENERATE_SQL
             notes = (*tuple(notes), "scale_miss:ai_over_compile")
             # Same checks as the first SQL. A failed replacement is not served.
+            stopped = _sql_checks(sql)
+            if stopped is not None:
+                return stopped
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        from dms_executor.qualifier_ai import review_candidate
+
+        reviewed = review_candidate(
+            question,
+            sql,
+            hint=hint,
+            warehouse=warehouse,
+            grantable=grantable,
+            space_id=space_id,
+            session_id=session_id,
+            served_route=served_route,
+            extra_notes=qualifier_notes,
+        )
+        if reviewed["action"] == "reconfirm" and isinstance(reviewed.get("envelope"), dict):
+            return reviewed["envelope"]
+        if reviewed["action"] == "abstain":
+            return _abstain(
+                question,
+                str(reviewed.get("reason") or "qualifier_ai"),
+                space_id=space_id,
+                session_id=session_id,
+                plan_source=plan_source,
+                notes=notes,
+                sql=sql,
+            )
+        rewritten = reviewed.get("sql")
+        if reviewed.get("repaired") and isinstance(rewritten, str) and rewritten.strip():
+            sql = rewritten.strip()
+            if served_route in {ROUTE_COMPILE, ROUTE_LADDER}:
+                served_route = ROUTE_MODEL
+                if not plan_origin:
+                    plan_origin = PLAN_ORIGIN_GENERATE_SQL
             stopped = _sql_checks(sql)
             if stopped is not None:
                 return stopped
@@ -1686,6 +1755,8 @@ def rank_window_ask(
     win = parse_rank_window(q)
     shape = rank_window_shape_reason(q)
     if shape:
+        if _qualifier_note_only(shape):
+            return None
         return _no(shape)
     if win is None:
         return None
@@ -1693,12 +1764,18 @@ def rank_window_ask(
         return None
     pair = rank_window_group(win)
     if pair is None:
+        if _qualifier_note_only("rank_window_unhandled_terms:no_entity"):
+            return None
         return _no("rank_window_unhandled_terms:no_entity")
     specs = {name: m.description or "" for name, m in onto.measures.items()}
     measure, why, reading = rank_window_measure(q, specs)
     if why or measure is None:
+        if why and _qualifier_note_only(why):
+            return None
         return _no(why or "unknown_measure")
     if win.limit is None:
+        if _qualifier_note_only("rank_window_open_ended"):
+            return None
         return _no("rank_window_open_ended")
     compiled = onto.compile(measure, group_by=[pair], limit=win.limit, offset=win.offset)
     if isinstance(compiled, Refusal):
@@ -2103,6 +2180,19 @@ def ai_lane_sql_check(
     if declared is not None:
         broken = violations_cited_by_sql(sql, declared, declared_violations)
         if broken:
+            if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+                from dms_executor.join_repair import orphan_reconfirm
+
+                held_orphans = orphan_reconfirm(
+                    broken,
+                    declared,
+                    question=question,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if held_orphans is not None:
+                    box["env"] = held_orphans
+                    return "fk_orphan_hold"
             return violation_reason(broken)
     grounded_defs = list(grounded or [])
     if grounded_defs:
@@ -2205,6 +2295,31 @@ def _run_extract_loop(
         held_env = held.get("env")
         if isinstance(held_env, dict):
             return held_env
+        if (
+            sql
+            and os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1"
+        ):
+            from dms_executor.join_flags import join_repair_stop
+
+            if join_repair_stop(reason):
+                from dms_executor.join_repair import resolve_join_repair
+
+                decided = resolve_join_repair(
+                    reason,
+                    sql,
+                    question=question,
+                    space_onto=space_onto,
+                    violations=declared_violations,
+                    warehouse=warehouse,
+                    grantable=grantable,
+                    dialect=dialect,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if isinstance(decided, dict):
+                    return decided
+                if isinstance(decided, str):
+                    return submit_sql(decided, _attempts)
         if reason == RESERVED_PARAM_AS_OF:
             env = reserved_as_of_abstain(
                 space_id=space_id,
@@ -2717,6 +2832,7 @@ def _maybe_generative_ask_impl(
     dialect: str | None = None,
     embedder: Callable[[list[str]], Any] | None = None,
     demo_gate: bool = True,
+    ask_context: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -2814,6 +2930,11 @@ def _maybe_generative_ask_impl(
     if lake is not None and not lake.is_file():
         lake = None
 
+    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+        from dms_executor.join_flags import bind_orphan_space, bind_serve_ontology
+
+        bind_orphan_space(space_id)
+        bind_serve_ontology(None)
     onto = ontology
     # A2-02/A2-06: a caller-declared ontology that FAILED verify keeps its
     # evidence and stays loaded with failed subjects marked. The default
@@ -2905,6 +3026,10 @@ def _maybe_generative_ask_impl(
     # A Space ontology (never the demo one). Compile serves run the same
     # join rule the AI lane runs, so this is known before the rank window.
     space_onto = (declared or onto) if not demo_ontology_allowed else None
+    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+        from dms_executor.join_flags import bind_serve_ontology
+
+        bind_serve_ontology(space_onto or onto)
     held_refusal: _CompileRefused | None = None
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,
@@ -3013,6 +3138,20 @@ def _maybe_generative_ask_impl(
             # The rows already sit in the governed block. A second Examples
             # section would send the same SQL twice.
             insights_ctx.pop("vq_examples", None)
+    from dms_executor.space_knowledge import knowledge_prompt, space_knowledge_enabled
+
+    # Flag off: the catalog is not copied and the context string is ignored.
+    if space_knowledge_enabled():
+        block = knowledge_prompt(
+            q,
+            space_id=space_id,
+            warehouse=lake,
+            embedder=embedder,
+            ask_context=ask_context,
+        )
+        if block:
+            insights_ctx = dict(insights_ctx)
+            insights_ctx["space_knowledge"] = block
     from dms_executor.ai_first import ai_first_enabled, with_examples
 
     held_preview: dict[str, Any] | None = None
@@ -3550,6 +3689,19 @@ def _maybe_generative_ask_impl(
         if broken:
             # The lake's declared ontology says this join is not safe (an
             # orphan FK misattributes or drops rows). SQL is no exemption.
+            # A steward threshold above the measured ratio reconfirms instead.
+            if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+                from dms_executor.join_repair import orphan_reconfirm
+
+                held_orphans = orphan_reconfirm(
+                    broken,
+                    declared,
+                    question=q,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if held_orphans is not None:
+                    return _stamp(held_orphans)
             return _stamp(
                 _abstain(
                     q,
@@ -3569,6 +3721,7 @@ def _maybe_generative_ask_impl(
                 )
             )
         join_why: str | None = None
+        cols: dict[str, set[str]] | None = None
         # The join rule is the named refusal. An EXPLAIN or grant miss must
         # not hide it behind a generic validate reason.
         if space_onto is not None:
@@ -3603,16 +3756,40 @@ def _maybe_generative_ask_impl(
             # SQL may join two relations only over a link the source declared
             # and verify() measured. A confident join on anything else is the
             # plausible wrong number this layer exists to refuse.
-            return _stamp(
-                _abstain(
-                    q,
+            # Flag on, four fixable shapes get one repair, then the same gates.
+            if os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1":
+                from dms_executor.join_repair import resolve_join_repair
+
+                decided = resolve_join_repair(
                     join_why,
+                    sql,
+                    question=q,
+                    space_onto=space_onto,
+                    violations=declared_violations,
+                    warehouse=lake,
+                    grantable=set(allowed),
+                    dialect=dialect,
                     space_id=space_id,
                     session_id=session_id,
-                    plan_source=source,
-                    sql=sql,
+                    columns_of=cols,
                 )
-            )
+                if isinstance(decided, dict):
+                    return _stamp(decided)
+                if isinstance(decided, str):
+                    sql = decided
+                    join_why = None
+                    why = None
+            if join_why:
+                return _stamp(
+                    _abstain(
+                        q,
+                        join_why,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source,
+                        sql=sql,
+                    )
+                )
         if why:
             shown = customer_grant_reason(why)
             cited = (
@@ -3789,9 +3966,17 @@ def _maybe_generative_ask_impl(
             )
         )
     raw_plan = payload.get("query_plan")
-    gap = unhonored_qualifier_reason(
-        q, plan=raw_plan if isinstance(raw_plan, dict) else None
-    )
+    plan_body = raw_plan if isinstance(raw_plan, dict) else None
+    plan_notes: tuple[str, ...] = ()
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        from dms_executor.qualifier_ai import NOTE_KINDS, is_candidate_note
+
+        full = unhonored_qualifier_reason(q, plan=plan_body)
+        gap = unhonored_qualifier_reason(q, plan=plan_body, skip_kinds=NOTE_KINDS)
+        if is_candidate_note(full):
+            plan_notes = (str(full),)
+    else:
+        gap = unhonored_qualifier_reason(q, plan=plan_body)
     if gap:
         return _stamp(
             _abstain(
@@ -3981,6 +4166,7 @@ def _maybe_generative_ask_impl(
             grantable=allowed,
             plan_origin=origin,
             served_route=ROUTE_COMPILE,
+            qualifier_notes=plan_notes,
         )
     )
 
@@ -4078,6 +4264,15 @@ def _climb_after_silent_verdict(
     return env
 
 
+def _qualifier_note_only(reason: str | None) -> bool:
+    """Flag on: this lexical reason is a note, so the rank compiler does not serve it."""
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() != "1":
+        return False
+    from dms_executor.qualifier_ai import is_candidate_note
+
+    return is_candidate_note(reason)
+
+
 def maybe_generative_ask(
     *args: Any, **kwargs: Any
 ) -> dict[str, Any] | None:
@@ -4092,6 +4287,19 @@ def maybe_generative_ask(
     token = ensure_clock()
     climb = bind_climb(None)
     turn_token = bind_turn(None)
+    repair_token = None
+    if os.environ.get("DMS_QUALIFIER_AI", "0").strip() == "1":
+        asked = kwargs.get("question")
+        if not isinstance(asked, str) and args:
+            asked = args[0]
+        compute = kwargs.get("compute")
+        if isinstance(asked, str) and callable(compute):
+            from dms_executor.qualifier_ai import (
+                bind_qualifier_repair,
+                repair_from_compute,
+            )
+
+            repair_token = bind_qualifier_repair(repair_from_compute(compute, asked))
     try:
         with use_ask_space(space_id):
             env = _maybe_generative_ask_impl(*args, **kwargs)
@@ -4099,6 +4307,10 @@ def maybe_generative_ask(
             attach_timings(env)
         return env
     finally:
+        if repair_token is not None:
+            from dms_executor.qualifier_ai import reset_qualifier_repair
+
+            reset_qualifier_repair(repair_token)
         reset_turn(turn_token)
         reset_climb(climb)
         release_clock(token)

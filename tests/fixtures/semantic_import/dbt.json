@@ -1,0 +1,48 @@
+{
+  "semantic_models": [
+    {
+      "name": "orders",
+      "description": "Order rows",
+      "model": "ref('orders')",
+      "entities": [
+        {"name": "order", "type": "primary", "expr": "order_id"}
+      ],
+      "dimensions": [
+        {
+          "name": "ordered_at",
+          "type": "time",
+          "expr": "ordered_at",
+          "description": "Order date"
+        },
+        {
+          "name": "status",
+          "type": "categorical",
+          "expr": "status",
+          "description": "Order status"
+        }
+      ],
+      "measures": [
+        {
+          "name": "total_amount",
+          "agg": "sum",
+          "expr": "amount",
+          "description": "Total amount"
+        }
+      ]
+    }
+  ],
+  "metrics": [
+    {
+      "name": "revenue",
+      "description": "Total amount",
+      "type": "simple",
+      "type_params": {"measure": "total_amount"}
+    },
+    {
+      "name": "ratio_odd",
+      "description": "Unsupported ratio",
+      "type": "ratio",
+      "type_params": {}
+    }
+  ]
+}

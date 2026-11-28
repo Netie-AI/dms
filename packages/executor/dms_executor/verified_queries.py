@@ -568,7 +568,43 @@ def retrieve_verified_examples(
             raise
         logger.warning("verified_example_retrieve_unavailable")
         return []
-    return [_example_public(row) for row in _rank_examples(q, rows, embedder)]
+    out = [_example_public(row) for row in _rank_examples(q, rows, embedder)]
+    extra = _import_prompt_rows(
+        q, space_id=sid, warehouse=db, grantable=allowed, dialect=dialect
+    )
+    if not extra:
+        return out
+    seen = {str(row.get("sql") or "") for row in out}
+    for row in extra:
+        sql_text = str(row.get("sql") or "")
+        if sql_text and sql_text not in seen:
+            out.append(row)
+            seen.add(sql_text)
+    return out
+
+
+def _import_prompt_rows(
+    ask_text: str,
+    *,
+    space_id: str,
+    warehouse: Path,
+    grantable: set[str],
+    dialect: str | None,
+) -> list[dict[str, Any]]:
+    """Approved import examples. Empty when the import flag is off, before any read."""
+    try:
+        from dms_executor.semantic_import.store import approved_for_prompt
+
+        return approved_for_prompt(
+            ask_text,
+            space_id=space_id,
+            warehouse=warehouse,
+            grantable=grantable,
+            dialect=dialect,
+        )
+    except Exception:
+        logger.warning("semantic_import_examples_unavailable")
+        return []
 
 
 def _schema_hash(

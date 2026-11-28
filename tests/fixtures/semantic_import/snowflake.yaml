@@ -1,0 +1,63 @@
+name: sales
+description: Sales model
+module_custom_instructions:
+  sql_generation: Prefer paid orders.
+tables:
+  - name: orders
+    description: Order rows
+    base_table:
+      database: analytics
+      schema: public
+      table: orders
+    primary_key:
+      columns:
+        - order_id
+    dimensions:
+      - name: status
+        expr: status
+        data_type: VARCHAR
+        description: Order status
+        synonyms:
+          - state
+        cortex_search_service:
+          service: status_search
+    time_dimensions:
+      - name: ordered_at
+        expr: ordered_at
+        data_type: DATE
+        description: Order date
+    facts:
+      - name: amount
+        expr: amount
+        data_type: NUMBER
+        description: Line amount
+    metrics:
+      - name: total_amount
+        expr: SUM(amount)
+        description: Total amount
+        synonyms:
+          - revenue
+      - name: running_amount
+        expr: SUM(amount) OVER (PARTITION BY status)
+        description: Window metric
+      - name: lod_amount
+        expr: "{FIXED status : SUM(amount)}"
+        description: Level of detail
+    filters:
+      - name: is_paid
+        expr: status = 'paid'
+        description: Paid rows
+relationships:
+  - name: orders_customers
+    left_table: orders
+    right_table: customers
+    relationship_columns:
+      - left_column: customer_id
+        right_column: customer_id
+    join_type: left_outer
+    relationship_type: many_to_one
+verified_queries:
+  - name: paid_count
+    question: how many paid orders
+    sql: SELECT COUNT(*) AS n FROM orders
+    use_as_onboarding_question: true

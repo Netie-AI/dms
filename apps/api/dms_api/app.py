@@ -35,10 +35,12 @@ from dms_api.routes import (
     ping,
     pipelines,
     runs,
+    semantic_import,
     spaces,
     studio,
     studio_adjust,
     studio_chat,
+    studio_knowledge,
     studio_sql_bind,
     trust,
 )
@@ -226,6 +228,10 @@ def create_app() -> FastAPI:
         app.include_router(studio_adjust.router)
     if studio_sql_bind.enabled():
         app.include_router(studio_sql_bind.router)
+    if semantic_import.enabled():
+        app.include_router(semantic_import.router)
+    if studio_knowledge.enabled():
+        app.include_router(studio_knowledge.router)
     return app
 
 

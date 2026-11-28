@@ -489,6 +489,10 @@ jobs:
         # BENCH-MATRIX-01. Five synthetic questions. Does not POST /v1/chat/ask.
         run: python scripts/bench_matrix.py --self-check
 
+      - name: BIRD harness self-check (stack-free, not a download)
+        # BIRD-HARNESS-CI-01. Synthetic sqlite. Does not fetch Mini-Dev.
+        run: python scripts/bench/bird/__main__.py self-check
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

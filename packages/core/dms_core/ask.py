@@ -32,6 +32,9 @@ class AskServicePort(Protocol):
         #: Cortex ask; exact = pack/VQ only; generative = skip pack, no plan
         #: source on live_ask (bind_plan and POST /dms/query are off). None = product.
         ask_path: str | None = None,
+        #: Steward text for this ask only. The model sees it when
+        #: DMS_SPACE_KNOWLEDGE is on. Gates keep the question.
+        ask_context: str | None = None,
     ) -> dict[str, Any]: ...
 
     def close(self) -> None: ...

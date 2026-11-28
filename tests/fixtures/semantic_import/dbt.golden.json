@@ -1,0 +1,70 @@
+{
+  "benchmarks": [],
+  "description": "",
+  "entities": [
+    {
+      "columns": [
+        {
+          "data_type": "",
+          "description": "",
+          "expr": "order_id",
+          "name": "order",
+          "role": "dimension",
+          "synonyms": []
+        },
+        {
+          "data_type": "time",
+          "description": "Order date",
+          "expr": "ordered_at",
+          "name": "ordered_at",
+          "role": "time_dimension",
+          "synonyms": []
+        },
+        {
+          "data_type": "categorical",
+          "description": "Order status",
+          "expr": "status",
+          "name": "status",
+          "role": "dimension",
+          "synonyms": []
+        }
+      ],
+      "description": "Order rows",
+      "name": "orders",
+      "primary_key": [
+        "order_id"
+      ],
+      "table": "orders"
+    }
+  ],
+  "filters": [],
+  "format": "dbt",
+  "instructions": [],
+  "measures": [
+    {
+      "description": "Total amount",
+      "expr": "sum(amount)",
+      "name": "revenue",
+      "synonyms": [],
+      "table": "orders"
+    },
+    {
+      "description": "Total amount",
+      "expr": "sum(amount)",
+      "name": "total_amount",
+      "synonyms": [],
+      "table": "orders"
+    }
+  ],
+  "name": "",
+  "onboarding": [],
+  "relationships": [],
+  "unsupported": [
+    {
+      "name": "ratio_odd",
+      "path": "metrics",
+      "reason": "dbt_metric:ratio"
+    }
+  ],
+  "verified_queries": []
+}
