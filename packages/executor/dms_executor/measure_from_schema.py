@@ -196,7 +196,9 @@ def reads_two_base_tables(sql: str, dialect: str | None) -> bool:
     import sqlglot
     from sqlglot import exp
 
-    read = dialect or "duckdb"
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
+    read = dialect or SERVING_DIALECT
     try:
         trees = [tree for tree in sqlglot.parse(sql or "", read=read) if tree is not None]
     except Exception:  # noqa: BLE001
