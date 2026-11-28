@@ -180,7 +180,18 @@ def test_ontology_counts_are_ints_on_one_summary(
         assert counts[key] == 0
 
 
-def test_ontology_store_connect_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ontology_store_connect_uses_the_shared_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import math
+
+    from cortex_client.compute import insights_timeout_s
+    from dms_core.control_plane.onto_data import store_connect_timeout_s
+
+    monkeypatch.delenv("DMS_INSIGHTS_TIMEOUT_S", raising=False)
+    assert store_connect_timeout_s() == math.ceil(insights_timeout_s())
+    assert store_connect_timeout_s() > 3
+    monkeypatch.setenv("DMS_INSIGHTS_TIMEOUT_S", "45")
     seen: dict[str, Any] = {}
 
     def fake_connect(conninfo: str, **kwargs: Any) -> None:
@@ -196,7 +207,8 @@ def test_ontology_store_connect_times_out(monkeypatch: pytest.MonkeyPatch) -> No
     )
     with pytest.raises(OSError):
         store._conn()
-    assert seen["kwargs"]["connect_timeout"] == 3
+    assert seen["kwargs"]["connect_timeout"] == 45
+    assert seen["kwargs"]["connect_timeout"] == store_connect_timeout_s()
 
 
 def test_ui_empty_states_are_in_the_pages() -> None:

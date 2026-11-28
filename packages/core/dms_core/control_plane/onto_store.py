@@ -693,10 +693,6 @@ def latest_snapshot(
     return _row_to_snapshot(row) if row is not None else None
 
 
-#: Same bound as the onto_data store. A down database answers, it does not hang the page.
-_CONNECT_TIMEOUT_S = 3
-
-
 class PostgresOntologyStore:
     """The durable store: the in-memory ``OntologyStore`` API over Postgres + RLS.
 
@@ -709,9 +705,10 @@ class PostgresOntologyStore:
         self._tenant_id = UUID(str(tenant_id))
 
     def _conn(self) -> psycopg.Connection:
+        from dms_core.control_plane.onto_data import store_connect_timeout_s
         from dms_core.control_plane.session import set_tenant_context
 
-        conn = psycopg.connect(self._conninfo, connect_timeout=_CONNECT_TIMEOUT_S)
+        conn = psycopg.connect(self._conninfo, connect_timeout=store_connect_timeout_s())
         set_tenant_context(conn, self._tenant_id, role="steward")
         return conn
 

@@ -122,7 +122,7 @@ def ontology_page_problems() -> list[str]:
         "fetchOntology(activeSpaceId",
         "ontologyBundle(",
         "objects: body.object_types",
-        "objects.map((o)",
+        "ontologyWindow(objects, shown).rows.map((o)",
     ):
         if needle not in text:
             problems.append(needle)

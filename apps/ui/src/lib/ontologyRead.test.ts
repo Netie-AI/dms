@@ -8,6 +8,7 @@ import {
   ontologyHeldView,
   ontologyHonestCard,
   ontologyReadPath,
+  ontologyWindow,
 } from "./ontologyRead";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +35,7 @@ describe("ontology reads name the active Space", () => {
     const down = ontologyHonestCard({ ok: false, reason: "store_unreadable" });
     expect(down?.title).toBe("Ontology store could not be read");
     const missing = ontologyHonestCard({ ok: false, reason: "space_required" });
-    expect(missing?.title).toBe("No Space selected");
+    expect(missing?.title).toBe("Pick a Space");
     expect(ontologyHonestCard({ ok: true, reason: "" })).toBeNull();
   });
 
@@ -48,6 +49,9 @@ describe("ontology reads name the active Space", () => {
     expect(page).toContain('data-testid="ontology-retry"');
     expect(page).toContain("ontologyHeldView(");
     expect(page).toContain("ontologyCountsMeasured(");
+    expect(page).toContain("ontologyWindow(");
+    expect(page).toContain("Load more");
+    expect(page).toContain('data-testid="ontology-window"');
     expect(api).toContain("ontologyReadPath(");
     expect(api).toContain("ontologyBundle(");
     expect(api).not.toContain('getJson<OntologySummary>("/v1/ontology", signal)');
@@ -88,7 +92,8 @@ describe("ontology reads name the active Space", () => {
       objects: [] as { id: string }[],
     };
     expect(ontologyCountsMeasured(down.summary)).toBe(false);
-    expect(ontologyCountsMeasured({ ok: false, reason: "empty_store" })).toBe(true);
+    expect(ontologyCountsMeasured({ ok: false, reason: "empty_store" })).toBe(false);
+    expect(ontologyCountsMeasured({ ok: false, reason: "space_required" })).toBe(false);
     expect(ontologyCountsMeasured(good.summary)).toBe(true);
     const kept = ontologyHeldView(down, good, false);
     expect(kept?.objects).toEqual([{ id: "sale" }]);
@@ -98,5 +103,17 @@ describe("ontology reads name the active Space", () => {
     const firstFail = ontologyHeldView(down, null, false);
     expect(firstFail).toBe(down);
     expect(ontologyCountsMeasured(firstFail?.summary)).toBe(false);
+  });
+
+  it("a long list says how many are on screen and keeps the rest", () => {
+    const few = ontologyWindow(["a", "b", "c"], 100);
+    expect(few.rows).toEqual(["a", "b", "c"]);
+    expect(few.label).toBeNull();
+    const many = Array.from({ length: 150 }, (_, i) => i);
+    const page = ontologyWindow(many, 100);
+    expect(page.rows).toHaveLength(100);
+    expect(page.label).toBe("showing 100 of 150");
+    expect(ontologyWindow(many, 150).label).toBeNull();
+    expect(ontologyWindow(many, 150).rows).toHaveLength(150);
   });
 });

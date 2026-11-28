@@ -36,7 +36,7 @@ export function ontologyBundle(body: OntologyReadBody): OntologyBundle {
 }
 
 const TITLES: Record<string, string> = {
-  space_required: "No Space selected",
+  space_required: "Pick a Space",
   empty_store: "No ontology for this Space",
   store_unreadable: "Ontology store could not be read",
 };
@@ -48,11 +48,26 @@ export function ontologyReadPath(section: string, spaceId?: string | null): stri
   return `${base}?space_id=${encodeURIComponent(id)}`;
 }
 
-/** A failed read is not a count of zero. An empty_store zero is a real read. */
+/** Tiles only after a successful read. space_required and a failed read are not zeros. */
 export function ontologyCountsMeasured(
   summary: { ok?: boolean; reason?: string } | null | undefined,
 ): boolean {
-  return Boolean(summary) && summary?.reason !== "store_unreadable";
+  return summary?.ok === true;
+}
+
+/** How many rows a list shows before Load more. The rest stay in the payload. */
+export const ONTOLOGY_PAGE = 100;
+
+/** A window, not a silent cut. `label` is null when every row is on screen. */
+export function ontologyWindow<T>(
+  items: readonly T[],
+  shown: number,
+): { rows: T[]; label: string | null } {
+  const total = items.length;
+  const n = Math.min(total, Math.max(0, shown));
+  const rows = items.slice(0, n);
+  if (n >= total) return { rows, label: null };
+  return { rows, label: `showing ${n} of ${total}` };
 }
 
 /**
