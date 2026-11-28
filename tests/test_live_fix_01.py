@@ -348,10 +348,57 @@ def test_page_load_gets_are_not_errors(client: TestClient, empty_ontology: None)
                 "source": "none",
                 "reason": "empty_store",
                 "space_id": OPS,
+                "counts": {
+                    "object_types": 0,
+                    "link_types": 0,
+                    "action_types": 0,
+                    "functions": 0,
+                    "metrics": 0,
+                },
+                "object_types": [],
+                "link_types": [],
+                "action_types": [],
+                "functions": [],
+                "metrics": [],
+                "nodes": [],
+                "edges": [],
             },
         )
         is None
     )
+    dropped = {
+        "ok": False,
+        "source": "none",
+        "reason": "empty_store",
+        "space_id": OPS,
+        "counts": {"object_types": 0},
+    }
+    assert smoke.ontology_lie(f"/v1/ontology?space_id={OPS}", dropped) == "object_types-missing"
+    mismatch = {
+        "ok": False,
+        "source": "none",
+        "reason": "empty_store",
+        "space_id": OPS,
+        "counts": {
+            "object_types": 0,
+            "link_types": 0,
+            "action_types": 0,
+            "functions": 0,
+            "metrics": 0,
+        },
+        "object_types": [{"id": "hidden"}],
+        "link_types": [],
+        "action_types": [],
+        "functions": [],
+        "metrics": [],
+        "nodes": [],
+        "edges": [],
+    }
+    assert (
+        smoke.ontology_lie(f"/v1/ontology?space_id={OPS}", mismatch)
+        == "object_types-count-mismatch"
+    )
+    assert smoke.ontology_page_problems() == []
 
 
 def test_ontology_page_sends_the_active_space() -> None:
