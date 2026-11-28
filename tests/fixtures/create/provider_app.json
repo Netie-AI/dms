@@ -1,0 +1,22 @@
+{
+  "content": {
+    "kind": "app",
+    "title": "Orders",
+    "estimated_cost": 0.02,
+    "parts": [
+      {
+        "id": "by_month",
+        "title": "Orders by month",
+        "body": "The chart follows the granted table.",
+        "sql": "SELECT month, amount FROM orders ORDER BY month"
+      }
+    ]
+  },
+  "usage": {
+    "model": "routed-by-customer",
+    "prompt_tokens": 11,
+    "completion_tokens": 4,
+    "total_tokens": 15,
+    "cost": 0.02
+  }
+}

@@ -1,0 +1,130 @@
+{
+  "run_sql": {
+    "name": "run_sql",
+    "description": "Run one read-only SELECT on a granted table. Returns the rows the statement produced.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "sql": {"type": "string", "description": "One read-only SELECT."}
+      },
+      "required": ["sql"]
+    }
+  },
+  "fetch_ontology": {
+    "name": "fetch_ontology",
+    "description": "Return the ontology summary for this Space. No table rows.",
+    "input_schema": {"type": "object", "properties": {}, "required": []}
+  },
+  "chart": {
+    "name": "chart",
+    "description": "Accept a chart spec. DMS does not draw it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string"},
+        "title": {"type": "string"},
+        "sql": {"type": "string"},
+        "mark": {"type": "string"}
+      },
+      "required": ["id", "title"]
+    }
+  },
+  "render_doc": {
+    "name": "render_doc",
+    "description": "Ask the provider Skill to render the file. DMS does not build the file.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "format": {"type": "string", "enum": ["app", "slides", "doc"]}
+      },
+      "required": ["format"]
+    }
+  },
+  "sign_request": {
+    "name": "sign_request",
+    "description": "Record a digest of the prompt for the audit log.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "label": {"type": "string"}
+      },
+      "required": ["label"]
+    }
+  },
+  "save_artifact": {
+    "name": "save_artifact",
+    "description": "Save one version of the artifact the model produced.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "artifact": {"type": "object"},
+        "note": {"type": "string"}
+      },
+      "required": ["artifact"]
+    }
+  },
+  "return_artifact": {
+    "name": "return_artifact",
+    "description": "Return the finished artifact after planning and checking it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "kind": {"type": "string", "enum": ["app", "slides", "doc"]},
+        "title": {"type": "string"},
+        "parts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {"type": "string"},
+              "title": {"type": "string"},
+              "body": {"type": "string"},
+              "sql": {"type": "string"},
+              "charts": {
+                "type": "array",
+                "maxItems": 5,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {"type": "string"},
+                    "sql": {"type": "string"},
+                    "type": {"type": "string", "description": "bar, line, or pie."},
+                    "x": {"type": "string", "description": "Category column."},
+                    "y": {"type": "string", "description": "Value column when series is a category."},
+                    "series": {"description": "Measure columns, or the column whose values become series."},
+                    "labels": {"type": "boolean", "description": "Draw the value on each point."}
+                  },
+                  "required": ["label", "sql"]
+                }
+              }
+            },
+            "required": ["id", "title"]
+          }
+        },
+        "style": {
+          "type": "object",
+          "properties": {
+            "colours": {"type": "string"},
+            "fonts": {"type": "string"},
+            "logo": {"type": "string"},
+            "tone": {"type": "string"}
+          }
+        },
+        "estimated_cost": {"type": "number"}
+      },
+      "required": ["kind", "title", "parts"]
+    }
+  },
+  "edit_section": {
+    "name": "edit_section",
+    "description": "Replace one section. Leave every other section as it was.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "section_id": {"type": "string"},
+        "replacement": {"type": "object"}
+      },
+      "required": ["section_id", "replacement"]
+    }
+  }
+}

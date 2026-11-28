@@ -46,6 +46,7 @@ from dms_api.routes import (
     studio,
     studio_adjust,
     studio_chat,
+    studio_create,
     studio_knowledge,
     studio_sql_bind,
     trust,
@@ -247,6 +248,9 @@ def create_app() -> FastAPI:
     app.include_router(studio_adjust.status_router)
     if studio_adjust.enabled():
         app.include_router(studio_adjust.router)
+    app.include_router(studio_create.status_router)
+    if studio_create.enabled():
+        app.include_router(studio_create.router)
     if studio_sql_bind.enabled():
         app.include_router(studio_sql_bind.router)
     if ready.mount_enabled():

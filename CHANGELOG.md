@@ -2,6 +2,96 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: Cursor v1, live cost
+
+- **Cursor.** `POST /v1/agents` launches. `GET /v1/agents/{id}/runs/{runId}` polls until the run finishes. A repair is `POST /v1/agents/{id}/runs` on that agent. JSON artifacts download from the presigned URL with no API key. Each call waits 240 seconds and retries. No clock stops a run.
+- **Cost.** No per-run token, step, or USD stop. The draft shows live cost. OpenVault 402 is the spend stop. Routing and the daily cap stay in OpenVault.
+- **Slides.** A named slide range keeps the deck inside it. A chart group is not split onto slides that share a title. A narrative that describes a different layout is dropped. The cover rule sits under the measured title. A matplotlib legend sits outside the axis title, at 9pt.
+
+## 2026-11-28 - DMS-CREATE-01: pages share one plan
+
+- **Doc.** A heading starts below the previous block. A table header stays with its next row, above the footer.
+- **Budget.** A named page count tells the model the section, chart, and table caps. One repair asks it to compact. The layout does not delete sections.
+- **Slides.** pdf, html, and pptx use one page plan. Two charts share a page. A text-only first page is a cover. A text-only last page is a close. A half-width legend sits to the right of the axis title.
+
+## 2026-11-28 - DMS-CREATE-01: charts sit under the heading
+
+- **Doc.** Each chart is drawn under its own heading, at the bitmap's aspect. Rows are a table with a header. Headings are larger and bold. A section that does not fit is kept. After one condense, a doc that still overflows is not shown.
+- **Slides.** Tick labels are 10pt. Data labels are at least 9pt. A slide holds two charts. The legend sits at the bottom.
+- **Numbers.** The prompt and the rendered app write figures with thousands separators and no trailing `.0`.
+- **Colour.** A generated palette colour is not both a near hue and a near RGB of one already chosen.
+
+## 2026-11-28 - DMS-CREATE-01: slides stay on the page, type stays readable
+
+- **Geometry.** Every text box is the slide width minus the margins. A long title grows (at most two lines) and the body starts below it.
+- **Colour.** Pie wedges and extra series cycle a palette grown from the brand. Bar and column axes start at zero.
+- **Type.** Body text does not go below 9pt. A one-page doc that still will not fit is trimmed, and the model is asked once to shorten it.
+- **Doc.** A chart sits with its section. The table is the top rows, not every source row. Two tables with the same numbers collapse to one.
+- **Deck.** An unreadable long deck is an outline, then groups of four slides. The prompt says every cited figure is copied from a result row.
+
+## 2026-11-28 - DMS-CREATE-01: one page stays one page
+
+- **Length.** A doc that asks for one page is one page, with charts scaled onto it. A named page count is that many pages. A deck is one page per slide.
+- **Charts.** The model sets type, x, series, and labels. The file follows that spec. A long quarter-by-region table is drawn as one series per category. Axis numbers stay plain (`1,000,000`, not `1e6`).
+- **Brand.** The logo and the title colour are drawn. PDF embeds the brand font (Calibri when that is the request). Slides have a footer, a slide number, data labels, and a fade.
+
+## 2026-11-28 - DMS-CREATE-01: Cursor finishes once, derived numbers are computed
+
+- **Cursor.** `POST /v0/agents` uses the 240 second timeout, then `GET /v0/agents/{id}` until FINISHED. The branch, the PR, and the artifact are what get judged. A miss does not launch a second agent.
+- **Parse.** A wrapper whose `artifact`, `result`, `output`, or `summary` is the artifact is unwrapped. `{status:needs_review}` and `{tool:run_sql}` stay a shape miss.
+- **Judge.** A difference of two result numbers traces, including a rounded one. A share is still checked only on the table the sentence names. A line-leading `2.` or `2)` is a list marker, not a figure. `$9.9M` and `5K` still have to match.
+
+## 2026-11-28 - DMS-CREATE-01: schema in the prompt, files that keep the content
+
+- **Prompt.** The plain system message states the JSON schema (kind, title, parts) and a short example. It does not say to call a tool. A parse or shape miss is one repair that sends the schema error back.
+- **Files.** Pdf wraps and paginates, and chart images are matplotlib PNGs. Html is styled and formats numbers. Pptx draws every numeric series in the brand colours, with axis titles, five charts per slide and the rest on the next slide. Nothing is dropped in silence.
+- **Judge.** A percent within one point of a multi-row ratio traces. K/M/B suffixes trace with rounding tolerance. A share claim is checked against the chart or SQL that sentence refers to. A one-row result is skipped. Chart rows are not cut at 40. A sliced part table says how many rows were shown.
+- **Log.** `served_model` is kept. A served model from another family warns. `log.seconds` is the job, not the age of the session.
+
+## 2026-11-28 - DMS-CREATE-01: plain OpenVault contract and real files
+
+- **Contract.** OpenVault rejects `tools` and ignores a top-level `system`. The default body is a system message, a user message, and `max_tokens` (default 8000). `DMS_CREATE_OV_TOOLS` is the digit 1 only, and it is off. The timeout is 240 seconds. Spend reads top-level `est_cost_usd`.
+- **Judge.** Thousands separators, currency, and percents trace as one number. A read-only multi-statement is repaired. A write still abstains. Each chart SQL is read-only, and a chart number must be in that chart's rows. A share claim has to match the computed shares.
+- **Files.** Confirm writes pptx, pdf, and html. A doc whose request says one page is one page.
+
+## 2026-11-28 - DMS-CREATE-01: OpenVault role is reason, slides skill is a deck
+
+- **Role.** Prove-box OpenVault allows `sql`, `tool`, `reason`, `summarize`, `grain`, and `ontology`. Create sends `DMS_CREATE_OV_ROLE` (default `reason`). It does not send `create_generate`, `create_improve`, or `create_cursor_key`.
+- **Cursor key.** `CURSOR_API_KEY`, or the DMS secret store when that env is unset. The key is not an OpenVault role and is not logged. Model routing stays in OpenVault.
+- **Slides.** `create_skills/slides/SKILL.md` tells the provider pptx Skill to build the file: up to 5 labelled comparison charts on a slide, a human-language narrative, and numbers that trace to SQL.
+
+## 2026-11-28 - DMS-CREATE-01: CI replays a recorded provider app
+
+- **Fixture.** `tests/fixtures/create/provider_app.json` is the provider response CI replays through `generate`. Title Orders, cost 0.02. Not a live bill.
+- **Budget.** The OpenVault daily cap is the budget. A 402 stops the run. `DMS_CREATE_MAX_TOKENS` and a tenant `max_steps` of 1 do not.
+
+## 2026-11-28 - DMS-CREATE-01: a shown app scores at least the direct ask
+
+- **Bar.** The Claude body is the direct ask (system prompt plus the same XML) plus tools and skills. A shown app is scored from `create_score.json` against those same words with the SQL and the citations removed. It is shown only when its points are at least that direct reading. A body that cites 18 from a granted row scores above a direct answer that cites 99999.
+- **Studio.** The super guide is a field. A typed guide is saved on the tenant before the session opens.
+
+## 2026-11-28 - DMS-CREATE-01: the provider generates, DMS governs
+
+- **Harness.** `DMS_CREATE` stays off unless it is the digit 1. DMS does not build components. `dms_core.create_generator` is the shared adapter for this harness and the doc/slides writer. `claude_api` goes through OpenVault with a role, a system prompt, XML context, tool schemas, and adaptive thinking. `cursor_api` is `POST /v0/agents` with no model field. The Cursor key comes from OpenVault and is not stored.
+- **Governance.** Tools (`run_sql`, `fetch_ontology`, `chart`, `render_doc`, `sign_request`, `save_artifact`) are JSON schemas with a per-tenant allowlist. Every call is validated, budgeted, and audited. Provider skills are `pptx`, `docx`, `xlsx`, and `pdf`, plus local `SKILL.md` folders picked by format. Prompts are versioned. Brand kit, templates, examples, and tool toggles are stored per tenant.
+- **Edit.** A user picks a section and an instruction. The provider returns the change. Other sections stay. Every version is kept and can be restored. The judge checks the schema, the brand fields, numbers against SQL results, and secrets or PII, then asks the provider to repair once.
+- **Measured.** Stub adapter: app title Orders, cost 0.02. Deck title Orders deck, cost 0.04. No live OpenVault key. Not a live bill. Not PASS.
+
+## 2026-11-28 - DMS-CREATE-01: finish the app after one confirm
+
+- **Build.** One cheap plan shows the estimate. The user confirms once. Every component is then built. A failed component is still retried once.
+- **Stop.** The 8-step, 8000-token, and $1 caps are gone. OpenVault 402 stops the run. A runaway guard stops at 60 steps or `DMS_CREATE_MAX_USD` (default 10) and says so. Twice the estimate warns and the build continues. The outline is not shortened in silence.
+- **Context.** The model gets the schema, SQL aggregates, and a sample of at most 20 rows. It does not get the raw table.
+- **Measured.** Stub orders lake, no usage in the response: seconds=0.353159, tokens=null, cost=null. No live OpenVault key. Not a live bill. Not PASS.
+
+## 2026-11-28 - DMS-CREATE-01: Create app behind a default-off flag
+
+- **Flag.** `DMS_CREATE` defaults off. Only the digit 1 turns it on. Off, the status body is `{"enabled": false}` and the action routes are not mounted.
+- **App only.** Studio shows Create app. Doc and slides are refused (`kind_required`). They belong to DMS-CREATE-02 in `packages/create_docs`.
+- **Cost.** One `create_plan` call returns intent, an outline, and an estimate. The user confirms before any component is built. Each component is generated, checked, and kept. A failed component is retried once. The run stops on max steps (default 8), max tokens (default 8000), max USD (default 1.0), or OpenVault HTTP 402 `budget_exceeded`, and returns the pieces already checked. Tenant overrides live in `DMS_CREATE_BUDGETS`.
+- **Meter.** Each streamed step carries tokens, USD, and steps. A missing count stays null. The log stores model, tokens, and cost only when the response included them.
+- **Measured.** Stub orders lake, no usage in the response: seconds=0.299799, tokens=null, cost=null. Not a live OpenVault bill. grade52 was not re-run. Not PASS.
+- **Base.** Rebased onto `fa0eeef` (#655). The READY-04 row below stays.
 ## 2026-11-28 - DMS-SIGN: load the signing key through the executor package
 
 - **Import.** `load_sign_pems` used `dms_executor.manifest` directly. Import-linter only allows `dms_api.wiring` to import the `dms_executor` package. It now uses `dms_executor.ManifestMinter`, the same path as `load_vault_secret`.

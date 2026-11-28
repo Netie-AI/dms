@@ -1,0 +1,72 @@
+{
+  "create": {
+    "agent": {
+      "id": "bc-00000000-0000-0000-0000-000000000001",
+      "status": "ACTIVE",
+      "latestRunId": "run-00000000-0000-0000-0000-000000000001",
+      "url": "https://cursor.com/agents/bc-00000000-0000-0000-0000-000000000001",
+      "repos": [{"url": "https://example.com/acme/create", "startingRef": "main"}]
+    },
+    "run": {
+      "id": "run-00000000-0000-0000-0000-000000000001",
+      "agentId": "bc-00000000-0000-0000-0000-000000000001",
+      "status": "CREATING"
+    }
+  },
+  "run": {
+    "id": "run-00000000-0000-0000-0000-000000000001",
+    "agentId": "bc-00000000-0000-0000-0000-000000000001",
+    "status": "FINISHED",
+    "durationMs": 1200,
+    "result": "Wrote the deck.",
+    "git": {
+      "branches": [
+        {
+          "repoUrl": "example.com/acme/create",
+          "branch": "cursor/deck",
+          "prUrl": "https://example.com/pr/9"
+        }
+      ]
+    }
+  },
+  "artifacts": {
+    "items": [
+      {
+        "path": "artifacts/deck.json",
+        "sizeBytes": 96,
+        "updatedAt": "2026-04-13T18:45:00.000Z"
+      }
+    ]
+  },
+  "download": {
+    "url": "https://example.com/deck.json",
+    "expiresAt": "2026-04-13T19:00:00.000Z"
+  },
+  "file": {
+    "kind": "slides",
+    "title": "Orders deck",
+    "parts": [{"id": "s1", "title": "Trend", "body": "Orders moved."}]
+  },
+  "follow_up": {
+    "run": {
+      "id": "run-00000000-0000-0000-0000-000000000002",
+      "agentId": "bc-00000000-0000-0000-0000-000000000001",
+      "status": "CREATING"
+    }
+  },
+  "follow_run": {
+    "id": "run-00000000-0000-0000-0000-000000000002",
+    "agentId": "bc-00000000-0000-0000-0000-000000000001",
+    "status": "FINISHED",
+    "result": "{\"kind\":\"app\",\"title\":\"Orders\",\"parts\":[{\"id\":\"a\",\"title\":\"Total\",\"body\":\"Total is 10.\"}]}",
+    "git": {
+      "branches": [
+        {
+          "repoUrl": "example.com/acme/create",
+          "branch": "cursor/deck",
+          "prUrl": "https://example.com/pr/9"
+        }
+      ]
+    }
+  }
+}

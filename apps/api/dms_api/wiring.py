@@ -2171,3 +2171,61 @@ def sign_ledger_callback(client: Any) -> Any:
         return response.entry_id
 
     return record
+
+def create_caller_key(header: str | None) -> str:
+    """The customer OpenVault key from the request. No install-key fallback."""
+    return (header or "").strip()
+
+
+def create_start(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_start_session(**kwargs)
+
+
+def create_generate(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_generate_artifact(**kwargs)
+
+
+def create_improve(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_improve_artifact(**kwargs)
+
+
+def create_read(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_read_artifact(**kwargs)
+
+
+def create_restore(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_restore_version(**kwargs)
+
+
+def create_guide_read(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_read_guide(**kwargs)
+
+
+def create_guide_save(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_save_guide(**kwargs)
+
+
+def create_events(**kwargs: Any) -> Any:
+    import dms_executor
+
+    return dms_executor.create_draft_events(**kwargs)
+
+
+def create_confirm_final(**kwargs: Any) -> dict[str, Any]:
+    import dms_executor
+
+    return dms_executor.create_confirm_final(**kwargs)

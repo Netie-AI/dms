@@ -1,0 +1,11 @@
+{
+  "version": "1",
+  "checks": [
+    {"id": "schema", "points": 2},
+    {"id": "kind", "points": 1},
+    {"id": "parts", "points": 1},
+    {"id": "brand", "points": 1},
+    {"id": "traced", "points": 3},
+    {"id": "clean", "points": 2}
+  ]
+}
