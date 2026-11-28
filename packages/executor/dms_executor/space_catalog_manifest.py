@@ -217,7 +217,7 @@ def generative_handoff(payload: object) -> bool:
     return payload.get(HANDOFF_FIELD) == HANDOFF_GENERATIVE
 
 
-def release_chooser_handoff(payload: object) -> object:
+def release_chooser_handoff(payload: dict[str, Any] | None) -> dict[str, Any] | None:
     """A handoff is not an answer while the flag is on.
 
     Flag off returns ``payload`` unchanged, including when the key is present.
