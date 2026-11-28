@@ -813,10 +813,25 @@ def _space_views(space_id: str) -> list[dict[str, Any]]:
 
 
 def _approved_for_space(space_id: str) -> list[dict[str, Any]]:
-    """Approved onto_data items whose version belongs to this Space."""
-    from dms_core.control_plane.onto_data import _public_item, ontology_data_store
+    """Approved onto_data items whose version belongs to this Space.
+
+    ``DMS_ONTO_SPACE_SCOPE`` on uses ``approved_items(space_id)``, which also
+    keeps a steward-marked tenant-wide version. Off, this stays the Space
+    match it had before that flag.
+    """
+    from dms_core.control_plane.onto_data import (
+        _public_item,
+        onto_space_scope_enabled,
+        ontology_data_store,
+    )
 
     store = ontology_data_store()
+    if onto_space_scope_enabled():
+        try:
+            return list(store.approved_items(space_id))
+        except Exception as exc:  # noqa: BLE001 - a down store is a named reason, not a 500
+            logger.warning("approved ontology items unreadable (%s)", type(exc).__name__)
+            raise _OntologyUnread from exc
     versions = getattr(store, "_versions", None)
     if isinstance(versions, dict):
         try:
@@ -1255,6 +1270,7 @@ def compile_ontology_proposal(
     actor: str,
     tenant_id: str,
     space_id: str | None = None,
+    tenant_wide: bool = False,
 ) -> dict[str, Any]:
     """Run AO-VENDOR-01 ``compile_source`` and store the proposal as proposed.
 
@@ -1306,6 +1322,7 @@ def compile_ontology_proposal(
         created_by=actor,
         space_id=space_id,
         tenant_id=tenant_id,
+        tenant_wide=tenant_wide,
     )
 
 

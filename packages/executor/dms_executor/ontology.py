@@ -615,11 +615,22 @@ class Ontology:
         """Ontology of approved items only. Proposed and revoked are absent.
 
         Does not call ``demo_ontology`` and does not read ``SUPPLY_CHAIN_GRAINS``.
+        ``DMS_ONTO_SPACE_SCOPE`` off reads every approved item. On, the items
+        are the Space bound on the ask, plus a steward-marked tenant-wide
+        version (``space_id`` null and provenance ``tenant_wide`` true).
         """
         if items is None:
-            from dms_core.control_plane.onto_data import ontology_data_store
+            from dms_core.control_plane.onto_data import (
+                ask_space_id,
+                onto_space_scope_enabled,
+                ontology_data_store,
+            )
 
-            items = ontology_data_store().approved_items()
+            store = ontology_data_store()
+            if onto_space_scope_enabled():
+                items = store.approved_items(ask_space_id())
+            else:
+                items = store.approved_items()
         onto = cls()
         served: list[str] = []
         approved = [row for row in items if str(row.get("status") or "") == "approved"]
