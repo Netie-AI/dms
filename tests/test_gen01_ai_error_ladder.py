@@ -460,8 +460,9 @@ def test_ai_error_retries_once_then_serves_correct_sql(
     env = _ask(exe, row)
     generate = [item for item in box.posts if str(item["url"]).endswith("/v1/insights")]
     assert len(generate) == 3
-    feedback = generate[1]["json"].get("sql_feedback") or {}
-    assert feedback.get("reason") == "insights_ai_error"
+    # The feedback rides in the question text; the body carries no sql_feedback key.
+    assert "sql_feedback" not in generate[1]["json"]
+    assert "feedback:\ninsights_ai_error" in str(generate[1]["json"].get("question"))
     assert isinstance(generate[1]["json"].get("ontology"), dict)
     gold = _gold(db, row["sql"])
     assert _flat(env.get("rows")) == _flat(gold)
@@ -650,7 +651,8 @@ def test_route_ladder_serves_correct_sql_after_one_ai_error(
         assert cell in text.casefold(), (cell, text)
     generate = _generate_posts(box)
     assert len(generate) == 3
-    assert (generate[1]["json"].get("sql_feedback") or {}).get("reason") == "insights_ai_error"
+    assert "sql_feedback" not in generate[1]["json"]
+    assert "feedback:\ninsights_ai_error" in str(generate[1]["json"].get("question"))
 
 
 def test_route_ladder_retry_does_not_exceed_the_one_call_cap(

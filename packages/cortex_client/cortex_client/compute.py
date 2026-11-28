@@ -1335,11 +1335,9 @@ def _insights_body(
             slots = onto.get("intent_slots")
             if isinstance(slots, dict) and slots:
                 body["intent_slots"] = slots
-    if isinstance(sql_feedback, dict) and str(sql_feedback.get("reason") or ""):
-        body["sql_feedback"] = {
-            "previous_sql": str(sql_feedback.get("previous_sql") or ""),
-            "reason": str(sql_feedback.get("reason") or ""),
-        }
+    # The repair feedback rides in the question text above. POST /v1/insights
+    # does not model a ``sql_feedback`` field and answers 422 when it is sent,
+    # which killed every repair and escalate call.
     apply_schema_context(body, schema_context)
     return without_route_fields(body)
 

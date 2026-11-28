@@ -93,6 +93,34 @@ def serving_warehouse_path() -> Path:
     return discovered_engine_warehouse() or ingest_warehouse_path()
 
 
+def ask_lake(explicit: Path | None = None) -> Path | None:
+    """File the ask checks and the file the query runs on.
+
+    An existing executor file, else the serving file Cortex reads, else the
+    ingest file. A missing file is created only when it is the repo demo
+    fixture. A real lake is never reseeded.
+    """
+    if explicit is not None and Path(explicit).is_file():
+        return Path(explicit)
+    serving = serving_warehouse_path()
+    if serving.is_file():
+        return serving
+    ingest = ingest_warehouse_path()
+    if ingest.is_file():
+        return ingest
+    from dms_executor.demo_warehouse import demo_fixture_path, ensure_demo_warehouse
+
+    fixture = demo_fixture_path()
+    try:
+        same = ingest.resolve() == fixture.resolve()
+    except OSError:
+        same = False
+    if not same:
+        return None
+    created = ensure_demo_warehouse(None)
+    return created if created.is_file() else None
+
+
 def paths_are_same(ingest: Path | None = None, serving: Path | None = None) -> bool:
     src = (ingest or ingest_warehouse_path()).resolve()
     dst = (serving or serving_warehouse_path()).resolve()

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import duckdb
+import pytest
 from dms_executor.demo_warehouse import (
     _SEEDED,
     DEMO_TABLES,
@@ -187,3 +188,19 @@ def test_second_call_same_process_does_not_reseed(tmp_path: Path) -> None:
         assert n == 1
     finally:
         con.close()
+
+
+def test_missing_operator_path_is_seeded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Library opens DMS_WAREHOUSE_DB read-only. A missing file must exist."""
+    missing = tmp_path / "wh.duckdb"
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(missing))
+    _SEEDED.clear()
+    out = ensure_demo_warehouse()
+    assert out == missing
+    assert missing.is_file()
+    inv, _sup, country, _category, txn = _counts(missing)
+    assert inv == 7
+    assert country == "MY"
+    assert txn == "outbound"

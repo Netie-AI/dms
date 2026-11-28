@@ -163,10 +163,17 @@ def _ensure(con: duckdb.DuckDBPyConnection) -> None:
                 con.execute(f"ALTER TABLE {_TABLE} ADD COLUMN {column} {decl}")
 
 
-def _connect(path: Path | None, *, write: bool = False) -> duckdb.DuckDBPyConnection:
+def _connect(
+    path: Path | None, *, write: bool = False, seed: bool = True
+) -> duckdb.DuckDBPyConnection:
     from dms_executor.demo_warehouse import connect_file, connect_serving
 
-    db = ensure_demo_warehouse(path)
+    if not seed:
+        db = Path(path) if path is not None else warehouse_path()
+        if not db.is_file():
+            raise FileNotFoundError(db)
+    else:
+        db = ensure_demo_warehouse(path)
     if write:
         return connect_file(db, write=True)
     return connect_serving(db)
@@ -235,7 +242,7 @@ def _public_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
+def _rows_for_space(db: Path, sid: str, *, seed: bool = True) -> list[dict[str, Any]]:
     """Load one Space on the serving connection, then drop scored-pack rows.
 
     Register creates the table. Lookup does not: a missing table is no rows.
@@ -245,7 +252,7 @@ def _rows_for_space(db: Path, sid: str) -> list[dict[str, Any]]:
     def _expr(names: set[str], column: str) -> str:
         return column if column in names else "NULL"
 
-    con = _connect(db)
+    con = _connect(db, seed=seed)
     try:
         try:
             found = con.execute(
@@ -545,6 +552,7 @@ def retrieve_verified_examples(
     dialect: str | None = None,
     embedder: Callable[[list[str]], Any] | None = None,
     force: bool = False,
+    seed: bool = True,
 ) -> list[dict[str, Any]]:
     """Similar Space examples for the SQL writer. Never an answer to execute.
 
@@ -560,7 +568,11 @@ def retrieve_verified_examples(
         sid = scope_key(space_id)
         db = warehouse or warehouse_path()
         allowed = grantable if grantable is not None else _grantable(space_id, db)
-        rows = [row for row in _rows_for_space(db, sid) if _example_ok(row, allowed, dialect)]
+        rows = [
+            row
+            for row in _rows_for_space(db, sid, seed=seed)
+            if _example_ok(row, allowed, dialect)
+        ]
     except Exception as exc:
         from dms_executor.lake_registry import SERVING_ERRORS
 

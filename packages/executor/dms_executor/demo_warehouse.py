@@ -202,13 +202,17 @@ WHERE txn_type = 'outbound'
 """
 
 
+def demo_fixture_path() -> Path:
+    """Repo ``data/dms_demo.duckdb``. Not an operator lake."""
+    here = Path(__file__).resolve()
+    return here.parents[3] / DEFAULT_REL  # packages/executor/dms_executor -> repo
+
+
 def warehouse_path() -> Path:
     raw = os.environ.get("DMS_WAREHOUSE_DB")
     if raw:
         return Path(raw)
-    here = Path(__file__).resolve()
-    repo = here.parents[3]  # packages/executor/dms_executor → repo
-    return repo / DEFAULT_REL
+    return demo_fixture_path()
 
 
 def connect_file(path: Path, *, write: bool = True) -> duckdb.DuckDBPyConnection:
@@ -235,8 +239,9 @@ def ensure_demo_warehouse(path: Path | None = None) -> Path:
 
     First call this process always ``_seed``s (DROP the six demo tables, write
     the small fixture). That is by design: the rich founder lake lives on the
-    Cortex path (``/var/cortex/data/dms_demo.duckdb``), not here. Do not point
-    ``DMS_WAREHOUSE_DB`` at the Cortex file.
+    Cortex path, not here. Do not point ``DMS_WAREHOUSE_DB`` at the Cortex file.
+    A missing path, including a missing ``DMS_WAREHOUSE_DB``, is created.
+    The ask path does not use this for a real lake. It uses ``ask_lake``.
     """
     db = path or warehouse_path()
     key = str(db.resolve())

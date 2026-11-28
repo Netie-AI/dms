@@ -2,6 +2,33 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - AI-FLOOR-01: direct floor record is not an envelope
+
+- **Record.** `run_direct` returns `stopped`, not a served abstain dict. The dialect string is `SERVING_DIALECT`.
+
+## 2026-11-28 - AI-FLOOR-01: seed a missing warehouse again
+
+- **Seed.** `ensure_demo_warehouse` is the shared path again. A missing caller path, including a missing `DMS_WAREHOUSE_DB`, is seeded. The first call in a process still thin-reseeds. Library can open that file read-only.
+- **Floor.** The ask uses `ask_lake`. An existing executing file is not reseeded. A missing custom path is not created by the floor.
+
+## 2026-11-28 - AI-FLOOR-01: one run_sql call on the executing lake
+
+- **Lake.** Schema and EXPLAIN use the file the query runs on. `ensure_demo_warehouse` creates a missing demo fixture and does not reseed an existing lake.
+- **Loop.** `dms_executor.ai_floor.run_floor` is the provider tool loop. Tool name `run_sql` (`execute_sql` is the same call). A hit is one model call. A miss puts the failed SQL and the database error in the question, then `route_hint` escalate. The first failure is the abstain reason. The static schema prefix is the cache block and is not a POST field. Generate is capped at 8s, inside the ask deadline.
+- **Live 7.** Not remeasured. The 3 binder abstains were EXPLAIN on the reseeded demo. The repair 422 was `sql_feedback` on the Insights body. The reported reason was the last `no_sql`. One generate used the 60s ceiling against a 33s deadline.
+
+## 2026-11-28 - AI-FLOOR-01: seed the warehouse and keep the join columns
+
+- **Warehouse.** Default live wiring leaves `Executor._warehouse` None. The floor now calls `ensure_demo_warehouse` before generate, same as the other lanes. Without that, every ask abstained `warehouse_missing`.
+- **Schema.** The 480-token pack reserved measures and dropped the join columns, so ranking, freight, and monthly questions came back `no_sql`. The floor asks for a 4000-token schema that keeps those columns and the physical joins.
+- **Stub 52.** `grade52 --main` at `2def3f4`. Off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43. On: correct=0 wrong=0 reconfirm=52 ai=0 rule=0. Same split as `ce1cabd`. The stub still has no `query_sql`. median_ms=62. Not PASS.
+
+## 2026-11-28 - AI-FLOOR-01: checked model SQL and live ask steps
+
+- **Flag.** `DMS_AI_FLOOR` is off unless the value is the digit 1. Off, the ask is unchanged. On, fixed lanes are skipped. The model SQL is served only after grant, one read-only SELECT, EXPLAIN, and a column shape. One error is fed back, then `route_hint` escalate. No model id.
+- **Stub 52.** `grade52 --main` at `ce1cabd`. Off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On: correct=0 wrong=0 reconfirm=52 ai=0 rule=0. `ai_floor` n=52 median_ms=61 max_ms=66 calls_max=3. The stub insights have no `query_sql`, so nothing is served. The median is that stub, not the live 15-18s. Not PASS.
+- **Studio.** The existing ask SSE emits understand, find, fetch of a granted table, write, run, check, and escalate when that rung runs. The open step breathes. No timer advances a step.
+
 ## 2026-11-28 - Slim: suite on the rebase
 
 - **Suite.** On the rebase onto `5b8da59`, `DMS_SKIP_CONTROL_PLANE_TESTS=1` and `DMS_DEMO_FALLBACK=0`: 5119 passed, 138 skipped, 34 xfailed. Control-plane tests skipped. Postgres was not started.
