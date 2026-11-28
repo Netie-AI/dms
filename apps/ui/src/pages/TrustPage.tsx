@@ -20,6 +20,7 @@ import {
 } from "@/lib/trustEmpty";
 import { useAsync } from "@/lib/useAsync";
 import type { TrustRun, TrustRunDetailItem, TrustSummary } from "@/lib/types";
+import { SpaceBenchPanel } from "@/pages/SpaceBenchPanel";
 
 function pct(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "Not measured yet";
@@ -267,6 +268,7 @@ export function TrustPage() {
   const { data, error, loading, reload } = useAsync<TrustSummary>((signal) =>
     fetchTrustSummary(signal),
   );
+  const [tab, setTab] = useState<"evidence" | "benchmarks">("evidence");
   const [inspect, setInspect] = useState<{ id: string; outcome?: string } | null>(null);
   const detail = useAsync(
     (signal) =>
@@ -303,6 +305,32 @@ export function TrustPage() {
         }
       />
 
+      <div className="mt-4 flex gap-2" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "evidence"}
+          onClick={() => setTab("evidence")}
+          className="border border-[var(--color-line)] px-2.5 py-1 text-xs"
+        >
+          Evidence
+        </button>
+        <button
+          type="button"
+          role="tab"
+          data-testid="trust-bench-tab"
+          aria-selected={tab === "benchmarks"}
+          onClick={() => setTab("benchmarks")}
+          className="border border-[var(--color-line)] px-2.5 py-1 text-xs"
+        >
+          Benchmarks
+        </button>
+      </div>
+
+      {tab === "benchmarks" ? (
+        <SpaceBenchPanel />
+      ) : (
+        <>
       {empty && (
         <div
           data-testid="trust-empty"
@@ -495,6 +523,8 @@ export function TrustPage() {
           </Section>
         )}
       </AsyncBoundary>
+        </>
+      )}
     </Page>
   );
 }

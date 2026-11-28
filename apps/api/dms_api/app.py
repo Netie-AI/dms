@@ -36,6 +36,7 @@ from dms_api.routes import (
     pipelines,
     runs,
     semantic_import,
+    space_bench,
     spaces,
     studio,
     studio_adjust,
@@ -231,6 +232,8 @@ def create_app() -> FastAPI:
         app.include_router(semantic_import.router)
     if studio_knowledge.enabled():
         app.include_router(studio_knowledge.router)
+    if space_bench.enabled():
+        app.include_router(space_bench.router)
     return app
 
 

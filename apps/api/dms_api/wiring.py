@@ -2000,3 +2000,108 @@ def connect_v2_set_granted(
     else:
         body["revoked_tables"] = list(names)
     return body
+
+
+def bench_ask_failed() -> dict[str, Any]:
+    """Non-envelope ask result. The builder abstains. The route does not."""
+    import dms_executor
+
+    return dms_executor.ask_failed_envelope()
+
+
+def bench_grantable(space_id: str) -> set[str]:
+    """Tables the Space may read. Tests replace this."""
+    import dms_executor
+
+    return set(dms_executor.Executor(cortex=None).grantable_tables(space_id=space_id))
+
+
+def bench_warehouse() -> Any:
+    from pathlib import Path
+
+    import dms_executor
+
+    path = dms_executor.warehouse_path()
+    return path if isinstance(path, Path) else Path(path)
+
+
+def bench_example_rows(space_id: str) -> list[dict[str, Any]]:
+    """Verified examples only. Benchmarks are a different table."""
+    import dms_executor
+
+    return dms_executor.list_verified_queries(space_id=space_id, path=bench_warehouse())
+
+
+def classify_benchmark_sql(space_id: str, gold_sql: str) -> tuple[str, str]:
+    """``(status, reason)``. A write or a scored row raises ``BenchRefused``."""
+    import dms_executor
+    from dms_core.control_plane.bench_store import BenchRefused
+
+    try:
+        dms_executor.guard_benchmark_write(sql=gold_sql)
+    except ValueError as exc:
+        code = str(exc) or "scored_pack_write_blocked"
+        raise BenchRefused(code) from None
+    check = dms_executor.check_gold_sql(
+        gold_sql,
+        grantable=bench_grantable(space_id),
+        warehouse=bench_warehouse(),
+    )
+    if check.refused:
+        raise BenchRefused(check.reason or "statement_not_allowed")
+    if check.ok:
+        return "valid", ""
+    return "invalid", check.reason
+
+
+def save_space_benchmark(
+    *,
+    space_id: str,
+    question: str,
+    gold_sql: str,
+    source: str = "steward",
+) -> dict[str, Any]:
+    """Gate the SQL, then store it. A write is refused. A grant miss is invalid."""
+    from dms_core.control_plane.bench_store import get_bench_store
+
+    status, reason = classify_benchmark_sql(space_id, gold_sql)
+    return get_bench_store().add_item(
+        space_id=space_id,
+        question=question,
+        gold_sql=gold_sql,
+        status=status,
+        invalid_reason=reason,
+        source=source,
+    )
+
+
+def run_benchmark_job(store: Any, run_id: str, items: list[dict[str, Any]], ask_fn: Any) -> None:
+    """Grade the snapshot. Progress is one item at a time. No extra deadline."""
+    import dms_executor
+
+    warehouse = bench_warehouse()
+
+    def execute(sql: str) -> tuple[list[dict[str, Any]] | None, str | None]:
+        return dms_executor.execute_gold(sql, warehouse)
+
+    done = 0
+
+    def on_result(row: dict[str, Any]) -> None:
+        nonlocal done
+        store.add_result(run_id, row)
+        done += 1
+        store.set_progress(run_id, done, len(items))
+
+    store.set_status(run_id, "running")
+    try:
+        status, results = dms_executor.run_items(
+            items,
+            ask_fn,
+            execute,
+            cancelled=lambda: bool(store.cancel_requested(run_id)),
+            on_result=on_result,
+        )
+        store.finish_run(run_id, status=status, tally=dms_executor.tally(results))
+    except Exception:
+        logger.warning("bench_run_failed")
+        store.finish_run(run_id, status="failed", tally={})

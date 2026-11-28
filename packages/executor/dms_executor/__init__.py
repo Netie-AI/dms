@@ -185,6 +185,14 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.space_bench import (
+    ask_failed_envelope,
+    check_gold_sql,
+    execute_gold,
+    guard_benchmark_write,
+    run_items,
+    tally,
+)
 from dms_executor.space_knowledge import (
     approve_note as approve_space_knowledge_note,  # noqa: F401 - re-exported
 )
@@ -2759,6 +2767,12 @@ __all__ = [
     "list_promote_targets",
     "list_warehouse_tables",
     "list_verified_queries",
+    "ask_failed_envelope",
+    "check_gold_sql",
+    "execute_gold",
+    "guard_benchmark_write",
+    "run_items",
+    "tally",
     "load_pipeline_by_name",
     "load_pipeline_yaml",
     "map_ask_response_to_envelope",
