@@ -536,13 +536,17 @@ jobs:
           if [ "$port_ready" != 1 ]; then
             fail_gauss "gs_ctl is running but host port 15432 is closed"
           fi
-          # Password goes in the exec environment, not on the gsql command line.
-          if ! docker exec -u "$owner" \
+          # No -h makes gsql try "Unknown:5432". Password stays in the
+          # exec environment, not on the command line.
+          gsql_out="$(docker exec -u "$owner" \
             -e PGPASSWORD="$GS_PASSWORD" \
             -e PATH="/usr/local/opengauss/bin:/usr/bin:/bin" \
             -e LD_LIBRARY_PATH="/usr/local/opengauss/lib" \
-            opengauss gsql -d postgres -U opengauss -v ON_ERROR_STOP=1 \
-            -c "CREATE TABLE public.dms_probe (n int); INSERT INTO public.dms_probe (n) VALUES (1);"; then
+            opengauss gsql -d postgres -U opengauss -h 127.0.0.1 -p 5432 -v ON_ERROR_STOP=1 \
+            -c "CREATE TABLE public.dms_probe (n int); INSERT INTO public.dms_probe (n) VALUES (1);" 2>&1)" || gsql_rc=$?
+          gsql_rc="${gsql_rc:-0}"
+          if [ "$gsql_rc" != 0 ]; then
+            echo "gsql failed: ${gsql_out//$GS_PASSWORD/[redacted]}"
             fail_gauss "could not create the probe table"
           fi
           export DMS_CONNECT_GAUSS_LIVE=1
