@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ConstraintTracePanel } from "@/components/ConstraintTracePanel";
+import { GovAudit } from "@/components/studio/GovAudit";
 import { useApp } from "@/context/AppContext";
 import { SignGate } from "@/pages/SignPanel";
 
@@ -36,6 +37,7 @@ export function AuditPage() {
       <p className="mt-3 max-w-xl text-[var(--color-ink-muted)]">
         Every recorded change, in the order it was written.
       </p>
+      <GovAudit />
       <button
         type="button"
         onClick={() => void runVerify()}

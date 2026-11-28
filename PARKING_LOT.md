@@ -2,6 +2,12 @@
 
 **Deferred until condition is met.**
 
+## DMS-GOV-01: OpenVault has no per-user cap write
+
+`GET /api/usage` and `GET /api/keys/quota` are read-only. `PUT /api/ship/budget` is one install cap, not a person. DMS stores the assignment and reads usage back. A USD-only budget stops the request when those events have no `est_cost_usd`.
+
+**Unlock:** OpenVault ships a per-user or per-key cap write API. Call that, and stop keeping a second cap in DMS.
+
 ## READY-02 leftover: SAML 2.0 and SCIM (#634)
 
 `DMS_SSO` (default off, digit 1 only) covers password login, roles, and OIDC for Google, Microsoft Entra, and a generic Okta issuer. SAML 2.0 and SCIM group sync, including IdP deprovision, are not in that change.

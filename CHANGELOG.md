@@ -2,6 +2,15 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE
+
+- **Flag.** `DMS_GOV_CONSOLE` defaults off. Only the exact digit 1 turns it on. `true`, `yes`, `on`, and a padded ` 1 ` stay off. Off, `/v1/gov` is not mounted and the ask, ingest, and connect handlers return the same result they returned before.
+- **Budgets.** A manager assigns each person a daily and monthly token or USD cap and ask, create, and connectors. The check runs before the model call. OpenVault has no per-user cap write (`GET /api/usage`, `GET /api/keys/quota`). DMS pre-checks and reads usage back. Routing stays in OpenVault. A USD-only cap stops the request when the events are unpriced. Token caps use `total_tokens`.
+- **Spend and audit.** Per-user spend (tokens, cost, model) exports as CSV. Managers see who asked what, when, the SQL, the row count, the cost, and PII flags. Members get a refusal, not a blanked question. Display redaction is configurable.
+- **Uploads.** Files and pasted text are scanned with vendored gitleaks rules (commit `5f6ec56`) and `dms_core.pii`. Policy is block, redact, or warn. The record is the uploader, the file hash, and the finding type. The secret value is not stored. Managers are alerted.
+- **Studio.** The console renders only after `GET /v1/gov/session` answers and the actor is a manager.
+- **Stub 52.** Not remeasured. The flag-off ask guard is a no-op. Armed grade52 and pack H were not run. Not PASS.
+
 ## 2026-11-28 - DMS-SIGN: load the signing key through the executor package
 
 - **Import.** `load_sign_pems` used `dms_executor.manifest` directly. Import-linter only allows `dms_api.wiring` to import the `dms_executor` package. It now uses `dms_executor.ManifestMinter`, the same path as `load_vault_secret`.
@@ -21,6 +30,7 @@ Append-only. Never edited, only added to. Newest first.
 - **Flag.** `DMS_FDE_KIT` defaults off. Only the digit `1` turns it on. Unset, `true`, `01`, and ` 1 ` exit 2 with `fde_kit_disabled` and write nothing. `list` works with the flag off.
 - **Report.** `scripts/fde/report.py` is `netie.fde.report/1`. Markdown is rendered from the JSON. An empty check list is SKIPPED. A kit that raises is a FAIL check with the exception class.
 - **Kits.** `run --stage all` calls `fde_pipeline` extract, profile, ontology, and pack. It does not copy those stages. Not PASS.
+
 ## 2026-11-28 - AI-FLOOR-01: direct floor record is not an envelope
 
 - **Record.** `run_direct` returns `stopped`, not a served abstain dict. The dialect string is `SERVING_DIALECT`.
