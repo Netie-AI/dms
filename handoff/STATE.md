@@ -124,37 +124,54 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-27 17:52 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-29 03:02 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `2f61927f` COMPILE-CHECK-01: do not serve compile SQL the AI checker rejects (#569)
+main: `12dcd1e2` fix(studio): clickable demo walk for Ask, exports, and settings (#680)
 
-open PRs: 36 (cap 60)
+open PRs: 53 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #571 | y | `a57dd6cc` | - | 3 ok, 3 running | HANDOFF-01: Netie Lead and Claude Code handoff directory, state updater, summary |
-| #570 | y | `8ad10a13` | - | no checks | DMS-AI-ABSTAIN-01: climb generative misses before abstaining |
+| #689 | y | `ffddd12a` | - | 8 ok, 1 FAIL, 2 running | SCALE-01: one ask budget, one parse, bounded lake scans |
+| #688 | y | `7396a43e` | - | 12 ok | DMS-ML-01: flag-gated modelling studio |
+| #687 | y | `189d7ed3` | - | 12 ok | DMS-SKILLS-01: skills library and Google AI Overview |
+| #686 | y | `1226369e` | - | 13 ok | DMS-CONNECT-03: Oracle, S3, Azure, and Salesforce connectors |
+| #685 | y | `fd12ab1c` | - | no checks | DMS-ACC-HELDOUT-01: held-out tally, memory context, 500-call compare |
+| #684 | y | `4e672afd` | - | 12 ok | DMS-CREATE-APP-01: runnable data apps with actions and chained Create |
+| #683 | y | `8106c8b2` | - | 12 ok | docs: DEPLOYMENT.md and HANDOFF.md (deploy guide, Claude handoff) |
+| #682 | y | `503e04af` | - | 12 ok | CREATE-STYLE-V2: theme, font stacks, and an open chart registry |
+| #672 | y | `0c177d5b` | - | 12 ok | SCIM-01: SCIM 2.0 user and group provisioning behind DMS_SCIM |
+| #671 | y | `f218e709` | - | 12 ok | DMS-GOV-01: manager governance console behind DMS_GOV_CONSOLE |
+| #668 | y | `568d0ee9` | - | 12 ok | Generality harness: one scoreboard, recorded slice in CI |
+| #665 | y | `6e87464b` | - | no checks | Accuracy levers on the AI floor, flags off |
+| #663 | y | `065c5c9d` | - | 16 ok | HARNESS-SEC-01: gate provider keys, SQL, and demo bearers |
+| #662 | y | `b94e6140` | - | no checks | BIG-SCHEMA-01: never send an empty schema |
+| #660 | y | `70173c66` | - | no checks | READY-07: AI sell profile for Studio ask |
+| #628 | y | `1c1de82c` | - | no checks | NL19-NO-SQL-GENERATE: retry one empty generate, then ask back |
+| #621 | y | `fec45062` | - | no checks | NL19-EXPLAIN-REPAIR: trace binder failures and repair within the call budget |
+| #616 | y | `d85a4171` | - | no checks | UX-CLARIFY-CARD-01: early clarify card before the SQL loop |
+| #613 | y | `ee1dd4c0` | - | no checks | FDE-ONTO-LINKS-01: propose undeclared join links for steward confirmation |
+| #612 | y | `73da9eac` | - | 15 ok | FDE-EVAL-PACK-01: steward definitions, tie-aware gold, raw-LLM control |
+| #607 | y | `be67fa52` | - | no checks | FEAT-METRIC-CUBE-01: Governed metric cubes the model plans against |
+| #606 | y | `408d33e8` | - | no checks | UX-GRANT-DATA-01: ask back when a measure is outside the Space grant |
+| #605 | y | `cd620c54` | - | no checks | UX-CHART-01: one sentence and a chart of the served rows |
+| #604 | y | `b9c36920` | - | no checks | UX-FEEDBACK-01: Yes, Fix it, and Request review |
+| #603 | y | `a4c02ce9` | - | 11 ok | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
+| #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
+| #596 | y | `8e548ab6` | - | 11 ok | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
+| #581 | n | `4116bec7` | tier:fast | 12 ok | handoff: state refresh |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
-| #542 | y | `e08f4664` | - | 3 ok, 1 FAIL | T5 install hardening: #387 TLS host guard (carried) + IPv4 serve; #388 and #377  |
-| #539 | y | `79b60ca6` | - | 4 ok | Answer fidelity: FIG-FIDELITY-01 (#508) E14, BIRD-ALLOWLIST-01 (#304) preflight, |
-| #538 | y | `3d972da8` | - | 5 ok, 2 FAIL | CONNECT-ASK-05: a join check that raises abstains check_unavailable (no 503, no  |
+| #542 | y | `6195feb3` | - | 11 ok | T5 install hardening: #388 env sentinel, #387 IPv4 + numeric-host guard, #377 at |
+| #539 | y | `0b292401` | - | no checks | Answer fidelity: FIG-FIDELITY-01 (#508) E14, BIRD-ALLOWLIST-01 (#304) preflight, |
 | #536 | y | `befc5712` | - | 4 ok | ENV-EXAMPLE-SENTINEL: a placeholder left in a secret refuses boot, by name (Refs |
-| #535 | y | `7392a270` | - | 4 ok, 3 FAIL | CATALOG-SCHEMA-01: the catalog reads the schemas the grants name (Refs #518) |
-| #534 | y | `056908af` | - | 5 ok, 2 FAIL | fix(executor): ONTO-SCOPE-01 the ask reads the asking Space's ontology items, no |
-| #533 | y | `e9136d1b` | - | 4 ok, 3 FAIL | ONTO-PROFILE-03: steward review screen for a file Space's proposed keys and link |
 | #532 | y | `1fdc548b` | - | 5 ok, 2 FAIL | T1 track, do not merge: epic #178 answer-path P0s (#531, #527, #524, #528, #523, |
-| #529 | y | `6c0014d1` | - | 4 ok | JOIN-HOLE-01 (P0): the join allowlist counts every relation a FROM names |
-| #522 | y | `70fb535a` | - | 4 ok | CONNECT-ASK-03: a Space with no ontology answers one-table SQL only (unverified_ |
-| #521 | y | `a8b9c316` | - | 4 ok | ONTO-PROFILE-01: measure a file Space and propose keys and links (Refs #514) |
-| #519 | y | `77c3bbfc` | - | 4 ok | fix(deps): pin duckdb>=1.1,<2 to match the Cortex engine (F-TBD-28) |
-| #510 | y | `50185f3f` | - | 4 ok | IPHONE-PWA-01 to 05: installable iPhone app, one-handed use, one-row composer, p |
+| #510 | y | `10f9761a` | - | 10 ok | IPHONE-PWA-01 to 05: installable iPhone app, one-handed use, one-row composer, p |
 | #509 | y | `4891318e` | - | 3 ok, 1 FAIL | feat(executor): "how full is each warehouse" serves the certified capacity metri |
 | #505 | y | `c5089449` | - | 4 ok | fix(ao): AO-MASK-01 - AO compile prompts carry only masked or non-personal sampl |
 | #501 | y | `df17dcc4` | - | 3 ok | feat(bench): Lane 1 model-in-isolation bench on the curated 52, with the product |
-| #491 | y | `6054a8ca` | - | no checks | feat(insights): INS-PROOF-03 steward pins - single-use preview token, register m |
 | #489 | y | `cfe2523b` | - | no checks | feat(ui): ACT-03 governed actions on AmendPage - receipt never says Applied with |
 | #461 | y | `099e1fd8` | - | 2 ok, 1 FAIL | feat(measure-lane): confirmed measures answer at the staged badge, steward route |
 | #457 | y | `3d2d6478` | - | 3 ok | fix(chat): ASK-CLARIFY-01 supersede #419: gate the re-ask text, per-request clar |
@@ -173,18 +190,16 @@ open PRs: 36 (cap 60)
 
 ### Netie-AI/Cortex
 
-main: `30463b00` FreeRoute: drop the urllib lock, send OpenVault role behind a flag (#490)
+main: `7d6945b4` FDE-CORTEX-SPACE-CATALOG-01: chooser reads the Space catalog (#494)
 
-open PRs: 11 (cap 60)
+open PRs: 9 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
 | #488 | n | `4327dcc5` | - | 5 ok, 1 FAIL | chore(deps): bump duckdb from 1.5.5 to 2.0.1 |
 | #487 | n | `71a645bc` | - | 6 ok | chore(deps-dev): bump @babel/runtime from 8.0.8 to 8.1.3 in /demo/dms-ui |
 | #486 | n | `f365a522` | - | 6 ok | chore(deps-dev): bump @babel/core from 8.0.9 to 8.1.3 in /demo/dms-ui |
-| #481 | y | `0bc6974b` | - | 5 ok, 1 FAIL | Track T4: Cortex accuracy and gates (#408 + JOIN-GRANT-ZW, #465, #426 partial, # |
-| #480 | y | `22c6a95f` | - | 5 ok, 1 FAIL | T2 Cortex security: gate ungated routes (#263), workflow reads (#368), redact ro |
-| #479 | y | `d4a62b63` | - | 5 ok, 1 FAIL | JOIN-GRANT-SUBQUERY-01: the join grant decides every table a statement reads (#4 |
+| #480 | y | `3e526b26` | - | 6 ok | T2 Cortex security: gate ungated routes (#263), workflow reads (#368), redact ro |
 | #476 | n | `06a86599` | - | 5 ok, 1 FAIL | chore(deps-dev): bump @playwright/test from 1.64.1 to 1.65.1 in /demo/dms-ui |
 | #475 | n | `9e8e0475` | - | 5 ok, 1 FAIL | chore(deps): bump next from 16.4.3 to 16.4.6 in /demo/dms-ui |
 | #472 | y | `b9f1f939` | - | 5 ok, 1 FAIL | docs(findings): DMS iPhone PWA, fixed phone button covered the demo banner |
@@ -193,17 +208,18 @@ open PRs: 11 (cap 60)
 
 ### Netie-AI/OpenVault
 
-main: `1d7595fb` fix(freeroute): add service tier and store limiter limited_by (#194)
+main: `ceab7c77` fix(freeroute): fail closed on uncapped paid hops and stamp downgrades (#198)
 
-open PRs: 6 (cap 60)
+open PRs: 7 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
+| #199 | y | `e85cd980` | - | no checks | feat(vault): tenant seats behind OV_SEAT_PLANE |
+| #196 | y | `3f333218` | tier:full | 11 ok | feat(guard): require credential on every GET outside an allowlist (READY-02) |
 | #174 | y | `b2159830` | tier:full | 9 ok | fix(vault): refuse an app grant whose label cannot be issued |
 | #173 | y | `24f495a5` | - | 9 ok | feat(freeroute): wire the Anthropic adapter as an opt-in tier (F110) |
 | #171 | y | `c5619981` | - | 3 ok, 1 FAIL | DRAFT (founder decision): superapp planner |
 | #170 | y | `371c4311` | tier:full | 9 ok | OV: site passwords and TOTP seeds are secrets, not LLM hops (F38, F39) |
-| #169 | y | `b842fbcb` | - | 8 ok, 1 FAIL | feat(vault): Anthropic Messages adapter module (unwired, opt-in tier, F110) |
 | #99 | y | `0bc13acb` | tier:full | 9 ok | Fork OmniRoute and Openship into OpenVault as FreeRoute and FreeBuild (DR-0018) |
 
 <!-- MACHINE:END -->
