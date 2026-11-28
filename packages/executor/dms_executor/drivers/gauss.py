@@ -28,6 +28,41 @@ TABLES_SQL = (
     "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
     "WHERE TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_SCHEMA, TABLE_NAME"
 )
+_TABLES_PG = (
+    "SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+    "WHERE c.relkind = 'r' AND has_table_privilege(c.oid, 'SELECT') "
+    "ORDER BY n.nspname, c.relname"
+)
+# No LATERAL, no WITH ORDINALITY, no two-array unnest. openGauss 5.0.0
+# rejects those. attnum order is the composite-key ceiling.
+_PK_NO_ORDINALITY = (
+    "SELECT n.nspname, c.relname, a.attname, a.attnum "
+    "FROM pg_catalog.pg_constraint con "
+    "JOIN pg_catalog.pg_class c ON c.oid = con.conrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+    "JOIN pg_catalog.pg_attribute a "
+    "ON a.attrelid = c.oid AND a.attnum = ANY (con.conkey) "
+    "WHERE con.contype = 'p' AND has_table_privilege(c.oid, 'SELECT') "
+    "ORDER BY n.nspname, c.relname, a.attnum"
+)
+_FK_NO_ORDINALITY = (
+    "SELECT con.conname, n.nspname, c.relname, a.attname, "
+    "pn.nspname, pc.relname, pa.attname, a.attnum "
+    "FROM pg_catalog.pg_constraint con "
+    "JOIN pg_catalog.pg_class c ON c.oid = con.conrelid "
+    "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+    "JOIN pg_catalog.pg_class pc ON pc.oid = con.confrelid "
+    "JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace "
+    "JOIN pg_catalog.pg_attribute a "
+    "ON a.attrelid = c.oid AND a.attnum = ANY (con.conkey) "
+    "JOIN pg_catalog.pg_attribute pa "
+    "ON pa.attrelid = pc.oid AND pa.attnum = ANY (con.confkey) "
+    "WHERE con.contype = 'f' "
+    "AND has_table_privilege(c.oid, 'SELECT') "
+    "AND has_table_privilege(pc.oid, 'SELECT') "
+    "ORDER BY con.conname, n.nspname, c.relname, a.attnum"
+)
 
 
 def enabled() -> bool:
@@ -152,7 +187,13 @@ def server_version(con: Any) -> str:
 def visible_tables(con: Any, _database: str) -> list[str]:
     from dms_core.control_plane.connect_grants import clean_tables
 
-    rows = _rows(con, TABLES_SQL, ())
+    try:
+        rows = _rows(con, TABLES_SQL, ())
+    except Exception:
+        # A compatibility mode can reject INFORMATION_SCHEMA. pg_class is the
+        # same list. ponytail: one extra catalog read, not a second dialect.
+        _quiet_rollback(con)
+        rows = _rows(con, _TABLES_PG, ())
     out: list[str] = []
     for schema, name in rows:
         if str(schema).lower() in _SKIP:
@@ -166,7 +207,18 @@ def visible_tables(con: Any, _database: str) -> list[str]:
 
 def keys_payload(con: Any) -> dict[str, Any]:
     pk_sql, fk_sql = key_sql()
-    return keys_from_rows(_rows(con, pk_sql, ()), _rows(con, fk_sql, ()), _SKIP)
+    try:
+        return keys_from_rows(_rows(con, pk_sql, ()), _rows(con, fk_sql, ()), _SKIP)
+    except Exception:
+        # openGauss 5 rejects WITH ORDINALITY and unnest() of two arrays.
+        # The fallback pairs by attnum. Composite key order can differ from
+        # conkey order. Upgrade path is the shared SQL when the server accepts it.
+        _quiet_rollback(con)
+        return keys_from_rows(
+            _rows(con, _PK_NO_ORDINALITY, ()),
+            _rows(con, _FK_NO_ORDINALITY, ()),
+            _SKIP,
+        )
 
 
 def prompt(tables: list[str]) -> str:
@@ -235,6 +287,16 @@ def _source_error(cfg: Any, exc: DriverError) -> Any:
 def _close(con: Any) -> None:
     try:
         con.close()
+    except Exception:
+        return
+
+
+def _quiet_rollback(con: Any) -> None:
+    rollback = getattr(con, "rollback", None)
+    if not callable(rollback):
+        return
+    try:
+        rollback()
     except Exception:
         return
 

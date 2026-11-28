@@ -584,6 +584,49 @@ def test_drivers_do_not_branch_on_question_text() -> None:
         assert "question.lower" not in text
 
 
+def test_gauss_catalog_falls_back_when_the_server_rejects_ordinality() -> None:
+    """openGauss 5 errors on WITH ORDINALITY. The probe still lists the table."""
+
+    class _Cur:
+        def __init__(self, owner: _Srv) -> None:
+            self._owner = owner
+            self._sql = ""
+
+        def execute(self, sql: str, _params: Any = None) -> None:
+            self._sql = sql
+            self._owner.executed.append(sql)
+            if "INFORMATION_SCHEMA" in sql or "WITH ORDINALITY" in sql:
+                raise RuntimeError("syntax")
+
+        def fetchall(self) -> list[tuple[Any, ...]]:
+            if "relkind" in self._sql:
+                return [("public", "dms_probe")]
+            if "contype = 'p'" in self._sql:
+                return [("public", "dms_probe", "n", 1)]
+            return []
+
+        def close(self) -> None:
+            return None
+
+    class _Srv:
+        def __init__(self) -> None:
+            self.executed: list[str] = []
+            self.rolled = 0
+
+        def cursor(self) -> _Cur:
+            return _Cur(self)
+
+        def rollback(self) -> None:
+            self.rolled += 1
+
+    con = _Srv()
+    assert gauss.visible_tables(con, "postgres") == ["public.dms_probe"]
+    assert gauss.keys_payload(con)["primary_keys"]["public.dms_probe"] == ["n"]
+    assert con.rolled >= 1
+    assert any("relkind" in sql for sql in con.executed)
+    assert any("ANY (con.conkey)" in sql for sql in con.executed)
+
+
 def _live(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
