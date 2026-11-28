@@ -758,6 +758,11 @@ jobs:
         # BIRD-HARNESS-CI-01. Synthetic sqlite. Does not fetch Mini-Dev.
         run: python scripts/bench/bird/__main__.py self-check
 
+      - name: Held-out harness check (stub, not a live score)
+        # DMS-ACC-HELDOUT-01. Four synthetic databases. Does not download
+        # BIRD or Spider, and does not call OpenVault.
+        run: python scripts/bench/bird/__main__.py heldout-check
+
       - name: Set up Node
         uses: actions/setup-node@v4
         with:

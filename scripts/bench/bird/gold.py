@@ -73,9 +73,15 @@ def list_tables(path: Path) -> list[str]:
 def schema_block(path: Path, *, sample_rows: int = SAMPLE_ROWS) -> str:
     """CREATE text plus at most ``sample_rows`` rows per table.
 
-    The sample cap is the prompt the ticket asks for. Scoring does not use it.
+    The sample cap is the baseline prompt. ``sample_rows=0`` is names and
+    types only: no ``SELECT`` and no cell values. Scoring does not use this text.
     """
-    limit = sample_rows if isinstance(sample_rows, int) and sample_rows > 0 else SAMPLE_ROWS
+    if sample_rows == 0:
+        limit = 0
+    elif isinstance(sample_rows, int) and sample_rows > 0:
+        limit = sample_rows
+    else:
+        limit = SAMPLE_ROWS
     con = sqlite3.connect(_uri(path), uri=True)
     try:
         con.execute("PRAGMA query_only = ON")
@@ -92,6 +98,8 @@ def schema_block(path: Path, *, sample_rows: int = SAMPLE_ROWS) -> str:
             info = list(con.execute(f"PRAGMA table_info({ident})"))
             cols = [(str(col[1]) + (" " + str(col[2]) if col[2] else "")).strip() for col in info]
             chunks.append(f"CREATE TABLE {ident} ({', '.join(cols)});")
+            if not limit:
+                continue
             cur = con.execute(f"SELECT * FROM {ident} LIMIT {int(limit)}")
             headers = [item[0] for item in cur.description or []]
             sample = [list(row) for row in cur.fetchall()]

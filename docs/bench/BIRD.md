@@ -165,3 +165,55 @@ answers is rejected.
 python scripts/verify/grade52.py --main
 DMS_BIRD_HARNESS=1 python scripts/verify/grade52.py --main
 ```
+
+## Held-out
+
+DMS-ACC-HELDOUT-01. Same runner, extra tally. Official EX still counts a
+matching row set as CORRECT. Held-out correct requires path `ai`. A
+rule-served match is `rule_fail` (a failure, not a WRONG number). A row set
+that disagrees with gold stays WRONG. The first number on the line is WRONG.
+`pass` stays false.
+
+`heldout-check` is local. Four synthetic databases, a scripted stub, no
+download, no OpenVault call. CI runs it.
+
+```
+python scripts/bench/bird/__main__.py heldout-check
+```
+
+`heldout` needs `DMS_BIRD_HARNESS=1`. Off, it sends no ask and writes no
+artifact.
+
+`--provider stub` abstains every question. It does not read the question
+and it does not invent SQL. That run is not a score.
+
+`--provider live` is one OpenVault call, role `sql`, then role `escalate`.
+The body has no provider and no model id. The schema text is table and
+column names with types, and no sample rows. Missing `OPENVAULT_URL` or an
+`ov_` key exits 2 before any score. That exit is not a live pass.
+
+`--dataset bird` uses the Mini-Dev files this runner already loads.
+`--dataset spider2` reads a local unpack of Spider 2.0-lite (MIT, in
+`xlang-ai/Spider2`). It does not download the repo or the SQLite zip.
+Only databases under `resource/databases/sqlite` are in the slice. A
+question with no gold SQL is unscored, stays in the denominator, and is
+not WRONG. Cloud databases are excluded. That is not a Spider leaderboard
+score.
+
+```
+DMS_BIRD_HARNESS=1 python scripts/bench/bird/__main__.py heldout \
+    --dataset spider2 --provider stub --root /tmp/spider2-lite --out /tmp/spider.jsonl
+
+DMS_BIRD_HARNESS=1 python scripts/bench/bird/__main__.py heldout \
+    --dataset bird --provider live \
+    --questions /tmp/bird/minidev/MINIDEV/mini_dev_sqlite.json \
+    --db-root /tmp/bird/minidev/MINIDEV/dev_databases \
+    --out /tmp/bird/heldout.jsonl
+```
+
+Each JSONL line stores ids, the held-out label, the stage, execution
+accuracy, latency, cost when OpenVault sent a usage number, and the
+escalation step. It does not store the question, the SQL, row values, or
+the key. Stages are schema retrieval, ontology mapping, SQL generation,
+and self-correction, plus rule_served. A code that is not one of those
+stays unknown. This tally does not change `POST /v1/chat/ask`.

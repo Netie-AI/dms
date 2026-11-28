@@ -175,6 +175,108 @@ def cmd_run(args: argparse.Namespace) -> int:
     return EXIT_PASS
 
 
+def cmd_heldout_check() -> int:
+    import tempfile
+
+    from bench.bird.heldout import format_heldout, keys_present, run_check
+
+    with tempfile.TemporaryDirectory(prefix="heldout-check-") as tmp:
+        try:
+            summary = run_check(Path(tmp))
+        except AssertionError as exc:
+            print(f"FAIL: {exc}")
+            return EXIT_FAIL
+    print(format_heldout(summary))
+    keys = "present" if keys_present() else "absent"
+    print(f"provider=stub live=not_run keys={keys}")
+    print("pass=false target=null")
+    print("heldout-check ok")
+    return EXIT_PASS
+
+
+def cmd_heldout(args: argparse.Namespace) -> int:
+    from bench.bird.corpus import validate_full
+    from bench.bird.heldout import (
+        HeldoutConfig,
+        format_heldout,
+        live_block,
+        load_spider,
+        run_heldout,
+        summarize,
+    )
+
+    blocked = _need_flag()
+    if blocked is not None:
+        return blocked
+    if args.provider == "live":
+        code = live_block()
+        if code == "openvault_url":
+            return _config("live needs OPENVAULT_URL. No score. Not a live pass.")
+        if code == "openvault_key":
+            return _config("live needs an ov_ key. No score. Not a live pass.")
+        found = _ov_headers()
+        if not found:
+            return _config("live needs an ov_ key. No score. Not a live pass.")
+        headers = found
+        ov_url = (args.openvault or os.environ.get("OPENVAULT_URL") or "").strip()
+    else:
+        headers = {}
+        ov_url = ""
+    try:
+        if args.dataset == "spider2":
+            if not args.root:
+                return _config("spider2 needs --root. No download and no score.")
+            loaded = load_spider(Path(args.root))
+            if loaded.sqlite_questions == 0:
+                return _config("spider2 sqlite slice is empty. No score.")
+            questions = loaded.questions
+            db_root = loaded.db_root
+            print(
+                f"spider2 licence=MIT sqlite={loaded.sqlite_questions} "
+                f"databases={loaded.databases} gold_absent={loaded.gold_absent} "
+                f"excluded_cloud={loaded.excluded_cloud}"
+            )
+        else:
+            if not args.questions or not args.db_root:
+                return _config("bird needs --questions and --db-root.")
+            from bench.bird.corpus import load_questions
+
+            questions_path = Path(args.questions)
+            if not questions_path.is_file():
+                return _config("questions file is missing")
+            questions = load_questions(questions_path)
+            problem = validate_full(questions, limit=args.limit)
+            if problem:
+                return _config(problem + ". Pass --limit for a smoke run. Not a Mini-Dev score.")
+            if args.limit is not None:
+                questions = questions[: args.limit]
+            db_root = Path(args.db_root)
+    except HeldoutConfig as exc:
+        return _config(str(exc.code) + ". No score.")
+    out = Path(args.out)
+    try:
+        rows = run_heldout(
+            questions,
+            dataset=args.dataset,
+            provider=args.provider,
+            db_root=db_root,
+            out=out,
+            api_base="http://stub",
+            ov_url=ov_url,
+            ov_headers=headers,
+            concurrency=args.concurrency,
+        )
+    except HeldoutConfig as exc:
+        return _config(str(exc.code) + ". No score.")
+    print(format_heldout(summarize(rows)))
+    sent = "false"
+    print(f"provider={args.provider} route=openvault provider_sent={sent}")
+    if args.limit is not None or args.dataset == "spider2":
+        print("not a full Mini-Dev score")
+    print("pass=false target=null")
+    return EXIT_PASS
+
+
 def cmd_score(args: argparse.Namespace) -> int:
     summary = report(load_jsonl(Path(args.jsonl)))
     print(format_report(summary))
@@ -277,6 +379,19 @@ def main(argv: list[str] | None = None) -> int:
     score = sub.add_parser("score")
     score.add_argument("--jsonl", required=True)
 
+    sub.add_parser("heldout-check")
+
+    held = sub.add_parser("heldout")
+    held.add_argument("--dataset", choices=("bird", "spider2"), required=True)
+    held.add_argument("--provider", choices=("stub", "live"), required=True)
+    held.add_argument("--questions", default=None)
+    held.add_argument("--db-root", default=None)
+    held.add_argument("--root", default=None)
+    held.add_argument("--out", required=True)
+    held.add_argument("--limit", type=int, default=None)
+    held.add_argument("--openvault", default=None)
+    held.add_argument("--concurrency", type=int, default=1)
+
     nightly = sub.add_parser("nightly")
     nightly.add_argument("--dest", required=True)
     nightly.add_argument("--arm", choices=("dms", "baseline"), default="dms")
@@ -295,6 +410,8 @@ def main(argv: list[str] | None = None) -> int:
         "run": lambda: cmd_run(args),
         "score": lambda: cmd_score(args),
         "nightly": lambda: cmd_nightly(args),
+        "heldout-check": lambda: cmd_heldout_check(),
+        "heldout": lambda: cmd_heldout(args),
     }
     return commands[args.cmd]()
 

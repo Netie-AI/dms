@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -29,7 +30,7 @@ from typing import Any
 
 from bench.bird.baseline import baseline_body, copied_model, escalate_body, sql_from_reply
 from bench.bird.corpus import asked_text, db_id_of, gold_sql_of, question_id
-from bench.bird.gold import execute_readonly, locate_db, schema_block
+from bench.bird.gold import SAMPLE_ROWS, execute_readonly, locate_db, schema_block
 from bench.bird.score import (
     attribute,
     classify,
@@ -194,6 +195,7 @@ def grade_item(
     api_base: str,
     ov_url: str,
     ov_headers: dict[str, str],
+    compact: bool = False,
 ) -> dict[str, Any]:
     """One question. The record stores ids and codes, never rows or SQL."""
     qid = question_id(question)
@@ -223,6 +225,7 @@ def grade_item(
         )
         record["seconds"] = time.perf_counter() - started
         record["http_status"] = 200
+        _fill_metrics(record, payload=None, envelope=None, pred_error="db_missing", rung="unknown")
         return _public(record)
     gold_sql = gold_sql_of(question)
     text = asked_text(question, evidence=evidence)
@@ -279,8 +282,10 @@ def grade_item(
             held["predicted"] = rows
             held["pred_error"] = None
 
+    payload: Any = None
+    samples = 0 if compact else SAMPLE_ROWS
     if arm == "baseline":
-        body = baseline_body(text, schema_block(path))
+        body = baseline_body(text, schema_block(path, sample_rows=samples))
 
         def escalate_same() -> tuple[int, Any] | None:
             if not ov_url:
@@ -377,6 +382,13 @@ def grade_item(
         record["path"] = attribute(envelope, model_sql)
     record["http_status"] = http_status
     record["seconds"] = time.perf_counter() - started
+    _fill_metrics(
+        record,
+        payload=payload if isinstance(payload, dict) else None,
+        envelope=envelope if isinstance(envelope, dict) else None,
+        pred_error=pred_error if isinstance(pred_error, str) else None,
+        rung=str(held["rung"] or ""),
+    )
     return _public(record)
 
 
@@ -386,6 +398,86 @@ def _status_bad(status: int | None, error: str | None, code: str | None) -> bool
     if status == 0 or (isinstance(status, int) and status >= 400):
         return True
     return False
+
+
+_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,40}$")
+# Short codes only. The question text is not an input.
+_STAGE_CODES = frozenset(
+    {
+        "sql_relation_not_granted",
+        "ungranted",
+        "db_missing",
+        "space_missing",
+        "outside_grounded_scope",
+        "unverified_join",
+        "no_declared_measure",
+        "unknown_measure",
+        "join_unconfirmed",
+        "not_in_ontology",
+        "missing_join",
+        "missing_metric",
+        "empty_sql",
+        "sqlite_error",
+        "no_result",
+    }
+)
+
+
+def _usage_cost(payload: Mapping[str, Any] | None) -> int | float | None:
+    """A number OpenVault already returned under ``usage``. Absent stays null."""
+    if not isinstance(payload, Mapping):
+        return None
+    usage = payload.get("usage")
+    if not isinstance(usage, Mapping):
+        return None
+    for key in ("cost", "total_cost", "usd"):
+        raw = usage.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            continue
+        return raw
+    return None
+
+
+def _escalation(envelope: Mapping[str, Any] | None, rung: str) -> str:
+    """The step that answered. A repair rung wins over the stamp inside the body."""
+    if rung in {"escalate", "retry"}:
+        return rung
+    if isinstance(envelope, Mapping):
+        raw = envelope.get("ladder_rung")
+        if isinstance(raw, str) and _TOKEN.fullmatch(raw):
+            return raw
+    if _TOKEN.fullmatch(rung):
+        return rung
+    return "unknown"
+
+
+def _stage_code(envelope: Mapping[str, Any] | None, pred_error: str | None) -> str | None:
+    if isinstance(envelope, Mapping):
+        for key in ("abstain_reason", "reason", "code"):
+            raw = envelope.get(key)
+            if isinstance(raw, str) and raw in _STAGE_CODES:
+                return raw
+    if isinstance(pred_error, str) and pred_error in _STAGE_CODES:
+        return pred_error
+    return None
+
+
+def _fill_metrics(
+    record: dict[str, Any],
+    *,
+    payload: Mapping[str, Any] | None,
+    envelope: Mapping[str, Any] | None,
+    pred_error: str | None,
+    rung: str,
+) -> None:
+    record["cost"] = _usage_cost(payload)
+    record["escalation"] = _escalation(envelope, rung)
+    record["stage_code"] = _stage_code(envelope, pred_error)
+    seconds = record.get("seconds")
+    if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+        record["latency_ms"] = int(round(float(seconds) * 1000))
+    else:
+        record["latency_ms"] = None
 
 
 def _public(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -405,6 +497,10 @@ def _public(record: Mapping[str, Any]) -> dict[str, Any]:
         "rung",
         "http_status",
         "seconds",
+        "cost",
+        "escalation",
+        "latency_ms",
+        "stage_code",
     )
     return {key: record.get(key) for key in keep}
 
@@ -457,6 +553,7 @@ def run_questions(
     ov_url: str = "",
     ov_headers: dict[str, str] | None = None,
     prior: Sequence[Mapping[str, Any]] | None = None,
+    compact: bool = False,
 ) -> list[dict[str, Any]]:
     """Grade pending questions. Writes one JSONL line each. Returns every line."""
     if arm not in ARMS:
@@ -480,6 +577,7 @@ def run_questions(
             api_base=api_base,
             ov_url=ov_url,
             ov_headers=headers,
+            compact=compact,
         )
 
     if workers == 1 or len(pending) <= 1:
