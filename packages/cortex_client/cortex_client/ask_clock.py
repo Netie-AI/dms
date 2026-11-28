@@ -444,6 +444,7 @@ def note_prompt_ctx(ctx: Mapping[str, Any] | None) -> None:
         "vq_examples",
         "sql_vote_prompt",
         "space_knowledge",
+        "skill_context",
     ):
         raw = ctx.get(key)
         if isinstance(raw, str):
@@ -454,6 +455,7 @@ def note_prompt_ctx(ctx: Mapping[str, Any] | None) -> None:
         "vq_examples",
         "sql_vote_prompt",
         "space_knowledge",
+        "skill_context",
     }}
     try:
         parts.append(json.dumps(rest, default=str, sort_keys=True))

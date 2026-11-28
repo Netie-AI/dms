@@ -14,6 +14,8 @@ from dms_core.control_plane.ask_audit import (
     PostgresAskAuditStore,
 )
 from dms_core.signing.flag import enabled as sign_enabled
+from dms_core.skills.flag import enabled as skills_enabled
+from dms_core.skills.web_insight import enabled as web_insight_enabled
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,6 +44,7 @@ from dms_api.routes import (
     ready,
     runs,
     semantic_import,
+    skills,
     space_bench,
     spaces,
     studio,
@@ -51,6 +54,7 @@ from dms_api.routes import (
     studio_knowledge,
     studio_sql_bind,
     trust,
+    web_insight,
 )
 from dms_api.settings import get_settings
 from dms_api.store.binding import StoreBinding
@@ -266,6 +270,10 @@ def create_app() -> FastAPI:
         from dms_api.routes import sign as sign_routes
 
         app.include_router(sign_routes.router)
+    if skills_enabled():
+        app.include_router(skills.router)
+    if web_insight_enabled():
+        app.include_router(web_insight.router)
     # Doc and slides stay unmounted until the digit 1. Status is mounted when
     # the package imports, so the UI can see enabled:false without Cortex.
     _mount_create_docs(app)

@@ -3480,6 +3480,15 @@ def _maybe_generative_ask_impl(
         if block:
             insights_ctx = dict(insights_ctx)
             insights_ctx["space_knowledge"] = block
+    from dms_core.skills.context import attach_skill_context
+
+    # Flag off: the same object. On, granted skill text and short citations.
+    insights_ctx = attach_skill_context(
+        insights_ctx,
+        q,
+        space_id=space_id,
+        tenant_id=os.environ.get("DMS_TENANT_ID", ""),
+    )
     from dms_executor.ai_first import ai_first_enabled, with_examples
 
     held_preview: dict[str, Any] | None = None

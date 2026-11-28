@@ -351,6 +351,17 @@ def apply_tool(session: dict[str, Any], name: str, arguments: Mapping[str, Any])
             return {"error": "artifact_missing"}
         version = _push_version(session, artifact, note=str(arguments.get("note") or "tool"))
         result = {"version": version}
+    elif name == "google_ai_overview":
+        from dms_core.skills.errors import SkillError
+        from dms_core.skills.web_insight import run as web_insight_run
+
+        try:
+            result = web_insight_run(
+                str(arguments.get("question") or ""),
+                tenant=str(session.get("tenant_id") or "local"),
+            )
+        except SkillError as exc:
+            result = {"error": exc.code, "cited": False, "overview": "", "served": False}
     else:
         result = {"error": "tool_unknown"}
     _audit(session, name, "error" not in result, [])

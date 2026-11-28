@@ -88,12 +88,51 @@ def _int_arg(args: dict[str, Any], key: str, default: int, *, lo: int, hi: int) 
 
 @router.get("/tools")
 def mcp_tools() -> dict[str, Any]:
+    tools: list[dict[str, Any]] = TOOLS
+    from dms_core.skills.flag import enabled as skills_enabled
+    from dms_core.skills.web_insight import enabled as web_insight_on
+    from dms_core.skills.web_insight import tool_spec as web_insight_tool
+
+    if skills_enabled() or web_insight_on():
+        tools = list(TOOLS)
+    if skills_enabled():
+        from dms_core.skills.context import provider_context
+
+        from dms_api.settings import get_settings
+
+        tenant = str(get_settings().dms_tenant_id)
+        for item in provider_context(surface="agent", tenant_id=tenant)["tools"]:
+            if not str(item["name"]).startswith("skill."):
+                continue
+            tools.append(
+                {
+                    "name": item["name"],
+                    "description": item["description"],
+                    "pin": item["pin"],
+                    "ran_by": "provider",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"question": {"type": "string"}},
+                    },
+                    "http": "GET /v1/studio/skills/context?surface=agent",
+                }
+            )
+    if web_insight_on():
+        spec = web_insight_tool()
+        tools.append(
+            {
+                "name": spec["name"],
+                "description": spec["description"],
+                "ran_by": "provider",
+                "inputSchema": spec["input_schema"],
+            }
+        )
     return {
         "ok": True,
         "protocol": "dms-mcp-http/0.1",
         "flag": "DMS_MCP",
         "honesty": "Thin wrap of existing DMS HTTP. Not a second serving engine.",
-        "tools": TOOLS,
+        "tools": tools,
     }
 
 
@@ -152,6 +191,36 @@ def mcp_call(
         pack_s = str(pack).strip() if pack else None
         result = ontology_section("metrics", settings, pack=pack_s)
         return {"ok": True, "name": name, "result": result}
+
+    from dms_core.skills.errors import SkillError
+    from dms_core.skills.flag import enabled as skills_enabled
+    from dms_core.skills.web_insight import TOOL_NAME
+    from dms_core.skills.web_insight import enabled as web_insight_on
+    from dms_core.skills.web_insight import run as web_insight_run
+
+    if web_insight_on() and name == TOOL_NAME:
+        transport = getattr(request.app.state, "web_insight_transport", None)
+        try:
+            cited = web_insight_run(
+                str(args.get("question") or ""),
+                transport=transport if callable(transport) else None,
+                tenant=str(settings.dms_tenant_id),
+            )
+        except SkillError as exc:
+            raise HTTPException(status_code=400, detail=exc.code) from exc
+        return {"ok": True, "name": name, "result": cited}
+
+    if skills_enabled() and name.startswith("skill."):
+        from dms_core.skills.context import provider_context
+
+        ctx = provider_context(surface="agent", tenant_id=str(settings.dms_tenant_id))
+        match = next((item for item in ctx["tools"] if item["name"] == name), None)
+        if match is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"ok": False, "error": "unknown_tool", "name": name},
+            )
+        return {"ok": True, "name": name, "result": {"ran_by": "provider", "skill": match}}
 
     raise HTTPException(
         status_code=404,

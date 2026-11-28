@@ -2259,3 +2259,13 @@ def create_context_share(**kwargs: Any) -> dict[str, Any]:
     import dms_executor
 
     return dms_executor.create_context_share(**kwargs)
+
+
+def skills_embedder(client: Any) -> Any:
+    """OpenVault embed callable, or None. No model name and no provider key.
+
+    Swap: another embedder with the same ``list[str] -> vectors`` shape.
+    """
+    import dms_executor
+
+    return dms_executor.openvault_embedder(client)

@@ -6,6 +6,7 @@ import { CreateDocsPanel, seedsFromMessages } from "@/components/studio/CreateDo
 import { ReadyGuide } from "@/components/studio/ReadyGuide";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { CreateSurface } from "@/components/studio/CreateSurface";
+import { SkillsGate } from "@/pages/SkillsPanel";
 import { useApp } from "@/context/AppContext";
 import {
   describeApiError,
@@ -354,6 +355,7 @@ export function StudioPage() {
 
       <CreateSurface spaceId={activeSpaceId} />
       <CreateDocsPanel seeds={seedsFromMessages(messages)} spaceId={activeSpaceId} startOpen />
+      <SkillsGate />
 
       <button
         type="button"
