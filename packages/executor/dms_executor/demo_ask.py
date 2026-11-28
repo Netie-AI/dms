@@ -5,7 +5,6 @@ Intents: total revenue, scale/divide, top SKUs, capacity. Unknown → ABSTAIN.
 
 from __future__ import annotations
 
-import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -98,7 +97,7 @@ _PREDICTIVE = re.compile(
 
 def _rules_off() -> bool:
     """Digit 1 only. Unset, ``0``, and ``true`` leave the regex router in place."""
-    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+    return __import__("dms_executor.rules_legacy", fromlist=["rules_off_lane"]).rules_off_lane()
 
 
 RULES_OFF_CODE = "rules_off"

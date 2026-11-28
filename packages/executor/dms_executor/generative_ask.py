@@ -1333,14 +1333,10 @@ def _submit_validated(
     stopped = _sql_checks(sql)
     if stopped is not None:
         return stopped
-    from dms_executor.ai_first import (
-        NO_MODEL_SQL,
-        ai_first_enabled,
-        compile_example,
-        note_example,
-    )
+    from dms_executor.ai_first import NO_MODEL_SQL, compile_example, note_example
+    from dms_executor.rules_legacy import hold_rule_serve
 
-    if ai_first_enabled() and served_route in {ROUTE_COMPILE, ROUTE_LADDER}:
+    if hold_rule_serve() and served_route in {ROUTE_COMPILE, ROUTE_LADDER}:
         note_example(
             compile_example(
                 sql, question=question, space_id=space_id, route=served_route
@@ -1568,7 +1564,7 @@ def _offer_rowset_sql(
 
 def _rules_off() -> bool:
     """Digit 1 only. The ontology compiler stays when the flag is off."""
-    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+    return __import__("dms_executor.rules_legacy", fromlist=["rules_off_lane"]).rules_off_lane()
 
 
 def _scale_miss_on() -> bool:

@@ -30,7 +30,7 @@ DMS law matches this: precision-on-answered is 100.00 percent (zero confidently 
 
 ## Open work (GitHub is SoT)
 
-- EPIC-017 #33 INCOMPLETE -- E9-01 #34 closed, E9-02 #41 closed, F40 DMS half closed (#66). Cortex#11 engine half still open. Repro: `scripts/repro_refused_badge.py` (customer path = `map_ask_response_to_envelope`, not `build_answer_envelope` with no route). WIP with EPIC-003 #6.
+- EPIC-017 #33 INCOMPLETE -- E9-01 #34 closed, E9-02 #41 closed, F40 DMS half closed (#66). Cortex#11 engine half still open. Repro: `attic/scripts/repro_refused_badge.py` (customer path = `map_ask_response_to_envelope`, not `build_answer_envelope` with no route). WIP with EPIC-003 #6.
 - EPIC-018 #35 QUEUED -- coverage/precision instrument; CI-ACCURACY (F42) not lit while #6+#33 WIP. Do not close 018.
 - EPIC-019 #38 next -- verified query repository. Do not park it forever, but do not start it while 017 completeness is false.
 - Engine bench honesty: 0 oracle disagreements on one schema family cannot prove customer viability (STATUS). Grow use cases that can fail: wrong FK, orphans, lying column names, messy Excel.

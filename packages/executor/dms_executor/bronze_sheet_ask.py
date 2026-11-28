@@ -61,9 +61,9 @@ def sheet_lane() -> str:
 
 def _rules_off() -> bool:
     """Digit 1 only. The sheet lane stays when the flag is off."""
-    import os
+    from dms_executor.rules_legacy import rules_off_lane
 
-    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+    return rules_off_lane()
 
 
 def bronze_sheet_lane_enabled() -> bool:
