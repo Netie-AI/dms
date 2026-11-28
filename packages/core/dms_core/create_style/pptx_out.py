@@ -132,8 +132,6 @@ def _fill(box: Box) -> str:
 
 def _shape(box: Box, shape_id: int) -> str:
     line = ""
-    if box.name == "card":
-        line = '<a:ln w="6350"><a:solidFill><a:srgbClr val="D9D4CB"/></a:solidFill></a:ln>'
     return (
         "<p:sp><p:nvSpPr>"
         f'<p:cNvPr id="{shape_id}" name="{xml_text(box.name)}"/>'

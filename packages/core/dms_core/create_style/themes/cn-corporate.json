@@ -1,5 +1,14 @@
 {
   "name": "cn-corporate",
+  "colours": {
+    "ink": "#1A2233",
+    "paper": "#FFFFFF",
+    "accent": "#0B4DA2",
+    "card": "#EEF3FB",
+    "muted": "#5B6578",
+    "line": "#D5DEEA"
+  },
+  "card_alpha": 1,
   "fonts": {
     "display": "Noto Sans CJK SC",
     "body": "Noto Sans CJK SC",

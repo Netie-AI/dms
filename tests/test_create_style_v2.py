@@ -289,11 +289,101 @@ def test_layout_blocks_hook_is_empty_until_the_flag(monkeypatch: pytest.MonkeyPa
         "chart_commentary",
         "table",
         "chart_page",
+        "cover",
+        "section",
+        "quote",
+        "agenda",
+        "timeline",
+        "process",
+        "swot",
+        "dashboard",
     ]
     side = next(item for item in listed if item["type"] == "image_side")
     assert side["fields"] == ["image_b64", "caption"]
     assert side["optional"] == ["label"]
     assert layout_blocks("other") == []
+
+
+def test_slide_grammars_match_the_reference_styles() -> None:
+    folder = default_theme_path().parent
+    red = load_theme(path=folder / "huawei-red.json")
+    pages = layout_pages(normalize(pitch_document()), red, "slide")
+    names = {box.name for page in pages for box in page.boxes}
+    assert "ibar" in names
+    assert "frame" in names
+    assert red.colours.accent == "#C7000B"
+    note = load_theme(path=folder / "research-note.json")
+    pages = layout_pages(normalize(pitch_document()), note, "slide")
+    assert any(box.name == "band" for page in pages for box in page.boxes)
+    assert note.fonts.display == "Times New Roman"
+    minimal = load_theme(path=folder / "minimal-art.json")
+    quiet = layout_pages(
+        normalize(
+            {
+                "title": "",
+                "blocks": [{"type": "quote", "text": "A quiet line.", "attribution": "A"}],
+            }
+        ),
+        minimal,
+        "slide",
+    )
+    assert all(box.name != "card" for page in quiet for box in page.boxes)
+    assert any(box.italic and box.text == "A quiet line." for page in quiet for box in page.boxes)
+    glass = load_theme(path=folder / "frosted-glass.json")
+    dark = layout_pages(normalize(pitch_document()), glass, "slide")
+    assert dark[0].boxes[0].fill == "#050B18"
+    cover = layout_pages(
+        normalize(
+            {
+                "title": "Cover title",
+                "blocks": [
+                    {
+                        "type": "cover",
+                        "image_b64": _wide_png(),
+                        "kicker": "01",
+                        "subtitle": "A subtitle",
+                    }
+                ],
+            }
+        ),
+        red,
+        "slide",
+    )
+    assert any(box.name == "bleed" for box in cover[0].boxes)
+    assert any(box.name == "scrim" for box in cover[0].boxes)
+    assert any(box.text == "Cover title" for box in cover[0].boxes)
+    board = layout_pages(
+        normalize(
+            {
+                "title": "Board",
+                "blocks": [
+                    {
+                        "type": "dashboard",
+                        "items": [{"headline": HEADLINE, "value": VALUE, "source": SOURCE}],
+                        "chart": _chart("Weekly orders", [4, 9, 6]),
+                    },
+                    {
+                        "type": "swot",
+                        "s": "One",
+                        "w": "Two",
+                        "o": "Three",
+                        "t": "Four",
+                    },
+                    {"type": "process", "steps": ["Collect", "Check", "Ship"]},
+                ],
+            }
+        ),
+        load_theme(),
+        "slide",
+    )
+    flat = [box.text for page in board for box in page.boxes]
+    assert VALUE in flat
+    assert "One" in flat
+    assert "Collect" in flat
+    assert any(box.name == "chart" for page in board for box in page.boxes)
+    official = load_theme(path=folder / "official-doc.json")
+    assert official.fonts.generic == "serif"
+    assert official.spacing.page_margin == 96
 
 
 def test_parts_keep_the_model_words_and_every_row(

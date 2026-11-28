@@ -13,3 +13,7 @@ Tests: `tests/test_create_style_v2.py`. Golden: `tests/fixtures/create_style/gol
 Fonts, when the flag is on: slides and the UI are Inter / Helvetica Neue / Arial. `themes/research-note.json` is Times New Roman / Liberation Serif / Tinos. `themes/cn-corporate.json` is Noto Sans CJK SC / Source Han Sans SC / Microsoft YaHei. Captions are italic. The nav mark stays. The word "netie" is the sans stack, not Fraunces. Preview paints the first installed file in the stack.
 
 Charts: `chart_registry.register` adds a kind. The model fills `kind`. The HTML buttons redraw that chart. No sentence picks a kind. `create_context.layout_blocks` returns the catalog only when the style flag is the digit 1.
+
+Slide grammar, when the flag is on: 1920x1080, margin 80. `wide.py` places the blocks. Themes with their own colours: huawei-red (frame and I-bar), cn-corporate (I-bar), research-note (8px top band, serif), minimal-art (no cards), frosted-glass (dark paper), fluent-light, official-doc (serif, margin 96, doc canvas). Cover is a full-bleed photo plus a scrim. Also section, quote, agenda, timeline, process, swot, dashboard. Short captions hug the line. Numeric table cells get a bar. Docs stay on the stacked flow at 800x1120.
+
+Not shipped: native editable pptx charts. morandi-gold, official-white, cinematic-blue, dark-graph, and academic still have no colour source in this workspace. Do not copy a Huawei or JPMorgan wordmark. Not PASS.

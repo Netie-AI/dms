@@ -102,8 +102,9 @@ def page_png(page: Any, theme: Theme) -> bytes:
         if box.kind == "rect":
             fill = _rgba(box.fill or theme.colours.card, box.alpha)
             draw.rectangle((box.x, box.y, box.x + box.w - 1, box.y + box.h - 1), fill=fill)
-            line = _rgb(theme.colours.line) + (255,)
-            draw.rectangle((box.x, box.y, box.x + box.w - 1, box.y + box.h - 1), outline=line)
+            if box.name not in ("card", "header_bar", "bar"):
+                line = _rgb(theme.colours.line) + (255,)
+                draw.rectangle((box.x, box.y, box.x + box.w - 1, box.y + box.h - 1), outline=line)
         elif box.kind == "image" and box.image:
             with Image.open(io.BytesIO(box.image)) as pasted:
                 frame = pasted.convert("RGBA").resize((box.w, box.h), Image.Resampling.LANCZOS)

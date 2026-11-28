@@ -37,7 +37,8 @@ def html_bytes(pages: list[Page], theme: Theme, title: str) -> bytes:
             if box.kind == "rect":
                 red, green, blue = _rgb_tuple(box.fill or colours.card)
                 style += f"background:rgba({red},{green},{blue},{box.alpha});"
-                style += f"border:1px solid {colours.line};"
+                if box.name not in ("card", "header_bar", "bar"):
+                    style += f"border:1px solid {colours.line};"
                 bits.append(f'<div class="box" style="{style}"></div>')
             elif box.kind == "image" and box.image:
                 encoded = base64.b64encode(box.image).decode("ascii")

@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-29 - CREATE-STYLE-V2: reference slide grammars
+
+- **Canvas.** Style-on slides are 1920x1080, margin 80, on the 8px grid. Docs are 800x1120. The default paper is white. Off, Create files stay as they are.
+- **Themes.** `fluent-light`, `huawei-red` (red frame and I-bar), `cn-corporate` (blue I-bar), `research-note` (top band, serif), `minimal-art` (no cards, large figures), `frosted-glass`, `official-doc`. A brand `theme` name loads that file.
+- **Blocks.** Cover, section, quote, agenda, timeline, process, SWOT, and a dashboard join the seven blocks. The model fills the slots. Short captions hug the line. A numeric table cell draws a bar from zero.
+- **Not in this pass.** Native PowerPoint charts. The five unpublished palettes (morandi-gold, official-white, cinematic-blue, dark-graph, academic) have no source file here. Not PASS.
+
 ## 2026-11-28 - CREATE-STYLE-V2: professional faces and an open chart registry
 
 - **Fonts.** Slides and the UI use Inter, then Helvetica Neue, then Arial. `research-note` uses Times New Roman, then Liberation Serif, then Tinos. `cn-corporate` uses Noto Sans CJK SC, then Source Han Sans SC, then Microsoft YaHei. Captions may be italic. The nav keeps a mark and sets the word in the sans stack. Preview uses the installed file, otherwise the next face in the stack.

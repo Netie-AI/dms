@@ -1,14 +1,14 @@
 {
   "name": "pitch",
   "colours": {
-    "ink": "#1C1C1C",
-    "paper": "#F4F1EA",
-    "accent": "#1F4B3A",
-    "card": "#FFFFFF",
-    "muted": "#5E6670",
-    "line": "#D9D4CB"
+    "ink": "#1B1B1F",
+    "paper": "#FFFFFF",
+    "accent": "#0F6CBD",
+    "card": "#F5F7FA",
+    "muted": "#616161",
+    "line": "#E3E3E3"
   },
-  "card_alpha": 0.55,
+  "card_alpha": 1,
   "fonts": {
     "display": "Inter",
     "body": "Inter",
@@ -20,10 +20,10 @@
   "logo_b64": "",
   "spacing": {
     "unit": 8,
-    "page_margin": 48,
-    "gap": 16,
-    "card_pad": 16
+    "page_margin": 80,
+    "gap": 32,
+    "card_pad": 24
   },
-  "slide": {"w": 1280, "h": 720},
-  "doc": {"w": 816, "h": 1056}
+  "slide": {"w": 1920, "h": 1080},
+  "doc": {"w": 800, "h": 1120}
 }

@@ -18,6 +18,14 @@ BLOCK_TYPES = (
     "chart_commentary",
     "table",
     "chart_page",
+    "cover",
+    "section",
+    "quote",
+    "agenda",
+    "timeline",
+    "process",
+    "swot",
+    "dashboard",
 )
 _REQUIRED = {
     "image_side": ("image_b64", "caption"),
@@ -27,12 +35,24 @@ _REQUIRED = {
     "chart_commentary": ("chart", "commentary"),
     "table": ("columns", "rows"),
     "chart_page": ("charts",),
+    "cover": ("image_b64",),
+    "section": ("title",),
+    "quote": ("text",),
+    "agenda": ("items",),
+    "timeline": ("events",),
+    "process": ("steps",),
+    "swot": ("s", "w", "o", "t"),
+    "dashboard": ("items",),
 }
 # Optional keys the model may send. Empty means the field is omitted.
 _OPTIONAL = {
     "image_side": ("label",),
     "image_below": ("label",),
     "two_column": ("left_label", "right_label"),
+    "cover": ("kicker", "subtitle"),
+    "section": ("kicker",),
+    "quote": ("attribution",),
+    "dashboard": ("chart",),
 }
 _KINDS = frozenset({"app", "doc", "slides"})
 _MAX_BLOCKS = 40
@@ -52,7 +72,7 @@ def catalog() -> list[dict[str, Any]]:
         optional = _OPTIONAL.get(name)
         if optional:
             row["optional"] = list(optional)
-        if name in ("chart_commentary", "chart_page"):
+        if name in ("chart_commentary", "chart_page", "dashboard"):
             from dms_core.create_style.chart_registry import known
 
             row["chart_kinds"] = list(known())
@@ -127,10 +147,64 @@ def _block(item: object) -> dict[str, Any]:
             "columns": _columns(item.get("columns")),
             "rows": _rows(item.get("rows"), item.get("columns")),
         }
-    charts = item.get("charts")
-    if not isinstance(charts, list) or len(charts) != 4:
-        raise CreateError("chart_page_needs_four")
-    return {"type": kind, "charts": [_chart(chart) for chart in charts]}
+    if kind == "chart_page":
+        charts = item.get("charts")
+        if not isinstance(charts, list) or len(charts) != 4:
+            raise CreateError("chart_page_needs_four")
+        return {"type": kind, "charts": [_chart(chart) for chart in charts]}
+    if kind == "cover":
+        block = {"type": kind, "image": _image(item.get("image_b64"))}
+        _keep(block, "kicker", _optional(item, "kicker"))
+        _keep(block, "subtitle", _optional(item, "subtitle"))
+        return block
+    if kind == "section":
+        block = {"type": kind, "title": _text(item.get("title"), "text_required")}
+        _keep(block, "kicker", _optional(item, "kicker"))
+        return block
+    if kind == "quote":
+        block = {"type": kind, "text": _text(item.get("text"), "text_required")}
+        _keep(block, "attribution", _optional(item, "attribution"))
+        return block
+    if kind == "agenda":
+        return {"type": kind, "items": _lines(item.get("items"), "text_required")}
+    if kind == "timeline":
+        return {"type": kind, "events": _events(item.get("events"))}
+    if kind == "process":
+        return {"type": kind, "steps": _lines(item.get("steps"), "text_required")}
+    if kind == "swot":
+        return {
+            "type": kind,
+            "s": _text(item.get("s"), "text_required"),
+            "w": _text(item.get("w"), "text_required"),
+            "o": _text(item.get("o"), "text_required"),
+            "t": _text(item.get("t"), "text_required"),
+        }
+    block = {"type": kind, "items": _items(item.get("items"))}
+    if item.get("chart") not in (None, ""):
+        block["chart"] = _chart(item.get("chart"))
+    return block
+
+
+def _lines(value: object, code: str) -> list[str]:
+    if not isinstance(value, list) or not value or len(value) > 6:
+        raise CreateError(code)
+    return [_text(item, code) for item in value]
+
+
+def _events(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value or len(value) > 6:
+        raise CreateError("text_required")
+    rows = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise CreateError("text_required")
+        rows.append(
+            {
+                "when": _text(item.get("when"), "text_required"),
+                "text": _text(item.get("text"), "text_required"),
+            }
+        )
+    return rows
 
 
 def _optional(item: dict[str, Any], key: str) -> str:

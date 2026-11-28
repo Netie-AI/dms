@@ -1,0 +1,20 @@
+{
+  "name": "minimal-art",
+  "colours": {
+    "ink": "#121212",
+    "paper": "#F6F5F2",
+    "accent": "#D9480F",
+    "card": "#F6F5F2",
+    "muted": "#8A8A8A",
+    "line": "#E4E2DC"
+  },
+  "card_alpha": 1,
+  "fonts": {
+    "display": "Times New Roman",
+    "body": "Times New Roman",
+    "stack": ["Times New Roman", "Liberation Serif", "Tinos"],
+    "cjk": "Noto Serif CJK SC",
+    "office": "Times New Roman",
+    "generic": "serif"
+  }
+}

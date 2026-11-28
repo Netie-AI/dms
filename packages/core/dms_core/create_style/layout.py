@@ -64,8 +64,8 @@ def wrap_text(text: str, width_px: int, font_px: int) -> tuple[list[str], int]:
         lines: list[str] = []
         fits = True
         for part in parts:
-            words = [word for word in part.split(" ") if word]
-            if any(len(word) > max_chars for word in words):
+            words = _tokens(part, max_chars)
+            if words is None:
                 fits = False
                 break
             if not words:
@@ -88,19 +88,40 @@ def wrap_text(text: str, width_px: int, font_px: int) -> tuple[list[str], int]:
     raise CreateError("word_does_not_fit")
 
 
+def _tokens(part: str, max_chars: int) -> list[str] | None:
+    """English words stay whole. A space-free run (CJK) breaks on characters."""
+    words: list[str] = []
+    for word in part.split(" "):
+        if not word:
+            continue
+        if len(word) <= max_chars:
+            words.append(word)
+            continue
+        if any(("A" <= char <= "Z") or ("a" <= char <= "z") for char in word):
+            return None
+        words.extend(word[index : index + max_chars] for index in range(0, len(word), max_chars))
+    return words
+
+
 def layout_pages(document: dict[str, Any], theme: Theme, canvas: str) -> list[Page]:
-    flow = _Flow(theme, canvas)
-    for block in document["blocks"]:
-        if block["type"] == "chart_page":
-            flow.chart_page(block)
-        else:
-            flow.use_title(document.get("title") or "")
-            flow.block(block)
-    flow.finish()
-    if not flow.pages:
+    if canvas == "slide":
+        from dms_core.create_style.wide import wide_pages
+
+        pages = wide_pages(document, theme)
+    else:
+        flow = _Flow(theme, canvas)
+        for block in document["blocks"]:
+            if block["type"] == "chart_page":
+                flow.chart_page(block)
+            else:
+                flow.use_title(document.get("title") or "")
+                flow.block(block)
+        flow.finish()
+        pages = flow.pages
+    if not pages:
         raise CreateError("layout_overflow")
-    _inside(flow.pages, theme)
-    return flow.pages
+    _inside(pages, theme)
+    return pages
 
 
 def snapshot_pages(pages: list[Page]) -> list[dict[str, Any]]:
@@ -135,6 +156,13 @@ def _inside(pages: list[Page], theme: Theme) -> None:
                 raise CreateError("layout_overflow")
             if box.name == "paper":
                 if (box.x, box.y, box.w, box.h) != (0, 0, page.w, page.h):
+                    raise CreateError("layout_overflow")
+                continue
+            # Full-bleed photo, a top band, and an edge frame sit on the page edge.
+            if box.name in ("bleed", "band", "scrim", "frame"):
+                if box.x < 0 or box.y < 0:
+                    raise CreateError("layout_overflow")
+                if box.x + box.w > page.w or box.y + box.h > page.h:
                     raise CreateError("layout_overflow")
                 continue
             if box.x < margin or box.y < margin:
@@ -277,9 +305,77 @@ class _Flow:
             self.chart_commentary(block)
         elif kind == "table":
             self.table(block)
+        elif kind in (
+            "cover",
+            "section",
+            "quote",
+            "agenda",
+            "timeline",
+            "process",
+            "swot",
+            "dashboard",
+        ):
+            self.extra(block)
         else:
             raise CreateError("bad_block")
         self.y += self.gap
+
+    def extra(self, block: dict[str, Any]) -> None:
+        """Doc pages keep the same words. Slides use the wide grammar."""
+        if block.get("image"):
+            caption = block.get("subtitle") or block.get("kicker") or ""
+            caption = caption or block.get("title") or block.get("text") or ""
+            if caption:
+                self.image_below({"image": block["image"], "caption": caption})
+            else:
+                side = _snap_down(min(320, self.content_w), self.unit)
+                self.ensure(side)
+                png = square_png(block["image"], side)
+                self.boxes.append(
+                    Box(
+                        kind="image",
+                        name="image",
+                        x=self.margin,
+                        y=self.y,
+                        w=side,
+                        h=side,
+                        image=png,
+                    )
+                )
+                self.y += side
+            return
+        if block.get("items") and isinstance(block["items"][0], dict):
+            self.kpi_strip(block)
+            if block.get("chart"):
+                self.chart_commentary(
+                    {"chart": block["chart"], "commentary": block["items"][0]["headline"]}
+                )
+            return
+        chunks: list[str] = []
+        for key in ("kicker", "title", "subtitle", "text", "attribution", "s", "w", "o", "t"):
+            piece = block.get(key)
+            if isinstance(piece, str) and piece:
+                chunks.append(piece)
+        items = block.get("items")
+        if isinstance(items, list):
+            chunks.extend(str(item) for item in items)
+        steps = block.get("steps")
+        if isinstance(steps, list):
+            chunks.extend(str(item) for item in steps)
+        events = block.get("events")
+        if isinstance(events, list):
+            for event in events:
+                chunks.append(str(event.get("when", "")) + " " + str(event.get("text", "")))
+        text = "\n".join(chunk for chunk in chunks if chunk.strip())
+        if not text:
+            return
+        lines, size = wrap_text(text, self.content_w, 16)
+        height = _snap(len(lines) * 24, self.unit)
+        self.ensure(height)
+        self._text(
+            "body", self.margin, self.y, self.content_w, height, text, lines, size, 24, False
+        )
+        self.y += height
 
     def image_side(self, block: dict[str, Any]) -> None:
         side = _snap_down(min(280, self.content_w - self.gap - 160), self.unit)
@@ -294,13 +390,14 @@ class _Flow:
         self.boxes.append(
             Box(kind="image", name="image", x=self.margin, y=self.y, w=side, h=side, image=png)
         )
-        self._card(self.margin + side + self.gap, self.y, cap_w, block_h)
+        card_y = self.y + _snap_down(max(block_h - text_h, 0) // 2, self.unit)
+        self._card(self.margin + side + self.gap, card_y, cap_w, text_h)
         self._text(
             "caption",
             self.margin + side + self.gap + self.pad,
-            self.y + self.pad,
+            card_y + self.pad,
             cap_w - 2 * self.pad,
-            block_h - 2 * self.pad,
+            text_h - 2 * self.pad,
             block["caption"],
             lines,
             size,
@@ -484,25 +581,14 @@ class _Flow:
         chart_h = _snap(chart_h, self.unit)
         self.ensure(chart_h)
         self.boxes.append(self._chart_image(block["chart"], self.margin, self.y, chart_w, chart_h))
-        self._card(self.margin + chart_w + self.gap, self.y, text_w, chart_h)
-        icon = icon_png("chart", self.theme.colours.ink)
-        self.boxes.append(
-            Box(
-                kind="image",
-                name="icon",
-                x=self.margin + chart_w + self.gap + self.pad,
-                y=self.y + self.pad,
-                w=24,
-                h=24,
-                image=icon,
-            )
-        )
+        card_y = self.y + _snap_down(max(chart_h - text_h, 0) // 2, self.unit)
+        self._card(self.margin + chart_w + self.gap, card_y, text_w, text_h)
         self._text(
             "commentary",
             self.margin + chart_w + self.gap + self.pad,
-            self.y + self.pad + 32,
+            card_y + self.pad,
             text_w - 2 * self.pad,
-            chart_h - self.pad - 32 - self.pad,
+            text_h - 2 * self.pad,
             block["commentary"],
             lines,
             size,

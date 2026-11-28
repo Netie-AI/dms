@@ -1,0 +1,12 @@
+{
+  "name": "frosted-glass",
+  "colours": {
+    "ink": "#FFFFFF",
+    "paper": "#050B18",
+    "accent": "#5EE3FF",
+    "card": "#16304A",
+    "muted": "#94A3B8",
+    "line": "#334155"
+  },
+  "card_alpha": 0.55
+}

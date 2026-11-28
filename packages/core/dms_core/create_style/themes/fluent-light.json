@@ -1,0 +1,11 @@
+{
+  "name": "fluent-light",
+  "colours": {
+    "ink": "#1B1B1F",
+    "paper": "#FFFFFF",
+    "accent": "#0F6CBD",
+    "card": "#F5F7FA",
+    "muted": "#616161",
+    "line": "#E3E3E3"
+  }
+}

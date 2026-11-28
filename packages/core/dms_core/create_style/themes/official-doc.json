@@ -1,0 +1,26 @@
+{
+  "name": "official-doc",
+  "colours": {
+    "ink": "#1A1A1A",
+    "paper": "#FFFFFF",
+    "accent": "#8B1A1A",
+    "card": "#FFFFFF",
+    "muted": "#4A4A4A",
+    "line": "#D0D0D0"
+  },
+  "card_alpha": 1,
+  "fonts": {
+    "display": "Times New Roman",
+    "body": "Times New Roman",
+    "stack": ["Times New Roman", "Liberation Serif", "Tinos"],
+    "cjk": "Noto Serif CJK SC",
+    "office": "Times New Roman",
+    "generic": "serif"
+  },
+  "spacing": {
+    "unit": 8,
+    "page_margin": 96,
+    "gap": 24,
+    "card_pad": 16
+  }
+}
