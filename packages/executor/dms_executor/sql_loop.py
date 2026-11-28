@@ -1015,6 +1015,26 @@ def run_model_loop(
             _tag_rung(attempts, schema_ladder)
             if why in no_retry_reasons:
                 return abstain(why, attempts, sql=sql, retries=retries)
+            if (
+                str(why).startswith("explain:")
+                and os.environ.get("DMS_EXPLAIN_REPAIR_TRACE", "0").strip() == "1"
+            ):
+                from dms_executor.explain_repair import facts_bound, repair_explain
+
+                if facts_bound():
+                    return repair_explain(
+                        asked=question,
+                        sql=sql,
+                        why=why,
+                        compute=compute,
+                        ctx=ctx,
+                        budget=budget,
+                        check=check,
+                        submit_ok=lambda statement, _got: submit_sql(statement, attempts),
+                        abstain_direct=lambda reason, failed: abstain(
+                            reason, attempts, sql=failed, retries=retries
+                        ),
+                    )
             schema_step = _schema_dispatch(
                 schema_ladder=schema_ladder,
                 outcome=outcome,

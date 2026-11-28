@@ -479,7 +479,11 @@ def _repair_explain(
     sql: str,
 ) -> tuple[dict[str, Any] | None, str]:
     from dms_executor.ask_ladder import is_direct_abstain
+    from dms_executor.explain_repair import enabled as explain_repair_enabled
 
+    # The explain-repair flag owns the budget and the binder trace.
+    if explain_repair_enabled():
+        return payload, sql
     why = _passes_reason(turn, sql)
     if not why or is_direct_abstain(why) or not str(why).startswith("explain:"):
         return payload, sql

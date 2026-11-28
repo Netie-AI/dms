@@ -2743,6 +2743,10 @@ def _maybe_generative_ask_impl(
     ``validate:ungranted:...``). bind_plan is not that confident path.
     File-grounded asks skip.
     """
+    if os.environ.get("DMS_EXPLAIN_REPAIR_TRACE", "0").strip() == "1":
+        from dms_executor.explain_repair import clear_trace
+
+        clear_trace()
     if tables or compute is None or submit is None or ledger_append is None:
         return None
     q = normalize_ask_question(question)
@@ -2840,6 +2844,16 @@ def _maybe_generative_ask_impl(
                 declared = onto
                 onto = None
     allowed = grantable if grantable is not None else set(_KNOWN)
+    if os.environ.get("DMS_EXPLAIN_REPAIR_TRACE", "0").strip() == "1":
+        from dms_executor.explain_repair import bind_facts
+
+        bind_facts(
+            grantable=set(allowed),
+            warehouse=lake,
+            dialect=dialect,
+            space_id=space_id,
+            session_id=session_id,
+        )
     if (
         os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() == "1"
         and os.environ.get("DMS_ONTO_PG", "0").strip() == "1"
@@ -3183,6 +3197,10 @@ def _maybe_generative_ask_impl(
         prov = gate_state.get("provenance")
         if isinstance(prov, dict) and isinstance(stamped, dict):
             stamped["ontology_provenance"] = dict(prov)
+        if os.environ.get("DMS_EXPLAIN_REPAIR_TRACE", "0").strip() == "1":
+            from dms_executor.explain_repair import stamp_envelope
+
+            stamped = stamp_envelope(stamped)
         return freeze_route(stamped)
 
     def _after_miss() -> dict[str, Any] | None:
@@ -3611,6 +3629,63 @@ def _maybe_generative_ask_impl(
                 )
             )
         if why:
+            if (
+                str(why).startswith("explain:")
+                and os.environ.get("DMS_EXPLAIN_REPAIR_TRACE", "0").strip() == "1"
+            ):
+                from dms_executor.explain_repair import repair_explain
+
+                def _submit_ok(
+                    statement: str, got: dict[str, Any] | None
+                ) -> dict[str, Any]:
+                    return _submit_validated(
+                        statement,
+                        question=q,
+                        space_id=space_id,
+                        session_id=session_id,
+                        submit=submit,
+                        ledger_append=ledger_append,
+                        notes=("GEN-01 Cortex ontology_plan SQL",),
+                        plan_source=source,
+                        coverage=coverage_from_sql_path(sql=statement),
+                        warehouse=lake,
+                        grantable=allowed,
+                        plan_origin=PLAN_ORIGIN_GENERATE_SQL,
+                        served_route=_sql_route(got),
+                    )
+
+                def _direct(reason: str, failed: str) -> dict[str, Any]:
+                    return _abstain(
+                        q,
+                        reason,
+                        space_id=space_id,
+                        session_id=session_id,
+                        plan_source=source,
+                        sql=failed,
+                    )
+
+                repaired = repair_explain(
+                    asked=q,
+                    sql=sql,
+                    why=why,
+                    compute=compute,
+                    ctx=insights_ctx,
+                    check=lambda statement: validate_compiled_sql(
+                        statement,
+                        grantable=set(allowed),
+                        warehouse=lake,
+                        dialect=dialect,
+                    ),
+                    submit_ok=_submit_ok,
+                    abstain_direct=_direct,
+                    warehouse=lake,
+                    grantable=set(allowed),
+                    dialect=dialect,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if isinstance(repaired, dict):
+                    return _stamp(repaired)
             shown = customer_grant_reason(why)
             cited = (
                 _cited_ungranted(sql, allowed, dialect)
