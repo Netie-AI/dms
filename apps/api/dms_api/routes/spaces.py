@@ -33,6 +33,23 @@ class SpaceCreate(BaseModel):
 
 @router.get("")
 def list_spaces(store: SpaceStoreDep, binding: StoreBindingDep) -> dict[str, Any]:
+    rows = list(store.list_spaces())
+    from dms_core.scim import enabled as scim_on
+
+    if scim_on():
+        from dms_core.scim.store import get_store
+
+        from dms_api.auth_sso import bound_tenant_id, current_principal
+        from dms_api.auth_sso import enabled as sso_on
+        from dms_api.settings import get_settings
+
+        principal = current_principal() if sso_on() else None
+        if principal is not None and principal.kind == "user":
+            grant = get_store().space_grant(
+                bound_tenant_id(get_settings().dms_tenant_id), principal.user_id
+            )
+            if grant is not None:
+                rows = [row for row in rows if row.id in set(grant)]
     spaces = [
         SpaceOut(
             id=s.id,
@@ -40,7 +57,7 @@ def list_spaces(store: SpaceStoreDep, binding: StoreBindingDep) -> dict[str, Any
             source_count=s.source_count,
             member_count=s.member_count,
         ).model_dump()
-        for s in store.list_spaces()
+        for s in rows
     ]
     return {
         "spaces": spaces,

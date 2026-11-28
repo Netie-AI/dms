@@ -218,6 +218,7 @@ jobs:
           export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
           # ONTO-DATA-01: tests/test_onto_data_01.py runs here. No skip.
           # DEF-VALIDATE-01: tests/test_def_validate_01.py runs here. No skip.
+          # SCIM-01: tests/test_scim_01.py and tests/invariants/test_scim_boundaries.py run here. No skip.
           bash scripts/ci_pytest_shard.sh files ${{ matrix.shard }} 3 > "$RUNNER_TEMP/shard_files.txt"
           echo "shard ${{ matrix.shard }} of 3: $(wc -l < "$RUNNER_TEMP/shard_files.txt") test files"
           xargs -a "$RUNNER_TEMP/shard_files.txt" python -m pytest -q --tb=short
@@ -773,7 +774,7 @@ jobs:
         working-directory: apps/ui
         run: |
           npm ci
-          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/reasonCopy.test.ts src/lib/ontologyRead.test.ts src/lib/trustEmpty.test.ts src/components/studio/clarifyCards.test.tsx src/lib/clarifyAsk.test.ts src/pages/SpaceBenchPanel.test.tsx
+          npx vitest run src/components/studio/ResultView.test.ts src/components/studio/AskStages.test.ts src/components/answerStamp.test.ts src/components/AnswerMessage.test.ts src/lib/copy.test.ts src/lib/reasonCopy.test.ts src/lib/ontologyRead.test.ts src/lib/trustEmpty.test.ts src/components/studio/clarifyCards.test.tsx src/lib/clarifyAsk.test.ts src/pages/SpaceBenchPanel.test.tsx src/components/studio/DirectorySync.test.ts
           npx playwright install --with-deps chromium
           npx playwright test e2e/clarify.spec.ts e2e/space-bench.spec.ts
 

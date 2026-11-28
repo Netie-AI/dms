@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { DirectorySync } from "@/components/studio/DirectorySync";
+
 type Session = {
   enabled: boolean;
   role: "manager" | "member";
@@ -347,6 +349,7 @@ export function GovConsole() {
         </button>
         {note && <p className="mt-2 text-sm text-[var(--color-ink-muted)]">{note}</p>}
       </div>
+      <DirectorySync />
     </section>
   );
 }

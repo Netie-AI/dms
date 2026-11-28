@@ -131,6 +131,7 @@ _users_by_email: dict[str, _User] = {}
 _users_by_id: dict[str, _User] = {}
 _sessions: dict[str, _Session] = {}
 _states: dict[str, _State] = {}
+_disabled: set[str] = set()
 _secret_loader: SecretLoader | None = None
 
 
@@ -159,6 +160,7 @@ def reset_for_tests() -> None:
     _users_by_id.clear()
     _sessions.clear()
     _states.clear()
+    _disabled.clear()
     _principal.set(None)
 
 
@@ -329,6 +331,43 @@ def provision_hash(*, email: str, password_hash: str, role: str, tenant_id: str)
     return found.user_id
 
 
+def grant_scim_user(*, email: str, role: str, tenant_id: str) -> str:
+    """Passwordless membership for a directory user. Does not clear a disable."""
+    addr = email.strip().lower()
+    if "@" not in addr or any(ch in addr for ch in " \r\n\x00"):
+        raise AuthError("email_invalid", 422)
+    named = _check_role(role)
+    if _UUID.fullmatch(tenant_id) is None:
+        raise AuthError("tenant_unknown", 422)
+    if tenant_id not in _tenants:
+        provision_tenant(tenant_id, "directory")
+    found = _users_by_email.get(addr)
+    if found is None:
+        user = _User(
+            user_id=secrets.token_hex(16),
+            email=addr,
+            password_hash="",
+            memberships={tenant_id: named},
+        )
+        _users_by_email[addr] = user
+        _users_by_id[user.user_id] = user
+        return user.user_id
+    found.memberships[tenant_id] = named
+    return found.user_id
+
+
+def disable_user(user_id: str) -> None:
+    """Revoke every session for this person and refuse the next login."""
+    _disabled.add(user_id)
+    stale = [digest for digest, row in _sessions.items() if row.user_id == user_id]
+    for digest in stale:
+        _sessions.pop(digest, None)
+
+
+def enable_user(user_id: str) -> None:
+    _disabled.discard(user_id)
+
+
 def load_bootstrap() -> None:
     """Read ``DMS_SSO_BOOTSTRAP_FILE`` when SSO is on. A missing env is a no-op.
 
@@ -401,6 +440,8 @@ def login(*, email: str, password: str, company: str | None) -> dict[str, str]:
         raise AuthError("auth_required")
     if not _verify_password(password, user.password_hash):
         raise AuthError("auth_required")
+    if user.user_id in _disabled:
+        raise AuthError("auth_required")
     if company:
         if company not in user.memberships:
             raise AuthError("auth_required")
@@ -423,7 +464,7 @@ def principal_for_token(token: str) -> Principal | None:
         _sessions.pop(digest, None)
         return None
     user = _users_by_id.get(row.user_id)
-    if user is None:
+    if user is None or user.user_id in _disabled:
         return None
     return Principal(
         user_id=user.user_id,
@@ -791,6 +832,8 @@ def finish_oidc(provider: str, code: str, state: str) -> dict[str, str]:
     role = role_from_claims(claims)
     tenant_id = _tenant_from_claims(claims)
     user = _upsert_sso(email, tenant_id, role)
+    if user.user_id in _disabled:
+        raise AuthError("auth_required")
     return _issue(user, tenant_id, role)
 
 
@@ -815,6 +858,11 @@ class AuthRequiredMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         path = request.url.path
         method = request.method.upper()
+        if path == "/scim/v2" or path.startswith("/scim/v2/"):
+            from dms_core.scim import enabled as scim_on
+
+            if scim_on():
+                return await call_next(request)
         if anonymous_allowed(method, path):
             return await call_next(request)
         principal = resolve_bearer(request.headers)
