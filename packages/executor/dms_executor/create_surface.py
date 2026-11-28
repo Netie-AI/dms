@@ -1,8 +1,8 @@
 """Create harness. The provider generates. DMS governs.
 
 ``DMS_CREATE`` is on only when it is the digit 1. The shared adapter is
-``dms_core.create_generator``. This module runs tools, budgets, versions,
-and the judge. Confirm writes the pptx, pdf, and html. It does not invent the words.
+``dms_core.create_generator``. This module runs tools, versions, and the
+judge, and shows live cost. Confirm writes the pptx, pdf, and html. It does not invent the words.
 """
 
 from __future__ import annotations
@@ -47,8 +47,6 @@ KINDS = frozenset({KIND_APP, KIND_DOC, KIND_SLIDES})
 _TOOLS = frozenset(
     {"run_sql", "fetch_ontology", "chart", "render_doc", "sign_request", "save_artifact"}
 )
-_STOP_CODES = frozenset({"runaway_steps", "runaway_usd", "budget_exceeded"})
-_RUNAWAY_STEPS = 60
 # Part tables keep 40 rows and say so. A chart query is the aggregate, so its
 # rows are not sliced.
 # ponytail: a huge chart frame is stored whole. Page it if a chart passes a few thousand rows.
@@ -57,8 +55,6 @@ _SCHEMA_ISSUE = "schema:required kind, title, parts"
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LOCK = threading.Lock()
 _BUDGET_TEXT = {
-    "runaway_steps": "Stopped. This run hit the runaway step guard. Saved versions stay.",
-    "runaway_usd": "Stopped. This run hit the runaway cost ceiling. Saved versions stay.",
     "budget_exceeded": "Stopped. OpenVault returned 402 budget_exceeded. Saved versions stay.",
 }
 _WARN = "Spend is past twice the estimate. The build continues."
@@ -227,6 +223,7 @@ def confirm_final(*, session_id: str, actor: str) -> dict[str, Any]:
         one_page=budget == 1,
         page_budget=budget,
         brand=session.get("brand") or {},
+        ask=asked,
     )
     session["final"] = True
     session["step"] = "ready"
@@ -313,14 +310,11 @@ def draft_events(*, session_id: str, api_key: str) -> Iterator[dict[str, Any]]:
 
 
 def apply_tool(session: dict[str, Any], name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate, allowlist, budget, audit, then run one client tool."""
+    """Validate, allowlist, audit, then run one client tool."""
     issues = validate_call(name, arguments)
     enabled = session.get("tools") or {}
     if name in _TOOLS and enabled.get(name, True) is False:
         issues = ["tool_disabled", *issues]
-    block = _budget_block(session)
-    if block:
-        issues = [block, *issues]
     if issues:
         _audit(session, name, False, issues)
         _count_step(session)
@@ -386,7 +380,6 @@ def _governed(
         and isinstance(artifact, dict)
         and _doc_overflow(session, artifact)
         and not session.get("repaired")
-        and not _cursor_run()
     ):
         from dms_executor.create_files import condense_issue
 
@@ -398,8 +391,8 @@ def _governed(
         session["artifact"] = None
         _save(session)
         return _view(session)
-    # A Cursor repair would launch a second agent. Judge the finished run once.
-    if issues and not session.get("repaired") and not _cursor_run():
+    # A Cursor repair is one follow-up on the same agent.
+    if issues and not session.get("repaired"):
         session["repaired"] = True
         repair = _turn(
             session,
@@ -459,10 +452,6 @@ def _turn(
     judge_issues: list[str] | None = None,
     deck: dict[str, Any] | None = None,
 ) -> Any:
-    block = _budget_block(session)
-    if block:
-        _stop(session, block)
-        return None
     spec = _spec(session, instruction, section_id, judge_issues, deck)
     context = _context(session)
     style = _style(session)
@@ -524,10 +513,6 @@ def _run_tools(
             raise CreateProblem(exc.code) from None
         turn.artifact = artifact
         return turn
-    block = _budget_block(session)
-    if block:
-        _stop(session, block)
-        return None
     spec = dict(spec)
     spec["tool_results"] = results
     try:
@@ -747,6 +732,9 @@ def _spec(
         spec["judge"] = {"issues": judge_issues}
     if deck:
         spec["deck"] = deck
+    cursor = session.get("cursor")
+    if _cursor_run() and isinstance(cursor, dict) and isinstance(cursor.get("id"), str):
+        spec["cursor_agent_id"] = cursor["id"]
     return spec
 
 
@@ -1184,37 +1172,6 @@ def _remember(session: dict[str, Any], turn: Any) -> None:
     )
     if turn.estimated_cost is not None and (session.get("estimate") or {}).get("cost") is None:
         session["estimate"] = {"tokens": turn.tokens, "cost": turn.estimated_cost}
-
-
-def _budget(session: dict[str, Any]) -> dict[str, float]:
-    del session
-    return {
-        "max_usd": float(_env_num("DMS_CREATE_MAX_USD", 10.0, False)),
-        "max_steps": float(_env_num("DMS_CREATE_MAX_STEPS", _RUNAWAY_STEPS, True)),
-    }
-
-
-def _env_num(name: str, default: float, whole: bool) -> float:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return float(default)
-    try:
-        value = float(raw)
-    except ValueError:
-        return float(default)
-    if whole:
-        return float(int(value))
-    return value
-
-
-def _budget_block(session: dict[str, Any]) -> str | None:
-    limits = _budget(session)
-    if int(session.get("steps_used") or 0) >= int(limits["max_steps"]):
-        return "runaway_steps"
-    spend = _spend_usd(session)
-    if spend is not None and spend >= limits["max_usd"]:
-        return "runaway_usd"
-    return None
 
 
 def _warn(session: dict[str, Any]) -> None:

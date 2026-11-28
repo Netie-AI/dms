@@ -18,7 +18,7 @@ One part is one slide.
 
 ## A comparison chart
 
-Each chart has a label a person can read (the things being compared) and the sql that produced the values. Set type (`bar`, `line`, or `pie`), `x`, `series`, and `labels` when you know them. The file follows that spec. Two charts share a slide. A third chart continues that part on the next slide. Use the chart tool to record that spec. The pptx Skill draws it. A chart without a label, or a chart whose values did not come from run_sql, does not belong in the file.
+Each chart has a label a person can read (the things being compared) and the sql that produced the values. Set type (`bar`, `line`, or `pie`), `x`, `series`, and `labels` when you know them. The file follows that spec. When the request names a slide count, keep that part's charts on one slide. A continuation does not reuse the title, and the narrative does not describe a layout the slide does not show. Use the chart tool to record that spec. The pptx Skill draws it. A chart without a label, or a chart whose values did not come from run_sql, does not belong in the file.
 
 ## Numbers
 

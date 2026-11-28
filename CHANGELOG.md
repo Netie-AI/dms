@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: Cursor v1, live cost
+
+- **Cursor.** `POST /v1/agents` launches. `GET /v1/agents/{id}/runs/{runId}` polls until the run finishes. A repair is `POST /v1/agents/{id}/runs` on that agent. JSON artifacts download from the presigned URL with no API key. Each call waits 240 seconds and retries. No clock stops a run.
+- **Cost.** No per-run token, step, or USD stop. The draft shows live cost. OpenVault 402 is the spend stop. Routing and the daily cap stay in OpenVault.
+- **Slides.** A named slide range keeps the deck inside it. A chart group is not split onto slides that share a title. A narrative that describes a different layout is dropped. The cover rule sits under the measured title. A matplotlib legend sits outside the axis title, at 9pt.
+
 ## 2026-11-28 - DMS-CREATE-01: pages share one plan
 
 - **Doc.** A heading starts below the previous block. A table header stays with its next row, above the footer.

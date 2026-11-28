@@ -11,7 +11,7 @@ Docs followed:
 - https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview
 - https://platform.claude.com/docs/en/build-with-claude/skills-guide
 - https://www.anthropic.com/research/building-effective-agents
-- https://cursor.com/docs/cloud-agent/api/v0
+- https://cursor.com/docs/cloud-agent/api/endpoints
 """
 
 from __future__ import annotations
@@ -160,18 +160,6 @@ def ov_tools_enabled() -> bool:
     return os.environ.get("DMS_CREATE_OV_TOOLS", "0").strip() == "1"
 
 
-def request_max_tokens() -> int:
-    """Tokens sent on the OpenVault body. Default 8000. This does not stop a run."""
-    raw = os.environ.get("DMS_CREATE_MAX_TOKENS", "8000").strip() or "8000"
-    try:
-        value = int(raw)
-    except ValueError:
-        return 8000
-    if value < 1:
-        return 8000
-    return value
-
-
 def transport_timeout() -> float:
     """OpenVault HTTP timeout. Live calls ran 18 to 24 seconds under the old 30."""
     return _OV_TIMEOUT_S
@@ -286,21 +274,25 @@ def request_body(
     if line:
         system = system + "\n" + line
     if provider == "cursor_api":
-        repo = os.environ.get("DMS_CREATE_CURSOR_REPO", "").strip()
-        ref = os.environ.get("DMS_CREATE_CURSOR_REF", "main").strip() or "main"
-        if not repo:
-            raise GeneratorError("cursor_repo_missing")
         plain, cleaned = _plain_pair(xml, spec)
-        body = {
-            "prompt": {"text": plain + "\n" + cleaned},
-            "source": {"repository": repo, "ref": ref},
-            "target": {"autoCreatePr": False},
-        }
+        text = plain + "\n" + cleaned
+        follow = spec.get("cursor_agent_id")
+        if isinstance(follow, str) and follow.strip():
+            body = {"prompt": {"text": text}, "agent_id": follow.strip()}
+        else:
+            repo = os.environ.get("DMS_CREATE_CURSOR_REPO", "").strip()
+            ref = os.environ.get("DMS_CREATE_CURSOR_REF", "main").strip() or "main"
+            if not repo:
+                raise GeneratorError("cursor_repo_missing")
+            body = {
+                "prompt": {"text": text},
+                "repos": [{"url": repo, "startingRef": ref}],
+                "autoCreatePR": False,
+            }
         _reject_model_keys(body)
         return body, cleaned
     # Caller ``role`` is the task name. The wire role is the OpenVault allowlist.
     role = ov_role()
-    cap = request_max_tokens()
     prefill = str(library.get("prefill") or "")
     if ov_tools_enabled():
         tools = client_tools(enabled)
@@ -316,7 +308,6 @@ def request_body(
             "tools": tools,
             "tool_choice": {"type": "auto"},
             "thinking": {"type": "adaptive"},
-            "max_tokens": cap,
         }
         if picked["anthropic"]:
             body["container"] = {
@@ -340,7 +331,7 @@ def request_body(
     ]
     if prefill:
         messages.append({"role": "assistant", "content": prefill})
-    body = {"role": role, "messages": messages, "max_tokens": cap}
+    body = {"role": role, "messages": messages}
     _reject_model_keys(body)
     return body, cleaned
 
@@ -589,36 +580,161 @@ def default_transport(body: dict[str, Any], api_key: str) -> Any:
 
 
 _AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
-_CURSOR_DONE = frozenset({"FINISHED", "FAILED", "ERROR", "CANCELLED", "EXPIRED"})
+_CURSOR_ACTIVE = frozenset({"CREATING", "RUNNING", "WAITING_FOR_BACKGROUND_WORK"})
+_CURSOR_DONE = frozenset({"FINISHED", "ERROR", "CANCELLED", "EXPIRED"})
+_CURSOR_RETRY = frozenset({429, 502, 503, 504})
+_CURSOR_TRIES = 3
 
 
 def default_cursor(body: dict[str, Any], api_key: str) -> Any:
-    """Launch one agent, poll until it finishes, then return that result.
+    """Launch one Cloud Agent, or follow up on one, and return the finished run.
 
-    A second call is a second launch. Repair must not call this again.
+    ``agent_id`` on the body is a follow-up. It is not sent to Cursor.
+    Each HTTP call uses the provider timeout and retries a transient failure.
+    Polling waits until the run is terminal. It does not stop on a clock.
     """
     import httpx
 
     base = os.environ.get("CURSOR_AGENTS_URL", "https://api.cursor.com").strip().rstrip("/")
     timeout = transport_timeout()
     auth = (api_key, "")
-    payload = _cursor_json(httpx, "post", base + "/v0/agents", auth, timeout, json=body)
-    agent_id = payload.get("id")
+    payload = dict(body)
+    follow = payload.pop("agent_id", None)
+    if isinstance(follow, str) and follow:
+        if _AGENT_ID.fullmatch(follow) is None:
+            raise GeneratorError("cursor_failed")
+        started = _cursor_json(
+            httpx, "post", f"{base}/v1/agents/{follow}/runs", auth, timeout, json=payload
+        )
+        agent_id = follow
+        run = started.get("run") if isinstance(started.get("run"), dict) else {}
+        run_id = run.get("id")
+    else:
+        started = _cursor_json(httpx, "post", base + "/v1/agents", auth, timeout, json=payload)
+        agent = started.get("agent") if isinstance(started.get("agent"), dict) else {}
+        run = started.get("run") if isinstance(started.get("run"), dict) else {}
+        agent_id = agent.get("id")
+        run_id = run.get("id") or agent.get("latestRunId")
     if not isinstance(agent_id, str) or _AGENT_ID.fullmatch(agent_id) is None:
-        return payload
-    deadline = time.monotonic() + timeout
-    status = ""
+        return started
+    if not isinstance(run_id, str) or _AGENT_ID.fullmatch(run_id) is None:
+        agent = _cursor_json(httpx, "get", f"{base}/v1/agents/{agent_id}", auth, timeout)
+        run_id = agent.get("latestRunId")
+    if not isinstance(run_id, str) or _AGENT_ID.fullmatch(run_id) is None:
+        raise GeneratorError("model_unreadable")
+    finished = _poll_run(httpx, base, auth, agent_id, str(run_id), timeout)
+    return _finish_cursor(httpx, base, auth, agent_id, finished, timeout)
+
+
+def _poll_run(
+    httpx: Any,
+    base: str,
+    auth: tuple[str, str],
+    agent_id: str,
+    run_id: str,
+    timeout: float,
+) -> dict[str, Any]:
+    url = f"{base}/v1/agents/{agent_id}/runs/{run_id}"
     while True:
-        payload = _cursor_json(httpx, "get", base + "/v0/agents/" + agent_id, auth, timeout)
+        payload = _cursor_json(httpx, "get", url, auth, timeout)
         status = str(payload.get("status") or "").upper()
         if status in _CURSOR_DONE:
-            break
-        if not status or time.monotonic() >= deadline:
-            raise GeneratorError("cursor_timeout")
+            return payload
+        if status not in _CURSOR_ACTIVE:
+            raise GeneratorError("model_unreadable")
         time.sleep(1.0)
+
+
+def _finish_cursor(
+    httpx: Any,
+    base: str,
+    auth: tuple[str, str],
+    agent_id: str,
+    run_payload: dict[str, Any],
+    timeout: float,
+) -> dict[str, Any]:
+    status = str(run_payload.get("status") or "").upper()
     if status != "FINISHED":
         raise GeneratorError("cursor_failed")
-    return _collect_cursor(httpx, base, auth, payload, timeout)
+    text = run_payload.get("result") if isinstance(run_payload.get("result"), str) else ""
+    found = _as_artifact(text)
+    paths = _artifact_paths(httpx, base, auth, agent_id, timeout)
+    if found is None:
+        found = _artifact_file(httpx, base, auth, agent_id, paths, timeout)
+    git = run_payload.get("git") if isinstance(run_payload.get("git"), dict) else {}
+    branches = git.get("branches") if isinstance(git.get("branches"), list) else []
+    first = branches[0] if branches and isinstance(branches[0], dict) else {}
+    out: dict[str, Any] = {
+        "id": agent_id,
+        "status": status,
+        "result": text,
+        "artifacts": paths,
+        "target": {"branchName": first.get("branch"), "prUrl": first.get("prUrl")},
+    }
+    if found is not None:
+        out["content"] = found
+    elif text:
+        out["content"] = text
+    return out
+
+
+def _artifact_paths(
+    httpx: Any,
+    base: str,
+    auth: tuple[str, str],
+    agent_id: str,
+    timeout: float,
+) -> list[str]:
+    try:
+        listed = _cursor_json(
+            httpx, "get", f"{base}/v1/agents/{agent_id}/artifacts", auth, timeout
+        )
+    except GeneratorError:
+        return []
+    items = listed.get("items") if isinstance(listed.get("items"), list) else []
+    paths: list[str] = []
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("path"), str):
+            paths.append(item["path"])
+    return paths
+
+
+def _artifact_file(
+    httpx: Any,
+    base: str,
+    auth: tuple[str, str],
+    agent_id: str,
+    paths: list[str],
+    timeout: float,
+) -> dict[str, Any] | None:
+    """Download one JSON artifact. The presigned URL is fetched with no API key."""
+    for path in paths:
+        if not path.endswith(".json") or path.startswith(("/", "\\")) or ".." in path:
+            continue
+        try:
+            ticket = _cursor_json(
+                httpx,
+                "get",
+                f"{base}/v1/agents/{agent_id}/artifacts/download",
+                auth,
+                timeout,
+                params={"path": path},
+            )
+        except GeneratorError:
+            continue
+        url = ticket.get("url")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            continue
+        try:
+            response = httpx.get(url, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError, AttributeError):
+            continue
+        found = _as_artifact(payload)
+        if found is not None:
+            return found
+    return None
 
 
 def _cursor_json(
@@ -630,71 +746,30 @@ def _cursor_json(
     **kwargs: Any,
 ) -> dict[str, Any]:
     """One Cursor HTTP call. The error code never carries the key or the body."""
-    try:
-        response = getattr(httpx, method)(url, auth=auth, timeout=timeout, **kwargs)
-        response.raise_for_status()
-        payload = response.json()
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        if status in (401, 403):
-            raise GeneratorError("cursor_unauthorized") from None
-        raise GeneratorError(f"cursor_http_{status}") from None
-    except httpx.HTTPError:
-        raise GeneratorError("cursor_unreachable") from None
-    except ValueError:
-        raise GeneratorError("model_unreadable") from None
-    if not isinstance(payload, dict):
-        raise GeneratorError("model_unreadable")
-    return payload
-
-
-def _collect_cursor(
-    httpx: Any,
-    base: str,
-    auth: tuple[str, str],
-    payload: dict[str, Any],
-    timeout: float,
-) -> dict[str, Any]:
-    """Prefer the artifact in the summary. Otherwise read the finished transcript."""
-    summary = payload.get("summary") if isinstance(payload.get("summary"), str) else ""
-    found = _as_artifact(summary)
-    text = ""
-    if found is None and isinstance(payload.get("id"), str):
+    for attempt in range(_CURSOR_TRIES):
         try:
-            convo = _cursor_json(
-                httpx,
-                "get",
-                base + "/v0/agents/" + payload["id"] + "/conversation",
-                auth,
-                timeout,
-            )
-        except GeneratorError:
-            convo = {}
-        text = _last_assistant(convo)
-        found = _as_artifact(text)
-    out = dict(payload)
-    if found is not None:
-        out["content"] = found
-    elif text:
-        out["content"] = text
-    return out
-
-
-def _last_assistant(payload: Mapping[str, Any]) -> str:
-    messages = payload.get("messages") or payload.get("conversation") or []
-    if not isinstance(messages, list):
-        return ""
-    texts: list[str] = []
-    for item in messages:
-        if not isinstance(item, dict):
-            continue
-        kind = str(item.get("type") or item.get("role") or "")
-        if kind not in {"assistant_message", "assistant"}:
-            continue
-        text = item.get("text") if isinstance(item.get("text"), str) else item.get("content")
-        if isinstance(text, str) and text.strip():
-            texts.append(text)
-    return texts[-1] if texts else ""
+            response = getattr(httpx, method)(url, auth=auth, timeout=timeout, **kwargs)
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise GeneratorError("cursor_unauthorized") from None
+            if status in _CURSOR_RETRY and attempt + 1 < _CURSOR_TRIES:
+                time.sleep(1.0)
+                continue
+            raise GeneratorError(f"cursor_http_{status}") from None
+        except httpx.HTTPError:
+            if attempt + 1 < _CURSOR_TRIES:
+                time.sleep(1.0)
+                continue
+            raise GeneratorError("cursor_unreachable") from None
+        except ValueError:
+            raise GeneratorError("model_unreadable") from None
+        if not isinstance(payload, dict):
+            raise GeneratorError("model_unreadable")
+        return payload
+    raise GeneratorError("cursor_unreachable")
 
 
 def _cursor_target(raw: Any) -> dict[str, Any] | None:

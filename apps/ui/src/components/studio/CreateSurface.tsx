@@ -37,7 +37,7 @@ function meter(spend?: Spend): string {
   if (!spend) return "n/a";
   const tokens = spend.tokens == null ? "n/a" : String(spend.tokens);
   const usd = spend.usd == null ? "n/a" : String(spend.usd);
-  return `${tokens} tokens, ${usd} USD, ${spend.steps ?? 0} steps`;
+  return `Live cost: ${tokens} tokens, ${usd} USD, ${spend.steps ?? 0} steps`;
 }
 
 export function CreateSurface({ spaceId }: { spaceId: string | null }) {

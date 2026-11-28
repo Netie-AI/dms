@@ -25,6 +25,27 @@ _LINES_PER_PAGE = 45
 _WRAP = 90
 _HEX = re.compile(r"#([0-9A-Fa-f]{6})")
 _PAGE_ASK = re.compile(r"\b(\d{1,2})\s+pages?\b")
+_SLIDE_RANGE = re.compile(r"\b(\d{1,2})\s*(?:-|to)\s*(\d{1,2})\s+slides?\b")
+_SLIDE_COUNT = re.compile(r"\b(\d{1,2})\s+slides?\b")
+_LAYOUT_CLAIM = re.compile(
+    r"\b(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+    r"(charts?|slides?|pages?)\b",
+    re.IGNORECASE,
+)
+_COUNT_WORD = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
 _DEFAULT_PALETTE = (
     (27, 77, 62),
     (196, 163, 90),
@@ -49,6 +70,8 @@ _CHARTS_PER_SLIDE = 2
 # band under the plot. Fractions of the chart box, edge origin, top-left.
 _LEGEND_RIGHT = (0.74, 0.12, 0.24, 0.72)
 _PLOT_BESIDE_LEGEND = (0.08, 0.10, 0.62, 0.68)
+# A legend or data label above this point size crowds the axis title.
+_MARK_PT = 9
 
 
 def _glyph(pt: int) -> tuple[float, float]:
@@ -116,6 +139,22 @@ def page_budget(text: str) -> int | None:
     return max(1, int(found.group(1)))
 
 
+def slide_span(text: str) -> tuple[int, int] | None:
+    """Inclusive slide count. ``4-6 slides`` is a range. ``5 slides`` is exact."""
+    folded = text.casefold()
+    found = _SLIDE_RANGE.search(folded)
+    if found:
+        lo, hi = int(found.group(1)), int(found.group(2))
+        if lo > hi:
+            lo, hi = hi, lo
+        return max(1, lo), max(1, hi)
+    one = _SLIDE_COUNT.search(folded)
+    if one is None:
+        return None
+    count = max(1, int(one.group(1)))
+    return count, count
+
+
 def render_artifact(
     folder: Path,
     artifact: Mapping[str, Any],
@@ -124,6 +163,7 @@ def render_artifact(
     one_page: bool,
     brand: Mapping[str, Any] | None = None,
     page_budget: int | None = None,
+    ask: str = "",
 ) -> list[str]:
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "artifact.json").write_text(
@@ -131,16 +171,18 @@ def render_artifact(
     )
     names = ["artifact.json"]
     kit, pages = _prepare(
-        artifact, kind=kind, one_page=one_page, page_budget=page_budget, brand=brand
+        artifact, kind=kind, one_page=one_page, page_budget=page_budget, brand=brand, ask=ask
     )
     html_name = f"{kind or 'artifact'}.html"
-    (folder / html_name).write_text(_html(artifact, _images(artifact, kit), kit), encoding="utf-8")
+    (folder / html_name).write_text(
+        _html(artifact, _images(artifact, kit, ask=ask), kit, ask=ask), encoding="utf-8"
+    )
     names.append(html_name)
     pdf_name = f"{kind or 'artifact'}.pdf"
     (folder / pdf_name).write_bytes(_pdf(pages, kit))
     names.append(pdf_name)
     if kind == "slides":
-        (folder / "slides.pptx").write_bytes(_pptx(artifact, kit))
+        (folder / "slides.pptx").write_bytes(_pptx(artifact, kit, ask))
         names.append("slides.pptx")
     return names
 
@@ -152,10 +194,11 @@ def preview_pngs(
     one_page: bool,
     brand: Mapping[str, Any] | None = None,
     page_budget: int | None = None,
+    ask: str = "",
 ) -> list[bytes]:
     """One PNG per page, in order. Tests use this to check the page count."""
     _kit_value, pages = _prepare(
-        artifact, kind=kind, one_page=one_page, page_budget=page_budget, brand=brand
+        artifact, kind=kind, one_page=one_page, page_budget=page_budget, brand=brand, ask=ask
     )
     palette = _palette(_kit_value)
     return [_page_png(page, palette[0]) for page in pages]
@@ -168,12 +211,13 @@ def _prepare(
     one_page: bool,
     page_budget: int | None,
     brand: Mapping[str, Any] | None,
+    ask: str = "",
 ) -> tuple[dict[str, str], list[Page]]:
     kit = _kit(brand, artifact)
-    images = _images(artifact, kit)
+    images = _images(artifact, kit, ask=ask)
     budget = 1 if one_page else page_budget
     if kind == "slides":
-        pages = _layout_slides(artifact, images)
+        pages = _layout_slides(artifact, images, ask)
     else:
         pages = _layout_doc(artifact, images, budget)
     count = len(pages) or 1
@@ -387,12 +431,21 @@ def _charts(part: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [chart for chart in part.get("charts") or [] if isinstance(chart, Mapping)]
 
 
-def _images(artifact: Mapping[str, Any], kit: Mapping[str, str]) -> dict[int, Bitmap]:
+def _images(
+    artifact: Mapping[str, Any], kit: Mapping[str, str], *, ask: str = ""
+) -> dict[int, Bitmap]:
     found: dict[int, Bitmap] = {}
     palette = _palette(kit)
+    half: set[int] = set()
+    if str(artifact.get("kind") or "") == "slides":
+        for item in _slide_plan(artifact, ask):
+            charts = _charts(item["part"])
+            if len(charts) >= 2:
+                half.update(id(chart) for chart in charts)
+    font = _font_name(kit)
     for part in _parts(artifact):
         for chart in _charts(part):
-            drawn = _chart_bitmap(chart, palette, _font_name(kit))
+            drawn = _chart_bitmap(chart, palette, font, half=id(chart) in half)
             if drawn is not None:
                 found[id(chart)] = drawn
     return found
@@ -565,8 +618,40 @@ def _as_float(value: Any) -> float:
 
 
 def _chart_bitmap(
-    chart: Mapping[str, Any], palette: list[tuple[int, int, int]], font: str
+    chart: Mapping[str, Any],
+    palette: list[tuple[int, int, int]],
+    font: str,
+    *,
+    half: bool = False,
 ) -> Bitmap | None:
+    figure = _chart_figure(chart, palette, font, half=half)
+    if figure is None:
+        return None
+    fig, _ax = figure
+    import matplotlib.pyplot as plt
+
+    canvas: Any = fig.canvas
+    canvas.draw()
+    width_px, height_px = canvas.get_width_height()
+    rgba = bytes(canvas.buffer_rgba())
+    png = io.BytesIO()
+    fig.savefig(png, format="png")
+    plt.close(fig)
+    rgb = bytearray(width_px * height_px * 3)
+    for pixel in range(width_px * height_px):
+        start = pixel * 4
+        rgb[pixel * 3 : pixel * 3 + 3] = rgba[start : start + 3]
+    return png.getvalue(), bytes(rgb), width_px, height_px
+
+
+def _chart_figure(
+    chart: Mapping[str, Any],
+    palette: list[tuple[int, int, int]],
+    font: str,
+    *,
+    half: bool = False,
+) -> tuple[Any, Any] | None:
+    """One matplotlib figure. The legend sits outside the plot, off the axis title."""
     frame = _frame(chart)
     if frame is None:
         return None
@@ -578,7 +663,11 @@ def _chart_bitmap(
     from matplotlib.ticker import FuncFormatter
 
     square = mark == "pie"
-    fig, ax = plt.subplots(figsize=(4.2, 4.2) if square else (6.4, 3.6), dpi=80)
+    fig, ax = plt.subplots(
+        figsize=(4.2, 4.2) if square else (6.4, 3.6),
+        dpi=80,
+        layout="constrained",
+    )
     fig.patch.set_facecolor("white")
     slots = list(range(len(categories)))
     title_colour = _hex(palette[0])
@@ -599,27 +688,31 @@ def _chart_bitmap(
         if mark == "bar":
             ax.set_ylim(bottom=0)
         if len(series) > 1:
-            ax.legend(
-                loc="upper center",
-                bbox_to_anchor=(0.5, -0.22),
-                ncol=min(len(series), 4),
-                fontsize=9,
-                frameon=False,
-            )
+            _mpl_legend(ax, half=half, count=len(series))
     ax.set_title(str(chart.get("label") or "Chart"), color=title_colour, fontname=_mpl_font(font))
-    fig.tight_layout()
-    canvas: Any = fig.canvas
-    canvas.draw()
-    width_px, height_px = canvas.get_width_height()
-    rgba = bytes(canvas.buffer_rgba())
-    png = io.BytesIO()
-    fig.savefig(png, format="png")
-    plt.close(fig)
-    rgb = bytearray(width_px * height_px * 3)
-    for pixel in range(width_px * height_px):
-        start = pixel * 4
-        rgb[pixel * 3 : pixel * 3 + 3] = rgba[start : start + 3]
-    return png.getvalue(), bytes(rgb), width_px, height_px
+    return fig, ax
+
+
+def _mpl_legend(ax: Any, *, half: bool, count: int) -> None:
+    """Right of a half-width plot, above a full-width plot. Never over the axis title."""
+    size = min(_MARK_PT, 10)
+    if half:
+        ax.legend(
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+            fontsize=size,
+            frameon=False,
+        )
+        return
+    ax.legend(
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.02),
+        ncol=min(count, 4),
+        borderaxespad=0.0,
+        fontsize=size,
+        frameon=False,
+    )
 
 
 def _mpl_font(name: str) -> str:
@@ -650,7 +743,11 @@ def _draw_bars(
             [slot + offset for slot in slots], values, width=width, label=name, color=colour
         )
         if show:
-            ax.bar_label(container, labels=[_tick_label(value) for value in values], fontsize=9)
+            ax.bar_label(
+                container,
+                labels=[_tick_label(value) for value in values],
+                fontsize=min(_MARK_PT, 10),
+            )
 
 
 def _draw_lines(
@@ -671,7 +768,7 @@ def _draw_lines(
                     textcoords="offset points",
                     xytext=(0, 4),
                     ha="center",
-                    fontsize=9,
+                    fontsize=min(_MARK_PT, 10),
                 )
 
 
@@ -702,27 +799,90 @@ def content_overflow(
     return len(pages) > budget
 
 
-def _slide_plan(artifact: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _planned_count(parts: Sequence[Mapping[str, Any]], per: int) -> int:
+    total = 0
+    for part in parts:
+        charts = _charts(part)
+        total += max(1, math.ceil(len(charts) / per)) if charts else 1
+    return total
+
+
+def _charts_per_slide(parts: Sequence[Mapping[str, Any]], span: tuple[int, int] | None) -> int:
+    """Group size whose slide count sits in the request. No range keeps two."""
+    if span is None:
+        return _CHARTS_PER_SLIDE
+    lo, hi = span
+    most = max((len(_charts(part)) for part in parts), default=1)
+    most = max(most, 1)
+    in_range = [per for per in range(1, most + 1) if lo <= _planned_count(parts, per) <= hi]
+    if in_range:
+        return max(in_range)
+    if _planned_count(parts, most) > hi:
+        return most
+    for per in range(most, 0, -1):
+        if _planned_count(parts, per) >= lo:
+            return per
+    return 1
+
+
+def _claim_count(sentence: str) -> int | None:
+    found = _LAYOUT_CLAIM.search(sentence)
+    if found is None:
+        return None
+    raw = found.group(1).casefold()
+    if raw.isdigit():
+        return int(raw)
+    return _COUNT_WORD.get(raw)
+
+
+def _body_for_slide(body: str, shown: int, total: int) -> str:
+    """Drop a sentence that describes a layout this slide does not have."""
+    if shown == total or not body.strip():
+        return body
+    kept: list[str] = []
+    for sentence in re.split(r"(?<=[.!?])\s+", body.strip()):
+        claimed = _claim_count(sentence)
+        folded = sentence.casefold()
+        if claimed is not None and claimed != shown:
+            continue
+        if "on one page" in folded or "on one slide" in folded:
+            continue
+        kept.append(sentence)
+    return " ".join(kept)
+
+
+def _next_title(title: str, index: int) -> str:
+    base = title.strip() or "Continued"
+    return f"{base} ({index + 1})"
+
+
+def _slide_plan(artifact: Mapping[str, Any], ask: str = "") -> list[dict[str, Any]]:
     """One entry per page. pdf, html, and pptx all use this list.
 
-    A part with more than two charts continues on the next page. A text-only
-    first page is a cover. A text-only last page is a close.
+    A named slide range picks how many charts share a page so the deck lands
+    in that range. A continuation does not reuse the title. A text-only first
+    page is a cover. A text-only last page is a close.
     """
     parts = _parts(artifact) or [{"title": artifact.get("title") or "Empty", "body": ""}]
+    per = _charts_per_slide(parts, slide_span(ask))
     slides: list[dict[str, Any]] = []
     for part in parts:
         charts = _charts(part)
-        groups = [
-            charts[index : index + _CHARTS_PER_SLIDE]
-            for index in range(0, len(charts), _CHARTS_PER_SLIDE)
-        ] or [[]]
+        groups = [charts[index : index + per] for index in range(0, len(charts), per)] or [[]]
+        split = len(groups) > 1
         for index, group in enumerate(groups):
             shown = dict(part)
             shown["charts"] = list(group)
+            if split:
+                shown["body"] = _body_for_slide(
+                    str(part.get("body") or ""), len(group), len(charts)
+                )
             if index:
-                shown["body"] = ""
+                shown["title"] = _next_title(str(part.get("title") or ""), index)
                 shown["rows"] = []
                 shown.pop("truncated", None)
+                if split:
+                    shown["body"] = _body_for_slide(shown["body"], len(group), len(charts))
             slides.append({"part": shown, "role": ""})
     if slides and not _charts(slides[0]["part"]):
         slides[0]["role"] = "cover"
@@ -731,10 +891,12 @@ def _slide_plan(artifact: Mapping[str, Any]) -> list[dict[str, Any]]:
     return slides
 
 
-def _layout_slides(artifact: Mapping[str, Any], images: Mapping[int, Bitmap]) -> list[Page]:
+def _layout_slides(
+    artifact: Mapping[str, Any], images: Mapping[int, Bitmap], ask: str = ""
+) -> list[Page]:
     """The shared slide plan. Each entry is one page."""
     pages: list[Page] = []
-    for item in _slide_plan(artifact):
+    for item in _slide_plan(artifact, ask):
         part = item["part"]
         role = str(item["role"] or "")
         if role in {"cover", "close"}:
@@ -1014,9 +1176,10 @@ def _html(
     artifact: Mapping[str, Any],
     images: Mapping[int, Bitmap],
     kit: Mapping[str, str],
+    ask: str = "",
 ) -> str:
     if str(artifact.get("kind") or "") == "slides":
-        return _slides_html(artifact, images, kit)
+        return _slides_html(artifact, images, kit, ask)
     palette = _palette(kit)
     accent = _hex(palette[0])
     ink = _hex(palette[min(2, len(palette) - 1)])
@@ -1070,6 +1233,7 @@ def _slides_html(
     artifact: Mapping[str, Any],
     images: Mapping[int, Bitmap],
     kit: Mapping[str, str],
+    ask: str = "",
 ) -> str:
     """One section per shared slide plan entry, including cover and close."""
     palette = _palette(kit)
@@ -1077,7 +1241,7 @@ def _slides_html(
     ink = _hex(palette[min(2, len(palette) - 1)])
     font = _esc(_font_name(kit))
     blocks = [f"<h1>{_esc(_present_prose(str(artifact.get('title') or '')))}</h1>"]
-    for item in _slide_plan(artifact):
+    for item in _slide_plan(artifact, ask):
         part = item["part"]
         role = str(item["role"] or "slide")
         chunks = [f'<section class="page {role}">', _part_body(part, images)]
@@ -1558,7 +1722,7 @@ def _png(rgb: bytes, width: int, height: int) -> bytes:
     return b"\x89PNG\r\n\x1a\n" + block(b"IHDR", ihdr) + block(b"IDAT", chunk) + block(b"IEND", b"")
 
 
-def _pptx(artifact: Mapping[str, Any], kit: Mapping[str, str]) -> bytes:
+def _pptx(artifact: Mapping[str, Any], kit: Mapping[str, str], ask: str = "") -> bytes:
     from pptx import Presentation
     from pptx.dml.color import RGBColor
     from pptx.oxml import parse_xml
@@ -1577,7 +1741,7 @@ def _pptx(artifact: Mapping[str, Any], kit: Mapping[str, str]) -> bytes:
     foot_h = int(Inches(0.32))
     foot_top = slide_h - margin - foot_h
     chart_bottom = foot_top - int(Inches(0.12))
-    plan = _slide_plan(artifact)
+    plan = _slide_plan(artifact, ask)
     total = max(len(plan), 1)
     for index, item in enumerate(plan, start=1):
         slide = deck.slides.add_slide(blank)
@@ -1648,11 +1812,12 @@ def _poster_slide(
     bar.line.fill.background()
     top = int(slide_h * (0.32 if role == "cover" else 0.40))
     top = max(top, bar_h + int(Inches(0.35)))
-    title_h = int(Inches(1.05 if role == "cover" else 0.85))
+    title_pt = 36 if role == "cover" else 28
+    title_text, title_h = _measured_title(str(part.get("title") or ""), box_w, title_pt)
     box = slide.shapes.add_textbox(Emu(margin), Emu(top), Emu(box_w), Emu(title_h))
     box.text_frame.word_wrap = True
-    box.text_frame.text = str(part.get("title") or "")
-    _face(box.text_frame, font, 36 if role == "cover" else 28, bold=True, colour=colour)
+    box.text_frame.text = title_text
+    _face(box.text_frame, font, title_pt, bold=True, colour=colour)
     cursor = top + title_h + int(Inches(0.08))
     rule_h = int(Inches(0.06))
     rule = slide.shapes.add_shape(
@@ -1669,6 +1834,18 @@ def _poster_slide(
         text.text_frame.word_wrap = True
         text.text_frame.text = body
         _face(text.text_frame, font, 18, bold=False, colour=None)
+
+
+def _measured_title(title: str, width_emu: int, pt: int) -> tuple[str, int]:
+    """Wrap at this point size and return a box tall enough for every line."""
+    from pptx.util import Inches
+
+    width_in = width_emu / 914400
+    chars = max(8, int(width_in * 72 / (pt * 0.52)))
+    wrapped = textwrap.wrap(title, width=chars) or [""]
+    line_in = pt / 72 * 1.35
+    height = int(Inches(line_in * len(wrapped) + 0.06))
+    return "\n".join(wrapped), height
 
 
 def _title_box(title: str, width_emu: int) -> tuple[str, int, int]:

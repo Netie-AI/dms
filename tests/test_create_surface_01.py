@@ -26,7 +26,6 @@ from dms_core.create_generator import (
     judge_artifact,
     local_skill,
     request_body,
-    request_max_tokens,
     score_artifact,
     skills_for,
     transport_timeout,
@@ -257,7 +256,7 @@ def test_request_is_provider_context_without_a_model(
     assert "tools" not in body
     assert "system" not in body
     assert "thinking" not in body
-    assert body["max_tokens"] == 8000
+    assert "max_tokens" not in body
     assert body["messages"][0]["role"] == "system"
     text = body["messages"][1]["content"]
     for tag in ("<schema>", "<data>", "<choices>", "<style>", "<examples>", "<skills>"):
@@ -325,6 +324,13 @@ def test_stub_app_and_deck_through_the_adapter(
     def cursor(body: dict[str, Any], api_key: str) -> dict[str, Any]:
         assert api_key == CURSOR_KEY
         assert "model" not in body
+        assert body["autoCreatePR"] is False
+        assert body["repos"] == [
+            {"url": "https://example.com/acme/create", "startingRef": "main"}
+        ]
+        assert "source" not in body
+        assert "target" not in body
+        assert "max_tokens" not in body
         text = body["prompt"]["text"]
         assert CURSOR_KEY not in text
         assert "<schema>" in text
@@ -597,11 +603,12 @@ def test_full_build_ignores_the_old_caps(
     assert built["artifact"]["title"] == "Orders"
 
 
-def test_runaway_and_budget_stop(
+def test_step_cap_does_not_stop_and_openvault_402_does(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _env(monkeypatch, tmp_path, "1")
     monkeypatch.setenv("DMS_CREATE_MAX_STEPS", "1")
+    monkeypatch.setenv("DMS_CREATE_MAX_USD", "0.01")
     bad = {"kind": "app", "parts": []}
     _patch(monkeypatch, [bad, _app()])
     from dms_executor.create_surface import generate_artifact
@@ -614,9 +621,10 @@ def test_runaway_and_budget_stop(
         api_key=OV_KEY,
         actor="api_admin",
     )
-    stopped = generate_artifact(session_id=opened["session_id"], api_key=OV_KEY)
-    assert stopped["stopped"] == "runaway_steps"
-    assert stopped["message"]
+    kept = generate_artifact(session_id=opened["session_id"], api_key=OV_KEY)
+    assert kept["stopped"] is None
+    assert kept["shown"] is True
+    assert kept["artifact"]["title"] == "Orders"
     _patch(monkeypatch, [GeneratorError("budget_exceeded")])
     second = start_session(
         space_id=SPACE,
@@ -964,9 +972,8 @@ def test_thousands_currency_and_percent_trace() -> None:
     assert "unsupported_claim" in issues("Total is 1.", {"1606773"})
 
 
-def test_max_tokens_defaults_to_8000(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("DMS_CREATE_MAX_TOKENS", raising=False)
-    assert request_max_tokens() == 8000
+def test_request_sends_no_token_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DMS_CREATE_MAX_TOKENS", "1")
     spec, context, style = _plain_spec()
     body, _xml = request_body(
         provider="claude_api",
@@ -977,9 +984,22 @@ def test_max_tokens_defaults_to_8000(monkeypatch: pytest.MonkeyPatch) -> None:
         enabled=None,
         prompt_version="1",
     )
-    assert body["max_tokens"] == 8000
-    monkeypatch.setenv("DMS_CREATE_MAX_TOKENS", "4000")
-    assert request_max_tokens() == 4000
+    assert "max_tokens" not in body
+    follow = dict(spec)
+    follow["cursor_agent_id"] = "bc_once"
+    cursor, _prompt = request_body(
+        provider="cursor_api",
+        role="generate",
+        spec=follow,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert cursor["agent_id"] == "bc_once"
+    assert "repos" not in cursor
+    assert "max_tokens" not in cursor
+    assert "model" not in cursor
 
 
 def test_read_only_multi_select_is_repaired(
@@ -1031,24 +1051,29 @@ def test_read_only_multi_select_is_repaired(
     assert len(stub_write.bodies) == 1
 
 
-def test_est_cost_usd_feeds_the_spend_cap(
+def test_est_cost_usd_is_live_and_does_not_stop(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     client = _client(monkeypatch, tmp_path, "1")
     monkeypatch.setenv("DMS_CREATE_MAX_USD", "0.05")
-    stub = _patch(monkeypatch, [{"content": _app(), "est_cost_usd": 0.2}])
+    stub = _patch(
+        monkeypatch,
+        [{"content": _app(), "est_cost_usd": 0.2}, {"content": _app(), "est_cost_usd": 0.2}],
+    )
     session_id = _open(client)
     first = client.post(
         f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
     )
     assert first.status_code == 200, first.text
     assert first.json()["spend"]["usd"] == pytest.approx(0.2)
+    assert first.json()["stopped"] is None
     second = client.post(
         f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
     )
     assert second.status_code == 200, second.text
-    assert second.json()["stopped"] == "runaway_usd"
-    assert len(stub.bodies) == 1
+    assert second.json()["stopped"] is None
+    assert second.json()["spend"]["usd"] == pytest.approx(0.4)
+    assert len(stub.bodies) == 2
 
 
 def test_chart_number_must_be_in_its_own_sql(
@@ -2293,12 +2318,23 @@ def test_difference_and_even_share_are_computed() -> None:
     )
 
 
-def test_cursor_polls_until_finished(monkeypatch: pytest.MonkeyPatch) -> None:
+def _cursor_record() -> dict[str, Any]:
+    path = Path(__file__).parent / "fixtures" / "create" / "cursor_v1.json"
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(loaded, dict)
+    return loaded
+
+
+def test_cursor_v1_launches_polls_and_reads_the_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import httpx
 
     monkeypatch.setenv("CURSOR_AGENTS_URL", "https://cursor.example")
-    deck = _deck()
-    seen: dict[str, list[tuple[str, float | None]]] = {"post": [], "get": []}
+    monkeypatch.setattr("dms_core.create_generator.time.sleep", lambda _seconds: None)
+    recorded = _cursor_record()
+    seen: dict[str, list[tuple[str, float | None, Any]]] = {"post": [], "get": []}
+    run_gets = {"n": 0}
 
     class _Resp:
         def __init__(self, payload: dict[str, Any]) -> None:
@@ -2311,38 +2347,154 @@ def test_cursor_polls_until_finished(monkeypatch: pytest.MonkeyPatch) -> None:
             return self._payload
 
     def post(url: str, **kwargs: Any) -> _Resp:
-        seen["post"].append((url, kwargs.get("timeout")))
-        assert kwargs["auth"][0] == CURSOR_KEY
-        return _Resp({"id": "bc_deck", "status": "RUNNING"})
+        seen["post"].append((url, kwargs.get("timeout"), kwargs.get("auth")))
+        assert kwargs["json"].get("prompt", {}).get("text")
+        assert "agent_id" not in kwargs["json"]
+        assert CURSOR_KEY not in json.dumps(kwargs["json"])
+        return _Resp(recorded["create"])
 
     def get(url: str, **kwargs: Any) -> _Resp:
-        seen["get"].append((url, kwargs.get("timeout")))
-        if url.endswith("/conversation"):
-            text = json.dumps(deck)
-            return _Resp({"messages": [{"type": "assistant_message", "text": text}]})
-        return _Resp(
-            {
-                "id": "bc_deck",
-                "status": "FINISHED",
-                "summary": "",
-                "target": {"branchName": "cursor/deck", "prUrl": "https://example.com/pr/9"},
-            }
-        )
+        seen["get"].append((url, kwargs.get("timeout"), kwargs.get("auth")))
+        agent = "bc-00000000-0000-0000-0000-000000000001"
+        run = "run-00000000-0000-0000-0000-000000000001"
+        if url == f"https://cursor.example/v1/agents/{agent}/runs/{run}":
+            run_gets["n"] += 1
+            if run_gets["n"] == 1:
+                pending = dict(recorded["run"])
+                pending["status"] = "CREATING"
+                return _Resp(pending)
+            return _Resp(recorded["run"])
+        if url == f"https://cursor.example/v1/agents/{agent}/artifacts":
+            return _Resp(recorded["artifacts"])
+        if url == f"https://cursor.example/v1/agents/{agent}/artifacts/download":
+            assert kwargs["params"] == {"path": "artifacts/deck.json"}
+            return _Resp(recorded["download"])
+        if url == "https://example.com/deck.json":
+            assert kwargs.get("auth") is None
+            return _Resp(recorded["file"])
+        raise AssertionError(url)
+
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "get", get)
+    raw = default_cursor(
+        {
+            "prompt": {"text": "Build the deck"},
+            "repos": [{"url": "https://example.com/acme/create", "startingRef": "main"}],
+            "autoCreatePR": False,
+        },
+        CURSOR_KEY,
+    )
+    assert seen["post"] == [("https://cursor.example/v1/agents", 240.0, (CURSOR_KEY, ""))]
+    assert run_gets["n"] == 2
+    assert raw["content"]["title"] == "Orders deck"
+    assert raw["target"]["branchName"] == "cursor/deck"
+    assert raw["target"]["prUrl"] == "https://example.com/pr/9"
+    assert raw["artifacts"] == ["artifacts/deck.json"]
+    assert CURSOR_KEY not in json.dumps(raw)
+
+
+def test_cursor_v1_follow_up_posts_a_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setenv("CURSOR_AGENTS_URL", "https://cursor.example")
+    monkeypatch.setattr("dms_core.create_generator.time.sleep", lambda _seconds: None)
+    recorded = _cursor_record()
+    agent = "bc-00000000-0000-0000-0000-000000000001"
+    posted: list[str] = []
+
+    class _Resp:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    def post(url: str, **kwargs: Any) -> _Resp:
+        posted.append(url)
+        assert "agent_id" not in kwargs["json"]
+        assert kwargs["auth"] == (CURSOR_KEY, "")
+        return _Resp(recorded["follow_up"])
+
+    def get(url: str, **kwargs: Any) -> _Resp:
+        if url.endswith("/runs/run-00000000-0000-0000-0000-000000000002"):
+            return _Resp(recorded["follow_run"])
+        if url.endswith("/artifacts"):
+            return _Resp({"items": []})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "get", get)
+    raw = default_cursor(
+        {"prompt": {"text": "Repair the number"}, "agent_id": agent},
+        CURSOR_KEY,
+    )
+    assert posted == [f"https://cursor.example/v1/agents/{agent}/runs"]
+    assert raw["id"] == agent
+    assert raw["content"]["title"] == "Orders"
+
+
+def test_cursor_401_does_not_leak_the_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setenv("CURSOR_AGENTS_URL", "https://cursor.example")
+
+    def post(url: str, **kwargs: Any) -> Any:
+        request = httpx.Request("POST", url)
+        response = httpx.Response(401, request=request, text=CURSOR_KEY)
+        raise httpx.HTTPStatusError("denied", request=request, response=response)
+
+    monkeypatch.setattr(httpx, "post", post)
+    with pytest.raises(GeneratorError) as exc:
+        default_cursor({"prompt": {"text": "Build"}}, CURSOR_KEY)
+    assert exc.value.code == "cursor_unauthorized"
+    assert CURSOR_KEY not in str(exc.value)
+
+
+def test_cursor_retries_a_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setenv("CURSOR_AGENTS_URL", "https://cursor.example")
+    monkeypatch.setattr("dms_core.create_generator.time.sleep", lambda _seconds: None)
+    recorded = _cursor_record()
+    posts = {"n": 0}
+
+    class _Resp:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    def post(url: str, **kwargs: Any) -> Any:
+        posts["n"] += 1
+        if posts["n"] == 1:
+            request = httpx.Request("POST", url)
+            response = httpx.Response(503, request=request, text="busy")
+            raise httpx.HTTPStatusError("busy", request=request, response=response)
+        return _Resp(recorded["create"])
+
+    def get(url: str, **kwargs: Any) -> _Resp:
+        if "/runs/" in url:
+            return _Resp(recorded["run"])
+        if url.endswith("/artifacts"):
+            return _Resp({"items": []})
+        raise AssertionError(url)
 
     monkeypatch.setattr(httpx, "post", post)
     monkeypatch.setattr(httpx, "get", get)
     raw = default_cursor({"prompt": {"text": "Build the deck"}}, CURSOR_KEY)
-    assert seen["post"] == [("https://cursor.example/v0/agents", 240.0)]
-    assert [item[0] for item in seen["get"]] == [
-        "https://cursor.example/v0/agents/bc_deck",
-        "https://cursor.example/v0/agents/bc_deck/conversation",
-    ]
-    assert seen["get"][0][1] == 240.0
-    assert raw["content"]["title"] == "Orders deck"
-    assert raw["target"]["prUrl"] == "https://example.com/pr/9"
+    assert posts["n"] == 2
+    assert raw["status"] == "FINISHED"
+    assert raw["content"] == "Wrote the deck."
 
 
-def test_cursor_judge_does_not_launch_again(
+def test_cursor_judge_follow_up_does_not_launch_again(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     client = _client(monkeypatch, tmp_path, "1")
@@ -2370,7 +2522,11 @@ def test_cursor_judge_does_not_launch_again(
     view = client.post(
         f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
     ).json()
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert "repos" in calls[0]
+    assert "agent_id" not in calls[0]
+    assert calls[1]["agent_id"] == "bc_once"
+    assert "repos" not in calls[1]
     assert view["shown"] is False
     assert "unsupported_claim" in view["issues"]
     assert view["cursor"]["branch"] == "cursor/deck"
@@ -2736,3 +2892,149 @@ def test_slide_page_counts_match_and_the_ends_are_a_cover_and_a_close(tmp_path: 
         for index, box in enumerate(boxes):
             for other in boxes[index + 1 :]:
                 assert not _intersects(box, other)
+
+
+def _slide_title(slide: Any) -> str:
+    text = ""
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        raw = shape.text_frame.text.strip()
+        if not raw or "/" in raw:
+            continue
+        text = raw
+        break
+    return text
+
+
+def test_slide_range_keeps_a_chart_group_together(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+    from pptx import Presentation
+
+    def chart(index: int) -> dict[str, Any]:
+        return {
+            "label": f"Chart {index}",
+            "type": "column",
+            "x": "quarter",
+            "series": ["amount"],
+            "rows": [
+                {"quarter": "Q1", "amount": index + 1},
+                {"quarter": "Q2", "amount": index + 2},
+            ],
+        }
+
+    artifact = {
+        "kind": "slides",
+        "title": "Deck",
+        "parts": [
+            {"id": "cover", "title": "Open", "body": "Start here."},
+            {
+                "id": "north",
+                "title": "North",
+                "body": "North led.",
+                "charts": [chart(1), chart(2)],
+            },
+            {"id": "south", "title": "South", "body": "South held.", "charts": [chart(3)]},
+            {
+                "id": "four",
+                "title": "Regions",
+                "body": "Four charts on one page.",
+                "charts": [chart(4), chart(5), chart(6), chart(7)],
+            },
+            {"id": "west", "title": "West", "body": "West grew.", "charts": [chart(8)]},
+            {"id": "close", "title": "Close", "body": "That is the briefing."},
+        ],
+    }
+    render_artifact(
+        tmp_path, artifact, kind="slides", one_page=False, ask="Prepare 4-6 slides for the board"
+    )
+    deck = Presentation(str(tmp_path / "slides.pptx"))
+    pdf_pages = (tmp_path / "slides.pdf").read_bytes().count(b"/Type /Page ")
+    html_pages = (tmp_path / "slides.html").read_text(encoding="utf-8").count('class="page')
+    assert 4 <= len(deck.slides) <= 6
+    assert pdf_pages == len(deck.slides) == html_pages
+    titles = [_slide_title(slide) for slide in deck.slides]
+    for left, right in zip(titles, titles[1:], strict=False):
+        assert left != right
+    saw_group = False
+    for slide in deck.slides:
+        charts = [shape for shape in slide.shapes if shape.has_chart]
+        text = "\n".join(
+            shape.text_frame.text for shape in slide.shapes if shape.has_text_frame
+        )
+        if "Four charts on one page." in text:
+            assert len(charts) == 4
+            saw_group = True
+        assert "Four charts on one page." not in text or len(charts) == 4
+    assert saw_group
+
+
+def test_half_width_mpl_legend_misses_the_axis_title() -> None:
+    import matplotlib.pyplot as plt
+    from dms_executor.create_files import _chart_figure
+
+    chart = {
+        "label": "Quarter",
+        "type": "column",
+        "x": "quarter",
+        "series": ["north", "south"],
+        "rows": [
+            {"quarter": "Q1", "north": 10, "south": 12},
+            {"quarter": "Q2", "north": 8, "south": 14},
+            {"quarter": "Q3", "north": 11, "south": 9},
+            {"quarter": "Q4", "north": 13, "south": 15},
+        ],
+    }
+    figure = _chart_figure(chart, [(17, 34, 51), (68, 85, 102)], "Calibri", half=True)
+    assert figure is not None
+    fig, ax = figure
+    fig.canvas.draw()
+    legend = ax.get_legend()
+    assert legend is not None
+    assert legend.get_texts()[0].get_fontsize() <= 10
+    legend_box = legend.get_window_extent()
+    axis_box = ax.xaxis.label.get_window_extent()
+    assert not legend_box.overlaps(axis_box)
+    for text in list(ax.texts) + list(legend.get_texts()):
+        assert text.get_fontsize() <= 10
+    plt.close(fig)
+
+
+def test_cover_rule_sits_below_the_wrapped_title(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Pt
+
+    title = "Quarterly operating review for the board and the leadership team this period"
+    artifact = {
+        "kind": "slides",
+        "title": "Deck",
+        "parts": [
+            {"id": "cover", "title": title, "body": "Open the briefing."},
+            {"id": "close", "title": "Close", "body": "Done."},
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="slides", one_page=False)
+    deck = Presentation(str(tmp_path / "slides.pptx"))
+    slide = deck.slides[0]
+    box = next(
+        shape
+        for shape in slide.shapes
+        if shape.has_text_frame and "Quarterly" in shape.text_frame.text
+    )
+    assert "\n" in box.text_frame.text
+    assert box.text_frame.paragraphs[0].font.size >= Pt(36)
+    rule = min(
+        (
+            shape
+            for shape in slide.shapes
+            if shape.shape_type == MSO_SHAPE.RECTANGLE and int(shape.top) > int(box.top)
+        ),
+        key=lambda shape: int(shape.top),
+    )
+    assert int(rule.top) >= int(box.top) + int(box.height)
+    assert not _intersects(
+        (int(box.left), int(box.top), int(box.width), int(box.height)),
+        (int(rule.left), int(rule.top), int(rule.width), int(rule.height)),
+    )
