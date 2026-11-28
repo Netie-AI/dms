@@ -367,12 +367,22 @@ def note_prompt_ctx(ctx: Mapping[str, Any] | None) -> None:
         note_prompt_text("insights_generate", "")
         return
     parts: list[str] = []
-    for key in ("schema_context", "governed_definitions", "vq_examples", "sql_vote_prompt"):
+    for key in (
+        "schema_context",
+        "governed_definitions",
+        "vq_examples",
+        "sql_vote_prompt",
+        "space_knowledge",
+    ):
         raw = ctx.get(key)
         if isinstance(raw, str):
             parts.append(raw)
     rest = {key: value for key, value in ctx.items() if key not in {
-        "schema_context", "governed_definitions", "vq_examples", "sql_vote_prompt"
+        "schema_context",
+        "governed_definitions",
+        "vq_examples",
+        "sql_vote_prompt",
+        "space_knowledge",
     }}
     try:
         parts.append(json.dumps(rest, default=str, sort_keys=True))

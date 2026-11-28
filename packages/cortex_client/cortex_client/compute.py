@@ -1195,6 +1195,20 @@ def _repair_question_suffix(sql_feedback: Mapping[str, Any]) -> str:
     return "\n" + "\n".join(parts)
 
 
+def _split_knowledge(text: str) -> tuple[str, str]:
+    """Question text, then the steward block including its mark.
+
+    A prompt with no mark comes back whole. The tail is not masked and is
+    not a gate input.
+    """
+    from cortex_client.insights import SPACE_KNOWLEDGE_MARK
+
+    parts = text.split(SPACE_KNOWLEDGE_MARK, 1)
+    if len(parts) == 1:
+        return text, ""
+    return parts[0], SPACE_KNOWLEDGE_MARK + parts[1]
+
+
 def _insights_body(
     question: str,
     *,
@@ -1204,12 +1218,13 @@ def _insights_body(
     sql_feedback: dict[str, Any] | None = None,
     route_hint: str | None = None,
 ) -> dict[str, Any]:
-    asked = question
+    head, tail = _split_knowledge(question)
+    asked = head
     if isinstance(sql_feedback, dict):
         reason = str(sql_feedback.get("reason") or "")
         prev = str(sql_feedback.get("previous_sql") or "")
         if reason:
-            asked = f"{question}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
+            asked = f"{head}\n\nprevious_sql:\n{prev}\n\nfeedback:\n{reason}"
             asked += _repair_question_suffix(sql_feedback)
     preference = (
         route_hint if route_hint in {"escalate", "reason"} else FREEROUTE_PREFERENCE
@@ -1223,6 +1238,8 @@ def _insights_body(
     asked = _masked_model_question(asked, evidence if isinstance(evidence, Mapping) else None)
     if examples:
         asked = question_with_examples(asked, examples)
+    if tail:
+        asked = f"{asked.rstrip()}{tail}"
     body: dict[str, Any] = {
         "intent": asked,
         "question": asked,

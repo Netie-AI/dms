@@ -284,6 +284,27 @@ def test_same_question_different_sql_is_not_excluded(
     assert [row["sql"] for row in kept] == ["SELECT a FROM t_kept"]
 
 
+def test_sql_fragment_is_hashed_like_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A listed statement in sql_fragment is excluded, even beside other SQL."""
+    _clear_hash_env(monkeypatch)
+    gold = "SELECT total FROM t_gold"
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(gold))
+    kept = filter_retrieved_rows(
+        [
+            {"body": "keeper", "sql_fragment": "SELECT total FROM t_kept"},
+            {"body": "fragment only", "sql_fragment": "select  total  from t_gold"},
+            {
+                "body": "hidden beside other sql",
+                "sql": "SELECT 1",
+                "sql_fragment": gold,
+            },
+        ]
+    )
+    assert [row["body"] for row in kept] == ["keeper"]
+
+
 def test_equivalent_sql_same_rows_excluded_by_result_hash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

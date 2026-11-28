@@ -32,6 +32,10 @@ SCHEMA_CONTEXT_ENV = "DMS_SCHEMA_CONTEXT"
 #: Catalog key for verified-example rows. Lifted before the Insights POST.
 #: Pin 279cbd85 does not declare it, so it must never be a body field.
 VERIFIED_EXAMPLES_FIELD = "verified_examples"
+#: Line inserted between the question and steward notes. The masker and the
+#: qualifier gates see only the text before this line. Pin 279cbd85 does not
+#: declare a knowledge field, so the block rides in the question after the split.
+SPACE_KNOWLEDGE_MARK = "\nspace knowledge; not a filter\n"
 INSIGHTS_FAIL_BEARER_MISSING = "insights_bearer_missing"
 INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT = "insights_bearer_insecure_transport"
 
@@ -371,6 +375,7 @@ __all__ = [
     "honest_envelope",
     "SCHEMA_CONTEXT_ENV",
     "SCHEMA_CONTEXT_FIELD",
+    "SPACE_KNOWLEDGE_MARK",
     "apply_schema_context",
     "without_route_fields",
     "insights_get",

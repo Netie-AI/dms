@@ -2832,6 +2832,7 @@ def _maybe_generative_ask_impl(
     dialect: str | None = None,
     embedder: Callable[[list[str]], Any] | None = None,
     demo_gate: bool = True,
+    ask_context: str | None = None,
 ) -> dict[str, Any] | None:
     """L2 when retrieve+plan compiles and validate passes. ABSTAIN when unsure.
 
@@ -3137,6 +3138,20 @@ def _maybe_generative_ask_impl(
             # The rows already sit in the governed block. A second Examples
             # section would send the same SQL twice.
             insights_ctx.pop("vq_examples", None)
+    from dms_executor.space_knowledge import knowledge_prompt, space_knowledge_enabled
+
+    # Flag off: the catalog is not copied and the context string is ignored.
+    if space_knowledge_enabled():
+        block = knowledge_prompt(
+            q,
+            space_id=space_id,
+            warehouse=lake,
+            embedder=embedder,
+            ask_context=ask_context,
+        )
+        if block:
+            insights_ctx = dict(insights_ctx)
+            insights_ctx["space_knowledge"] = block
     from dms_executor.ai_first import ai_first_enabled, with_examples
 
     held_preview: dict[str, Any] | None = None
