@@ -127,7 +127,12 @@ async def _event_frames(ask_id: str) -> AsyncIterator[bytes]:
                 or not isinstance(t_ms, int)
             ):
                 continue
-            yield _frame({"stage": stage, "t_ms": t_ms, "status": status})
+            frame: dict[str, Any] = {"stage": stage, "t_ms": t_ms, "status": status}
+            if "table" in event:
+                frame["table"] = event["table"]
+            if "detail" in event:
+                frame["detail"] = event["detail"]
+            yield _frame(frame)
         if done:
             return
 

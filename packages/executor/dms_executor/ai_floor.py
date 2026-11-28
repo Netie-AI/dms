@@ -53,6 +53,13 @@ def enabled(env: Mapping[str, str] | None = None) -> bool:
     return str(source.get(AI_FLOOR_ENV) or "").strip() == "1"
 
 
+def _big_on() -> bool:
+    """DMS_BIG_SCHEMA, digit 1 only. Off, this harness does not retrieve a slice."""
+    from dms_executor.big_schema import enabled as big_enabled
+
+    return big_enabled()
+
+
 def _head(reason: str) -> str:
     return str(reason or "").strip().lower().split(":", 1)[0].strip()
 
@@ -167,14 +174,30 @@ def _context(
 
         _fingerprint, described = read_catalog(warehouse, grantable, dialect)
         tables = _granted_tables(described, grantable)
-        built = build_schema_context(
-            question,
-            described,
-            ontology=onto,
-            grantable=grantable,
-            space_id=space_id,
-        )
-        prompt = built.prompt
+        prompt = ""
+        if _big_on():
+            from dms_executor.big_schema import slice_for_ask
+
+            sliced = slice_for_ask(
+                question,
+                described,
+                ontology=onto,
+                warehouse=warehouse,
+                grantable=set(grantable),
+            )
+            if sliced is not None and sliced.prompt.strip():
+                prompt = sliced.prompt
+                if sliced.picked:
+                    tables = list(sliced.picked)
+        if not prompt:
+            built = build_schema_context(
+                question,
+                described,
+                ontology=onto,
+                grantable=grantable,
+                space_id=space_id,
+            )
+            prompt = built.prompt
         if isinstance(prompt, str) and prompt.strip() and not schema_context_is_empty(prompt):
             blocks.append(prompt.strip())
         note_stage("find", "done")
@@ -225,6 +248,15 @@ def _catalog(
         previous = feedback.get("previous_sql") or ""
         reason = feedback.get("reason") or ""
         asked = f"{asked}\n\nprevious_sql:\n{previous}\n\nfeedback:\n{reason}"
+        if _big_on():
+            from dms_executor.big_schema import repair_schema
+
+            extra = repair_schema().strip()
+            if extra:
+                asked = (
+                    f"{asked}\n\nrepair_schema:\n{extra}\n\n"
+                    "Repair from this error and the schema only."
+                )
     catalog: dict[str, Any] = {
         "sql_vote_prompt": asked,
         "sql_vote_kind": "escalate" if escalate else "direct",
@@ -273,6 +305,12 @@ def _stamp(
     if checks:
         assumptions.append("ai_floor: checks=" + ",".join(checks))
     env["assumptions"] = assumptions
+    if _big_on():
+        from dms_executor.big_schema import last_meta
+
+        meta = last_meta()
+        if meta:
+            env["big_schema"] = meta
     return env
 
 
@@ -446,6 +484,12 @@ def run_floor(
             note_stage("write", "failed")
             continue
         note_stage("write", "done")
+        if _big_on():
+            from dms_executor.big_schema import prepare_sql
+
+            capped, _refused = prepare_sql(sql, dialect=spoken)
+            if capped:
+                sql = capped
         why = validate_compiled_sql(
             sql,
             grantable=set(grantable),
@@ -491,6 +535,15 @@ def run_floor(
             continue
         note_stage("run", "done")
         rows = rows_from_submit_result(result)
+        if _big_on():
+            from dms_executor.big_schema import cap_result, note_executed
+
+            rows, result = cap_result(result, rows)
+            output = getattr(result, "output", None)
+            count = len(rows)
+            if isinstance(output, dict) and isinstance(output.get("row_count"), int):
+                count = output["row_count"]
+            note_executed(sql, returned=len(rows), row_count=count)
         shape = _shape(rows)
         note_stage("check", "started")
         if shape:

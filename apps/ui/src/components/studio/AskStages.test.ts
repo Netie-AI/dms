@@ -58,6 +58,29 @@ describe("AskStages", () => {
     expect(stageLabel({ stage: "fetch", t_ms: 1, status: "done", table: "a b" })).toBe("Fetching");
   });
 
+  it("shows the big schema step when the event carries that phrase", () => {
+    expect(
+      stageLabel({
+        stage: "find",
+        t_ms: 1,
+        status: "done",
+        detail: "finding tables (picked: fact_revenue, dim_account)",
+      }),
+    ).toBe("finding tables (picked: fact_revenue, dim_account)");
+    expect(stageLabel({ stage: "write", t_ms: 1, status: "started", detail: "writing SQL" })).toBe(
+      "writing SQL",
+    );
+    expect(
+      stageLabel({ stage: "run", t_ms: 1, status: "started", detail: "running on database" }),
+    ).toBe("running on database");
+    expect(
+      stageLabel({ stage: "check", t_ms: 1, status: "started", detail: "checking result" }),
+    ).toBe("checking result");
+    expect(stageLabel({ stage: "write", t_ms: 1, status: "started", detail: "DROP TABLE t" })).toBe(
+      "Writing SQL",
+    );
+  });
+
   it("treats a flag-off end event as disabled, not a stage", () => {
     expect(isDisabledStreamEvent({ enabled: false })).toBe(true);
     expect(isDisabledStreamEvent({ stage: "plan", t_ms: 1, status: "done" })).toBe(false);

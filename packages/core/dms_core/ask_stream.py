@@ -57,8 +57,14 @@ _STATUS = frozenset({"started", "done", "failed", "cancelled"})
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 _current: ContextVar[str | None] = ContextVar("dms_ask_stream_id", default=None)
+_picked_phrase: ContextVar[str] = ContextVar("dms_big_picked_phrase", default="")
 _lock = threading.Lock()
 _slots: dict[str, _Slot] = {}
+_STEP_DETAIL = frozenset({"writing SQL", "running on database", "checking result"})
+_PICKED_LINE = re.compile(
+    r"^finding tables \(picked: [A-Za-z_][A-Za-z0-9_]{0,63}"
+    r"(?:, [A-Za-z_][A-Za-z0-9_]{0,63}){0,7}\)$"
+)
 
 
 def stream_enabled() -> bool:
@@ -96,7 +102,13 @@ class _Slot:
         self.cond = threading.Condition()
         self.done = False
 
-    def add(self, stage: str, status: str, table: str | None = None) -> None:
+    def add(
+        self,
+        stage: str,
+        status: str,
+        table: str | None = None,
+        detail: str | None = None,
+    ) -> None:
         event: dict[str, str | int] = {
             "stage": stage,
             "t_ms": max(0, int((time.perf_counter() - self.t0) * 1000)),
@@ -104,6 +116,8 @@ class _Slot:
         }
         if table is not None:
             event["table"] = table
+        if detail is not None:
+            event["detail"] = detail
         with self.cond:
             if self.done or len(self.events) >= _MAX_EVENTS:
                 return
@@ -179,7 +193,59 @@ def mark_cancelled() -> None:
         return
 
 
-def _emit(stage: str, status: str, table: str | None = None) -> None:
+def safe_detail(value: object) -> str | None:
+    """A live step phrase. Anything else is dropped."""
+    if not isinstance(value, str):
+        return None
+    if value in _STEP_DETAIL or _PICKED_LINE.fullmatch(value):
+        return value
+    return None
+
+
+def _big_steps() -> bool:
+    return os.environ.get("DMS_BIG_SCHEMA", "").strip() == "1"
+
+
+def note_picked(names: object) -> None:
+    """Tables the big-schema slice kept. The find step quotes them. No SQL."""
+    try:
+        if not _big_steps() or not isinstance(names, list):
+            _picked_phrase.set("")
+            return
+        clean: list[str] = []
+        for name in names:
+            if isinstance(name, str) and _IDENT.fullmatch(name) and name not in clean:
+                clean.append(name)
+            if len(clean) >= 8:
+                break
+        if not clean:
+            _picked_phrase.set("")
+            return
+        _picked_phrase.set("finding tables (picked: " + ", ".join(clean) + ")")
+    except Exception:
+        return
+
+
+def _step_detail(stage: str, status: str) -> str | None:
+    if not _big_steps():
+        return None
+    if stage == "find" and status == "done":
+        return _picked_phrase.get() or None
+    if status != "started":
+        return None
+    return {
+        "write": "writing SQL",
+        "run": "running on database",
+        "check": "checking result",
+    }.get(stage)
+
+
+def _emit(
+    stage: str,
+    status: str,
+    table: str | None = None,
+    detail: str | None = None,
+) -> None:
     if stage not in _PUBLIC:
         return
     if status not in _STATUS and _rung_token(status) is None:
@@ -190,7 +256,7 @@ def _emit(stage: str, status: str, table: str | None = None) -> None:
     slot = _slots.get(ask_id)
     if slot is None:
         return
-    slot.add(stage, status, table)
+    slot.add(stage, status, table, safe_detail(detail))
 
 
 def note_fetch(table: str) -> None:
@@ -213,6 +279,9 @@ def public_event(event: dict[str, Any]) -> dict[str, Any]:
     table = event.get("table")
     if isinstance(table, str) and _IDENT.fullmatch(table) is not None:
         out["table"] = table
+    detail = safe_detail(event.get("detail"))
+    if detail is not None:
+        out["detail"] = detail
     return out
 
 
@@ -226,7 +295,7 @@ def note_stage(stage: str, status: str = "done") -> None:
             return
         if status not in _STATUS:
             status = "done"
-        _emit(public, status)
+        _emit(public, status, detail=_step_detail(public, status))
     except Exception:
         return
 

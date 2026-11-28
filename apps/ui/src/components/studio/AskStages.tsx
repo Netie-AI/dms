@@ -6,6 +6,7 @@ export type AskStageEvent = {
   t_ms: number;
   status: string;
   table?: string;
+  detail?: string;
 };
 
 const LABELS: Record<string, string> = {
@@ -31,6 +32,21 @@ function tableName(value: string | undefined): string | null {
   return value;
 }
 
+function stepDetail(value: string | undefined): string | null {
+  if (!value) return null;
+  if (value === "writing SQL" || value === "running on database" || value === "checking result") {
+    return value;
+  }
+  if (
+    /^finding tables \(picked: [A-Za-z_][A-Za-z0-9_]{0,63}(?:, [A-Za-z_][A-Za-z0-9_]{0,63}){0,7}\)$/.test(
+      value,
+    )
+  ) {
+    return value;
+  }
+  return null;
+}
+
 function rungNumber(status: string): string | null {
   if (status.length !== 5 || !status.startsWith("rung")) return null;
   const digit = status[4];
@@ -39,6 +55,8 @@ function rungNumber(status: string): string | null {
 }
 
 export function stageLabel(event: AskStageEvent): string {
+  const detail = stepDetail(event.detail);
+  if (detail) return detail;
   const rung = event.stage === "retry" ? rungNumber(event.status) : null;
   if (rung) return `Retry rung ${rung}`;
   if (event.stage === "fetch") {
@@ -153,7 +171,14 @@ export function useAskStages(askId: string | null): AskStageEvent[] {
       }
       if (typeof body.stage !== "string" || typeof body.t_ms !== "number") return;
       const table = typeof body.table === "string" ? body.table : undefined;
-      const event = { stage: body.stage, t_ms: body.t_ms, status: String(body.status ?? ""), table };
+      const detail = typeof body.detail === "string" ? body.detail : undefined;
+      const event = {
+        stage: body.stage,
+        t_ms: body.t_ms,
+        status: String(body.status ?? ""),
+        table,
+        detail,
+      };
       setStages((prev) => [...prev, event]);
     };
     source.onerror = () => {
