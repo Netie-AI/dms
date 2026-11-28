@@ -87,15 +87,38 @@ export function redactSecret(text: string, secret?: string): string {
   return text.split(secret).join("[redacted]");
 }
 
+const SERVICE_DOWN = "The analysis service is not reachable, so this step did not run.";
+
+function looksLikeTransport(text: string): boolean {
+  return (
+    text.includes("ConnectError") ||
+    text.includes("Errno") ||
+    text.trim().startsWith("{") ||
+    text.trim().startsWith("[")
+  );
+}
+
 /** Turn a raw API error body into a sentence a steward can act on. */
 export function describeApiError(body: string, secret?: string): string {
   let reason = body.trim();
+  let code = "";
   try {
-    const parsed = JSON.parse(body) as { detail?: unknown };
+    const parsed = JSON.parse(body) as {
+      detail?: unknown;
+      message?: unknown;
+      code?: unknown;
+    };
+    if (typeof parsed.code === "string") code = parsed.code;
     const extracted = detailReason(parsed.detail);
     if (extracted) reason = extracted;
+    else if (typeof parsed.message === "string" && parsed.message.trim()) {
+      reason = parsed.message.trim();
+    }
   } catch {
     /* keep raw body */
+  }
+  if (code === "cortex_unavailable" || reason === "cortex_unavailable" || looksLikeTransport(reason)) {
+    return SERVICE_DOWN;
   }
   if (reason === "gate_unavailable") {
     return "Cortex gate is unreachable. Start Cortex before writing -- an ungated change is refused.";

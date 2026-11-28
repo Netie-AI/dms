@@ -16,7 +16,7 @@ export function AuditPage() {
   useEffect(() => {
     void fetch("/api/v1/audit/ledger")
       .then((r) => r.json())
-      .then(setRows)
+      .then((body) => setRows(Array.isArray(body) ? body : []))
       .catch(() => setRows([]));
   }, []);
 

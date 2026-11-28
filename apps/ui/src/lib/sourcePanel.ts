@@ -41,5 +41,6 @@ export function sourcesHeadline(
   if (sources.length) {
     return `${sources.length} ${sources.length === 1 ? "table" : "tables"} · ${totalRows.toLocaleString()} rows`;
   }
-  return "Certified answer, no file card from Cortex. Open SQL.";
+  if (env.abstained || env.badge === "ABSTAIN") return "No table on this answer.";
+  return "There is no file card on this answer.";
 }

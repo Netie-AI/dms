@@ -98,13 +98,13 @@ const AppContext = createContext<AppState | null>(null);
 function classifyPause(message: string): string | null {
   const m = message.toLowerCase();
   if (m.includes("429") || m.includes("pool_saturated") || m.includes("rate")) {
-    return "Paused — pool busy or rate-limited. Retry shortly.";
+    return "Paused - pool busy or rate-limited. Retry shortly.";
   }
   if (m.includes("manifest_unknown_issuer") || m.includes("unknown_issuer")) {
-    return "Paused — OpenVault JWKS trust. Restart OV with pinned OPENVAULT_HOME, then Cortex JWKS refresh.";
+    return "Paused - sign-in trust is not ready.";
   }
   if (m.includes("submit") && m.includes("404")) {
-    return "Paused — Cortex contract routes missing. Restart Cortex on :8010.";
+    return "Paused - the analysis service is missing its contract routes.";
   }
   return null;
 }

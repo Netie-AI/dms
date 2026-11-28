@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useApp } from "@/context/AppContext";
 import {
+  describeApiError,
   fetchAmendProposals,
   postAmendProposal,
   type AmendProposal,
@@ -16,7 +17,7 @@ export function AmendPage() {
     // Clear first so a Space switch cannot leave another Space's diffs on screen.
     setList([]);
     void fetchAmendProposals(activeSpaceId)
-      .then(setList)
+      .then((body) => setList(Array.isArray(body) ? body : []))
       .catch(() => setList([]));
   };
 
@@ -45,7 +46,7 @@ export function AmendPage() {
       body: JSON.stringify({ idempotency_token: p.idempotency_token }),
     });
     if (!res.ok) {
-      setMsg(await res.text());
+      setMsg(describeApiError(await res.text()));
       reload();
       return;
     }
