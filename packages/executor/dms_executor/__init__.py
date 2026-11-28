@@ -1420,6 +1420,7 @@ class Executor:
                 )
                 self._store_turn(session_id, space_id, env)
                 return env
+        held_askback: dict[str, Any] | None = None
         if allow_gen:
             # Insights generate + ranking. Never POST /dms/query. Nothing binds
             # on a miss (bind_on_miss=False). Pre-gates stay before this call.
@@ -1476,6 +1477,11 @@ class Executor:
                     sql, space_id=space_id, session_id=session_id, tables=tables
                 ),
             )
+            from dms_executor.generate_retry import peel_deferred_askback
+
+            gen_env, held_askback = peel_deferred_askback(
+                gen_env if isinstance(gen_env, dict) else None
+            )
             if gen_env is not None:
                 # cq_sku_count is not in PACK_METRICS. A generic GEN-01 abstain
                 # hides that exact-match / pack-metric miss. A confident
@@ -1496,6 +1502,11 @@ class Executor:
                 env = attach_cascade(gen_env, cascade)
                 self._store_turn(session_id, space_id, env)
                 return env
+        from dms_executor.generate_retry import prefer_askback
+
+        def _finish(env: dict[str, Any]) -> dict[str, Any]:
+            return prefer_askback(env, held_askback)
+
         if not allow_cortex:
             env = path_miss_envelope(
                 question,
@@ -1507,7 +1518,7 @@ class Executor:
                 session_id=session_id,
             )
             self._store_turn(session_id, space_id, env)
-            return env
+            return _finish(env)
         acl = self.demo_acl(session_id=session_id, space_id=space_id, tables=tables)
         if acl.session_id not in self._bound_sessions:
             self.bind_session(acl)
@@ -1593,7 +1604,7 @@ class Executor:
                     refused["route"] = route
                 env = attach_cascade(refused, cascade)
                 self._store_turn(session_id, space_id, env)
-                return env
+                return _finish(env)
             elif gap:
                 # One code. The relation name is not part of it.
                 refused = sql_refusal_envelope(
@@ -1606,7 +1617,7 @@ class Executor:
                 )
                 env = attach_cascade(refused, cascade)
                 self._store_turn(session_id, space_id, env)
-                return env
+                return _finish(env)
         if sql_used and not is_demo_space(space_id) and not getattr(resp, "abstained", False):
             # dms#277 F-e: the contract ask's SQL obeys the same text-numeric rule.
             num_why = untyped_numeric_reason(sql_used, self._warehouse or warehouse_path())
@@ -1615,7 +1626,7 @@ class Executor:
                     question, num_why, space_id=space_id, session_id=session_id
                 )
                 self._store_turn(session_id, space_id, env)
-                return env
+                return _finish(env)
         if space_onto is not None and sql_used and not getattr(resp, "abstained", False):
             # ONTO-DERIVE-01: the contract ask never saw this Space's join rules.
             # Its SQL answers only if it passes the same rule generation does.
@@ -1631,7 +1642,7 @@ class Executor:
                     sql=sql_used,
                 )
                 self._store_turn(session_id, space_id, env)
-                return env
+                return _finish(env)
         # DMS_AI_FIRST still ran the contract grant check above. An ungranted,
         # hostile, numeric, or unverified-join SQL stayed a direct abstain.
         # A SQL that would have been served is not the answer.
@@ -1645,7 +1656,7 @@ class Executor:
                 cascade,
             )
             self._store_turn(session_id, space_id, env)
-            return env
+            return _finish(env)
         env = attach_cascade(
             map_ask_response_to_envelope(
                 resp,
@@ -1659,7 +1670,7 @@ class Executor:
             cascade,
         )
         self._store_turn(session_id, space_id, env)
-        return env
+        return _finish(env)
 
     def offer_reconfirm(
         self,

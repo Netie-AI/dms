@@ -233,7 +233,52 @@ def terminal_askback() -> dict[str, Any] | None:
     scope = _SCOPE.get()
     if scope is None or not scope.tried or scope.recovering:
         return None
-    return _askback(scope, scope.last_reason or "no_sql")
+    env = _askback(scope, scope.last_reason or "no_sql")
+    audit = env.get("generate_audit")
+    if isinstance(audit, dict):
+        stamped = dict(audit)
+        stamped["defer"] = True
+        env["generate_audit"] = stamped
+    return env
+
+
+def peel_deferred_askback(
+    env: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Hold a terminal ask-back so a later grant check can still refuse.
+
+    A give-up ask-back that replaced a certify refusal is not deferred.
+    """
+    if not isinstance(env, dict):
+        return env, None
+    audit = env.get("generate_audit")
+    if not isinstance(audit, dict) or not audit.get("defer"):
+        return env, None
+    clean = {key: value for key, value in audit.items() if key != "defer"}
+    env["generate_audit"] = clean
+    return None, env
+
+
+def prefer_askback(
+    env: dict[str, Any],
+    held: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Use the ask-back only when the downstream result is a bare give-up."""
+    if held is None:
+        return env
+    if env.get("abstained") is not True:
+        return env
+    reason = str(env.get("abstain_reason") or "")
+    from dms_executor.ask_ladder import is_direct_abstain
+
+    if reason and is_direct_abstain(reason):
+        return env
+    text = str(env.get("text") or "").casefold()
+    if is_give_up(reason) or text.startswith("generative miss:"):
+        return held
+    if "cannot certify an ontology-grounded query" in text:
+        return held
+    return env
 
 
 def granted_schema_block(
