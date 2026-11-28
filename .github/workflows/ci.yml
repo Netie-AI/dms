@@ -284,7 +284,7 @@ jobs:
           # the Postgres service, so the sources route is checked here before
           # the page-load smoke. The test drops schema dms; the API migrates
           # again on boot.
-          python -m pytest tests/control_plane/test_studio_fix_a_pg.py -q --tb=short -p no:cacheprovider
+          python -m pytest tests/control_plane/test_studio_fix_a_pg.py tests/control_plane/test_fde_tenant_01.py -q --tb=short -p no:cacheprovider
           python -m uvicorn dms_api.app:app --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
           pid=$!
           ok=0
