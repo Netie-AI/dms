@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-11-28, FDE-REASON-LEAK-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_REPLY_HYGIENE` default off (`bd218d0`, base `05bc1e7`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 ai=0 rule=43. On, correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_REPLY_HYGIENE` default off (`30bd306`, base `67ae704`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 ai=0 rule=43. On, correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Armed and pack H unmeasured. Not PASS.
 
 ## Direction
 
@@ -12,7 +12,7 @@ Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, 
 
 ## 52 pack - number of record (STUB)
 
-STUB at `bd218d0`, `grade52 --main`, base `05bc1e7`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `30bd306`, `grade52 --main`, base `67ae704`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
