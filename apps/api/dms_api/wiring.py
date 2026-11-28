@@ -2259,3 +2259,21 @@ def create_context_share(**kwargs: Any) -> dict[str, Any]:
     import dms_executor
 
     return dms_executor.create_context_share(**kwargs)
+
+
+def _ml_studio() -> Any:
+    """The modelling module. Loaded through the package the import contract allows."""
+    from importlib import import_module
+
+    import dms_executor
+
+    return import_module(dms_executor.__name__ + ".ml_studio")
+
+
+def ml_start(**kwargs: Any) -> dict[str, Any]:
+    """Queue a modelling run. The flag and the fit live in the executor."""
+    return _ml_studio().start_run(**kwargs)
+
+
+def ml_read(run_id: str) -> dict[str, Any] | None:
+    return _ml_studio().read_run(run_id)

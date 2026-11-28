@@ -2,6 +2,12 @@
 
 **Deferred until condition is met.**
 
+## DMS-ML-01 leftover: reinforcement learning
+
+`register_task` stores a note. `fit_frame` refuses `reinforcement` and any name outside forecast, classification, regression, and clustering. Nothing is trained.
+
+**Unlock:** a runner that returns held-out metrics and a baseline, passes the leakage, split, row, and time gates, and has a synthetic test where it beats that baseline. Do not train on the future. Do not report a training-set score.
+
 ## READY-02 leftover: SAML 2.0 and SCIM (#634)
 
 `DMS_SSO` (default off, digit 1 only) covers password login, roles, and OIDC for Google, Microsoft Entra, and a generic Okta issuer. SAML 2.0 and SCIM group sync, including IdP deprovision, are not in that change.

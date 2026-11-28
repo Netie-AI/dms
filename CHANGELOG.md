@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-ML-01: modelling studio
+
+- **Flag.** `DMS_ML_STUDIO` defaults off. Only the digit 1 turns it on. Off, `/v1/studio/ml` is not mounted and the ask path is unchanged.
+- **Runs.** `POST /v1/studio/ml/runs` queues a job. `GET` reads it later. SQL must be one aggregated read. The provider sees a schema map, then metric JSON. Rows stay in the warehouse. A result is proven only when the selected model beats its baseline on held-out data. Training scores are not reported.
+- **Scope.** Forecast, classification, regression, clustering. Reinforcement learning is a stored note, not a runner.
+- **Deps.** `scikit-learn` and `pillow` on the executor. ETS is numpy. No statsmodels. No migration.
+- **Proof.** Harborline small, four fits finished. Planner and insights were not run. Not PASS.
+
 ## 2026-11-28 - DMS-CREATE-CONTEXT-01: chats, a questionnaire, or a project
 
 - **Flag.** `DMS_CREATE_CONTEXT` defaults off. Only the digit 1 turns it on. Off, Create status stays `{"enabled": true}` when Create itself is on, and `/v1/studio/create/context` is not found.
