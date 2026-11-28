@@ -61,6 +61,9 @@ class AskResponse(BaseModel):
     provenance_layer: str | None = None
     #: Contract ``provenance.metric_id``.
     metric_id: str | None = None
+    #: Set when Cortex hands a Space with no approved measure to DMS SQL
+    #: generation. Absent on every flag-off answer.
+    space_catalog_handoff: str | None = None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any) -> AskResponse:  # type: ignore[override]

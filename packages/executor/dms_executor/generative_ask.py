@@ -146,6 +146,7 @@ from dms_executor.semantic_retrieve import (
     retrieve_short_context,
     slots_for_measure,
 )
+from dms_executor.space_catalog_manifest import release_chooser_handoff
 from dms_executor.space_ontology import (
     REASON_NO_DECLARED_MEASURE,
     REASON_UNVERIFIED_JOIN,
@@ -3514,6 +3515,9 @@ def _maybe_generative_ask_impl(
         ):
             raise
         payload = None
+    # A chooser handoff is not an answer. Flag off leaves the payload as it
+    # arrived, so a flag-off generate result is unchanged.
+    payload = release_chooser_handoff(payload)
     # Freeze the Insights payload. Later bind_plan overwrite must not invent
     # or drop Cortex setup fields. Ranking merge keeps these keys.
     setup_src = payload if isinstance(payload, dict) else None
