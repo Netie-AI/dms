@@ -4083,6 +4083,7 @@ def maybe_generative_ask(
 ) -> dict[str, Any] | None:
     """Bind the ask clock, then stamp ``timings`` on the envelope."""
     from dms_core.control_plane.onto_data import use_ask_space
+
     from dms_executor.ask_ladder import bind_climb, reset_climb
     from dms_executor.scale_miss import bind_turn, reset_turn
 

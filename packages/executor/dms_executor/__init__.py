@@ -884,6 +884,7 @@ class Executor:
             onto_space_scope_enabled,
             reset_ask_space,
         )
+
         from dms_executor.route_stamp import freeze_route
 
         space_token = bind_ask_space(space_id) if onto_space_scope_enabled() else None
