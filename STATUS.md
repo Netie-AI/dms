@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-28, FDE-TENANT-01
+**Last updated:** 2026-11-28, BIRD-JOIN-GATE-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_TENANT_PROVISION` default off. Off, the operator CLI refuses and writes nothing. On, it inserts a tenant row and a default pool as steward, and a rerun is a no-op. It creates no key, grant, or credential. A write route does not provision. A missing tenant is HTTP 409 `tenant_not_provisioned`. Main also has `DMS_ONTO_SPACE_SCOPE` default off: approved items follow the asking Space, plus a steward `tenant_wide` mark. Stub 52 for tenant provision, flag off and on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Not PASS.
+**Tip:** `DMS_JOIN_DECLARED_FK` and `DMS_FK_ORPHAN_DISCLOSE` default off (base `43e4724`). Stub 52 off and both on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Orphan ratio stays 0 until a steward sets it. Armed unmeasured (stub). Not PASS.
 
 ## Direction
 
@@ -44,7 +44,7 @@ With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI c
 
 | Item | PR |
 |------|----|
-| FDE-ONTO-SPACE-SCOPE-01: approved items stay in their Space. Flag off. | this branch |
+| BIRD-JOIN-GATE-01 / BIRD-FK-ORPHANS-01: declared FK on a key-less child, one join repair, orphan disclose. Flags off. | this branch |
 | P0 GEN01-WRONG-TO-LADDER-01: an AI-call error must not serve a GEN-01 L2 | #430 |
 | CHECKER-FANOUT-01: hold L2 until grant and grain checks pass | #451 (supersedes #434) |
 | COMPILE-FALLBACK-KEEP-01 / INTENT-SPEC-01 | #443 (supersedes #433) / #444 (supersedes #409) |

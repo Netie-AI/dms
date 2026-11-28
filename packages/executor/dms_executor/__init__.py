@@ -6,6 +6,7 @@ Manifest minting + signing + submit() live here. Path enforcement is Cortex's jo
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any, Literal
@@ -1652,6 +1653,59 @@ class Executor:
             join_why = check_sql_against_space(
                 sql_used, space_onto, self._warehouse or warehouse_path(), readable
             )
+            if join_why and os.environ.get("DMS_JOIN_DECLARED_FK", "0").strip() == "1":
+                from dms_executor.generative_ask import _submit_validated
+                from dms_executor.join_repair import resolve_join_repair
+                from dms_executor.ontology import coverage_from_sql_path
+
+                decided = resolve_join_repair(
+                    join_why,
+                    sql_used,
+                    question=question,
+                    space_onto=space_onto,
+                    violations=[],
+                    warehouse=self._warehouse or warehouse_path(),
+                    grantable=set(readable),
+                    dialect=SERVING_DIALECT,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if isinstance(decided, dict):
+                    env = attach_cascade(decided, cascade)
+                    self._store_turn(session_id, space_id, env)
+                    return env
+                if isinstance(decided, str):
+                    repaired = _submit_validated(
+                        decided,
+                        question=question,
+                        space_id=space_id,
+                        session_id=session_id,
+                        submit=lambda sql: self._submit_verified_sql(
+                            sql,
+                            space_id=space_id,
+                            session_id=session_id,
+                            tables=tables,
+                        ),
+                        ledger_append=lambda payload: self._ledger_verified_query(
+                            asset_sql=str(payload.get("sql") or ""),
+                            run_id=str(payload.get("run_id") or ""),
+                            space_id=space_id,
+                            session_id=session_id,
+                            event_type="ask.generated_ontology",
+                        ),
+                        notes=("join repair",),
+                        plan_source="ontology_plan",
+                        coverage=coverage_from_sql_path(sql=decided),
+                        warehouse=self._warehouse or warehouse_path(),
+                        grantable=set(readable),
+                    )
+                    if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1":
+                        from dms_executor.join_repair import stamp_orphan_exclusion
+
+                        stamp_orphan_exclusion(repaired, onto=space_onto)
+                    env = attach_cascade(repaired, cascade)
+                    self._store_turn(session_id, space_id, env)
+                    return env
             if join_why:
                 env = path_miss_envelope(
                     question,
@@ -1688,6 +1742,10 @@ class Executor:
             ),
             cascade,
         )
+        if os.environ.get("DMS_FK_ORPHAN_DISCLOSE", "0").strip() == "1" and space_onto is not None:
+            from dms_executor.join_repair import stamp_orphan_exclusion
+
+            stamp_orphan_exclusion(env, onto=space_onto)
         self._store_turn(session_id, space_id, env)
         return env
 
