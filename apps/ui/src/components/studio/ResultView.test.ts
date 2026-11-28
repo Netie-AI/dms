@@ -69,9 +69,10 @@ describe("Studio result view", () => {
     expect(markup).not.toContain("<select");
     expect(stamp(markup, "served_provider")).toBe("groq");
     expect(stamp(markup, "served_model")).toBe("openai/gpt-oss-120b");
-    expect(stamp(markup, "cortex-pin")).toBe("not stamped");
-    expect(stamp(markup, "contract-version")).toBe("not stamped");
-    expect(stamp(markup, "timings")).toBe("not stamped");
+    expect(markup).not.toContain('data-stamp="cortex-pin"');
+    expect(markup).not.toContain('data-stamp="contract-version"');
+    expect(markup).not.toContain('data-stamp="timings"');
+    expect(markup).not.toContain("not stamped");
   });
 
   it("answered date and numeric renders a line chart", () => {
@@ -118,7 +119,8 @@ describe("Studio result view", () => {
     });
     expect(markup).toContain('data-testid="studio-abstain"');
     expect(markup).toContain('data-testid="studio-abstain-reason"');
-    expect(markup).toContain("reserved_param:as_of");
+    expect(markup).toContain("That question uses a reserved date setting, so no figure was given.");
+    expect(markup).not.toContain("reserved_param:as_of");
     expect(markup).not.toContain("FAKE_ROW_SHOULD_NOT_RENDER");
     expect(markup).not.toContain('data-testid="studio-rows"');
     expect(markup).not.toContain('data-testid="studio-chart"');
@@ -127,14 +129,13 @@ describe("Studio result view", () => {
     expect(markup).toContain("no SQL");
   });
 
-  it("missing stamps read not stamped", () => {
+  it("omits stamps the envelope does not carry", () => {
     const markup = html(answered());
+    expect(markup).not.toContain('data-testid="studio-stamps"');
+    expect(markup).not.toContain("not stamped");
     for (const slot of STAMP_SLOTS) {
-      expect(stamp(markup, slot.id)).toBe("not stamped");
+      expect(markup).not.toContain(`data-stamp="${slot.id}"`);
     }
-    expect(markup).toContain("Cortex pin");
-    expect(markup).toContain("Contract version");
-    expect(markup).toContain("Timings");
   });
 
   it("reconfirm shows the reason, the suggestion, and Yes and No", () => {

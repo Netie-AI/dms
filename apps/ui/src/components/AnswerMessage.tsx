@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/Badge";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
-import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
+import { AbstainNote, AnswerDetails } from "@/components/answerStamp";
 import { SimpleChart } from "@/components/SimpleChart";
 import { AccessCard } from "@/components/AccessCard";
 import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
@@ -30,6 +30,7 @@ import {
   rowsToCsv,
   xlsxDownloadName,
 } from "@/lib/rowsToCsv";
+import { plainReceiptWhy, visibleReason } from "@/lib/reasonCopy";
 import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind, ClarifyReading, GrantedSpace } from "@/lib/types";
 
@@ -154,7 +155,7 @@ function reconfirmCard(envelope: AnswerEnvelope): {
   const reasonText = typeof offer.reason_text === "string" ? offer.reason_text.trim() : "";
   return {
     token: offer.token,
-    reason: reasonText || offer.reason_code,
+    reason: visibleReason(reasonText, offer.reason_code),
     suggestion,
     definition,
   };
@@ -427,7 +428,6 @@ export function AnswerMessage({
         >
           <Badge kind={envelope.badge} />
         </button>
-        <ServedModelLine envelope={envelope} />
         {(envelope.demo_fallback_used || envelope.ask_mode === "demo") && (
           <span className="border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-warn)]">
             {envelope.demo_fallback_used ? "fallback → demo" : "demo"}
@@ -605,13 +605,13 @@ export function AnswerMessage({
             Include / exclude / unsure
           </p>
           <p data-testid="audit-receipt-include" className="mt-1">
-            Include: {receipt.include}
+            Include: {plainReceiptWhy(receipt.include)}
           </p>
           <p data-testid="audit-receipt-exclude" className="mt-1">
-            Exclude: {receipt.exclude}
+            Exclude: {plainReceiptWhy(receipt.exclude)}
           </p>
           <p data-testid="audit-receipt-unsure" className="mt-1">
-            Unsure: {receipt.unsure}
+            Unsure: {plainReceiptWhy(receipt.unsure)}
           </p>
         </div>
       )}
