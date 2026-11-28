@@ -1,17 +1,14 @@
 # STATUS.md - DMS
 **Last updated:** 2026-11-28, FDE-REASON-LEAK-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_REPLY_HYGIENE` default off (`bf63afe`, base `3752fb4`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 ai=0 rule=43. On, correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Armed and pack H unmeasured. Not PASS.
-
+**Tip:** `DMS_REPLY_HYGIENE` default off (`56056cf`, base `05bcd41`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 clarify=0 abstain=0 refusal_ok=4 ai=0 rule=43. On, correct=43 wrong=0 reconfirm=0 clarify=5 abstain=0 refusal_ok=4 ai=0 rule=43. Empty cards ask back. Abstain did not grow. Armed and pack H unmeasured. Not PASS.
 ## Direction
-
 AI-first text-to-SQL. Plan: `docs/plans/AI_SQL_SHIFT.md`. `understand_question` is the GRAIN-AI call; `reading` stays empty. `DMS_AI_FIRST` is default off. On, L1 and compile SQL are examples, not serves.
-
 Escalation: `DMS_ASK_LADDER` defaults off. On, a generative miss climbs repair, richer context, plan, then an OpenVault escalate role. `DMS_AI_CLARIFY` defaults off. On, role `reason` asks back with 2 to 4 checked readings. No verdict keeps the old gates. Direct abstain only for ungranted tables, PII, and destructive SQL. DMS does not name a model.
 
 ## 52 pack - number of record (STUB)
 
-STUB at `bf63afe`, `grade52 --main`, base `3752fb4`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
+STUB at `56056cf`, `grade52 --main`, base `05bcd41`. In-process replay, not a live model. Label, not a score. Not PASS. stamp_contradiction=0.
 
 | Run | 52 included | paths | metric |
 |-----|-------------|-------|--------|
@@ -24,7 +21,6 @@ STUB at `bf63afe`, `grade52 --main`, base `3752fb4`. In-process replay, not a li
 
 Flag off and on: refusal_ok=4, refusal_wrong=0, abstain=0, wrong_ub95=6.7%, coverage 43/43. Flag on moves the five empty cards to clarify=5. Pack H and armed grade52 not measured. Not PASS.
 Compile honour, flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23. Twenty compile qids move to reconfirm.
-
 With a model configured (Cortex Check, DMS 57d85c52), Cortex rejected every AI call with 422 because DMS sent `model` and `strict`. DMS fell back to the GEN-01 rule builder, which served 3 wrong answers. #442 (`79b7a274`) fixed the 422: DMS now strips `model` and `strict` from every Cortex Insights POST (`without_route_fields` in `insights.py` and `compute.py`). The OpenVault chat preflight still pins provider and model (`strict_pin.py`). The open P0 is #430: an AI-call error must not serve a GEN-01 L2. The live-model number is pending. The stub does not arm Insights, so its ai=0 says nothing about the AI lane.
 
 ## Merged since 2026-10-09
