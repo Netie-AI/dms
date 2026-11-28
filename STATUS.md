@@ -1,8 +1,8 @@
 # STATUS.md - DMS
 
-**Last updated:** 2026-11-28, FDE-ONTO-SPACE-SCOPE-01
+**Last updated:** 2026-11-28, FDE-TENANT-01
 **Remote:** https://github.com/Netie-AI/dms
-**Tip:** `DMS_ONTO_SPACE_SCOPE` default off (`962fed6`). Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. On, the same stub stays correct=43 wrong=0 reconfirm=5 ai=0 rule=43. Approved items follow the asking Space, plus a steward `tenant_wide` mark. Armed and pack H unmeasured. Not PASS.
+**Tip:** `DMS_TENANT_PROVISION` default off. Off, the operator CLI refuses and writes nothing. On, it inserts a tenant row and a default pool as steward, and a rerun is a no-op. It creates no key, grant, or credential. A write route does not provision. A missing tenant is HTTP 409 `tenant_not_provisioned`. Main also has `DMS_ONTO_SPACE_SCOPE` default off: approved items follow the asking Space, plus a steward `tenant_wide` mark. Stub 52 for tenant provision, flag off and on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Not PASS.
 
 ## Direction
 
