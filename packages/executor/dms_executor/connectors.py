@@ -60,14 +60,42 @@ _SYSTEM = {
 }
 
 
-class ConnectProbeError(Exception):
-    """Typed probe failure. The message is the code only."""
+_PROBE_CODES = frozenset(
+    {
+        "auth",
+        "network",
+        "permission",
+        "tls",
+        "auth_method_unsupported",
+        "compat_mode_unsupported",
+        "compat_mode_unknown",
+        "product_not_gauss",
+        "product_not_oracle",
+        "thick_mode_refused",
+    }
+)
 
-    def __init__(self, code: str) -> None:
-        if code not in {"auth", "network", "permission", "tls"}:
+
+class ConnectProbeError(Exception):
+    """Typed probe failure. The message is the code only.
+
+    ``doc`` is set only for auth_method_unsupported, and only to the public
+    openGauss driver page. Any other string is dropped.
+    """
+
+    def __init__(self, code: str, *, doc: str = "") -> None:
+        if code not in _PROBE_CODES:
             code = "network"
+            doc = ""
+        if code == "auth_method_unsupported":
+            from dms_executor.drivers.gauss import AUTH_DOC
+
+            doc = doc if doc == AUTH_DOC else ""
+        else:
+            doc = ""
         super().__init__(code)
         self.code = code
+        self.doc = doc
 
 
 class ConnectQueryError(Exception):
@@ -220,8 +248,25 @@ def parse_login(secret: str) -> tuple[str, str]:
     return user, password
 
 
+def _extra(kind: str) -> Any | None:
+    """The Gauss or Oracle driver when its flag is on. Otherwise None."""
+    key = (kind or "").strip().lower()
+    if key == "gauss":
+        from dms_executor.drivers import gauss
+
+        return gauss if gauss.enabled() else None
+    if key == "oracle":
+        from dms_executor.drivers import oracle
+
+        return oracle if oracle.enabled() else None
+    return None
+
+
 def _dialect(kind: str) -> str:
     key = (kind or "").strip().lower()
+    extra = _extra(key)
+    if extra is not None:
+        return str(extra.DIALECT)
     if key in {"postgresql", "postgres"}:
         return "postgres"
     if key in {"mysql", "mariadb"}:
@@ -296,6 +341,8 @@ def _one_statement(sql: str) -> str:
 def plan_cost(con: Any, kind: str, statement: str) -> float | None:
     """Total plan cost, or None when the driver has no number. None warns."""
     key = kind.lower()
+    if key == "gauss" and _extra(key) is not None:
+        key = "postgresql"
     cur = con.cursor()
     try:
         if key in {"postgresql", "postgres"}:
@@ -306,6 +353,14 @@ def plan_cost(con: Any, kind: str, statement: str) -> float | None:
             return None
         row = cur.fetchone()
     except Exception:
+        # A failed EXPLAIN aborts the transaction. Roll it back so the read
+        # still runs and the missing cost stays a warning.
+        rollback = getattr(con, "rollback", None)
+        if callable(rollback):
+            try:
+                rollback()
+            except Exception:
+                return None
         return None
     finally:
         cur.close()
@@ -403,6 +458,14 @@ def probe_source(
         ) as con:
             version = _version(con, kind)
             tables = _tables(con, kind, database)
+            extra = _extra(kind)
+            extra_fields: dict[str, Any] = {}
+            if extra is not None:
+                extra_fields = {
+                    "dialect": extra.DIALECT,
+                    "keys": extra.keys_payload(con),
+                    "prompt": extra.prompt(tables),
+                }
     except ConnectProbeError:
         raise
     except Exception as exc:
@@ -413,6 +476,7 @@ def probe_source(
         "server_version": version[:200],
         "tables_visible": len(tables),
         "tables": tables,
+        **extra_fields,
     }
 
 
@@ -438,6 +502,14 @@ def _session(
     )
     try:
         _lock_read_only(con, kind)
+        extra = _extra(kind)
+        if extra is not None:
+            from dms_executor.drivers import DriverError
+
+            try:
+                extra.inspect(con)
+            except DriverError as exc:
+                raise ConnectProbeError(exc.code, doc=exc.doc) from None
         yield con
     finally:
         try:
@@ -462,6 +534,21 @@ def _open(
 ) -> Any:
     key = kind.lower()
     try:
+        extra = _extra(key)
+        if extra is not None:
+            from dms_executor.drivers import DriverError
+
+            try:
+                return extra.connect_login(
+                    host=host,
+                    port=int(port),
+                    database=database,
+                    user=user,
+                    password=password,
+                    timeout=CONNECT_HANDSHAKE_S,
+                )
+            except DriverError as exc:
+                raise ConnectProbeError(exc.code, doc=exc.doc) from None
         if key in {"postgresql", "postgres"}:
             import psycopg
 
@@ -532,6 +619,15 @@ def _open(
 
 def _lock_read_only(con: Any, kind: str) -> None:
     key = kind.lower()
+    extra = _extra(key)
+    if extra is not None and key == "oracle":
+        try:
+            extra.lock_read_only(con)
+        except Exception:
+            raise ConnectProbeError("permission") from None
+        return
+    if extra is not None and key == "gauss":
+        key = "postgresql"
     try:
         if key in {"postgresql", "postgres"}:
             con.execute("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY")
@@ -557,6 +653,9 @@ def _lock_read_only(con: Any, kind: str) -> None:
 
 def _version(con: Any, kind: str) -> str:
     key = kind.lower()
+    extra = _extra(key)
+    if extra is not None:
+        return str(extra.server_version(con))
     if key in {"postgresql", "postgres"}:
         sql = "SELECT current_setting('server_version')"
     elif key in {"mysql", "mariadb"}:
@@ -578,6 +677,9 @@ def _version(con: Any, kind: str) -> str:
 
 def _tables(con: Any, kind: str, database: str) -> list[str]:
     key = kind.lower()
+    extra = _extra(key)
+    if extra is not None:
+        return list(extra.visible_tables(con, database))
     if key in {"mysql", "mariadb"}:
         sql = (
             "SELECT TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
@@ -738,10 +840,14 @@ def run_live_select(
             if isinstance(ready, dict):
                 return ready
             statement, estimate = ready
-            wrapped = (
-                f"SELECT * FROM ({statement}) AS _dms_page "
-                f"LIMIT {int(page_size) + 1} OFFSET {int(offset)}"
-            )
+            extra = _extra(kind)
+            if extra is not None:
+                wrapped = extra.page_sql(statement, page_size, offset)
+            else:
+                wrapped = (
+                    f"SELECT * FROM ({statement}) AS _dms_page "
+                    f"LIMIT {int(page_size) + 1} OFFSET {int(offset)}"
+                )
             cur = con.cursor()
             try:
                 cur.execute(wrapped)

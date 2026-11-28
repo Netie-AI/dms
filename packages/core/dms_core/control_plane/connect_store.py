@@ -10,6 +10,7 @@ construct this store.
 
 from __future__ import annotations
 
+import os
 import re
 from threading import Lock
 from typing import Any
@@ -21,6 +22,19 @@ from dms_core.control_plane.connect_secrets import key_id_for_ref, value_has_sec
 from dms_core.control_plane.session import set_tenant_context
 
 _KINDS = frozenset({"postgresql", "mysql", "mariadb", "sqlserver", "sqlite"})
+def _flag_on(name: str) -> bool:
+    """On only for the digit 1. ``true``, ``yes``, and ``on`` stay off."""
+    return os.environ.get(name, "").strip() == "1"
+
+
+def allowed_kinds() -> frozenset[str]:
+    """Kinds the connect book accepts. Gauss and Oracle stay out unless their flag is on."""
+    kinds = set(_KINDS)
+    if _flag_on("DMS_CONNECT_GAUSS"):
+        kinds.add("gauss")
+    if _flag_on("DMS_CONNECT_ORACLE"):
+        kinds.add("oracle")
+    return frozenset(kinds)
 _MODES = frozenset({"live", "extract"})
 _HOST = re.compile(r"^[A-Za-z0-9._:-]{1,253}$")
 _DB = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
@@ -96,7 +110,7 @@ class ConnectStore:
         cred_ref: str,
         mode: str,
     ) -> None:
-        if kind not in _KINDS or mode not in _MODES:
+        if kind not in allowed_kinds() or mode not in _MODES:
             raise ConnectStoreError("bad_request")
         if isinstance(port, bool) or not isinstance(port, int) or port < 0 or port > 65535:
             raise ConnectStoreError("bad_request")
