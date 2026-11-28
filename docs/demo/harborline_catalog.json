@@ -1,0 +1,2297 @@
+{
+  "datasets": [
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the company row.",
+          "name": "company_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Registered legal name.",
+          "name": "legal_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Name used with customers.",
+          "name": "trade_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Currency of every money column. USD.",
+          "name": "currency_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Last business date included in this load.",
+          "name": "as_of_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Month number the fiscal year starts.",
+          "name": "fiscal_year_start_month",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "What the company distributes.",
+          "name": "line_of_business",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "One row for Harborline Distribution, the demo wholesaler.",
+      "name": "company_profile"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the region.",
+          "name": "region_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Short region code.",
+          "name": "region_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Sales region name, such as Northland.",
+          "name": "region_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "City of the regional distribution center.",
+          "name": "city",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Sales regions. Northland is the region with the late-2025 drop.",
+      "name": "regions"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the department.",
+          "name": "department_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Department name.",
+          "name": "department_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Employee departments.",
+      "name": "departments"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the segment.",
+          "name": "segment_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Segment name, such as Key account.",
+          "name": "segment_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "How Harborline groups customer accounts.",
+      "name": "customer_segments"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the brand.",
+          "name": "brand_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Brand name.",
+          "name": "brand_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Product brands sold by Harborline.",
+      "name": "brands"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the category.",
+          "name": "category_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Category name.",
+          "name": "category_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Product categories such as Hose, Fasteners, and Safety.",
+      "name": "categories"
+    },
+    {
+      "columns": [
+        {
+          "description": "Unit code.",
+          "name": "uom_code",
+          "primary_key": true,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Unit name.",
+          "name": "uom_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Units a SKU is sold in. EA is each, CS is a case.",
+      "name": "units_of_measure"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the carrier.",
+          "name": "carrier_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Carrier name.",
+          "name": "carrier_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Transport mode, such as ltl or parcel.",
+          "name": "mode",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Typical transit days before the lane adjustment.",
+          "name": "typical_transit_days",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Outbound carriers that deliver customer orders.",
+      "name": "carriers"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the terms.",
+          "name": "terms_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Terms name, such as Net 30.",
+          "name": "terms_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Days after the invoice date that payment is due.",
+          "name": "net_days",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Invoice payment terms.",
+      "name": "payment_terms"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the channel.",
+          "name": "channel_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Channel name.",
+          "name": "channel_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Order channels: inside sales, web, or counter.",
+      "name": "channels"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the reason.",
+          "name": "reason_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Return reason.",
+          "name": "reason_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Why a customer returned goods.",
+      "name": "return_reasons"
+    },
+    {
+      "columns": [
+        {
+          "description": "Tax code.",
+          "name": "tax_code",
+          "primary_key": true,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Tax code name.",
+          "name": "tax_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Tax rate as a fraction. 0.0625 is 6.25 percent.",
+          "name": "rate",
+          "primary_key": false,
+          "type": "DECIMAL(8,4)"
+        }
+      ],
+      "description": "Tax codes. This load assigns STD and does not add tax to invoices.",
+      "name": "tax_codes"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the account.",
+          "name": "account_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Account name.",
+          "name": "account_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "income, expense, asset, or liability.",
+          "name": "account_type",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Chart of accounts reference. This load does not post a journal.",
+      "name": "gl_accounts"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the warehouse.",
+          "name": "warehouse_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Region this warehouse serves.",
+          "name": "region_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Short code, such as DC-NORTH.",
+          "name": "warehouse_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Warehouse name.",
+          "name": "warehouse_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "City of the warehouse.",
+          "name": "city",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "True when the region's orders ship from here.",
+          "name": "is_primary",
+          "primary_key": false,
+          "type": "BOOLEAN"
+        },
+        {
+          "description": "Pallet positions the building can hold.",
+          "name": "capacity_pallets",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Distribution centers and overflow bulk sites. Orders ship from the regional center.",
+      "name": "warehouses"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the zone.",
+          "name": "zone_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Warehouse that contains the zone.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Short zone code.",
+          "name": "zone_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Zone type: pick or bulk.",
+          "name": "zone_type",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Pick and bulk zones inside a warehouse.",
+      "name": "warehouse_zones"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the employee.",
+          "name": "employee_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Department the employee works in.",
+          "name": "department_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Home region.",
+          "name": "region_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Home warehouse. Empty for finance staff.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Employee name.",
+          "name": "full_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Job title.",
+          "name": "job_title",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Date the employee was hired.",
+          "name": "hire_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Work email on the example.test domain.",
+          "name": "email",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "True when the employee is active.",
+          "name": "active",
+          "primary_key": false,
+          "type": "BOOLEAN"
+        }
+      ],
+      "description": "Harborline employees. Account executives own customer orders.",
+      "name": "employees"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the assignment.",
+          "name": "assignment_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Employee on the assignment.",
+          "name": "employee_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Warehouse the employee is assigned to.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Role at that warehouse.",
+          "name": "role_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Date the assignment started.",
+          "name": "start_date",
+          "primary_key": false,
+          "type": "DATE"
+        }
+      ],
+      "description": "Warehouse assignment for an employee who works a building.",
+      "name": "employee_assignments"
+    },
+    {
+      "columns": [
+        {
+          "description": "Region the manager runs.",
+          "name": "region_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Employee who manages the region.",
+          "name": "employee_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Date the manager took the region.",
+          "name": "start_date",
+          "primary_key": false,
+          "type": "DATE"
+        }
+      ],
+      "description": "Manager responsible for a sales region.",
+      "name": "region_managers"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the customer.",
+          "name": "customer_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Stable customer code.",
+          "name": "customer_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Customer account name.",
+          "name": "customer_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Customer segment.",
+          "name": "segment_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Sales region that owns the account.",
+          "name": "region_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Tax code on the account. This load uses STD.",
+          "name": "tax_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Customer city.",
+          "name": "city",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Date the account opened.",
+          "name": "opened_on",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Credit limit in USD.",
+          "name": "credit_limit",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "True when the account can place orders.",
+          "name": "active",
+          "primary_key": false,
+          "type": "BOOLEAN"
+        }
+      ],
+      "description": "Customer accounts. CUST-PINNACLE is the Northland key account that stops ordering.",
+      "name": "customers"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the site.",
+          "name": "site_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Customer that owns the site.",
+          "name": "customer_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Ship-to city.",
+          "name": "city",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "True when orders default to this site.",
+          "name": "is_default",
+          "primary_key": false,
+          "type": "BOOLEAN"
+        }
+      ],
+      "description": "Ship-to sites. This load has one default site per customer.",
+      "name": "customer_sites"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the contact.",
+          "name": "contact_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Customer the contact buys for.",
+          "name": "customer_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Contact name.",
+          "name": "full_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Role at the customer, such as buyer.",
+          "name": "role_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Work email on the example.test domain.",
+          "name": "email",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Buyer contacts at a customer account.",
+      "name": "customer_contacts"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the supplier.",
+          "name": "supplier_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Stable supplier code.",
+          "name": "supplier_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Supplier name.",
+          "name": "supplier_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Warehouse that receives this supplier.",
+          "name": "home_warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Supplier city.",
+          "name": "city",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Quoted lead time in days.",
+          "name": "lead_time_days",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "True when procurement marks the supplier preferred.",
+          "name": "preferred",
+          "primary_key": false,
+          "type": "BOOLEAN"
+        }
+      ],
+      "description": "Suppliers. Late deliveries are measured on inbound receipts, not on this row.",
+      "name": "suppliers"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the contact.",
+          "name": "contact_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Supplier the contact works for.",
+          "name": "supplier_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Contact name.",
+          "name": "full_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Role at the supplier.",
+          "name": "role_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Work email on the example.test domain.",
+          "name": "email",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Contacts at a supplier.",
+      "name": "supplier_contacts"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the product.",
+          "name": "product_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Brand of the product.",
+          "name": "brand_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Category of the product.",
+          "name": "category_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Product family name.",
+          "name": "product_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Product families. A product has one each-SKU and one case-SKU.",
+      "name": "products"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the SKU.",
+          "name": "sku_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Product family of the SKU.",
+          "name": "product_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Stable SKU code.",
+          "name": "sku_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "SKU name a buyer would recognize.",
+          "name": "sku_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Unit of measure code.",
+          "name": "uom_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "List price in USD for one unit.",
+          "name": "list_price",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "Standard cost in USD for one unit.",
+          "name": "standard_cost",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "Shipping weight in kilograms.",
+          "name": "weight_kg",
+          "primary_key": false,
+          "type": "DECIMAL(8,2)"
+        }
+      ],
+      "description": "Sellable SKUs. HX-440 is the each-pack that stocks out at DC-NORTH.",
+      "name": "skus"
+    },
+    {
+      "columns": [
+        {
+          "description": "SKU.",
+          "name": "sku_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Primary supplier of the SKU.",
+          "name": "supplier_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "True on the primary supplier row.",
+          "name": "is_primary",
+          "primary_key": false,
+          "type": "BOOLEAN"
+        }
+      ],
+      "description": "Primary supplier for a SKU. One row per SKU in this load.",
+      "name": "sku_suppliers"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the lane.",
+          "name": "lane_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Carrier on the lane.",
+          "name": "carrier_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Origin warehouse.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Destination region.",
+          "name": "region_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Planned transit days on this lane.",
+          "name": "transit_days",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Transit days for a carrier from a warehouse into a region.",
+      "name": "carrier_lanes"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the price list.",
+          "name": "price_list_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Price list name.",
+          "name": "price_list_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Currency of the list prices.",
+          "name": "currency_code",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Price lists. This load has one standard list.",
+      "name": "price_lists"
+    },
+    {
+      "columns": [
+        {
+          "description": "Price list.",
+          "name": "price_list_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU.",
+          "name": "sku_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Unit price in USD.",
+          "name": "unit_price",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "Date this price became effective.",
+          "name": "effective_from",
+          "primary_key": false,
+          "type": "DATE"
+        }
+      ],
+      "description": "List price of a SKU on a price list.",
+      "name": "price_list_items"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the promotion.",
+          "name": "promotion_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Promotion name.",
+          "name": "promotion_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "First date the promotion is offered.",
+          "name": "start_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Last date the promotion is offered.",
+          "name": "end_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Offered discount percent. Not written on lines.",
+          "name": "discount_pct",
+          "primary_key": false,
+          "type": "DECIMAL(5,2)"
+        }
+      ],
+      "description": "Promotions. Order lines in this load keep discount_pct at zero.",
+      "name": "promotions"
+    },
+    {
+      "columns": [
+        {
+          "description": "Promotion.",
+          "name": "promotion_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU on the promotion.",
+          "name": "sku_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "SKUs included in a promotion.",
+      "name": "promotion_skus"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the cost center.",
+          "name": "cost_center_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Region the cost center belongs to.",
+          "name": "region_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Cost center name.",
+          "name": "cost_center_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Cost centers, one per sales region.",
+      "name": "cost_centers"
+    },
+    {
+      "columns": [
+        {
+          "description": "Region the target applies to.",
+          "name": "region_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Calendar year.",
+          "name": "target_year",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Month number, 1 through 12.",
+          "name": "target_month",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Revenue target in USD for that month.",
+          "name": "target_usd",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        }
+      ],
+      "description": "Monthly revenue target by region in USD. Not a forecast of actuals.",
+      "name": "sales_targets"
+    },
+    {
+      "columns": [
+        {
+          "description": "Calendar date.",
+          "name": "calendar_date",
+          "primary_key": true,
+          "type": "DATE"
+        },
+        {
+          "description": "Calendar year.",
+          "name": "calendar_year",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Calendar quarter, 1 through 4.",
+          "name": "quarter",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Month number, 1 through 12.",
+          "name": "calendar_month",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "English month name.",
+          "name": "month_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Day of week. 0 is Monday, 6 is Sunday.",
+          "name": "dow",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "English weekday name.",
+          "name": "dow_name",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "True on Saturday and Sunday.",
+          "name": "is_weekend",
+          "primary_key": false,
+          "type": "BOOLEAN"
+        }
+      ],
+      "description": "One row per day from 2024-01-01 through 2025-12-31.",
+      "name": "calendar"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the order.",
+          "name": "order_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Customer that placed the order.",
+          "name": "customer_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Ship-to site.",
+          "name": "site_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Warehouse that ships the order.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Channel the order came in on.",
+          "name": "channel_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Payment terms copied onto the order.",
+          "name": "terms_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Account executive on the order.",
+          "name": "employee_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Date placed. Monthly revenue uses this date.",
+          "name": "order_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "filled when every line shipped, otherwise short.",
+          "name": "status",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Customer orders. One row per order. Status filled or short.",
+      "name": "orders"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the line.",
+          "name": "order_line_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Order this line belongs to.",
+          "name": "order_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU ordered.",
+          "name": "sku_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Quantity ordered.",
+          "name": "qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Quantity shipped. Zero means it was not filled.",
+          "name": "fulfilled_qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Selling price in USD for one unit.",
+          "name": "unit_price",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "Discount percent. This load writes zero.",
+          "name": "discount_pct",
+          "primary_key": false,
+          "type": "DECIMAL(5,2)"
+        },
+        {
+          "description": "Recognized revenue in USD: fulfilled quantity times unit price.",
+          "name": "line_amount",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        }
+      ],
+      "description": "Order lines. Recognized revenue is line_amount, fulfilled quantity times price.",
+      "name": "order_lines"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the shipment.",
+          "name": "shipment_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Order this shipment fills.",
+          "name": "order_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Warehouse the shipment left.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Carrier that took the shipment.",
+          "name": "carrier_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Date the warehouse shipped.",
+          "name": "ship_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Delivery date, or the expected date while in transit.",
+          "name": "delivered_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "delivered or in_transit.",
+          "name": "status",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Outbound shipment for an order that had at least one filled line.",
+      "name": "shipments"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the shipment line.",
+          "name": "shipment_line_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Shipment.",
+          "name": "shipment_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Order line that was shipped.",
+          "name": "order_line_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU shipped.",
+          "name": "sku_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Quantity shipped.",
+          "name": "qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Filled units on a shipment. Unfilled units are not shipped.",
+      "name": "shipment_lines"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the invoice.",
+          "name": "invoice_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Order this invoice bills.",
+          "name": "order_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Customer billed.",
+          "name": "customer_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Payment terms.",
+          "name": "terms_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Invoice date. Same as the order date in this load.",
+          "name": "invoice_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Date payment is due.",
+          "name": "due_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Invoice total in USD, the sum of line revenue.",
+          "name": "total_amount",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "paid when a payment is applied, otherwise open.",
+          "name": "status",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "One invoice per order. Total equals recognized line revenue. No tax is added.",
+      "name": "invoices"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the invoice line.",
+          "name": "invoice_line_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Invoice.",
+          "name": "invoice_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Order line billed.",
+          "name": "order_line_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU billed.",
+          "name": "sku_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Quantity billed, equal to fulfilled quantity.",
+          "name": "qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Unit price in USD.",
+          "name": "unit_price",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "Line revenue in USD.",
+          "name": "line_amount",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        }
+      ],
+      "description": "Invoice lines copied from order lines after fulfillment.",
+      "name": "invoice_lines"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the payment.",
+          "name": "payment_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Customer that paid.",
+          "name": "customer_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Date the payment was received.",
+          "name": "payment_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Payment amount in USD.",
+          "name": "amount",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        },
+        {
+          "description": "Payment method: ach, check, or card.",
+          "name": "method",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Customer payments against invoices that fell due inside the load window.",
+      "name": "payments"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the application.",
+          "name": "application_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Payment applied.",
+          "name": "payment_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Invoice the payment was applied to.",
+          "name": "invoice_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Amount applied in USD.",
+          "name": "amount",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        }
+      ],
+      "description": "How a payment was applied to an invoice. One application per payment here.",
+      "name": "payment_applications"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the purchase order.",
+          "name": "po_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Supplier the PO was sent to.",
+          "name": "supplier_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Warehouse that will receive the goods.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Date the PO was placed. First day of that week bucket.",
+          "name": "order_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Expected receipt date, order date plus lead time.",
+          "name": "expected_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "PO status. This load marks them received.",
+          "name": "status",
+          "primary_key": false,
+          "type": "VARCHAR"
+        },
+        {
+          "description": "Week bucket. 0 is 2024-01-01, then every 7 days.",
+          "name": "week_index",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Purchase orders to suppliers, one per supplier per week.",
+      "name": "purchase_orders"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the PO line.",
+          "name": "po_line_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Purchase order.",
+          "name": "po_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU ordered from the supplier.",
+          "name": "sku_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Quantity ordered.",
+          "name": "qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Unit cost in USD.",
+          "name": "unit_cost",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        }
+      ],
+      "description": "Lines on a purchase order.",
+      "name": "purchase_order_lines"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the receipt.",
+          "name": "receipt_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Purchase order this receipt closes against.",
+          "name": "po_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Supplier that shipped.",
+          "name": "supplier_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Warehouse that received the goods.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Date the supplier promised delivery.",
+          "name": "promised_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Date the warehouse actually received the goods.",
+          "name": "received_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Days after the promised date. A late delivery is a value above zero.",
+          "name": "late_days",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Goods receipts. A late delivery is late_days above zero versus the promised date.",
+      "name": "inbound_receipts"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the receipt line.",
+          "name": "receipt_line_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Receipt.",
+          "name": "receipt_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU received.",
+          "name": "sku_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Quantity received.",
+          "name": "qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "SKUs on an inbound receipt.",
+      "name": "inbound_receipt_lines"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the return.",
+          "name": "return_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Order the goods came from.",
+          "name": "order_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Customer that returned the goods.",
+          "name": "customer_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Return reason.",
+          "name": "reason_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Date the return was received.",
+          "name": "return_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Return status. This load uses received.",
+          "name": "status",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Customer returns against an order.",
+      "name": "returns"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the return line.",
+          "name": "return_line_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Return.",
+          "name": "return_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU returned.",
+          "name": "sku_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Quantity returned.",
+          "name": "qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Return amount in USD.",
+          "name": "amount",
+          "primary_key": false,
+          "type": "DECIMAL(14,2)"
+        }
+      ],
+      "description": "Units and amount on a customer return.",
+      "name": "return_lines"
+    },
+    {
+      "columns": [
+        {
+          "description": "Date of the nightly count.",
+          "name": "snapshot_date",
+          "primary_key": true,
+          "type": "DATE"
+        },
+        {
+          "description": "Warehouse counted.",
+          "name": "warehouse_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU counted.",
+          "name": "sku_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Units on hand at day end. Zero is a stockout.",
+          "name": "qty_on_hand",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Units on purchase order and not yet in the bin.",
+          "name": "qty_on_order",
+          "primary_key": false,
+          "type": "INTEGER"
+        }
+      ],
+      "description": "Nightly on-hand count by warehouse and SKU. Not a roll-forward of receipts.",
+      "name": "inventory_snapshots"
+    },
+    {
+      "columns": [
+        {
+          "description": "Surrogate key for the movement.",
+          "name": "movement_id",
+          "primary_key": true,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Warehouse.",
+          "name": "warehouse_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "SKU.",
+          "name": "sku_id",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "Snapshot date this change is measured on.",
+          "name": "movement_date",
+          "primary_key": false,
+          "type": "DATE"
+        },
+        {
+          "description": "Units added, or removed when negative.",
+          "name": "qty",
+          "primary_key": false,
+          "type": "INTEGER"
+        },
+        {
+          "description": "opening on the first day, otherwise net.",
+          "name": "movement_type",
+          "primary_key": false,
+          "type": "VARCHAR"
+        }
+      ],
+      "description": "Change in on-hand versus the prior snapshot for the same warehouse and SKU.",
+      "name": "inventory_movements"
+    }
+  ],
+  "description": "Harborline Distribution, a synthetic mid-size industrial wholesaler. Rows run from 2024-01-01 through 2025-12-31. Currency is USD. Tables live in schema harborline. Qualify SQL as harborline.table_name. Recognized revenue is order_lines.line_amount.",
+  "dialect": "duckdb",
+  "measures": [
+    {
+      "description": "Recognized revenue in USD. Fulfilled quantity times unit price, dated by orders.order_date.",
+      "expression": "sum(line_amount)",
+      "grain": "order_lines",
+      "name": "recognized_revenue"
+    },
+    {
+      "description": "Share of inbound receipts that are a late delivery.",
+      "expression": "avg(case when late_days > 0 then 1 else 0 end)",
+      "grain": "inbound_receipts",
+      "name": "late_receipt_rate"
+    },
+    {
+      "description": "Nights a warehouse and SKU had a stockout, on-hand zero.",
+      "expression": "count rows where qty_on_hand = 0",
+      "grain": "inventory_snapshots",
+      "name": "stockout_days"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "warehouses",
+      "from_column": "region_id",
+      "name": "warehouses_region_id_regions",
+      "to": "regions",
+      "to_column": "region_id"
+    },
+    {
+      "from": "warehouse_zones",
+      "from_column": "warehouse_id",
+      "name": "warehouse_zones_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "employees",
+      "from_column": "department_id",
+      "name": "employees_department_id_departments",
+      "to": "departments",
+      "to_column": "department_id"
+    },
+    {
+      "from": "employees",
+      "from_column": "region_id",
+      "name": "employees_region_id_regions",
+      "to": "regions",
+      "to_column": "region_id"
+    },
+    {
+      "from": "employees",
+      "from_column": "warehouse_id",
+      "name": "employees_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "employee_assignments",
+      "from_column": "employee_id",
+      "name": "employee_assignments_employee_id_employees",
+      "to": "employees",
+      "to_column": "employee_id"
+    },
+    {
+      "from": "employee_assignments",
+      "from_column": "warehouse_id",
+      "name": "employee_assignments_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "region_managers",
+      "from_column": "region_id",
+      "name": "region_managers_region_id_regions",
+      "to": "regions",
+      "to_column": "region_id"
+    },
+    {
+      "from": "region_managers",
+      "from_column": "employee_id",
+      "name": "region_managers_employee_id_employees",
+      "to": "employees",
+      "to_column": "employee_id"
+    },
+    {
+      "from": "customers",
+      "from_column": "segment_id",
+      "name": "customers_segment_id_customer_segments",
+      "to": "customer_segments",
+      "to_column": "segment_id"
+    },
+    {
+      "from": "customers",
+      "from_column": "region_id",
+      "name": "customers_region_id_regions",
+      "to": "regions",
+      "to_column": "region_id"
+    },
+    {
+      "from": "customers",
+      "from_column": "tax_code",
+      "name": "customers_tax_code_tax_codes",
+      "to": "tax_codes",
+      "to_column": "tax_code"
+    },
+    {
+      "from": "customer_sites",
+      "from_column": "customer_id",
+      "name": "customer_sites_customer_id_customers",
+      "to": "customers",
+      "to_column": "customer_id"
+    },
+    {
+      "from": "customer_contacts",
+      "from_column": "customer_id",
+      "name": "customer_contacts_customer_id_customers",
+      "to": "customers",
+      "to_column": "customer_id"
+    },
+    {
+      "from": "suppliers",
+      "from_column": "home_warehouse_id",
+      "name": "suppliers_home_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "supplier_contacts",
+      "from_column": "supplier_id",
+      "name": "supplier_contacts_supplier_id_suppliers",
+      "to": "suppliers",
+      "to_column": "supplier_id"
+    },
+    {
+      "from": "products",
+      "from_column": "brand_id",
+      "name": "products_brand_id_brands",
+      "to": "brands",
+      "to_column": "brand_id"
+    },
+    {
+      "from": "products",
+      "from_column": "category_id",
+      "name": "products_category_id_categories",
+      "to": "categories",
+      "to_column": "category_id"
+    },
+    {
+      "from": "skus",
+      "from_column": "product_id",
+      "name": "skus_product_id_products",
+      "to": "products",
+      "to_column": "product_id"
+    },
+    {
+      "from": "skus",
+      "from_column": "uom_code",
+      "name": "skus_uom_code_units_of_measure",
+      "to": "units_of_measure",
+      "to_column": "uom_code"
+    },
+    {
+      "from": "sku_suppliers",
+      "from_column": "sku_id",
+      "name": "sku_suppliers_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "sku_suppliers",
+      "from_column": "supplier_id",
+      "name": "sku_suppliers_supplier_id_suppliers",
+      "to": "suppliers",
+      "to_column": "supplier_id"
+    },
+    {
+      "from": "carrier_lanes",
+      "from_column": "carrier_id",
+      "name": "carrier_lanes_carrier_id_carriers",
+      "to": "carriers",
+      "to_column": "carrier_id"
+    },
+    {
+      "from": "carrier_lanes",
+      "from_column": "warehouse_id",
+      "name": "carrier_lanes_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "carrier_lanes",
+      "from_column": "region_id",
+      "name": "carrier_lanes_region_id_regions",
+      "to": "regions",
+      "to_column": "region_id"
+    },
+    {
+      "from": "price_list_items",
+      "from_column": "price_list_id",
+      "name": "price_list_items_price_list_id_price_lists",
+      "to": "price_lists",
+      "to_column": "price_list_id"
+    },
+    {
+      "from": "price_list_items",
+      "from_column": "sku_id",
+      "name": "price_list_items_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "promotion_skus",
+      "from_column": "promotion_id",
+      "name": "promotion_skus_promotion_id_promotions",
+      "to": "promotions",
+      "to_column": "promotion_id"
+    },
+    {
+      "from": "promotion_skus",
+      "from_column": "sku_id",
+      "name": "promotion_skus_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "cost_centers",
+      "from_column": "region_id",
+      "name": "cost_centers_region_id_regions",
+      "to": "regions",
+      "to_column": "region_id"
+    },
+    {
+      "from": "sales_targets",
+      "from_column": "region_id",
+      "name": "sales_targets_region_id_regions",
+      "to": "regions",
+      "to_column": "region_id"
+    },
+    {
+      "from": "orders",
+      "from_column": "customer_id",
+      "name": "orders_customer_id_customers",
+      "to": "customers",
+      "to_column": "customer_id"
+    },
+    {
+      "from": "orders",
+      "from_column": "site_id",
+      "name": "orders_site_id_customer_sites",
+      "to": "customer_sites",
+      "to_column": "site_id"
+    },
+    {
+      "from": "orders",
+      "from_column": "warehouse_id",
+      "name": "orders_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "orders",
+      "from_column": "channel_id",
+      "name": "orders_channel_id_channels",
+      "to": "channels",
+      "to_column": "channel_id"
+    },
+    {
+      "from": "orders",
+      "from_column": "terms_id",
+      "name": "orders_terms_id_payment_terms",
+      "to": "payment_terms",
+      "to_column": "terms_id"
+    },
+    {
+      "from": "orders",
+      "from_column": "employee_id",
+      "name": "orders_employee_id_employees",
+      "to": "employees",
+      "to_column": "employee_id"
+    },
+    {
+      "from": "order_lines",
+      "from_column": "order_id",
+      "name": "order_lines_order_id_orders",
+      "to": "orders",
+      "to_column": "order_id"
+    },
+    {
+      "from": "order_lines",
+      "from_column": "sku_id",
+      "name": "order_lines_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "shipments",
+      "from_column": "order_id",
+      "name": "shipments_order_id_orders",
+      "to": "orders",
+      "to_column": "order_id"
+    },
+    {
+      "from": "shipments",
+      "from_column": "warehouse_id",
+      "name": "shipments_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "shipments",
+      "from_column": "carrier_id",
+      "name": "shipments_carrier_id_carriers",
+      "to": "carriers",
+      "to_column": "carrier_id"
+    },
+    {
+      "from": "shipment_lines",
+      "from_column": "shipment_id",
+      "name": "shipment_lines_shipment_id_shipments",
+      "to": "shipments",
+      "to_column": "shipment_id"
+    },
+    {
+      "from": "shipment_lines",
+      "from_column": "order_line_id",
+      "name": "shipment_lines_order_line_id_order_lines",
+      "to": "order_lines",
+      "to_column": "order_line_id"
+    },
+    {
+      "from": "shipment_lines",
+      "from_column": "sku_id",
+      "name": "shipment_lines_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "invoices",
+      "from_column": "order_id",
+      "name": "invoices_order_id_orders",
+      "to": "orders",
+      "to_column": "order_id"
+    },
+    {
+      "from": "invoices",
+      "from_column": "customer_id",
+      "name": "invoices_customer_id_customers",
+      "to": "customers",
+      "to_column": "customer_id"
+    },
+    {
+      "from": "invoices",
+      "from_column": "terms_id",
+      "name": "invoices_terms_id_payment_terms",
+      "to": "payment_terms",
+      "to_column": "terms_id"
+    },
+    {
+      "from": "invoice_lines",
+      "from_column": "invoice_id",
+      "name": "invoice_lines_invoice_id_invoices",
+      "to": "invoices",
+      "to_column": "invoice_id"
+    },
+    {
+      "from": "invoice_lines",
+      "from_column": "order_line_id",
+      "name": "invoice_lines_order_line_id_order_lines",
+      "to": "order_lines",
+      "to_column": "order_line_id"
+    },
+    {
+      "from": "invoice_lines",
+      "from_column": "sku_id",
+      "name": "invoice_lines_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "payments",
+      "from_column": "customer_id",
+      "name": "payments_customer_id_customers",
+      "to": "customers",
+      "to_column": "customer_id"
+    },
+    {
+      "from": "payment_applications",
+      "from_column": "payment_id",
+      "name": "payment_applications_payment_id_payments",
+      "to": "payments",
+      "to_column": "payment_id"
+    },
+    {
+      "from": "payment_applications",
+      "from_column": "invoice_id",
+      "name": "payment_applications_invoice_id_invoices",
+      "to": "invoices",
+      "to_column": "invoice_id"
+    },
+    {
+      "from": "purchase_orders",
+      "from_column": "supplier_id",
+      "name": "purchase_orders_supplier_id_suppliers",
+      "to": "suppliers",
+      "to_column": "supplier_id"
+    },
+    {
+      "from": "purchase_orders",
+      "from_column": "warehouse_id",
+      "name": "purchase_orders_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "purchase_order_lines",
+      "from_column": "po_id",
+      "name": "purchase_order_lines_po_id_purchase_orders",
+      "to": "purchase_orders",
+      "to_column": "po_id"
+    },
+    {
+      "from": "purchase_order_lines",
+      "from_column": "sku_id",
+      "name": "purchase_order_lines_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "inbound_receipts",
+      "from_column": "po_id",
+      "name": "inbound_receipts_po_id_purchase_orders",
+      "to": "purchase_orders",
+      "to_column": "po_id"
+    },
+    {
+      "from": "inbound_receipts",
+      "from_column": "supplier_id",
+      "name": "inbound_receipts_supplier_id_suppliers",
+      "to": "suppliers",
+      "to_column": "supplier_id"
+    },
+    {
+      "from": "inbound_receipts",
+      "from_column": "warehouse_id",
+      "name": "inbound_receipts_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "inbound_receipt_lines",
+      "from_column": "receipt_id",
+      "name": "inbound_receipt_lines_receipt_id_inbound_receipts",
+      "to": "inbound_receipts",
+      "to_column": "receipt_id"
+    },
+    {
+      "from": "inbound_receipt_lines",
+      "from_column": "sku_id",
+      "name": "inbound_receipt_lines_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "returns",
+      "from_column": "order_id",
+      "name": "returns_order_id_orders",
+      "to": "orders",
+      "to_column": "order_id"
+    },
+    {
+      "from": "returns",
+      "from_column": "customer_id",
+      "name": "returns_customer_id_customers",
+      "to": "customers",
+      "to_column": "customer_id"
+    },
+    {
+      "from": "returns",
+      "from_column": "reason_id",
+      "name": "returns_reason_id_return_reasons",
+      "to": "return_reasons",
+      "to_column": "reason_id"
+    },
+    {
+      "from": "return_lines",
+      "from_column": "return_id",
+      "name": "return_lines_return_id_returns",
+      "to": "returns",
+      "to_column": "return_id"
+    },
+    {
+      "from": "return_lines",
+      "from_column": "sku_id",
+      "name": "return_lines_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "inventory_snapshots",
+      "from_column": "warehouse_id",
+      "name": "inventory_snapshots_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "inventory_snapshots",
+      "from_column": "sku_id",
+      "name": "inventory_snapshots_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    },
+    {
+      "from": "inventory_movements",
+      "from_column": "warehouse_id",
+      "name": "inventory_movements_warehouse_id_warehouses",
+      "to": "warehouses",
+      "to_column": "warehouse_id"
+    },
+    {
+      "from": "inventory_movements",
+      "from_column": "sku_id",
+      "name": "inventory_movements_sku_id_skus",
+      "to": "skus",
+      "to_column": "sku_id"
+    }
+  ],
+  "schema": "harborline"
+}
