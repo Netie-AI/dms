@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: Cursor finishes once, derived numbers are computed
+
+- **Cursor.** `POST /v0/agents` uses the 240 second timeout, then `GET /v0/agents/{id}` until FINISHED. The branch, the PR, and the artifact are what get judged. A miss does not launch a second agent.
+- **Parse.** A wrapper whose `artifact`, `result`, `output`, or `summary` is the artifact is unwrapped. `{status:needs_review}` and `{tool:run_sql}` stay a shape miss.
+- **Judge.** A difference of two result numbers traces, including a rounded one. A share is still checked only on the table the sentence names. A line-leading `2.` or `2)` is a list marker, not a figure. `$9.9M` and `5K` still have to match.
+
 ## 2026-11-28 - DMS-CREATE-01: schema in the prompt, files that keep the content
 
 - **Prompt.** The plain system message states the JSON schema (kind, title, parts) and a short example. It does not say to call a tool. A parse or shape miss is one repair that sends the schema error back.

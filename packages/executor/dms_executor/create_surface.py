@@ -27,6 +27,7 @@ from dms_core.create_generator import (
     judge_artifact,
     prompt_digest,
     score_artifact,
+    selected_provider,
     skills_for,
     splice_section,
     template_text,
@@ -48,7 +49,8 @@ _TOOLS = frozenset(
 )
 _STOP_CODES = frozenset({"runaway_steps", "runaway_usd", "budget_exceeded"})
 _RUNAWAY_STEPS = 60
-# Part tables keep 40 rows and say so. Chart SQL is not sliced.
+# Part tables keep 40 rows and say so. A chart query is the aggregate, so its
+# rows are not sliced.
 # ponytail: a huge chart frame is stored whole. Page it if a chart passes a few thousand rows.
 _ROW_CAP = 40
 _SCHEMA_ISSUE = "schema:required kind, title, parts"
@@ -374,7 +376,8 @@ def _governed(
         session["artifact"] = None
         _save(session)
         return _view(session)
-    if issues and not session.get("repaired"):
+    # A Cursor repair would launch a second agent. Judge the finished run once.
+    if issues and not session.get("repaired") and not _cursor_run():
         session["repaired"] = True
         repair = _turn(
             session,
@@ -927,6 +930,13 @@ def _push_version(session: dict[str, Any], artifact: Mapping[str, Any], note: st
     return version_id
 
 
+def _cursor_run() -> bool:
+    try:
+        return selected_provider() == "cursor_api"
+    except GeneratorError:
+        return False
+
+
 def _timed(fn: Any) -> Any:
     """Seconds for this call, not the age of the session."""
     started = time.perf_counter()
@@ -947,6 +957,9 @@ def _remember(session: dict[str, Any], turn: Any) -> None:
             "seconds": turn.seconds,
         }
     )
+    target = getattr(turn, "cursor_target", None)
+    if isinstance(target, dict):
+        session["cursor"] = target
     if getattr(turn, "model_warning", None):
         session["model_warning"] = turn.model_warning
         if not session.get("warning"):
@@ -1100,6 +1113,7 @@ def _view(session: dict[str, Any]) -> dict[str, Any]:
         "message": session.get("message"),
         "warning": session.get("warning"),
         "model_warning": session.get("model_warning"),
+        "cursor": session.get("cursor"),
         "score": session.get("score"),
         "log": _log(session),
     }

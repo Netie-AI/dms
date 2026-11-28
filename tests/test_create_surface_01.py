@@ -18,6 +18,7 @@ from dms_api.settings import get_settings
 from dms_core.create_generator import (
     GeneratorError,
     bind_secret_store,
+    default_cursor,
     default_transport,
     direct_prompt,
     generate,
@@ -1619,6 +1620,175 @@ def test_served_model_is_logged_and_a_mismatch_warns(
     assert quiet["shown"] is True
     assert quiet["log"]["model"] == "claude-sonnet-4"
     assert quiet["model_warning"] is None
+
+
+def test_wrapped_artifact_needs_no_repair(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    wrapped = {"action": "return_artifact", "artifact": _app()}
+    stub = _patch(monkeypatch, [wrapped])
+    session_id = _open(client)
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is True
+    assert view["artifact"]["title"] == "Orders"
+    assert len(stub.bodies) == 1
+
+
+def test_list_marker_is_not_a_figure() -> None:
+    def issues(body: str, allowed: set[str]) -> list[str]:
+        artifact = {
+            "kind": "app",
+            "title": "Orders",
+            "parts": [{"id": "a", "title": "Total", "body": body}],
+        }
+        return judge_artifact(artifact, kind="app", brand={}, allowed_numbers=allowed)
+
+    assert "unsupported_claim" not in issues("2. One line.\n3. Another.", set())
+    assert "unsupported_claim" not in issues("2. Revenue is $9.9M.", {"9876543"})
+    assert "unsupported_claim" in issues("2. Revenue is $1.2M.", {"9900000"})
+    assert "unsupported_claim" in issues("Total is 1.", {"1606773"})
+
+
+def test_difference_and_even_share_are_computed() -> None:
+    rows = [{"region": "North", "amount": 50000}, {"region": "South", "amount": 33608}]
+    gap = {
+        "kind": "app",
+        "title": "Orders",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Gap",
+                "body": "The gap is 16,392.",
+                "charts": [{"label": "Regions", "rows": rows}],
+            }
+        ],
+    }
+    assert "unsupported_claim" not in judge_artifact(
+        gap, kind="app", brand={}, allowed_numbers={"50000", "33608"}
+    )
+    invented = json.loads(json.dumps(gap))
+    invented["parts"][0]["body"] = "The gap is 99,999."
+    assert "unsupported_claim" in judge_artifact(
+        invented, kind="app", brand={}, allowed_numbers={"50000", "33608"}
+    )
+    even = [
+        {"region": "North", "amount": 10},
+        {"region": "South", "amount": 10},
+        {"region": "East", "amount": 10},
+    ]
+    skewed = [{"channel": "Web", "amount": 775}, {"channel": "Store", "amount": 225}]
+    mix = {
+        "kind": "slides",
+        "title": "Mix",
+        "parts": [
+            {
+                "id": "s1",
+                "title": "Mix",
+                "body": "Regions are split evenly at 33% each.",
+                "charts": [
+                    {"label": "Regions", "rows": even},
+                    {"label": "Channels", "rows": skewed},
+                ],
+            }
+        ],
+    }
+    quiet = judge_artifact(
+        mix, kind="slides", brand={}, allowed_numbers={"10", "775", "225"}
+    )
+    assert "share_mismatch" not in quiet
+    assert "unsupported_claim" not in quiet
+    named = json.loads(json.dumps(mix))
+    named["parts"][0]["body"] = "Regions are 10%."
+    assert "share_mismatch" in judge_artifact(
+        named, kind="slides", brand={}, allowed_numbers={"10", "775", "225"}
+    )
+
+
+def test_cursor_polls_until_finished(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setenv("CURSOR_AGENTS_URL", "https://cursor.example")
+    deck = _deck()
+    seen: dict[str, list[tuple[str, float | None]]] = {"post": [], "get": []}
+
+    class _Resp:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return self._payload
+
+    def post(url: str, **kwargs: Any) -> _Resp:
+        seen["post"].append((url, kwargs.get("timeout")))
+        assert kwargs["auth"][0] == CURSOR_KEY
+        return _Resp({"id": "bc_deck", "status": "RUNNING"})
+
+    def get(url: str, **kwargs: Any) -> _Resp:
+        seen["get"].append((url, kwargs.get("timeout")))
+        if url.endswith("/conversation"):
+            text = json.dumps(deck)
+            return _Resp({"messages": [{"type": "assistant_message", "text": text}]})
+        return _Resp(
+            {
+                "id": "bc_deck",
+                "status": "FINISHED",
+                "summary": "",
+                "target": {"branchName": "cursor/deck", "prUrl": "https://example.com/pr/9"},
+            }
+        )
+
+    monkeypatch.setattr(httpx, "post", post)
+    monkeypatch.setattr(httpx, "get", get)
+    raw = default_cursor({"prompt": {"text": "Build the deck"}}, CURSOR_KEY)
+    assert seen["post"] == [("https://cursor.example/v0/agents", 240.0)]
+    assert [item[0] for item in seen["get"]] == [
+        "https://cursor.example/v0/agents/bc_deck",
+        "https://cursor.example/v0/agents/bc_deck/conversation",
+    ]
+    assert seen["get"][0][1] == 240.0
+    assert raw["content"]["title"] == "Orders deck"
+    assert raw["target"]["prUrl"] == "https://example.com/pr/9"
+
+
+def test_cursor_judge_does_not_launch_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    monkeypatch.setenv("DMS_CREATE_GENERATOR", "cursor_api")
+    monkeypatch.setenv("CURSOR_API_KEY", CURSOR_KEY)
+    monkeypatch.setenv("DMS_CREATE_CURSOR_REPO", "https://example.com/acme/create")
+    calls: list[dict[str, Any]] = []
+
+    def launch(body: dict[str, Any], api_key: str) -> dict[str, Any]:
+        assert api_key == CURSOR_KEY
+        calls.append(body)
+        return {
+            "content": {
+                "kind": "app",
+                "title": "Orders",
+                "parts": [{"id": "a", "title": "Total", "body": "Total is 99999."}],
+            },
+            "id": "bc_once",
+            "status": "FINISHED",
+            "target": {"branchName": "cursor/deck", "prUrl": "https://example.com/pr/9"},
+        }
+
+    monkeypatch.setattr("dms_core.create_generator.default_cursor", launch)
+    session_id = _open(client)
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert len(calls) == 1
+    assert view["shown"] is False
+    assert "unsupported_claim" in view["issues"]
+    assert view["cursor"]["branch"] == "cursor/deck"
+    assert view["cursor"]["pr_url"] == "https://example.com/pr/9"
 
 
 def test_log_seconds_are_the_job_not_the_session(

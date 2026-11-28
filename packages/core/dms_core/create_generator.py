@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -111,6 +112,7 @@ class ProviderTurn:
     estimated_cost: float | None
     model_warning: str | None = None
     seconds: float | None = None
+    cursor_target: dict[str, Any] | None = None
 
 
 def tool_registry() -> dict[str, dict[str, Any]]:
@@ -384,6 +386,7 @@ def complete(
         provider=provider,
         estimated_cost=estimate,
         model_warning=_provider_mismatch(provider, served),
+        cursor_target=_cursor_target(raw) if provider == "cursor_api" else None,
     )
 
 
@@ -454,7 +457,8 @@ def judge_artifact(
             issues.append(f"brand_{key}")
     prose = _prose(artifact)
     ratios = _ratio_points(artifact)
-    if _unsupported(prose, allowed_numbers, ratios) or _chart_untraced(artifact):
+    diffs = _artifact_diffs(artifact)
+    if _unsupported(prose, allowed_numbers, ratios, diffs) or _chart_untraced(artifact):
         issues.append("unsupported_claim")
     if _share_mismatch(artifact):
         issues.append("share_mismatch")
@@ -572,19 +576,52 @@ def default_transport(body: dict[str, Any], api_key: str) -> Any:
         raise GeneratorError("model_unreadable") from None
 
 
+_AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+_CURSOR_DONE = frozenset({"FINISHED", "FAILED", "ERROR", "CANCELLED", "EXPIRED"})
+
+
 def default_cursor(body: dict[str, Any], api_key: str) -> Any:
-    """POST /v0/agents. Basic auth, no model field. The key is not logged."""
+    """Launch one agent, poll until it finishes, then return that result.
+
+    A second call is a second launch. Repair must not call this again.
+    """
     import httpx
 
     base = os.environ.get("CURSOR_AGENTS_URL", "https://api.cursor.com").strip().rstrip("/")
+    timeout = transport_timeout()
+    auth = (api_key, "")
+    payload = _cursor_json(httpx, "post", base + "/v0/agents", auth, timeout, json=body)
+    agent_id = payload.get("id")
+    if not isinstance(agent_id, str) or _AGENT_ID.fullmatch(agent_id) is None:
+        return payload
+    deadline = time.monotonic() + timeout
+    status = ""
+    while True:
+        payload = _cursor_json(httpx, "get", base + "/v0/agents/" + agent_id, auth, timeout)
+        status = str(payload.get("status") or "").upper()
+        if status in _CURSOR_DONE:
+            break
+        if not status or time.monotonic() >= deadline:
+            raise GeneratorError("cursor_timeout")
+        time.sleep(1.0)
+    if status != "FINISHED":
+        raise GeneratorError("cursor_failed")
+    return _collect_cursor(httpx, base, auth, payload, timeout)
+
+
+def _cursor_json(
+    httpx: Any,
+    method: str,
+    url: str,
+    auth: tuple[str, str],
+    timeout: float,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """One Cursor HTTP call. The error code never carries the key or the body."""
     try:
-        response = httpx.post(
-            base + "/v0/agents",
-            auth=(api_key, ""),
-            json=body,
-            timeout=30.0,
-        )
+        response = getattr(httpx, method)(url, auth=auth, timeout=timeout, **kwargs)
         response.raise_for_status()
+        payload = response.json()
     except httpx.HTTPStatusError as exc:
         status = exc.response.status_code
         if status in (401, 403):
@@ -592,10 +629,74 @@ def default_cursor(body: dict[str, Any], api_key: str) -> Any:
         raise GeneratorError(f"cursor_http_{status}") from None
     except httpx.HTTPError:
         raise GeneratorError("cursor_unreachable") from None
-    try:
-        return response.json()
     except ValueError:
         raise GeneratorError("model_unreadable") from None
+    if not isinstance(payload, dict):
+        raise GeneratorError("model_unreadable")
+    return payload
+
+
+def _collect_cursor(
+    httpx: Any,
+    base: str,
+    auth: tuple[str, str],
+    payload: dict[str, Any],
+    timeout: float,
+) -> dict[str, Any]:
+    """Prefer the artifact in the summary. Otherwise read the finished transcript."""
+    summary = payload.get("summary") if isinstance(payload.get("summary"), str) else ""
+    found = _as_artifact(summary)
+    text = ""
+    if found is None and isinstance(payload.get("id"), str):
+        try:
+            convo = _cursor_json(
+                httpx,
+                "get",
+                base + "/v0/agents/" + payload["id"] + "/conversation",
+                auth,
+                timeout,
+            )
+        except GeneratorError:
+            convo = {}
+        text = _last_assistant(convo)
+        found = _as_artifact(text)
+    out = dict(payload)
+    if found is not None:
+        out["content"] = found
+    elif text:
+        out["content"] = text
+    return out
+
+
+def _last_assistant(payload: Mapping[str, Any]) -> str:
+    messages = payload.get("messages") or payload.get("conversation") or []
+    if not isinstance(messages, list):
+        return ""
+    texts: list[str] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("type") or item.get("role") or "")
+        if kind not in {"assistant_message", "assistant"}:
+            continue
+        text = item.get("text") if isinstance(item.get("text"), str) else item.get("content")
+        if isinstance(text, str) and text.strip():
+            texts.append(text)
+    return texts[-1] if texts else ""
+
+
+def _cursor_target(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    found = raw.get("target")
+    target: dict[str, Any] = found if isinstance(found, dict) else {}
+    agent_id = raw.get("id") if isinstance(raw.get("id"), str) else None
+    branch = target.get("branchName") or target.get("branch")
+    pr_url = target.get("prUrl") or target.get("pr_url")
+    status = raw.get("status") if isinstance(raw.get("status"), str) else None
+    if not any((agent_id, branch, pr_url, status)):
+        return None
+    return {"id": agent_id, "status": status, "branch": branch, "pr_url": pr_url}
 
 
 def _cursor_key() -> str:
@@ -610,6 +711,45 @@ def _cursor_key() -> str:
     if len(raw) < 8:
         raise GeneratorError("cursor_key_missing")
     return raw
+
+
+def _unwrap_artifact(content: dict[str, Any]) -> dict[str, Any]:
+    """Accept `{action, artifact}` and a summary string. Leave any other object."""
+    for key in ("artifact", "result", "output", "summary"):
+        found = _as_artifact(content.get(key))
+        if found is not None:
+            return found
+    return content
+
+
+def _as_artifact(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        value = _json_in(value)
+    if isinstance(value, dict) and ("kind" in value or "parts" in value):
+        return value
+    return None
+
+
+def _json_in(text: str) -> Any:
+    stripped = _strip_fence(text).strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    index = 0
+    while True:
+        start = text.find("{", index)
+        if start < 0:
+            return None
+        try:
+            found, offset = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(found, dict) and ("kind" in found or "parts" in found):
+            return found
+        index = start + max(offset, 1)
 
 
 def _parse(raw: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any]]:
@@ -636,8 +776,8 @@ def _parse(raw: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[
     elif isinstance(content, dict) and "cursor_key" in content and "kind" not in content:
         return content, [], usage
     elif isinstance(content, dict):
-        # A shape miss (no kind) is still the object, so the judge can name it.
-        return _public(content), [], usage
+        # A wrapped `{artifact: {...}}` is the artifact. A shape miss stays a dict.
+        return _public(_unwrap_artifact(content)), [], usage
     calls: list[dict[str, Any]] = []
     artifact = None
     blocks = content if isinstance(content, list) else []
@@ -717,7 +857,8 @@ def _plain_system() -> str:
     schema = tool_registry()[_OUTPUT_TOOL]["input_schema"]
     return (
         "Reply with one JSON object and no other text.\n"
-        "The object has this shape:\n"
+        "The object is the artifact itself. Do not wrap it.\n"
+        "JSON schema:\n"
         + json.dumps(schema, indent=2)
         + "\nExample:\n"
         + json.dumps(_SCHEMA_EXAMPLE, indent=2)
@@ -771,7 +912,9 @@ def _score_check(
                 return False
         return True
     if check_id == "traced":
-        return not _unsupported(prose, allowed_numbers, _ratio_points(artifact))
+        return not _unsupported(
+            prose, allowed_numbers, _ratio_points(artifact), _artifact_diffs(artifact)
+        )
     if check_id == "clean":
         if redact_text(prose) != prose:
             return False
@@ -799,22 +942,60 @@ def _prose(artifact: Mapping[str, Any]) -> str:
 
 
 def _unsupported(
-    prose: str, allowed: set[str], ratios: Sequence[float] | None = None
+    prose: str,
+    allowed: set[str],
+    ratios: Sequence[float] | None = None,
+    derived: Sequence[float] | None = None,
 ) -> bool:
     near = list(ratios or [])
-    values = _allowed_floats(allowed)
+    pool = _allowed_floats(allowed)
+    pool.extend(derived or [])
     for match in _NUM.finditer(prose):
+        if _is_list_marker(prose, match):
+            continue
         forms = _match_forms(
             match.group("body"), bool(match.group("pct")), match.group("suffix")
         )
         if not forms.isdisjoint(allowed):
             continue
-        if match.group("suffix") and _suffix_near(match, values):
+        if match.group("suffix") and _suffix_near(match, pool):
             continue
         if match.group("pct") and _percent_near(match, near):
             continue
+        if not match.group("pct") and not match.group("suffix") and _plain_near(match, pool):
+            continue
         return True
     return False
+
+
+def _is_list_marker(text: str, match: re.Match[str]) -> bool:
+    """A leading `2.` or `2)` is a list marker, not a figure."""
+    if match.group("pct") or match.group("suffix"):
+        return False
+    body = match.group("body")
+    if "," in body or "." in body:
+        return False
+    raw = match.group(0)
+    if raw[:1] in "$£€¥" or raw.startswith(("RM", "-")):
+        return False
+    end = match.end()
+    if end >= len(text) or text[end] not in ".)":
+        return False
+    if text[end] == "." and end + 1 < len(text) and text[end + 1].isdigit():
+        return False
+    line = text.rfind("\n", 0, match.start()) + 1
+    return text[line : match.start()].strip() == ""
+
+
+def _plain_near(match: re.Match[str], values: Sequence[float]) -> bool:
+    """16,392 matches a computed difference that rounds to that precision."""
+    plain = match.group("body").replace(",", "")
+    decimals = len(plain.split(".", 1)[1]) if "." in plain else 0
+    try:
+        shown = round(float(plain), decimals)
+    except ValueError:
+        return False
+    return any(round(candidate, decimals) == shown for candidate in values)
 
 
 def _number_tokens(value: Any) -> set[str]:
@@ -915,7 +1096,8 @@ def _chart_untraced(artifact: Mapping[str, Any]) -> bool:
                 for value in row.values():
                     allowed.update(_number_tokens(value))
             ratios = [share * 100.0 for share in _shares_of(chart.get("rows"))]
-            if _unsupported(str(chart.get("label") or ""), allowed, ratios):
+            diffs = _column_diffs(chart.get("rows"))
+            if _unsupported(str(chart.get("label") or ""), allowed, ratios, diffs):
                 return True
     return False
 
@@ -988,6 +1170,52 @@ def _refers(sentence: str, chart: Mapping[str, Any]) -> bool:
             if isinstance(value, str) and len(value.strip()) >= 3 and value.casefold() in sentence:
                 return True
     return False
+
+
+def _artifact_diffs(artifact: Mapping[str, Any]) -> list[float]:
+    found: list[float] = []
+    for part in artifact.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        found.extend(_column_diffs(part.get("rows")))
+        for chart in part.get("charts") or []:
+            if isinstance(chart, dict):
+                found.extend(_column_diffs(chart.get("rows")))
+    return found
+
+
+def _column_diffs(rows: Any) -> list[float]:
+    """Differences computed from one result. A year column is not a measure."""
+    if not isinstance(rows, list):
+        return []
+    columns: dict[str, list[float]] = {}
+    diffs: list[float] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        nums: list[float] = []
+        for key, value in row.items():
+            number = _as_float(value)
+            if number is None or _is_year(number):
+                continue
+            columns.setdefault(str(key), []).append(number)
+            nums.append(number)
+        for index, left in enumerate(nums):
+            for right in nums[index + 1 :]:
+                diffs.append(abs(left - right))
+    for series in columns.values():
+        if len(series) < 2:
+            continue
+        # ponytail: full pairs up to 80 values. Beyond that, only the spread.
+        ordered = series if len(series) <= 80 else [min(series), max(series)]
+        for index, left in enumerate(ordered):
+            for right in ordered[index + 1 :]:
+                diffs.append(abs(left - right))
+    return diffs
+
+
+def _is_year(number: float) -> bool:
+    return 1900 <= number <= 2100 and float(number).is_integer()
 
 
 def _ratio_points(artifact: Mapping[str, Any]) -> list[float]:
