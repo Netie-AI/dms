@@ -159,7 +159,8 @@ def test_rollup_of_no_checks_is_skipped() -> None:
     assert mod.rollup([]) == "SKIPPED"
     text = mod.render_md({"status": "SKIPPED", "checks": [], "schema": "netie.fde.report/1"})
     assert "SKIPPED" in text
-    assert "No failed checks." in text
+    assert "## Needs attention" in text
+    assert "None." in text
 
 
 def test_render_md_follows_the_report_dict_only() -> None:
@@ -189,7 +190,8 @@ def test_render_md_follows_the_report_dict_only() -> None:
     text = mod.render_md(report)
     assert text.index("K4.05") < text.index("K4.03")
     assert "Filter the repeat load." in text
-    assert text.index("## Failed items") > text.index("| K4.05 |")
+    assert "## Needs attention" in text
+    assert text.index("## Needs attention") > text.index("| K4.05 |")
 
 
 def _trap(
@@ -267,7 +269,8 @@ def test_traps_are_found_without_hardcoded_names(
     first = report["checks"][0]
     assert first["status"] == "FAIL"
     assert first["fix"] in md
-    assert f"| {first['id']} |" in md.split("## Failed items")[0]
+    assert "## Needs attention" in md
+    assert f"| {first['id']} |" in md.split("## Needs attention")[0]
     source = SCAN.read_text(encoding="utf-8")
     for word in (table, *cols):
         assert word not in source
