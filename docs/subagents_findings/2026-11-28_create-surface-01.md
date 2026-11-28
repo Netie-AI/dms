@@ -1,23 +1,25 @@
 # DMS-CREATE-01
 
-**Status:** Not PASS. Unit file `tests/test_create_surface_01.py` plus `tests/invariants/test_boundaries.py` passed (26). Armed grade52 not run. Tokens and cost not measured. Not a score.
+**Status:** Not PASS. `tests/test_create_surface_01.py` and `tests/invariants/test_boundaries.py`: 31 passed. Armed grade52 not run. Not a live OpenVault bill.
 
-PREFLIGHT: PARTIAL. ADJUST-SQL-VQ-01 already stores steward SQL that lookup does not replay. STREAM-STAGES-01 already streams ladder stages behind a flag. CHART-SPEC-01 already asks OpenVault with a role string.
+PREFLIGHT: PARTIAL. The earlier create-surface finding covered the flag, the OpenVault role, and `create_accept`. This pass replaces the hand-built component loop with the shared provider adapter.
 
 ## What
 
-`DMS_CREATE` defaults off. On, Studio can create an app for a Space. The caller sends a DMS API key and an OpenVault key. DMS sends `create_plan`, then `create_generate` for one component at a time. It does not send a model, a provider, or `strict`.
+`DMS_CREATE` defaults off. Only the digit 1 turns it on. DMS formats context, routes through OpenVault or the Cursor agents API, and judges. The model plans and checks. `packages/core/dms_core/create_generator.py` is the module the doc/slides writer imports too.
 
-One cheap plan returns intent, an outline, and an estimate. The user confirms once, then every component is built. A failed component is retried once. OpenVault 402 stops the run. The runaway guard is 60 steps or `DMS_CREATE_MAX_USD` (default 10) and it says why. Twice the estimate warns and the build continues. The model gets the schema, SQL aggregates, and a sample of at most 20 rows. Doc and slides raise `kind_required`.
+Claude requests carry a system prompt, XML tags (`schema`, `data`, `choices`, `style`, `examples`, `skills`), tool schemas, `thinking: {type: adaptive}`, and Anthropic skills (`pptx`, `docx`, `xlsx`, `pdf`) when the format needs them. Cursor is `POST /v0/agents` with no model field. The Cursor key comes from role `create_cursor_key` and is not logged.
+
+Tools, prompts, and local `SKILL.md` files are data. A tenant can edit the brand kit, the guide, examples, and which tools are on. A section edit splices one part and keeps every version.
 
 ## Review
 
-A missing usage field is null, not 0. The plan estimate is stored beside the log and is not written as measured cost. Stub orders lake: seconds=0.353159, tokens=null, cost=null. No live OpenVault key. The old 8-step, 8000-token, and $1 stops are not applied.
+Stub adapter, no usage from a live key: app `Orders` cost 0.02, deck `Orders deck` cost 0.04. The judge withheld an uncited number and a secret. A disabled `run_sql` did not run. grade52 was not re-run.
 
 ## Not a word rule
 
-No phrase list. Ungranted and destructive SQL use the existing abstain. An uncited number is withheld. `create_accept` is stored and is not replayed.
+No phrase list. Ungranted and destructive SQL use the existing abstain. Numbers must appear in SQL results or aggregates. Secrets use `redact_text`. PII uses `mask_payload`.
 
 ## Not PASS
 
-grade52 was not re-run. No live OpenVault key, so tokens and cost were not measured. The Studio click path was not exercised in a browser.
+No live OpenVault key and no live Cursor key. The Studio click path was not exercised in a browser.

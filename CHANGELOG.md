@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: the provider generates, DMS governs
+
+- **Harness.** `DMS_CREATE` stays off unless it is the digit 1. DMS does not build components. `dms_core.create_generator` is the shared adapter for this harness and the doc/slides writer. `claude_api` goes through OpenVault with a role, a system prompt, XML context, tool schemas, and adaptive thinking. `cursor_api` is `POST /v0/agents` with no model field. The Cursor key comes from OpenVault and is not stored.
+- **Governance.** Tools (`run_sql`, `fetch_ontology`, `chart`, `render_doc`, `sign_request`, `save_artifact`) are JSON schemas with a per-tenant allowlist. Every call is validated, budgeted, and audited. Provider skills are `pptx`, `docx`, `xlsx`, and `pdf`, plus local `SKILL.md` folders picked by format. Prompts are versioned. Brand kit, templates, examples, and tool toggles are stored per tenant.
+- **Edit.** A user picks a section and an instruction. The provider returns the change. Other sections stay. Every version is kept and can be restored. The judge checks the schema, the brand fields, numbers against SQL results, and secrets or PII, then asks the provider to repair once.
+- **Measured.** Stub adapter: app title Orders, cost 0.02. Deck title Orders deck, cost 0.04. No live OpenVault key. Not a live bill. Not PASS.
+
 ## 2026-11-28 - DMS-CREATE-01: finish the app after one confirm
 
 - **Build.** One cheap plan shows the estimate. The user confirms once. Every component is then built. A failed component is still retried once.

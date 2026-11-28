@@ -2183,18 +2183,6 @@ def create_start(**kwargs: Any) -> dict[str, Any]:
     return start_session(**kwargs)
 
 
-def create_confirm(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import confirm_intent
-
-    return confirm_intent(**kwargs)
-
-
-def create_plan(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import draft_plan
-
-    return draft_plan(**kwargs)
-
-
 def create_generate(**kwargs: Any) -> dict[str, Any]:
     from dms_executor.create_surface import generate_artifact
 
@@ -2207,28 +2195,28 @@ def create_improve(**kwargs: Any) -> dict[str, Any]:
     return improve_artifact(**kwargs)
 
 
-def create_accept(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import accept_artifact
-
-    return accept_artifact(**kwargs)
-
-
 def create_read(**kwargs: Any) -> dict[str, Any]:
     from dms_executor.create_surface import read_artifact
 
     return read_artifact(**kwargs)
 
 
-def create_query(**kwargs: Any) -> dict[str, Any]:
-    from dms_executor.create_surface import query_artifact
+def create_restore(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import restore_version
 
-    return query_artifact(**kwargs)
+    return restore_version(**kwargs)
 
 
-def create_export(**kwargs: Any) -> tuple[bytes, str]:
-    from dms_executor.create_surface import export_bytes
+def create_guide_read(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import read_guide
 
-    return export_bytes(**kwargs)
+    return read_guide(**kwargs)
+
+
+def create_guide_save(**kwargs: Any) -> dict[str, Any]:
+    from dms_executor.create_surface import save_guide
+
+    return save_guide(**kwargs)
 
 
 def create_events(**kwargs: Any) -> Any:

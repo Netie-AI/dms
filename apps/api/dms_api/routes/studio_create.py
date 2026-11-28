@@ -1,13 +1,10 @@
-"""Create app, doc, or slides (DMS-CREATE-01).
+"""Create harness (DMS-CREATE-01).
 
 ``DMS_CREATE`` defaults off. Status is always mounted and answers
 ``enabled: false`` while the flag is off. The other routes stay unmounted.
 
-The call is the existing compliance call-through. ``mutation=False`` so a
-missing task catalog does not invent a new refusal. A run needs the customer
-OpenVault key and a DMS API key. OpenVault sees the caller key and a role
-string. DMS does not name a model or a provider, and it does not fall back
-to an install key.
+A run needs the customer OpenVault key and a DMS API key. OpenVault sees
+the caller key and a role string. DMS does not name a model.
 """
 
 from __future__ import annotations
@@ -18,24 +15,22 @@ from typing import Any
 
 from cortex_client import compliance_gate
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
 from dms_api.mcp_server.auth import bearer_from_headers, lookup_bearer
 from dms_api.wiring import (
-    create_accept,
     create_caller_key,
-    create_confirm,
     create_confirm_final,
     create_events,
-    create_export,
     create_generate,
+    create_guide_read,
+    create_guide_save,
     create_improve,
-    create_plan,
-    create_query,
     create_read,
+    create_restore,
     create_start,
 )
 
@@ -57,30 +52,46 @@ class SessionIn(BaseModel):
     kind: str = Field(min_length=1, max_length=16)
     goal: str = Field(min_length=1, max_length=400)
     audience: str = Field(min_length=1, max_length=200)
+    style: str = Field(default="", max_length=800)
+    template: str = Field(default="plain", max_length=32)
+    brand_colours: str = Field(default="", max_length=80)
+    brand_fonts: str = Field(default="", max_length=80)
+    brand_logo: str = Field(default="", max_length=200)
+    brand_tone: str = Field(default="", max_length=80)
+    inputs: list[str] = Field(default_factory=list)
+    examples: list[dict[str, str]] | None = None
+    tools: dict[str, bool] | None = None
+    workbook: bool = False
+    prompt_version: str = Field(default="1", max_length=8)
 
 
-class IntentIn(BaseModel):
+class GenerateIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    answer: str | None = Field(default=None, max_length=400)
-
-
-class PlanIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    tweak: str | None = Field(default=None, max_length=400)
+    inputs: list[str] | None = None
 
 
 class ImproveIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    section_id: str = Field(min_length=1, max_length=64)
     instruction: str = Field(min_length=1, max_length=400)
 
 
-class QueryIn(BaseModel):
+class RestoreIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    filters: dict[str, str] = Field(default_factory=dict)
+    version_id: int = Field(ge=1)
+
+
+class GuideIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    brand: dict[str, str] | None = None
+    guides: dict[str, str] | None = None
+    tools: dict[str, bool] | None = None
+    examples: list[dict[str, str]] | None = None
+    templates: dict[str, str] | None = None
 
 
 def _actor(request: Request, settings: Any) -> str:
@@ -122,27 +133,59 @@ def create_status(cortex: CortexDep, settings: SettingsDep) -> dict[str, bool]:
     enforce(
         compliance_gate(
             action="studio.create_status",
-            actor=_actor_settings(settings),
+            actor="status",
             metadata={"task_id": "studio.create_status", "space_id": ""},
             client=cortex,
         ),
         mutation=False,
     )
+    del settings
     return {"enabled": True}
 
 
-def _actor_settings(settings: Any) -> str:
-    if settings.dms_actor_user_id is None:
-        return ""
-    return str(settings.dms_actor_user_id)
+@router.get("/guide")
+def get_guide(request: Request, cortex: CortexDep, settings: SettingsDep) -> dict[str, Any]:
+    actor = _actor(request, settings)
+    _key(request)
+    enforce(
+        compliance_gate(
+            action="studio.create_guide",
+            actor=actor,
+            metadata={"task_id": "studio.create_guide", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
+    try:
+        return create_guide_read(tenant_id=str(settings.dms_tenant_id))
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from None
+
+
+@router.put("/guide")
+def put_guide(
+    body: GuideIn, request: Request, cortex: CortexDep, settings: SettingsDep
+) -> dict[str, Any]:
+    actor = _actor(request, settings)
+    _key(request)
+    enforce(
+        compliance_gate(
+            action="studio.create_guide",
+            actor=actor,
+            metadata={"task_id": "studio.create_guide", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
+    try:
+        return create_guide_save(tenant_id=str(settings.dms_tenant_id), guide=body.model_dump())
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from None
 
 
 @router.post("/sessions")
 def open_session(
-    body: SessionIn,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
+    body: SessionIn, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
     enforce(
@@ -163,59 +206,18 @@ def open_session(
             api_key=_key(request),
             actor=actor,
             tenant_id=str(settings.dms_tenant_id),
+            style=body.style,
+            template=body.template,
+            brand_colours=body.brand_colours,
+            brand_fonts=body.brand_fonts,
+            brand_logo=body.brand_logo,
+            brand_tone=body.brand_tone,
+            inputs=body.inputs,
+            examples=body.examples,
+            tools=body.tools,
+            workbook=body.workbook,
+            prompt_version=body.prompt_version,
         )
-    except Exception as exc:  # noqa: BLE001 - typed create error, else re-raised
-        raise _http(exc) from None
-
-
-@router.post("/sessions/{session_id}/intent")
-def confirm_session(
-    session_id: str,
-    body: IntentIn,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
-) -> dict[str, Any]:
-    actor = _actor(request, settings)
-    enforce(
-        compliance_gate(
-            action="studio.create_intent",
-            actor=actor,
-            metadata={"task_id": "studio.create_intent", "space_id": ""},
-            client=cortex,
-        ),
-        mutation=False,
-    )
-    try:
-        return create_confirm(
-            session_id=session_id,
-            api_key=_key(request),
-            answer=body.answer,
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise _http(exc) from None
-
-
-@router.post("/sessions/{session_id}/plan")
-def plan_session(
-    session_id: str,
-    body: PlanIn,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
-) -> dict[str, Any]:
-    actor = _actor(request, settings)
-    enforce(
-        compliance_gate(
-            action="studio.create_plan",
-            actor=actor,
-            metadata={"task_id": "studio.create_plan", "space_id": ""},
-            client=cortex,
-        ),
-        mutation=False,
-    )
-    try:
-        return create_plan(session_id=session_id, api_key=_key(request), tweak=body.tweak)
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from None
 
@@ -226,6 +228,7 @@ def generate_session(
     request: Request,
     cortex: CortexDep,
     settings: SettingsDep,
+    body: GenerateIn | None = None,
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
     enforce(
@@ -238,17 +241,18 @@ def generate_session(
         mutation=False,
     )
     try:
-        return create_generate(session_id=session_id, api_key=_key(request))
+        return create_generate(
+            session_id=session_id,
+            api_key=_key(request),
+            inputs=None if body is None else body.inputs,
+        )
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from None
 
 
 @router.post("/sessions/{session_id}/run")
 def run_session(
-    session_id: str,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
+    session_id: str, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> StreamingResponse:
     actor = _actor(request, settings)
     key = _key(request)
@@ -274,32 +278,8 @@ def run_session(
     return StreamingResponse(frames(), media_type="text/event-stream")
 
 
-@router.post("/sessions/{session_id}/confirm")
-def confirm_file(
-    session_id: str,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
-) -> dict[str, Any]:
-    actor = _actor(request, settings)
-    _key(request)
-    enforce(
-        compliance_gate(
-            action="studio.create_confirm",
-            actor=actor,
-            metadata={"task_id": "studio.create_confirm", "space_id": ""},
-            client=cortex,
-        ),
-        mutation=False,
-    )
-    try:
-        return create_confirm_final(session_id=session_id, actor=actor or "api_viewer")
-    except Exception as exc:  # noqa: BLE001
-        raise _http(exc) from None
-
-
-@router.post("/sessions/{session_id}/improve")
-def improve_session(
+@router.post("/sessions/{session_id}/edit")
+def edit_session(
     session_id: str,
     body: ImproveIn,
     request: Request,
@@ -321,14 +301,16 @@ def improve_session(
             session_id=session_id,
             api_key=_key(request),
             instruction=body.instruction,
+            section_id=body.section_id,
         )
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from None
 
 
-@router.post("/sessions/{session_id}/accept")
-def accept_session(
+@router.post("/sessions/{session_id}/restore")
+def restore_session(
     session_id: str,
+    body: RestoreIn,
     request: Request,
     cortex: CortexDep,
     settings: SettingsDep,
@@ -337,25 +319,43 @@ def accept_session(
     _key(request)
     enforce(
         compliance_gate(
-            action="studio.create_accept",
+            action="studio.create_restore",
             actor=actor,
-            metadata={"task_id": "studio.create_accept", "space_id": ""},
+            metadata={"task_id": "studio.create_restore", "space_id": ""},
             client=cortex,
         ),
         mutation=False,
     )
     try:
-        return create_accept(session_id=session_id, actor=actor or "api_viewer")
+        return create_restore(session_id=session_id, version_id=body.version_id, actor=actor)
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from None
 
 
-@router.get("/artifacts/{session_id}")
+@router.post("/sessions/{session_id}/confirm")
+def confirm_file(
+    session_id: str, request: Request, cortex: CortexDep, settings: SettingsDep
+) -> dict[str, Any]:
+    actor = _actor(request, settings)
+    _key(request)
+    enforce(
+        compliance_gate(
+            action="studio.create_confirm",
+            actor=actor,
+            metadata={"task_id": "studio.create_confirm", "space_id": ""},
+            client=cortex,
+        ),
+        mutation=False,
+    )
+    try:
+        return create_confirm_final(session_id=session_id, actor=actor or "api_viewer")
+    except Exception as exc:  # noqa: BLE001
+        raise _http(exc) from None
+
+
+@router.get("/sessions/{session_id}")
 def read_session(
-    session_id: str,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
+    session_id: str, request: Request, cortex: CortexDep, settings: SettingsDep
 ) -> dict[str, Any]:
     actor = _actor(request, settings)
     _key(request)
@@ -372,102 +372,3 @@ def read_session(
         return create_read(session_id=session_id)
     except Exception as exc:  # noqa: BLE001
         raise _http(exc) from None
-
-
-@router.post("/artifacts/{session_id}/query")
-def query_session(
-    session_id: str,
-    body: QueryIn,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
-) -> dict[str, Any]:
-    actor = _actor(request, settings)
-    _key(request)
-    enforce(
-        compliance_gate(
-            action="studio.create_query",
-            actor=actor,
-            metadata={"task_id": "studio.create_query", "space_id": ""},
-            client=cortex,
-        ),
-        mutation=False,
-    )
-    try:
-        return create_query(session_id=session_id, filters=body.filters)
-    except Exception as exc:  # noqa: BLE001
-        raise _http(exc) from None
-
-
-@router.post("/artifacts/{session_id}/refresh")
-def refresh_session(
-    session_id: str,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
-) -> dict[str, Any]:
-    actor = _actor(request, settings)
-    _key(request)
-    enforce(
-        compliance_gate(
-            action="studio.create_refresh",
-            actor=actor,
-            metadata={"task_id": "studio.create_refresh", "space_id": ""},
-            client=cortex,
-        ),
-        mutation=False,
-    )
-    try:
-        return create_read(session_id=session_id)
-    except Exception as exc:  # noqa: BLE001
-        raise _http(exc) from None
-
-
-@router.get("/artifacts/{session_id}/pptx")
-def export_pptx(
-    session_id: str,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
-) -> Response:
-    actor = _actor(request, settings)
-    _key(request)
-    enforce(
-        compliance_gate(
-            action="studio.create_export",
-            actor=actor,
-            metadata={"task_id": "studio.create_export", "space_id": ""},
-            client=cortex,
-        ),
-        mutation=False,
-    )
-    try:
-        data, media = create_export(session_id=session_id, kind="pptx")
-    except Exception as exc:  # noqa: BLE001
-        raise _http(exc) from None
-    return Response(content=data, media_type=media)
-
-
-@router.get("/artifacts/{session_id}/pdf")
-def export_pdf(
-    session_id: str,
-    request: Request,
-    cortex: CortexDep,
-    settings: SettingsDep,
-) -> Response:
-    actor = _actor(request, settings)
-    _key(request)
-    enforce(
-        compliance_gate(
-            action="studio.create_export",
-            actor=actor,
-            metadata={"task_id": "studio.create_export", "space_id": ""},
-            client=cortex,
-        ),
-        mutation=False,
-    )
-    try:
-        data, media = create_export(session_id=session_id, kind="pdf")
-    except Exception as exc:  # noqa: BLE001
-        raise _http(exc) from None
-    return Response(content=data, media_type=media)

@@ -243,6 +243,16 @@
   }
 }
 
+.create-estimate,
+.create-warn {
+  margin-top: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.create-warn {
+  color: var(--color-ink);
+}
+
 .create-spend {
   display: block;
   margin-top: 0.2rem;
