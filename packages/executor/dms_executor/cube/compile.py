@@ -34,6 +34,7 @@ _AGGS = frozenset({"sum", "count", "avg", "min", "max", "count_distinct"})
 _OPS = frozenset({"eq", "neq", "gt", "gte", "lt", "lte", "in"})
 _SAFE = (
     exp.Column,
+    exp.Identifier,
     exp.Literal,
     exp.Neg,
     exp.Paren,
@@ -372,8 +373,8 @@ def compile_plan(plan: CubePlan, cube: Cube, *, dialect: str) -> str:
         sub = exp.select(*child_selects[table]).from_(table)
         for pred in child_where.get(table, []):
             sub = sub.where(pred)
-        sub = sub.group_by(*child_groups[table]).subquery(alias)
-        query = query.join(sub, on=_on(join, alias), join_type="LEFT")
+        child_sub = sub.group_by(*child_groups[table]).subquery(alias)
+        query = query.join(child_sub, on=_on(join, alias), join_type="LEFT")
 
     if outer_groups:
         query = query.group_by(*outer_groups)
@@ -387,8 +388,8 @@ def compile_plan(plan: CubePlan, cube: Cube, *, dialect: str) -> str:
         direction = str(item.direction or "asc").strip().lower()
         if direction not in {"asc", "desc"}:
             raise CubePlanError(REASON_UNKNOWN)
-        col = exp.column(name)
-        orders.append(col.asc() if direction == "asc" else col.desc())
+        ordered = exp.column(name)
+        orders.append(ordered.asc() if direction == "asc" else ordered.desc())
     if orders:
         query = query.order_by(*orders)
     if plan.limit is not None:

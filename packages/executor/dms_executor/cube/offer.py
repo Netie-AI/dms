@@ -308,7 +308,8 @@ def _shape_block(
     kind = str(verdict.get("verdict") or "")
     if kind not in {"misfit", "unknown"}:
         return None
-    reasons = verdict.get("reasons") if isinstance(verdict.get("reasons"), list) else []
+    raw_reasons = verdict.get("reasons")
+    reasons = raw_reasons if isinstance(raw_reasons, list) else []
     shown = [str(item) for item in reasons if str(item).strip()]
     env_out = _reconfirm(
         asked,
@@ -334,7 +335,8 @@ def _arbitrate(
 
     if not arbiter_enabled():
         return env
-    rows = env.get("rows") if isinstance(env.get("rows"), list) else []
+    raw_rows = env.get("rows")
+    rows = raw_rows if isinstance(raw_rows, list) else []
     columns, data = table_of([row for row in rows if isinstance(row, dict)])
     item = ResultSet(
         sql=str(env.get("sql_used") or ""),
