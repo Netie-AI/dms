@@ -27,6 +27,22 @@ House rules that apply on every engagement:
    Done when fidelity prints `gold 17 ok / 0 mismatch / 0 error` and the PK/FK counts match.
 2. Confirm their engine is supported (see the table below). If it is not, stop and raise it now, not on site.
 3. Send the access request in the security section (read-only login, network path, PII list).
+4. Provision this company's tenant row before anyone creates a Space. See "Provision the tenant" below. A second company that skips this step and keeps the default `DMS_TENANT_ID` lands in the live Studio list of that default tenant.
+
+### Provision the tenant
+
+A process whose `DMS_TENANT_ID` is not a row in `dms.tenants` answers every tenant-scoped write, including `POST /v1/spaces`, with HTTP 409 `tenant_not_provisioned`. The body is that code only. The route does not create the tenant, and it does not echo the database error.
+
+Provisioning is an operator command. It is never automatic. It does not create a key, a grant, a user, a membership, or a credential. Auth, grant, and key changes stay on the founder 1-hour objection window and are not this step.
+
+```bash
+DMS_TENANT_PROVISION=1 DATABASE_URL=postgresql://... \
+  python scripts/ops/provision_tenant.py --tenant-id <uuid> --name "<company>"
+```
+
+`DMS_TENANT_PROVISION` defaults off. Off, the command refuses and writes nothing. On, it inserts the tenant row and a default compute pool. The pool write uses the steward role. It never sets the admin role. Run the same command again and it is a no-op.
+
+Then start DMS with `DMS_TENANT_ID` set to that uuid, and create the Space in section 1.
 
 ### Engine support on main
 
@@ -42,7 +58,7 @@ All engines land in DuckDB bronze and every answer runs there (extract-only, DR-
 
 ## 1. Connect (day 1, morning)
 
-1. **Create the tenant Space**: `POST /v1/spaces` with the company name. Record the `space_id` in the tenant sheet.
+1. **Create the tenant Space** only after the tenant row from section 0 exists. `POST /v1/spaces` with the company name. A missing tenant is HTTP 409 `tenant_not_provisioned`, not a 500, and nothing is written. Record the `space_id` in the tenant sheet.
 2. **Credential custody**:
    - Preferred: the customer's DBA puts the read-only password into the tenant's OpenVault. DMS receives an OpenVault credential reference through `POST /v1/connect/sources` (flag `DMS_CONNECT_API`; the connect book is process memory today, so re-connect after a restart). A raw secret in that body is rejected.
    - Fallback: `POST /v1/studio/sources/sql` with `{kind, host, port, database, user, password, tables?, max_rows?, space_id}`. The password is used once and is not stored. Type it through a secure prompt or `FDE_SOURCE_PASSWORD`, never in chat, a ticket or a shell history.
@@ -147,6 +163,7 @@ At fleet scale, `factory` makes seeded tenants (8 domains x 4 naming styles, any
 
 ## Per-tenant onboarding checklist
 
+- [ ] Tenant provisioned with the operator CLI (`DMS_TENANT_PROVISION=1`), `tenant_id` recorded, rerun was a no-op
 - [ ] Engine and version confirmed supported (table in section 0)
 - [ ] Practice-pack rehearsal on the same engine passed fidelity (80/80 style, keys counted)
 - [ ] Read-only login created by the customer's DBA (not by us), SELECT on the agreed tables only
@@ -186,6 +203,6 @@ At fleet scale, `factory` makes seeded tenants (8 domains x 4 naming styles, any
   - AO-MASK-01 (#505, still open) makes AI compile prompts carry only masked or non-personal sample values. Until it lands, keep PII columns out of the grant for any Space where `DMS_AO_COMPILE` is on.
   - Where a question does not need a PII column, leave it out of the grant.
   - The practice HR pack has `full_name` and `email` on purpose, so the team rehearses this.
-- **Tenant isolation.** One Space per company, with grants scoped to that Space. Never reuse a Space or a bronze lake across customers.
+- **Tenant isolation.** One tenant per company, then one Space per company, with grants scoped to that Space. Never point a second company at the default tenant, and never reuse a Space or a bronze lake across customers.
 - **Data residency.** The bronze copy lives where the tenant's DMS runs. Agree the region before the first pull.
 - **Exit.** On contract end, the customer revokes the login. The tenant lake is removed only with the customer's written request and the founder's approval (no silent deletes).

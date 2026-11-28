@@ -45,6 +45,7 @@ from dms_api.routes import (
 from dms_api.settings import get_settings
 from dms_api.store.binding import StoreBinding
 from dms_api.store.memory import DemoSpaceStore
+from dms_api.tenant_http import install as install_tenant_errors
 from dms_api.wiring import build_ask_service
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,10 @@ def create_app() -> FastAPI:
         return JSONResponse(
             status_code=422, content={"detail": _validation_detail_without_input(exc)}
         )
+
+    # A missing dms.tenants row is a 409 on every write route. The body is the
+    # code only: the driver error can quote the statement.
+    install_tenant_errors(app)
 
     app.include_router(health.router, tags=["health"])
     app.include_router(ping.router, tags=["skeleton"])
