@@ -13,6 +13,12 @@ Append-only. Never edited, only added to. Newest first.
 - **Destructive.** A typed non-SELECT statement, or a destructive verdict from role `reason`, refuses before compile. No keyword list. An unknown verdict is not a destructive abstain.
 - **Stub 52.** `grade52 --main` at `12326dd`, base `3752fb4`. Flag off: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Flag on: correct=23 wrong=0 reconfirm=25 ai=0 rule=23 L1=23. Rule-served did not grow. Armed grade52 and pack H were not run. Not PASS.
 
+## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: join parse uses SERVING_DIALECT
+
+- **Dialect.** `reads_two_base_tables` parses with `dialect or SERVING_DIALECT`. No `duckdb` literal. The grant-dialect scan stays as it was.
+- **Base.** Rebased onto `cb64f4d`.
+- **Stub 52.** `grade52 --main` at `ce6d54d`. Flag off and flag on: correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. stamp_contradiction=0. Rule-served did not grow. Armed grade52 and the 41-id rerun were not run. Not PASS.
+
 ## 2026-11-28 - NL19-SCHEMA-ONTO-GAP: a missing measure reaches the AI SQL leg
 
 - **Flag.** `DMS_MEASURE_FROM_SCHEMA` defaults off. Only the digit 1 turns it on. Off, the ask prompt, the envelope, and the served route stay as they were.
