@@ -546,7 +546,9 @@ def test_live_ask_vq04_beats_greedy_compute(minter: ManifestMinter) -> None:
         }
     )
     exe = Executor(cortex=fake, minter=minter)  # type: ignore[arg-type]
-    env = exe.live_ask("how full is each warehouse", session_id="ses_gen01_vq04")
+    env = exe.live_ask(
+        "How many delayed incoming shipments per warehouse?", session_id="ses_gen01_vq04"
+    )
     assert env["badge"] == "ABSTAIN"
     assert env["abstained"] is True
     assert fake.submits == []

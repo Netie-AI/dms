@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from cortex_client.client import CortexClient
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
 from cortex_contract.execution import Manifest, QueryResult
 from dms_api.app import create_app
@@ -35,11 +36,20 @@ from dms_executor.demo_pack import (
     TOTAL_SPEND_Q,
     is_uncertified_paraphrase,
     lookup_pack_metric,
+    match_pack_phrase,
 )
 from dms_executor.demo_warehouse import execute_sql
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
 from fastapi.testclient import TestClient
+
+# Certified synonyms of cq_capacity_utilisation (founder goal: synonyms of a
+# certified metric serve L1 from the certified definition, never AI re-derivation).
+HOW_FULL_SYNONYMS = (
+    "how full is each warehouse",
+    "How full are the warehouses?",
+    "warehouse fullness",
+)
 
 FINANCE = "cccccccc-cccc-cccc-cccc-cccccccccccc"
 WAREHOUSE_OPS = "dddddddd-dddd-dddd-dddd-dddddddddddd"
@@ -504,11 +514,12 @@ def test_vq03_exact_asks_hit_pack_and_traps_miss() -> None:
         hit = lookup_pack_metric(question, grantable=grant, dialect="duckdb")
         assert hit is not None, question
         assert hit.metric_id == metric_id
-    assert lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance, dialect="duckdb") is None
+    how_full = lookup_pack_metric(HOW_FULL_TRAP_Q, grantable=finance, dialect="duckdb")
+    assert how_full is not None and how_full.metric_id == "cq_capacity_utilisation"
     assert lookup_pack_metric(DELAYED_COUNT_TRAP_Q, grantable=ops, dialect="duckdb") is None
     assert lookup_pack_metric(SHIPMENT_COST_Q, grantable=finance, dialect="duckdb") is None
     assert lookup_pack_metric(SPEND_BY_COUNTRY_Q, grantable=ops, dialect="duckdb") is None
-    assert is_uncertified_paraphrase(HOW_FULL_TRAP_Q)
+    assert not is_uncertified_paraphrase(HOW_FULL_TRAP_Q)
     assert is_uncertified_paraphrase(DELAYED_COUNT_TRAP_Q)
     assert not is_uncertified_paraphrase(CAPACITY_UTILISATION_Q)
     assert not is_uncertified_paraphrase(SHIPMENT_COST_Q)
@@ -613,42 +624,161 @@ _DELAYED_DEST_SQL = (
 )
 
 
-def test_how_full_synonym_does_not_pack_hit(
-    warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    cortex = _PackCortex(warehouse=warehouse)
-    client = _live_client(warehouse, minter, monkeypatch, cortex)
+@dataclass
+class _NoModelPackCortex(_PackCortex):
+    """Pack double that records any Insights (model) call."""
+
+    insights: list[str] = field(default_factory=list)
+
+    def compute_insights(self, question: str, **_kwargs: Any) -> dict[str, Any]:
+        self.insights.append(question)
+        return {"status": "ABSTAIN", "insights_fail": "insights_unarmed"}
+
+
+class _ArmedPackCortex(CortexClient):
+    """A real ``CortexClient`` type, so ``live_ask`` takes the armed product path.
+
+    The armed path skips the planted-paraphrase list, which is where grade52
+    sent "how full is each warehouse" to the model and compile abstained
+    ``ungrounded_measure:utilisation_pct``. Transport is the pack double.
+    """
+
+    def __init__(self, inner: _NoModelPackCortex) -> None:
+        super().__init__("http://127.0.0.1:9")
+        self.inner = inner
+
+    def submit(self, req: Any) -> QueryResult:  # type: ignore[override]
+        return self.inner.submit(req)
+
+    def ledger_append(self, req: LedgerAppendRequest) -> LedgerAppendResponse:  # type: ignore[override]
+        return self.inner.ledger_append(req)
+
+    def ask(self, req: AskRequest) -> AskResponse:  # type: ignore[override]
+        return self.inner.ask(req)
+
+    def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:  # type: ignore[override]
+        return self.inner.compute_insights(question, **kwargs)
+
+
+def _sql_submitted(cortex: _PackCortex) -> list[str]:
+    out: list[str] = []
+    for s in cortex.submits:
+        plan = getattr(s, "plan", None)
+        if isinstance(plan, dict) and plan.get("kind") == "sql":
+            body = s.body
+            out.append(str(body.get("sql") if isinstance(body, dict) else getattr(body, "sql", "")))
+    return out
+
+
+def _ask_env(client: TestClient, question: str, session_id: str) -> dict[str, Any]:
     r = client.post(
         "/v1/chat/ask",
-        json={
-            "question": HOW_FULL_TRAP_Q,
-            "space_id": FINANCE,
-            "session_id": "ses_how_full",
-        },
+        json={"question": question, "space_id": FINANCE, "session_id": session_id},
     )
     assert r.status_code == 200, r.text
     env = r.json()
     assert_envelope_valid(env)
-    assert env["abstained"] is True
-    assert env["badge"] == "ABSTAIN"
-    assert env["rows"] == []
-    assert env["values"] == []
-    assert "91" not in env["text"]
-    assert cortex.asks == []
+    return env
+
+
+def test_how_full_synonyms_resolve_to_the_certified_capacity_metric() -> None:
+    finance = {"locations", "inventory", "transactions", "suppliers"}
+    for question in HOW_FULL_SYNONYMS:
+        hit = lookup_pack_metric(question, grantable=finance, dialect="duckdb")
+        assert hit is not None, question
+        assert hit.metric_id == "cq_capacity_utilisation"
+        assert hit.sql == CAPACITY_UTILISATION_SQL
+        assert not is_uncertified_paraphrase(question)
+    assert match_pack_phrase("how full is the parking lot") is None
+    assert match_pack_phrase("how full is the parking lot", tables=None) is None
+    assert match_pack_phrase("how full") is None
+    assert match_pack_phrase("how full is warehouse A") is None
+
+
+@pytest.mark.parametrize("armed", [False, True], ids=["fake", "armed"])
+@pytest.mark.parametrize("question", HOW_FULL_SYNONYMS)
+def test_how_full_synonym_answers_l1_from_the_certified_definition(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    armed: bool,
+) -> None:
+    """A certified synonym serves the certified metric: same id, rows, values. No model."""
+    inner = _NoModelPackCortex(warehouse=warehouse)
+    cortex: Any = _ArmedPackCortex(inner) if armed else inner
+    try:
+        client = _live_client(warehouse, minter, monkeypatch, cortex)
+        canonical = _ask_env(client, CAPACITY_UTILISATION_Q, "ses_cap_canonical")
+        env = _ask_env(client, question, "ses_cap_synonym")
+    finally:
+        if armed:
+            cortex.close()
+    assert canonical["badge"] == "L1_GOVERNED_METRIC"
+    assert canonical["abstained"] is False
+    assert canonical["rows"]
+
+    assert env["abstained"] is False, env["text"]
+    assert env["badge"] == "L1_GOVERNED_METRIC"
+    assert env["answer_id"] == "ans_cq_capacity_utilisation"
+    assert "governed metric cq_capacity_utilisation" in env["assumptions"]
+    assert f"certified synonym of '{CAPACITY_UTILISATION_Q}'" in env["assumptions"]
+    assert env["rows"] == canonical["rows"]
+    assert env["values"] == canonical["values"]
+    assert env["text"] == canonical["text"]
+    assert {"location_code", "pct_used"} <= set(env["rows"][0])
+    first = env["rows"][0]
+    assert str(first["location_code"]) in env["text"]
+    assert "ungrounded_measure" not in json.dumps(env)
+    assert "uncertified paraphrase" not in json.dumps(env)
+    # Certified definition, executed through Cortex submit + ledger. No model, no contract ask.
+    assert _sql_submitted(inner) == [CAPACITY_UTILISATION_SQL, CAPACITY_UTILISATION_SQL]
+    assert inner.insights == []
+    assert inner.asks == []
+    assert inner.appends[-1].event_type == "ask.governed_metric"
+
+
+@pytest.mark.parametrize("armed", [False, True], ids=["fake", "armed"])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "how full is the parking lot",
+        # One warehouse is a filter the certified metric does not have. Serving
+        # every location's row under L1 would answer a different question.
+        "how full is warehouse A",
+    ],
+)
+def test_how_full_outside_the_certified_metric_is_not_served_as_it(
+    warehouse: Path,
+    minter: ManifestMinter,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    armed: bool,
+) -> None:
+    inner = _NoModelPackCortex(warehouse=warehouse)
+    cortex: Any = _ArmedPackCortex(inner) if armed else inner
+    try:
+        client = _live_client(warehouse, minter, monkeypatch, cortex)
+        env = _ask_env(client, question, "ses_not_capacity")
+    finally:
+        if armed:
+            cortex.close()
+    assert env["badge"] != "L1_GOVERNED_METRIC"
+    assert env["answer_id"] != "ans_cq_capacity_utilisation"
+    assert "governed metric cq_capacity_utilisation" not in env["assumptions"]
+    assert CAPACITY_UTILISATION_SQL not in _sql_submitted(inner)
+    assert not any("pct_used" in row for row in env["rows"])
 
 
 def test_planted_refuse_stays_abstain_when_cortex_returns_l1(
     warehouse: Path, minter: ManifestMinter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """VQ-04: live WRONG2 was Cortex L1 on these two phrases. Must refuse."""
+    """VQ-04: live WRONG2 was Cortex L1 on a planted phrase. Must refuse.
+
+    "how full is each warehouse" left this list: it is a certified synonym of
+    cq_capacity_utilisation and serves from the pack before any Cortex ask.
+    """
     cases = (
-        (
-            HOW_FULL_TRAP_Q,
-            FINANCE,
-            CAPACITY_UTILISATION_SQL,
-            [{"location_code": "WH-A", "pct_used": 91.0}],
-            "WH-A 91.0",
-        ),
         (
             DELAYED_COUNT_TRAP_Q,
             WAREHOUSE_OPS,
