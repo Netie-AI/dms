@@ -4,6 +4,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { useApp } from "@/context/AppContext";
+import { STARTER_QUESTIONS } from "@/lib/starterQuestions";
 import {
   describeApiError,
   fetchLibraryTree,
@@ -40,15 +41,6 @@ type Receipt = {
   per_class?: Record<string, number> | null;
   files?: FileRow[] | null;
 };
-
-/** Starter questions. Retrieved suggestions replace this list when that data exists. */
-const STARTER_QUESTIONS = [
-  "What is our total spend by supplier country?",
-  "What is total stock value by category?",
-  "Which SKUs are below reorder level in warehouse A?",
-  "Show warehouse capacity utilisation",
-  "Which locations are cold storage?",
-] as const;
 
 /** Flatten the tree to the leaves that can actually be previewed and asked about. */
 function askableLeaves(nodes: TreeNode[], out: TreeNode[] = []): TreeNode[] {

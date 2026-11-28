@@ -15,12 +15,4 @@ export const FIXTURE_SPACES: SpaceSummary[] = [
   },
 ];
 
-/** Exact certified questions a CEO can click, plus one typo trap that must abstain. */
-export const SUGGESTED_QUESTIONS = [
-  "What is our total spend by supplier country?",
-  "What is total stock value by category?",
-  "Top 5 selling SKUs by revenue",
-  "How many SKUs do we have in inventory?",
-  "Show warehouse capacity utilisation",
-  "Show top 3 categoty sales",
-];
+export { STARTER_QUESTIONS as SUGGESTED_QUESTIONS } from "./starterQuestions";

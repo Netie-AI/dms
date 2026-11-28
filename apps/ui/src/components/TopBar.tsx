@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { useAppLogin } from "@/components/LoginGate";
 import { useApp } from "@/context/AppContext";
 import { ceoSafeHref } from "@/lib/productMode";
 import type { AppRole } from "@/lib/types";
@@ -20,6 +21,7 @@ export function TopBar() {
     setProductMode,
   } = useApp();
   const navigate = useNavigate();
+  const login = useAppLogin();
   const [newOpen, setNewOpen] = useState(false);
   const nextMode = productMode === "cream" ? "graphite" : "cream";
 
@@ -172,6 +174,16 @@ export function TopBar() {
           </>
         )}
       </button>
+
+      {login.enabled && login.session ? (
+        <button
+          type="button"
+          onClick={() => void login.signOut()}
+          className="h-8 shrink-0 px-2 text-xs text-[var(--color-ink-muted)] hover:text-[var(--color-ink)]"
+        >
+          Sign out
+        </button>
+      ) : null}
 
       {productMode === "graphite" && (
         <select

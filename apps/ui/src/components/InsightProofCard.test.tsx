@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Navigate } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 import { InsightProofCard } from "./InsightProofCard";
 import { InsightsPageView, resolveStatus, statusToView } from "@/pages/InsightsPage";
 import {
@@ -134,21 +134,25 @@ describe("InsightProofCard", () => {
 });
 
 describe("InsightsPage", () => {
-  it("given a status 404 renders the same redirect to '/' as the catch-all", () => {
+  it("a missing insights flag renders its own page, not the Ask home", () => {
     expect(statusToView(404)).toBe("missing");
     expect(statusToView(200)).toBe("ready");
-    const el = InsightsPageView({ view: { kind: "missing" } }) as ReactElement<{
-      to: string;
-      replace: boolean;
-    }>;
-    expect(el.type).toBe(Navigate);
-    expect(el.props.to).toBe("/");
-    expect(el.props.replace).toBe(true);
+    const html = renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(InsightsPageView, { view: { kind: "missing" } }),
+      ),
+    );
+    expect(html).toContain("insights-unavailable");
+    expect(html).toContain("Insights is not on");
+    expect(html).toContain("Back to Ask");
+    expect(html).not.toContain("Ask your company's data");
   });
 
-  it("redirects like main when the status call fails any other way, and shows nothing first", async () => {
+  it("stays missing when the status call fails any other way, and shows nothing first", async () => {
     // A proxy 502, an enabled:false body, and a rejected fetch (API down) all
-    // behave as the catch-all does on main: a redirect, never the feature's header.
+    // stay on the unavailable page, never the feature's header and never Ask.
     expect(statusToView(502)).toBe("missing");
     expect(statusToView(500)).toBe("missing");
     const resp = (status: number, body: unknown) =>

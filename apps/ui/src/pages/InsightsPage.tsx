@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { InsightProofCard } from "@/components/InsightProofCard";
 import { PageHeader } from "@/components/PageShell";
 import { useApp } from "@/context/AppContext";
@@ -21,10 +21,9 @@ import {
  * INS-PROOF-03 - /insights, reachable by URL only (no nav link).
  *
  * It asks GET /v1/insight-proof/status first. With the flag off that is a 404
- * and this page renders the same redirect to "/" as the catch-all route, so the
- * URL behaves as it does on main. Any status other than a 2xx that says
- * enabled, and a fetch that rejects (API down), redirect the same way, and
- * nothing of the feature (not even its header) renders before the answer.
+ * and this page says insights is not on, instead of rendering the Ask home.
+ * Any status other than a 2xx that says enabled, and a fetch that rejects
+ * (API down), does the same. Nothing of the feature renders before the answer.
  */
 
 export type InsightsView =
@@ -67,7 +66,22 @@ export function InsightsPageView({
   onCancel?: (insightId: string) => void;
   onReplay?: (assetId: string) => void;
 }) {
-  if (view.kind === "missing") return <Navigate to="/" replace />;
+  if (view.kind === "missing") {
+    return (
+      <div className="mx-auto max-w-xl p-6" data-testid="insights-unavailable">
+        <PageHeader
+          phase="Insights"
+          title="Insights is not on"
+          blurb="This install has not turned insights on. Ask is available from the home page."
+        />
+        <p className="mt-6 text-sm">
+          <Link to="/" className="text-[var(--color-accent)] hover:underline">
+            Back to Ask
+          </Link>
+        </p>
+      </div>
+    );
+  }
   if (view.kind === "loading") return null;
   return (
     <div className="mx-auto max-w-4xl p-6">

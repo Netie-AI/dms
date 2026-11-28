@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "@/components/AppShell";
+import { LoginGate } from "@/components/LoginGate";
 import { AppProvider } from "@/context/AppContext";
 import { AdminPage } from "@/pages/AdminPage";
 import { AmendPage } from "@/pages/AmendPage";
@@ -15,25 +16,27 @@ import { TrustPage } from "@/pages/TrustPage";
 
 export default function App() {
   return (
-    <AppProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route index element={<ChatPage />} />
-            <Route path="spaces" element={<SpacesPage />} />
-            <Route path="library" element={<LibraryPage />} />
-            <Route path="studio" element={<StudioPage />} />
-            <Route path="ontology" element={<OntologyPage />} />
-            <Route path="amend" element={<AmendPage />} />
-            <Route path="audit" element={<AuditPage />} />
-            <Route path="trust" element={<TrustPage />} />
-            <Route path="runs" element={<RunsPage />} />
-            <Route path="admin" element={<AdminPage />} />
-            <Route path="insights" element={<InsightsPage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </AppProvider>
+    <BrowserRouter>
+      <LoginGate>
+        <AppProvider>
+          <Routes>
+            <Route element={<AppShell />}>
+              <Route index element={<ChatPage />} />
+              <Route path="spaces" element={<SpacesPage />} />
+              <Route path="library" element={<LibraryPage />} />
+              <Route path="studio" element={<StudioPage />} />
+              <Route path="ontology" element={<OntologyPage />} />
+              <Route path="amend" element={<AmendPage />} />
+              <Route path="audit" element={<AuditPage />} />
+              <Route path="trust" element={<TrustPage />} />
+              <Route path="runs" element={<RunsPage />} />
+              <Route path="admin" element={<AdminPage />} />
+              <Route path="insights" element={<InsightsPage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Route>
+          </Routes>
+        </AppProvider>
+      </LoginGate>
+    </BrowserRouter>
   );
 }

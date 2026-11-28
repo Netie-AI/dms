@@ -17,7 +17,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from dms_api.app_login import LoginBook
+from dms_api.app_login import enabled as app_login_enabled
 from dms_api.middleware_actor import RejectIdentityHeadersMiddleware
+from dms_api.middleware_login import AppLoginMiddleware
 from dms_api.migrate import run_migrations
 from dms_api.routes import (
     admin,
@@ -40,6 +43,9 @@ from dms_api.routes import (
     studio_adjust,
     studio_chat,
     trust,
+)
+from dms_api.routes import (
+    app_login as app_login_routes,
 )
 from dms_api.settings import get_settings
 from dms_api.store.binding import StoreBinding
@@ -164,6 +170,9 @@ def create_app() -> FastAPI:
     app.state.ask_audit_store = InMemoryAskAuditStore()
     app.state.cortex = None
     app.state.ask_service = build_ask_service(None)
+    # UX-SIGNIN-01. Off unless DMS_APP_LOGIN=1. Off, no session cookie and no
+    # auth routes. The founder turns it on after the objection window.
+    app.state.app_login = LoginBook.load() if app_login_enabled() else None
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
@@ -172,6 +181,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    if app.state.app_login is not None:
+        app.add_middleware(AppLoginMiddleware)
     app.add_middleware(RejectIdentityHeadersMiddleware)
 
     @app.exception_handler(RequestValidationError)
@@ -208,6 +219,8 @@ def create_app() -> FastAPI:
         app.include_router(insight_proof.router)
     if studio_adjust.enabled():
         app.include_router(studio_adjust.router)
+    if app.state.app_login is not None:
+        app.include_router(app_login_routes.router)
     return app
 
 

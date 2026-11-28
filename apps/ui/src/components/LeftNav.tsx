@@ -106,7 +106,7 @@ export function LeftNav() {
         id="primary-nav"
         aria-label="Primary"
         data-testid="left-nav"
-        className="flex w-12 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] py-3 max-lg:hidden"
+        className="flex w-16 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r border-[var(--color-line)] bg-[var(--color-panel)] py-3 max-lg:hidden"
       >
         {visible.map((group, gi) => (
           <div key={group.title} className="flex w-full flex-col items-center gap-1">
@@ -116,16 +116,23 @@ export function LeftNav() {
                 key={item.id}
                 to={item.to}
                 end={item.to === "/"}
-                title={`${item.label} — ${item.hint}`}
+                title={`${item.label}. ${item.hint}`}
+                aria-label={item.label}
                 className={({ isActive }) =>
-                  `flex h-8 w-8 items-center justify-center text-[11px] font-semibold tracking-wide ${
+                  `flex w-full flex-col items-center px-0.5 py-1 text-[11px] font-semibold tracking-wide ${
                     isActive
                       ? "bg-[var(--color-accent-soft)] text-[var(--color-accent)]"
                       : "text-[var(--color-ink-muted)] hover:bg-[var(--color-paper-2)]"
                   }`
                 }
               >
-                {item.short}
+                <span>{item.short}</span>
+                <span
+                  className="mt-0.5 text-[9px] font-medium leading-none tracking-normal"
+                  data-testid={`nav-label-${item.id}`}
+                >
+                  {item.label}
+                </span>
               </NavLink>
             ))}
           </div>
