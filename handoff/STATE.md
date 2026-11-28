@@ -124,20 +124,18 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-28 16:01 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-28 17:05 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `dc4c40dc` FDE-REASON-LEAK-01: keep transport errors out of user replies (#617)
+main: `a7c0ce4f` BIRD-TIES-PROJECTION-01: return the full tie and only the asked columns (#627)
 
-open PRs: 53 (cap 60)
+open PRs: 49 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
 | #628 | y | `1c1de82c` | - | no checks | NL19-NO-SQL-GENERATE: retry one empty generate, then ask back |
-| #627 | y | `653f70bf` | - | 8 ok, 3 running | BIRD-TIES-PROJECTION-01: return the full tie and only the asked columns |
-| #623 | y | `396fba34` | - | 8 ok, 3 running | BIRD-SERVING-DEADLINE-01: do not end a progressing ask on the serving reserve |
-| #622 | y | `854a6b0e` | - | 8 ok, 3 running | NL19-SCHEMA-ONTO-GAP: hand a missing measure to the AI SQL leg |
+| #622 | y | `ba1e9474` | - | 8 ok, 3 running | NL19-SCHEMA-ONTO-GAP: hand a missing measure to the AI SQL leg |
 | #621 | y | `fec45062` | - | no checks | NL19-EXPLAIN-REPAIR: trace binder failures and repair within the call budget |
 | #616 | y | `d85a4171` | - | no checks | UX-CLARIFY-CARD-01: early clarify card before the SQL loop |
 | #613 | y | `ee1dd4c0` | - | no checks | FDE-ONTO-LINKS-01: propose undeclared join links for steward confirmation |
@@ -148,10 +146,8 @@ open PRs: 53 (cap 60)
 | #604 | y | `b9c36920` | - | no checks | UX-FEEDBACK-01: Yes, Fix it, and Request review |
 | #603 | y | `a4c02ce9` | - | 11 ok | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
 | #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
-| #600 | y | `e2e7b2e9` | - | 11 ok | FEAT-BENCH-SPACE-01: Benchmarks inside each Space |
-| #599 | y | `36349872` | - | 8 ok, 3 running | UX-TRUST-01: show benchmark files and quiet studio polls |
 | #596 | y | `8e548ab6` | - | 11 ok | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
-| #581 | n | `5555be05` | tier:fast | 11 ok | handoff: state refresh |
+| #581 | n | `5570cb33` | tier:fast | 12 ok | handoff: state refresh |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
