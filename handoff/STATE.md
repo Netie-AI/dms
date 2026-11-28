@@ -124,19 +124,25 @@ Claude Code takes the top NEXT item of a lane only when it is concrete, or after
 ## Machine block
 
 <!-- MACHINE:BEGIN -->
-Generated 2026-11-28 18:01 SGT by scripts/handoff/update_state.py. Do not hand-edit.
+Generated 2026-11-28 19:06 SGT by scripts/handoff/update_state.py. Do not hand-edit.
 
 ### Netie-AI/dms
 
-main: `fa0eeef7` READY-04: guide a new company from connect to a first count (#655)
+main: `7dc5e5f4` Add the Harborline demo company generator and buyer gold (#659)
 
-open PRs: 51 (cap 60)
+open PRs: 57 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
-| #658 | y | `9f20439d` | - | 8 ok, 3 running | DMS-CREATE-01: Create app with a hard per-run budget |
-| #657 | y | `8c03ce44` | - | 8 ok, 3 running | AI-FLOOR-01: checked model SQL and live ask steps |
-| #656 | y | `547bfa15` | - | 8 ok, 3 running | READY-02: require a credential when DMS_SSO is 1 |
+| #668 | y | `568d0ee9` | - | 8 ok, 3 running | Generality harness: one scoreboard, recorded slice in CI |
+| #667 | y | `d56ff70d` | - | 8 ok, 3 running | DMS-SIGN: sign, disclose, and store documents (flag off) |
+| #665 | y | `6e87464b` | - | no checks | Accuracy levers on the AI floor, flags off |
+| #663 | y | `72b5a405` | - | 13 ok, 2 running | HARNESS-SEC-01: gate provider keys, SQL, and demo bearers |
+| #662 | y | `b94e6140` | - | no checks | BIG-SCHEMA-01: never send an empty schema |
+| #661 | y | `dab5f750` | - | 3 ok, 8 running | Create doc and slides through the shared provider adapter |
+| #660 | y | `70173c66` | - | no checks | READY-07: AI sell profile for Studio ask |
+| #658 | y | `645f241d` | - | 10 ok, 1 running | DMS-CREATE-01: harness for Claude and Cursor |
+| #657 | y | `d034aed8` | - | 8 ok, 3 running | AI-FLOOR-01: checked model SQL and live ask steps |
 | #628 | y | `1c1de82c` | - | no checks | NL19-NO-SQL-GENERATE: retry one empty generate, then ask back |
 | #621 | y | `fec45062` | - | no checks | NL19-EXPLAIN-REPAIR: trace binder failures and repair within the call budget |
 | #616 | y | `d85a4171` | - | no checks | UX-CLARIFY-CARD-01: early clarify card before the SQL loop |
@@ -149,7 +155,7 @@ open PRs: 51 (cap 60)
 | #603 | y | `a4c02ce9` | - | 11 ok | FEAT-PIPELINE-STEP-01: Python SDK, CLI, Airflow operators, dbt recipe, signed we |
 | #601 | y | `f737c265` | - | no checks | UX-SIGNIN-01: in-app sign-in behind DMS_APP_LOGIN (default off) |
 | #596 | y | `8e548ab6` | - | 11 ok | FEAT-VALUE-MATCH-01: entity and value matching for misspelled filter values |
-| #581 | n | `84db8cbe` | tier:fast | 12 ok | handoff: state refresh |
+| #581 | n | `fa96e692` | tier:fast | 12 ok | handoff: state refresh |
 | #574 | y | `0c08c59e` | - | 7 ok | R1-CLARIFY-01: ask back instead of abstaining on an ambiguous question |
 | #563 | y | `05539dbc` | - | no checks | WORD-RULES-OUT-01: rank ontology measures when DMS_NO_WORD_RULES is on |
 | #543 | y | `b7059751` | - | 5 ok, 2 FAIL | FDE-ONBOARD-01: one command onboards a customer's files into a Space and drafts  |
@@ -206,14 +212,13 @@ open PRs: 9 (cap 60)
 
 ### Netie-AI/OpenVault
 
-main: `6337ea52` fix: patch next, electron, and server advisories (#197)
+main: `ceab7c77` fix(freeroute): fail closed on uncapped paid hops and stamp downgrades (#198)
 
-open PRs: 9 (cap 60)
+open PRs: 8 (cap 60)
 
 | PR | draft | head | tier | CI on head | title |
 |---|---|---|---|---|---|
 | #199 | y | `e85cd980` | - | no checks | feat(vault): tenant seats behind OV_SEAT_PLANE |
-| #198 | y | `a2dd884b` | - | 12 ok | fix(freeroute): fail closed on uncapped paid hops and stamp downgrades |
 | #196 | y | `3f333218` | tier:full | 11 ok | feat(guard): require credential on every GET outside an allowlist (READY-02) |
 | #174 | y | `b2159830` | tier:full | 9 ok | fix(vault): refuse an app grant whose label cannot be issued |
 | #173 | y | `24f495a5` | - | 9 ok | feat(freeroute): wire the Anthropic adapter as an opt-in tier (F110) |
