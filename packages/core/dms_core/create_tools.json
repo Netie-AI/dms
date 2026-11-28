@@ -87,7 +87,12 @@
                   "type": "object",
                   "properties": {
                     "label": {"type": "string"},
-                    "sql": {"type": "string"}
+                    "sql": {"type": "string"},
+                    "type": {"type": "string", "description": "bar, line, or pie."},
+                    "x": {"type": "string", "description": "Category column."},
+                    "y": {"type": "string", "description": "Value column when series is a category."},
+                    "series": {"description": "Measure columns, or the column whose values become series."},
+                    "labels": {"type": "boolean", "description": "Draw the value on each point."}
                   },
                   "required": ["label", "sql"]
                 }

@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: one page stays one page
+
+- **Length.** A doc that asks for one page is one page, with charts scaled onto it. A named page count is that many pages. A deck is one page per slide.
+- **Charts.** The model sets type, x, series, and labels. The file follows that spec. A long quarter-by-region table is drawn as one series per category. Axis numbers stay plain (`1,000,000`, not `1e6`).
+- **Brand.** The logo and the title colour are drawn. PDF embeds the brand font (Calibri when that is the request). Slides have a footer, a slide number, data labels, and a fade.
+
 ## 2026-11-28 - DMS-CREATE-01: Cursor finishes once, derived numbers are computed
 
 - **Cursor.** `POST /v0/agents` uses the 240 second timeout, then `GET /v0/agents/{id}` until FINISHED. The branch, the PR, and the artifact are what get judged. A miss does not launch a second agent.

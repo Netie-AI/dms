@@ -78,7 +78,16 @@ _SCHEMA_EXAMPLE = {
             "title": "Section title",
             "body": "One sentence.",
             "sql": "SELECT column FROM table",
-            "charts": [{"label": "Comparison", "sql": "SELECT column FROM table"}],
+            "charts": [
+                {
+                    "label": "Comparison",
+                    "sql": "SELECT column FROM table",
+                    "type": "bar",
+                    "x": "column",
+                    "series": ["value"],
+                    "labels": True,
+                }
+            ],
         }
     ],
 }

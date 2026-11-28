@@ -1426,7 +1426,7 @@ def test_pptx_multi_series_brand_and_extra_slide(tmp_path: Path) -> None:
         brand={"colours": "#112233 #445566", "fonts": "Source Sans"},
     )
     deck = Presentation(str(tmp_path / "slides.pptx"))
-    assert len(deck.slides) == 2
+    assert len(deck.slides) == 1
     drawn = [shape.chart for slide in deck.slides for shape in slide.shapes if shape.has_chart]
     assert len(drawn) == 6
     assert len(drawn[0].series) == 4
@@ -1435,7 +1435,7 @@ def test_pptx_multi_series_brand_and_extra_slide(tmp_path: Path) -> None:
     assert drawn[0].has_title
     assert drawn[0].chart_title.text_frame.text == "Quarterly by region"
     assert drawn[0].category_axis.has_title
-    assert drawn[0].category_axis.axis_title.text_frame.text == "region"
+    assert drawn[0].category_axis.axis_title.text_frame.text == "Region"
     assert drawn[0].value_axis.has_title
     title = deck.slides[0].shapes[0].text_frame.paragraphs[0]
     assert title.font.name == "Source Sans"
@@ -1452,6 +1452,10 @@ def test_html_formats_numbers_and_charts(tmp_path: Path) -> None:
                 "id": "a",
                 "title": "Total",
                 "body": "Revenue for the year.",
+                "rows": [
+                    {"region": "North", "revenue": 545806.0},
+                    {"region": "South", "revenue": 1200.5},
+                ],
                 "charts": [
                     {
                         "label": "Revenue by region",
@@ -1480,6 +1484,197 @@ def test_html_formats_numbers_and_charts(tmp_path: Path) -> None:
     assert "revenue=545806.0" not in html
     assert "545806.0" not in html
     assert "data:image/png;base64," in html
+    assert html.count("<table>") == 1
+    assert "<th>Revenue</th>" in html
+    assert "<th>revenue</th>" not in html
+
+
+def _png_top(png: bytes) -> bytes:
+    import zlib
+
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    at = 8
+    blob = b""
+    while at + 8 <= len(png):
+        length = int.from_bytes(png[at : at + 4], "big")
+        tag = png[at + 4 : at + 8]
+        data = png[at + 8 : at + 8 + length]
+        if tag == b"IDAT":
+            blob += data
+        if tag == b"IEND":
+            break
+        at += 12 + length
+    raw = zlib.decompress(blob)
+    return raw[1:4]
+
+
+def test_one_page_doc_fits_charts_and_a_deck_is_one_page_per_slide(tmp_path: Path) -> None:
+    from dms_executor.create_files import preview_pngs, render_artifact
+    from pptx import Presentation
+
+    charts = [
+        {
+            "label": f"Chart {index}",
+            "rows": [
+                {"region": "North", "amount": index + 1},
+                {"region": "South", "amount": index + 2},
+            ],
+        }
+        for index in range(8)
+    ]
+    doc = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Body",
+                "body": "Opened. TAILTOKEN",
+                "rows": [{"region": "North", "amount": 1}],
+                "charts": charts,
+            }
+        ],
+    }
+    brand = {"colours": "#112233", "fonts": "Calibri", "logo": "Netie"}
+    render_artifact(tmp_path / "doc", doc, kind="doc", one_page=True, brand=brand)
+    pdf = (tmp_path / "doc" / "doc.pdf").read_bytes()
+    assert pdf.count(b"/Type /Page ") == 1
+    assert pdf.count(b"/Subtype /Image") == 8
+    assert b"TAILTOKEN" in pdf
+    assert b"Netie" in pdf
+    assert b"/BaseFont /Calibri" in pdf
+    assert b"/FontFile2" in pdf
+    assert b"0.067 0.133 0.200 rg" in pdf
+    pngs = preview_pngs(doc, kind="doc", one_page=True, brand=brand)
+    assert len(pngs) == 1
+    (tmp_path / "doc" / "page.png").write_bytes(pngs[0])
+    assert _png_top(pngs[0]) == b"\x11\x22\x33"
+    long = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Body",
+                "body": "\n".join(f"line {index} of the note" for index in range(80)),
+                "charts": charts[:2],
+            }
+        ],
+    }
+    render_artifact(
+        tmp_path / "two", long, kind="doc", one_page=False, page_budget=2, brand=brand
+    )
+    two = (tmp_path / "two" / "doc.pdf").read_bytes()
+    assert two.count(b"/Type /Page ") == 2
+    assert len(preview_pngs(long, kind="doc", one_page=False, page_budget=2, brand=brand)) == 2
+    parts = [
+        {
+            "id": f"s{index}",
+            "title": f"Slide {index}",
+            "body": "One point.",
+            "charts": [
+                {
+                    "label": f"Amount {index}",
+                    "rows": [
+                        {"region": "North", "amount": index},
+                        {"region": "South", "amount": index + 1},
+                    ],
+                }
+            ],
+        }
+        for index in range(1, 17)
+    ]
+    deck = {"kind": "slides", "title": "Deck", "parts": parts}
+    render_artifact(tmp_path / "deck", deck, kind="slides", one_page=False, brand=brand)
+    deck_pdf = (tmp_path / "deck" / "slides.pdf").read_bytes()
+    assert deck_pdf.count(b"/Type /Page ") == 16
+    deck_pngs = preview_pngs(deck, kind="slides", one_page=False, brand=brand)
+    assert len(deck_pngs) == 16
+    (tmp_path / "deck" / "slide-1.png").write_bytes(deck_pngs[0])
+    (tmp_path / "deck" / "slide-16.png").write_bytes(deck_pngs[-1])
+    show = Presentation(str(tmp_path / "deck" / "slides.pptx"))
+    assert len(show.slides) == 16
+    texts = [
+        shape.text_frame.text
+        for slide in show.slides
+        for shape in slide.shapes
+        if shape.has_text_frame
+    ]
+    assert any(text.endswith("1 / 16") for text in texts)
+    assert any(text.endswith("16 / 16") for text in texts)
+    assert "p:fade" in show.slides[0]._element.xml
+    drawn = next(shape.chart for shape in show.slides[0].shapes if shape.has_chart)
+    assert drawn.plots[0].has_data_labels
+    assert drawn.value_axis.tick_labels.number_format == "#,##0"
+
+
+def test_chart_spec_pivots_a_long_table_and_axes_stay_plain(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dms_executor import create_files as files
+    from pptx import Presentation
+    from pptx.enum.chart import XL_CHART_TYPE
+
+    rows = []
+    for quarter, north, south in (("Q1", 10, 20), ("Q2", 15, 25), ("Q3", 1000000, 1500000)):
+        rows.append({"quarter": quarter, "region": "North", "amount": north})
+        rows.append({"quarter": quarter, "region": "South", "amount": south})
+    seen: list[str] = []
+    real = files._tick_label
+
+    def spy(value: float) -> str:
+        text = real(value)
+        seen.append(text)
+        return text
+
+    monkeypatch.setattr(files, "_tick_label", spy)
+    artifact = {
+        "kind": "slides",
+        "title": "Regions",
+        "parts": [
+            {
+                "id": "s1",
+                "title": "Quarterly",
+                "body": "By region.",
+                "charts": [
+                    {
+                        "label": "Quarterly by region",
+                        "type": "line",
+                        "x": "quarter",
+                        "series": "region",
+                        "y": "amount",
+                        "labels": True,
+                        "rows": rows,
+                    }
+                ],
+            }
+        ],
+    }
+    files.render_artifact(
+        tmp_path, artifact, kind="slides", one_page=False, brand={"fonts": "Calibri"}
+    )
+    deck = Presentation(str(tmp_path / "slides.pptx"))
+    drawn = next(shape.chart for shape in deck.slides[0].shapes if shape.has_chart)
+    assert drawn.chart_type == XL_CHART_TYPE.LINE
+    assert [series.name for series in drawn.series] == ["North", "South"]
+    assert list(drawn.plots[0].categories) == ["Q1", "Q2", "Q3"]
+    assert drawn.category_axis.axis_title.text_frame.text == "Quarter"
+    assert "1,000,000" in seen
+    assert all("e" not in item.lower() for item in seen)
+    wide = {
+        "label": "Picked series",
+        "type": "bar",
+        "x": "region",
+        "series": ["q1", "q2"],
+        "rows": [{"region": "North", "q1": 1, "q2": 2, "q3": 3, "q4": 4}],
+    }
+    frame = files._frame(wide)
+    assert frame is not None
+    _mark, axis, categories, series, show = frame
+    assert axis == "Region"
+    assert categories == ["North"]
+    assert [name for name, _values in series] == ["Q1", "Q2"]
+    assert show is True
 
 
 def test_chart_rows_past_forty_stay_and_a_sliced_part_is_marked(

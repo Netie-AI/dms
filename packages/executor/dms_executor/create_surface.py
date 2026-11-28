@@ -215,16 +215,19 @@ def confirm_final(*, session_id: str, actor: str) -> dict[str, Any]:
         raise CreateProblem("nothing_to_confirm")
     artifact = session.get("artifact") or {}
     folder = _store_dir() / session_id
-    from dms_executor.create_files import one_page_requested, render_artifact
+    from dms_executor.create_files import page_budget, render_artifact
 
     asked = " ".join(
         [str(session.get("goal") or ""), str(session.get("style_prompt") or "")]
     )
+    kind = str(session.get("kind") or "")
+    budget = page_budget(asked) if kind == "doc" else None
     session["files"] = render_artifact(
         folder,
         artifact,
-        kind=str(session.get("kind") or ""),
-        one_page=one_page_requested(asked),
+        kind=kind,
+        one_page=budget == 1,
+        page_budget=budget,
         brand=session.get("brand") or {},
     )
     session["final"] = True
