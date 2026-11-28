@@ -1352,19 +1352,17 @@ class Executor:
 
             # Phrase match + a failed later step is a named refusal (not None).
             # None means the phrase missed, so generative / contract ask may run.
-            # DMS_AI_FIRST: a granted phrase is an example, not a submit.
-            # A grant miss or a hostile phrase still goes through maybe_pack_ask.
+            # DMS_AI_FIRST or DMS_RULES_LEGACY=0: a granted phrase is an example,
+            # not a submit. A grant miss or a hostile phrase still goes through
+            # maybe_pack_ask.
             raise_if_ask_stopped()
-            from dms_executor.ai_first import (
-                ai_first_enabled,
-                note_example,
-                pack_example,
-            )
+            from dms_executor.ai_first import note_example, pack_example
             from dms_executor.demo_pack import lookup_pack_metric, match_pack_phrase
             from dms_executor.manifest import SecurityEvent, reject_hostile_chat_sql
+            from dms_executor.rules_legacy import hold_rule_serve
 
             held_pack = False
-            if ai_first_enabled() and is_demo_space(space_id):
+            if hold_rule_serve() and is_demo_space(space_id):
                 phrase = match_pack_phrase(question, tables=tables)
                 if phrase is not None:
                     hit = lookup_pack_metric(
@@ -2553,7 +2551,7 @@ def map_ask_response_to_envelope(
     # checking the envelope against itself can catch it. The signal lives in the
     # route, and the route has to outrank the badge.
     #
-    # Reproduced end to end by scripts/repro_refused_badge.py (F40 / Cortex#11).
+    # Reproduced end to end by attic/scripts/repro_refused_badge.py (F40 / Cortex#11).
     # The engine-side fix - teaching _is_abstain_signal about "refused" - is
     # still needed and is not what this is. This is the half DMS owns: whatever
     # the engine sends, DMS does not put a confident badge on a refusal.

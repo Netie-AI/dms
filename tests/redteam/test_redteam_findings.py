@@ -2,7 +2,7 @@
 
 Every case in WRONG was served by the gate on main with a confident badge, and a verifier
 re-derived the correct answer blind from the data (see
-docs/subagents_findings/2026-10-05_redteam-gate-01.md). They are strict xfails: today they
+attic/docs/subagents_findings/2026-10-05_redteam-gate-01.md). They are strict xfails: today they
 fail, so the suite stays green; when a fix makes the gate abstain or answer correctly the
 case XPASSes, strict=True turns the suite red, and whoever landed the fix removes the
 marker. No fix can land silently.
