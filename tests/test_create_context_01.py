@@ -236,7 +236,8 @@ def test_pack_keeps_a_small_result_and_the_questionnaire(
     assert "m0" in text
     assert "m8" not in text
     assert "payroll" not in text
-    assert "999" not in text
+    # The record id is random hex. The salary is a JSON string.
+    assert '"999"' not in text
     assert "<sources>" in text
 
 
