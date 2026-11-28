@@ -54,18 +54,34 @@ _TEMPLATES = frozenset({"plain", "brief", "bold"})
 # Prove-box OpenVault allowlist. A name outside this set is not sent.
 _OV_ROLES = frozenset({"sql", "tool", "reason", "summarize", "grain", "ontology"})
 _secret_store: Any = None
-# Thousands groups, a leading currency mark, and a trailing percent are one number.
+# Thousands groups, a leading currency mark, a K/M/B suffix, and a trailing percent
+# are one number. The suffix is optional so 1,606,773 still matches as one token.
 _NUM = re.compile(
     r"(?<![\w.])"
     r"(?:[$£€¥]|RM)?"
     r"-?"
     r"(?P<body>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+    r"(?P<suffix>[KkMmBb])?"
     r"(?P<pct>%)?"
     r"(?![\w%]|\.\d)"
 )
 _PERCENT_WORD = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s+percent\b", re.I)
-# A dominant share plus one of these is a concentration miss. Not an ask-path word rule.
-_DISPERSED = ("a few", "several", "evenly", "spread across")
+_SCALES = {"k": 1e3, "m": 1e6, "b": 1e9}
+_SHARE_TOLERANCE = 1.0
+_SCHEMA_EXAMPLE = {
+    "kind": "app",
+    "title": "Short title",
+    "parts": [
+        {
+            "id": "part-1",
+            "title": "Section title",
+            "body": "One sentence.",
+            "sql": "SELECT column FROM table",
+            "charts": [{"label": "Comparison", "sql": "SELECT column FROM table"}],
+        }
+    ],
+}
+_MODEL_NOTE = "Served model is not the requested provider."
 _OV_TIMEOUT_S = 240.0
 _MODEL_KEYS = frozenset(
     {"model", "model_id", "model_name", "provider", "served_model", "served_provider", "strict"}
@@ -93,6 +109,8 @@ class ProviderTurn:
     prompt: str
     provider: str
     estimated_cost: float | None
+    model_warning: str | None = None
+    seconds: float | None = None
 
 
 def tool_registry() -> dict[str, dict[str, Any]]:
@@ -235,9 +253,10 @@ def direct_prompt(
     *,
     prompt_version: str = "1",
 ) -> str:
-    """The plain Claude ask: system prompt plus the same XML context. No tools."""
-    system, xml = _system_and_xml(spec, data_context, style, prompt_version)
-    return system + "\n" + xml
+    """The plain Claude ask: JSON schema plus the same XML context. No tools."""
+    xml = _system_and_xml(spec, data_context, style, prompt_version)[1]
+    system, cleaned = _plain_pair(xml)
+    return system + "\n" + cleaned
 
 
 def request_body(
@@ -257,13 +276,14 @@ def request_body(
         ref = os.environ.get("DMS_CREATE_CURSOR_REF", "main").strip() or "main"
         if not repo:
             raise GeneratorError("cursor_repo_missing")
+        plain, cleaned = _plain_pair(xml)
         body = {
-            "prompt": {"text": system + "\n" + xml},
+            "prompt": {"text": plain + "\n" + cleaned},
             "source": {"repository": repo, "ref": ref},
             "target": {"autoCreatePr": False},
         }
         _reject_model_keys(body)
-        return body, xml
+        return body, cleaned
     # Caller ``role`` is the task name. The wire role is the OpenVault allowlist.
     role = ov_role()
     cap = request_max_tokens()
@@ -298,18 +318,17 @@ def request_body(
         _reject_model_keys(body)
         return body, xml
     # Plain contract. OpenVault rejects ``tools`` and ignores a top-level system.
+    # The library string still says call return_artifact. This path does not send it.
+    plain, cleaned = _plain_pair(xml)
     messages = [
-        {
-            "role": "system",
-            "content": system + "\nReply with one JSON object and no other text.",
-        },
-        {"role": "user", "content": xml},
+        {"role": "system", "content": plain},
+        {"role": "user", "content": cleaned},
     ]
     if prefill:
         messages.append({"role": "assistant", "content": prefill})
     body = {"role": role, "messages": messages, "max_tokens": cap}
     _reject_model_keys(body)
-    return body, xml
+    return body, cleaned
 
 
 def complete(
@@ -348,7 +367,11 @@ def complete(
     estimate = None
     if isinstance(artifact, dict):
         estimate = _num(artifact.get("estimated_cost"))
-    model = usage.get("model")
+    served = _served_name(raw, usage)
+    model = served
+    if model is None:
+        found = usage.get("model")
+        model = found.strip() if isinstance(found, str) and found.strip() else None
     return ProviderTurn(
         artifact=artifact,
         tool_calls=calls,
@@ -356,10 +379,11 @@ def complete(
         tokens=tokens,
         prompt_tokens=_int(usage.get("prompt_tokens")),
         completion_tokens=_int(usage.get("completion_tokens")),
-        model=model if isinstance(model, str) else None,
+        model=model,
         prompt=prompt,
         provider=provider,
         estimated_cost=estimate,
+        model_warning=_provider_mismatch(provider, served),
     )
 
 
@@ -429,7 +453,8 @@ def judge_artifact(
         if wanted and str(style.get(key) or "") != wanted:
             issues.append(f"brand_{key}")
     prose = _prose(artifact)
-    if _unsupported(prose, allowed_numbers) or _chart_untraced(artifact):
+    ratios = _ratio_points(artifact)
+    if _unsupported(prose, allowed_numbers, ratios) or _chart_untraced(artifact):
         issues.append("unsupported_claim")
     if _share_mismatch(artifact):
         issues.append("share_mismatch")
@@ -606,9 +631,12 @@ def _parse(raw: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[
             content = json.loads(_strip_fence(content))
         except json.JSONDecodeError:
             return None, [], usage
-    if isinstance(content, dict) and "cursor_key" in content and "kind" not in content:
+    if isinstance(content, dict) and content.get("type") == "tool_use":
+        content = [content]
+    elif isinstance(content, dict) and "cursor_key" in content and "kind" not in content:
         return content, [], usage
-    if isinstance(content, dict) and content.get("kind"):
+    elif isinstance(content, dict):
+        # A shape miss (no kind) is still the object, so the judge can name it.
         return _public(content), [], usage
     calls: list[dict[str, Any]] = []
     artifact = None
@@ -680,6 +708,30 @@ def _check(schema: Mapping[str, Any], value: Any, path: str) -> list[str]:
     return []
 
 
+def _plain_pair(xml: str) -> tuple[str, str]:
+    """Schema plus the context. Tool names stay on the tools-flag path only."""
+    return _plain_system(), _drop_tool_words(xml)
+
+
+def _plain_system() -> str:
+    schema = tool_registry()[_OUTPUT_TOOL]["input_schema"]
+    return (
+        "Reply with one JSON object and no other text.\n"
+        "The object has this shape:\n"
+        + json.dumps(schema, indent=2)
+        + "\nExample:\n"
+        + json.dumps(_SCHEMA_EXAMPLE, indent=2)
+    )
+
+
+def _drop_tool_words(text: str) -> str:
+    text = re.sub(r"call return_artifact", "reply with the JSON object", text, flags=re.I)
+    text = re.sub(r"return_artifact", "the JSON object", text, flags=re.I)
+    text = re.sub(r"use run_sql", "use the SQL already in the context", text, flags=re.I)
+    text = re.sub(r"run_sql", "the SQL results", text, flags=re.I)
+    return text
+
+
 def _system_and_xml(
     spec: Mapping[str, Any],
     data_context: Mapping[str, Any],
@@ -719,7 +771,7 @@ def _score_check(
                 return False
         return True
     if check_id == "traced":
-        return not _unsupported(prose, allowed_numbers)
+        return not _unsupported(prose, allowed_numbers, _ratio_points(artifact))
     if check_id == "clean":
         if redact_text(prose) != prose:
             return False
@@ -746,10 +798,22 @@ def _prose(artifact: Mapping[str, Any]) -> str:
     return "\n".join(chunks)
 
 
-def _unsupported(prose: str, allowed: set[str]) -> bool:
-    for forms in _trace_forms(prose):
-        if forms.isdisjoint(allowed):
-            return True
+def _unsupported(
+    prose: str, allowed: set[str], ratios: Sequence[float] | None = None
+) -> bool:
+    near = list(ratios or [])
+    values = _allowed_floats(allowed)
+    for match in _NUM.finditer(prose):
+        forms = _match_forms(
+            match.group("body"), bool(match.group("pct")), match.group("suffix")
+        )
+        if not forms.isdisjoint(allowed):
+            continue
+        if match.group("suffix") and _suffix_near(match, values):
+            continue
+        if match.group("pct") and _percent_near(match, near):
+            continue
+        return True
     return False
 
 
@@ -765,22 +829,69 @@ def _number_tokens(value: Any) -> set[str]:
 def _trace_forms(text: str) -> list[set[str]]:
     found: list[set[str]] = []
     for match in _NUM.finditer(text):
-        found.append(_match_forms(match.group("body"), bool(match.group("pct"))))
+        found.append(
+            _match_forms(match.group("body"), bool(match.group("pct")), match.group("suffix"))
+        )
     return found
 
 
-def _match_forms(body: str, percent: bool) -> set[str]:
+def _match_forms(body: str, percent: bool, suffix: str | None = None) -> set[str]:
     plain = body.replace(",", "")
     forms = {plain, _bare(plain)}
+    scaled = _scaled(plain, suffix)
+    if scaled is None:
+        return forms
+    shown = _num_text(scaled)
+    forms.update({shown, _bare(shown)})
     if not percent:
         return forms
-    try:
-        frac = float(plain) / 100.0
-    except ValueError:
-        return forms
-    shown = _num_text(frac)
-    forms.update({shown, _bare(shown)})
+    frac = _num_text(scaled / 100.0)
+    forms.update({frac, _bare(frac)})
     return forms
+
+
+def _scaled(plain: str, suffix: str | None) -> float | None:
+    try:
+        number = float(plain)
+    except ValueError:
+        return None
+    if suffix:
+        number *= _SCALES[suffix.casefold()]
+    return number
+
+
+def _allowed_floats(allowed: set[str]) -> list[float]:
+    found: list[float] = []
+    for token in allowed:
+        try:
+            found.append(float(token))
+        except ValueError:
+            continue
+    return found
+
+
+def _suffix_near(match: re.Match[str], values: Sequence[float]) -> bool:
+    """$9.9M matches a value that rounds to 9.9 at the printed precision."""
+    suffix = match.group("suffix")
+    if not suffix:
+        return False
+    plain = match.group("body").replace(",", "")
+    decimals = len(plain.split(".", 1)[1]) if "." in plain else 0
+    try:
+        shown = round(float(plain), decimals)
+    except ValueError:
+        return False
+    scale = _SCALES[suffix.casefold()]
+    return any(round(candidate / scale, decimals) == shown for candidate in values)
+
+
+def _percent_near(match: re.Match[str], points: Sequence[float]) -> bool:
+    """77% is supported when a multi-row ratio rounds to it within one point."""
+    try:
+        shown = float(match.group("body").replace(",", ""))
+    except ValueError:
+        return False
+    return any(abs(shown - point) <= _SHARE_TOLERANCE for point in points)
 
 
 def _num_text(value: float) -> str:
@@ -803,40 +914,96 @@ def _chart_untraced(artifact: Mapping[str, Any]) -> bool:
                     continue
                 for value in row.values():
                     allowed.update(_number_tokens(value))
-            if _unsupported(str(chart.get("label") or ""), allowed):
+            ratios = [share * 100.0 for share in _shares_of(chart.get("rows"))]
+            if _unsupported(str(chart.get("label") or ""), allowed, ratios):
                 return True
     return False
 
 
 def _share_mismatch(artifact: Mapping[str, Any]) -> bool:
-    """A stated share, or a 'spread out' claim, has to match the computed shares."""
-    shares = _computed_shares(artifact)
-    if not shares:
-        return False
-    prose = _prose(artifact)
-    claimed = _claimed_percents(prose)
-    for claim in claimed:
-        if not any(abs(claim - (share * 100.0)) <= 1.0 for share in shares):
-            return True
-    top = max(shares)
-    folded = prose.casefold()
-    return top >= 0.75 and any(phrase in folded for phrase in _DISPERSED)
+    """A percent is checked against the chart or SQL that sentence names.
 
-
-def _computed_shares(artifact: Mapping[str, Any]) -> list[float]:
-    shares: list[float] = []
+    A one-row result is not a share. A sentence that names no chart is not
+    checked against every chart in the artifact.
+    """
     for part in artifact.get("parts") or []:
         if not isinstance(part, dict):
             continue
-        shares.extend(_shares_of(part.get("rows")))
+        if _part_share_mismatch(part):
+            return True
+    return False
+
+
+def _part_share_mismatch(part: Mapping[str, Any]) -> bool:
+    texts = [str(part.get("title") or ""), str(part.get("body") or "")]
+    for chart in part.get("charts") or []:
+        if isinstance(chart, dict):
+            texts.append(str(chart.get("label") or ""))
+    for sentence in _sentences("\n".join(texts)):
+        claims = _claimed_percents(sentence)
+        if not claims:
+            continue
+        shares = _shares_for_sentence(sentence, part)
+        if not shares:
+            continue
+        for claim in claims:
+            if not any(abs(claim - (share * 100.0)) <= _SHARE_TOLERANCE for share in shares):
+                return True
+    return False
+
+
+def _sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _shares_for_sentence(sentence: str, part: Mapping[str, Any]) -> list[float]:
+    folded = sentence.casefold()
+    charts = [
+        chart
+        for chart in part.get("charts") or []
+        if isinstance(chart, dict) and _shares_of(chart.get("rows"))
+    ]
+    named = [chart for chart in charts if _refers(folded, chart)]
+    if named:
+        shares: list[float] = []
+        for chart in named:
+            shares.extend(_shares_of(chart.get("rows")))
+        return shares
+    if len(charts) == 1:
+        return _shares_of(charts[0].get("rows"))
+    if charts:
+        return []
+    return _shares_of(part.get("rows"))
+
+
+def _refers(sentence: str, chart: Mapping[str, Any]) -> bool:
+    label = str(chart.get("label") or "").strip()
+    if len(label) >= 3 and label.casefold() in sentence:
+        return True
+    for row in chart.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        for value in row.values():
+            if isinstance(value, str) and len(value.strip()) >= 3 and value.casefold() in sentence:
+                return True
+    return False
+
+
+def _ratio_points(artifact: Mapping[str, Any]) -> list[float]:
+    points: list[float] = []
+    for part in artifact.get("parts") or []:
+        if not isinstance(part, dict):
+            continue
+        points.extend(share * 100.0 for share in _shares_of(part.get("rows")))
         for chart in part.get("charts") or []:
             if isinstance(chart, dict):
-                shares.extend(_shares_of(chart.get("rows")))
-    return shares
+                points.extend(share * 100.0 for share in _shares_of(chart.get("rows")))
+    return points
 
 
 def _shares_of(rows: Any) -> list[float]:
-    if not isinstance(rows, list) or not rows:
+    if not isinstance(rows, list) or len(rows) < 2:
         return []
     totals: dict[str, float] = {}
     for row in rows:
@@ -912,10 +1079,32 @@ def _as_float(value: Any) -> float | None:
         match = next(_NUM.finditer(value), None)
         if match is None:
             return None
-        try:
-            return float(match.group("body").replace(",", ""))
-        except ValueError:
-            return None
+        scaled = _scaled(match.group("body").replace(",", ""), match.group("suffix"))
+        return scaled
+    return None
+
+
+def _served_name(raw: Any, usage: Mapping[str, Any]) -> str | None:
+    sources: list[Mapping[str, Any]] = []
+    if isinstance(raw, Mapping):
+        sources.append(raw)
+    sources.append(usage)
+    for source in sources:
+        value = source.get("served_model")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _provider_mismatch(provider: str, served: str | None) -> str | None:
+    """Warn when OpenVault served a different family. Absent means no warning."""
+    if not served:
+        return None
+    name = served.casefold()
+    if provider == "claude_api":
+        return None if "claude" in name else _MODEL_NOTE
+    if provider == "cursor_api":
+        return None if "cursor" in name else _MODEL_NOTE
     return None
 
 

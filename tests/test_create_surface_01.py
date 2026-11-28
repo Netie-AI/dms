@@ -849,7 +849,14 @@ def test_claude_body_is_the_direct_ask_plus_tools() -> None:
     assert "system" not in body
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][1]["content"] == xml
-    assert text == body["messages"][0]["content"].split("\nReply with one JSON", 1)[0] + "\n" + xml
+    system = body["messages"][0]["content"]
+    assert "one JSON object" in system
+    assert '"kind"' in system
+    assert "return_artifact" not in system
+    assert "run_sql" not in system
+    assert "return_artifact" not in xml
+    assert "run_sql" not in xml
+    assert text == system + "\n" + xml
 
 
 def test_shown_app_scores_at_least_the_direct_ask(
@@ -907,7 +914,11 @@ def test_plain_contract_omits_tools_until_the_flag(monkeypatch: pytest.MonkeyPat
     assert "tools" not in body
     assert "system" not in body
     assert body["messages"][0]["role"] == "system"
-    assert "one JSON object" in body["messages"][0]["content"]
+    sent = body["messages"][0]["content"] + body["messages"][1]["content"]
+    assert "one JSON object" in sent
+    assert '"kind"' in body["messages"][0]["content"]
+    assert "return_artifact" not in sent
+    assert "run_sql" not in sent
     monkeypatch.setenv("DMS_CREATE_OV_TOOLS", "true")
     still, _xml = request_body(
         provider="claude_api",
@@ -931,6 +942,7 @@ def test_plain_contract_omits_tools_until_the_flag(monkeypatch: pytest.MonkeyPat
     )
     assert armed["tools"]
     assert armed["system"]
+    assert "return_artifact" in armed["system"]
     assert armed["thinking"] == {"type": "adaptive"}
     skills = armed["container"]["skills"]
     assert {"type": "anthropic", "skill_id": "pptx", "version": "latest"} in skills
@@ -1107,7 +1119,27 @@ def test_confirm_writes_pptx_pdf_and_a_one_page_doc(
     from pptx import Presentation
 
     client = _client(monkeypatch, tmp_path, "1")
+    opened = client.post(
+        "/v1/studio/create/sessions",
+        json={
+            "space_id": SPACE,
+            "kind": "slides",
+            "goal": "See order trend",
+            "audience": "Founder",
+            "brand_colours": "#112233",
+            "brand_fonts": "Source Sans",
+        },
+        headers=HEADERS,
+    )
+    assert opened.status_code == 200, opened.text
+    session_id = opened.json()["session_id"]
     deck = _deck()
+    deck["style"] = {
+        "colours": "#112233",
+        "fonts": "Source Sans",
+        "logo": "",
+        "tone": "",
+    }
     deck["parts"][0]["charts"] = [
         {
             "label": "Amount by month",
@@ -1115,7 +1147,6 @@ def test_confirm_writes_pptx_pdf_and_a_one_page_doc(
         }
     ]
     _patch(monkeypatch, [deck])
-    session_id = _open(client, "slides")
     client.post(f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS)
     close_lakes()
     confirmed = client.post(
@@ -1128,6 +1159,8 @@ def test_confirm_writes_pptx_pdf_and_a_one_page_doc(
     html = (folder / "slides.html").read_text(encoding="utf-8")
     assert "Orders deck" in html
     assert "Amount by month" in html
+    assert "#112233" in html
+    assert "Source Sans" in html
     deck_file = Presentation(str(folder / "slides.pptx"))
     assert len(deck_file.slides) == 1
     assert any(shape.has_chart for slide in deck_file.slides for shape in slide.shapes)
@@ -1207,7 +1240,43 @@ def test_share_claim_must_match_the_computed_shares() -> None:
         brand={},
         allowed_numbers={"75", "25"},
     )
-    assert "share_mismatch" in spread
+    assert "share_mismatch" not in spread
+    single = judge_artifact(
+        art("Sales are spread across a few regions.", [{"region": "All", "amount": 100}]),
+        kind="slides",
+        brand={},
+        allowed_numbers={"100"},
+    )
+    assert "share_mismatch" not in single
+    unnamed = {
+        "kind": "slides",
+        "title": "Mix",
+        "parts": [
+            {
+                "id": "s1",
+                "title": "Mix",
+                "body": "Overall is 10%.",
+                "charts": [
+                    {"label": "Regions", "rows": rows},
+                    {
+                        "label": "Channels",
+                        "rows": [
+                            {"channel": "Web", "amount": 50},
+                            {"channel": "Store", "amount": 50},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    assert "share_mismatch" not in judge_artifact(
+        unnamed, kind="slides", brand={}, allowed_numbers={"75", "25", "50", "10"}
+    )
+    named = json.loads(json.dumps(unnamed))
+    named["parts"][0]["body"] = "Regions is 10%."
+    assert "share_mismatch" in judge_artifact(
+        named, kind="slides", brand={}, allowed_numbers={"75", "25", "50", "10"}
+    )
     honest = judge_artifact(
         art("North is 75%."),
         kind="slides",
@@ -1250,3 +1319,320 @@ def test_unknown_template_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: 
             actor="api_admin",
             template="neon",
         )
+
+
+def test_plain_prompt_states_the_schema_and_repairs_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    stub = _patch(monkeypatch, ["not json", _app()])
+    session_id = _open(client)
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is True
+    assert len(stub.bodies) == 2
+    repair = stub.bodies[1]["messages"][1]["content"]
+    assert "model_unreadable" in repair
+    assert "schema:required kind, title, parts" in repair
+    for body in stub.bodies:
+        system = body["messages"][0]["content"]
+        user = body["messages"][1]["content"]
+        assert "one JSON object" in system
+        assert '"kind"' in system
+        assert '"parts"' in system
+        assert "Short title" in system
+        assert "return_artifact" not in system + user
+        assert "run_sql" not in system + user
+    shape = _patch(monkeypatch, [{"title": "Nope"}, _app()])
+    again = _open(client)
+    fixed = client.post(
+        f"/v1/studio/create/sessions/{again}/generate", headers=HEADERS
+    ).json()
+    assert fixed["shown"] is True
+    assert len(shape.bodies) == 2
+    assert "missing:kind" in shape.bodies[1]["messages"][1]["content"]
+
+
+def test_pdf_wraps_and_keeps_every_line(tmp_path: Path) -> None:
+    import re
+
+    from dms_executor.create_files import render_artifact
+
+    lines = [f"line {index} of the note" for index in range(60)]
+    lines.append("TAILTOKEN")
+    rows = [{"region": f"r{index:02d}", "revenue": float(index)} for index in range(1, 56)]
+    rows.append({"region": "TAILREGION", "revenue": 1.0})
+    artifact = {
+        "kind": "doc",
+        "title": "Note",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Body",
+                "body": "\n".join(lines) + "\n" + ("WRAPME" * 30),
+                "charts": [{"label": "Rows", "rows": rows}],
+            }
+        ],
+    }
+    render_artifact(tmp_path, artifact, kind="doc", one_page=False, brand={"colours": "#112233"})
+    pdf = (tmp_path / "doc.pdf").read_bytes()
+    assert b"TAILTOKEN" in pdf
+    assert b"TAILREGION" in pdf
+    assert b"WRAPME" in pdf
+    assert pdf.count(b"/Type /Page ") > 1
+    assert b"/Subtype /Image" in pdf
+    for block in re.findall(rb"BT\n(.*?)\nET", pdf, re.S):
+        for line in re.findall(rb"\(([^)]*)\) Tj", block):
+            assert len(line) <= 90
+
+
+def test_pptx_multi_series_brand_and_extra_slide(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+    from pptx import Presentation
+    from pptx.dml.color import RGBColor
+
+    regions = ["North", "South", "East", "West", "Central", "Coast"]
+    multi = {
+        "label": "Quarterly by region",
+        "rows": [
+            {"region": name, "q1": 10 + index, "q2": 12 + index, "q3": 8 + index, "q4": 9 + index}
+            for index, name in enumerate(regions)
+        ],
+    }
+    charts = [multi] + [
+        {
+            "label": f"Chart {index}",
+            "rows": [
+                {"region": "North", "amount": index},
+                {"region": "South", "amount": index + 1},
+            ],
+        }
+        for index in range(1, 6)
+    ]
+    artifact = {
+        "kind": "slides",
+        "title": "Regions",
+        "parts": [
+            {"id": "s1", "title": "Where sales sit", "body": "Six charts.", "charts": charts}
+        ],
+    }
+    render_artifact(
+        tmp_path,
+        artifact,
+        kind="slides",
+        one_page=False,
+        brand={"colours": "#112233 #445566", "fonts": "Source Sans"},
+    )
+    deck = Presentation(str(tmp_path / "slides.pptx"))
+    assert len(deck.slides) == 2
+    drawn = [shape.chart for slide in deck.slides for shape in slide.shapes if shape.has_chart]
+    assert len(drawn) == 6
+    assert len(drawn[0].series) == 4
+    assert drawn[0].series[0].format.fill.fore_color.rgb == RGBColor(0x11, 0x22, 0x33)
+    assert drawn[0].series[1].format.fill.fore_color.rgb == RGBColor(0x44, 0x55, 0x66)
+    assert drawn[0].has_title
+    assert drawn[0].chart_title.text_frame.text == "Quarterly by region"
+    assert drawn[0].category_axis.has_title
+    assert drawn[0].category_axis.axis_title.text_frame.text == "region"
+    assert drawn[0].value_axis.has_title
+    title = deck.slides[0].shapes[0].text_frame.paragraphs[0]
+    assert title.font.name == "Source Sans"
+
+
+def test_html_formats_numbers_and_charts(tmp_path: Path) -> None:
+    from dms_executor.create_files import render_artifact
+
+    artifact = {
+        "kind": "app",
+        "title": "Revenue",
+        "parts": [
+            {
+                "id": "a",
+                "title": "Total",
+                "body": "Revenue for the year.",
+                "charts": [
+                    {
+                        "label": "Revenue by region",
+                        "rows": [
+                            {"region": "North", "revenue": 545806.0},
+                            {"region": "South", "revenue": 1200.5},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    render_artifact(
+        tmp_path,
+        artifact,
+        kind="app",
+        one_page=False,
+        brand={"colours": "#112233", "fonts": "Source Sans"},
+    )
+    html = (tmp_path / "app.html").read_text(encoding="utf-8")
+    assert "<style>" in html
+    assert "#112233" in html
+    assert "Source Sans" in html
+    assert "545,806" in html
+    assert "1,200.50" in html
+    assert "revenue=545806.0" not in html
+    assert "545806.0" not in html
+    assert "data:image/png;base64," in html
+
+
+def test_chart_rows_past_forty_stay_and_a_sliced_part_is_marked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    con = duckdb.connect(str(tmp_path / "orders.duckdb"))
+    values = ", ".join(f"('m{index:02d}', {index})" for index in range(7, 49))
+    con.execute(f"INSERT INTO orders VALUES {values}")
+    con.close()
+    spec = {
+        "kind": "slides",
+        "title": "Orders deck",
+        "parts": [
+            {
+                "id": "s1",
+                "title": "Trend",
+                "body": "The chart follows the granted table.",
+                "sql": "SELECT month, amount FROM orders ORDER BY month",
+                "charts": [
+                    {
+                        "label": "Amount by month",
+                        "sql": "SELECT month, amount FROM orders ORDER BY month",
+                    }
+                ],
+            }
+        ],
+    }
+    _patch(monkeypatch, [spec])
+    session_id = _open(client, "slides")
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is True, view
+    part = view["artifact"]["parts"][0]
+    assert part["truncated"] == {"shown": 40, "total": 48}
+    assert len(part["rows"]) == 40
+    chart_rows = part["charts"][0]["rows"]
+    assert len(chart_rows) == 48
+    assert any(row["month"] == "m48" for row in chart_rows)
+    close_lakes()
+    confirmed = client.post(
+        f"/v1/studio/create/sessions/{session_id}/confirm", headers=HEADERS
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    html = (tmp_path / "store" / session_id / "slides.html").read_text(encoding="utf-8")
+    assert "Showing 40 of 48." in html
+    assert "m48" in html
+
+
+def test_derived_percent_traces_within_one_point() -> None:
+    def art(body: str, rows: list[dict[str, int]]) -> dict[str, Any]:
+        return {
+            "kind": "slides",
+            "title": "Mix",
+            "parts": [
+                {
+                    "id": "s1",
+                    "title": "Mix",
+                    "body": body,
+                    "charts": [{"label": "Regions", "rows": rows}],
+                }
+            ],
+        }
+
+    heavy = [{"region": "North", "amount": 770}, {"region": "South", "amount": 230}]
+    allowed = {"770", "230"}
+    honest = judge_artifact(
+        art("North is 77%.", heavy), kind="slides", brand={}, allowed_numbers=allowed
+    )
+    assert "unsupported_claim" not in honest
+    assert "share_mismatch" not in honest
+    close = judge_artifact(
+        art("North is 76%.", heavy), kind="slides", brand={}, allowed_numbers=allowed
+    )
+    assert "unsupported_claim" not in close
+    off = judge_artifact(
+        art("North is 75%.", heavy), kind="slides", brand={}, allowed_numbers=allowed
+    )
+    assert "unsupported_claim" in off
+    tiny = [{"region": "North", "amount": 4}, {"region": "South", "amount": 996}]
+    small = judge_artifact(
+        art("North is 0.4%.", tiny), kind="slides", brand={}, allowed_numbers={"4", "996"}
+    )
+    assert "unsupported_claim" not in small
+    assert "share_mismatch" not in small
+
+
+def test_letter_suffix_numbers_trace() -> None:
+    def issues(body: str, allowed: set[str]) -> list[str]:
+        artifact = {
+            "kind": "app",
+            "title": "Orders",
+            "parts": [{"id": "a", "title": "Total", "body": body}],
+        }
+        return judge_artifact(artifact, kind="app", brand={}, allowed_numbers=allowed)
+
+    assert "unsupported_claim" not in issues("Revenue is $9.9M.", {"9876543"})
+    assert "unsupported_claim" not in issues("Orders are 5K.", {"5000"})
+    assert "unsupported_claim" not in issues("Bookings are $1.6B.", {"1600000000"})
+    assert "unsupported_claim" in issues("Revenue is $1.2M.", {"9900000"})
+    assert "unsupported_claim" in issues("Orders are 5K.", {"100"})
+
+
+def test_served_model_is_logged_and_a_mismatch_warns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    usage = {
+        "model": None,
+        "prompt_tokens": 6,
+        "completion_tokens": 4,
+        "total_tokens": 10,
+        "cost": 0.02,
+    }
+    _patch(monkeypatch, [{"content": _app(), "served_model": "nvidia/nemotron-3", "usage": usage}])
+    session_id = _open(client)
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["shown"] is True
+    assert view["log"]["model"] == "nvidia/nemotron-3"
+    assert view["log"]["provider"] == "claude_api"
+    note = "Served model is not the requested provider."
+    assert view["model_warning"] == note
+    assert view["warning"] == note
+    assert "served_model" not in view["artifact"]
+    matched = {
+        "content": _app(),
+        "served_model": "claude-sonnet-4",
+        "usage": {**usage, "model": "routed-by-customer"},
+    }
+    _patch(monkeypatch, [matched])
+    again = _open(client)
+    quiet = client.post(
+        f"/v1/studio/create/sessions/{again}/generate", headers=HEADERS
+    ).json()
+    assert quiet["shown"] is True
+    assert quiet["log"]["model"] == "claude-sonnet-4"
+    assert quiet["model_warning"] is None
+
+
+def test_log_seconds_are_the_job_not_the_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import dms_executor.create_surface as surface
+
+    client = _client(monkeypatch, tmp_path, "1")
+    real = surface.time.time
+    monkeypatch.setattr(surface.time, "time", lambda: real() - 10000)
+    session_id = _open(client)
+    monkeypatch.setattr(surface.time, "time", real)
+    _patch(monkeypatch, [_usage(_app(), 11, 0.02)])
+    view = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    ).json()
+    assert view["log"]["seconds"] < 30

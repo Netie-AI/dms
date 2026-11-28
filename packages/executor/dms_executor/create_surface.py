@@ -48,7 +48,10 @@ _TOOLS = frozenset(
 )
 _STOP_CODES = frozenset({"runaway_steps", "runaway_usd", "budget_exceeded"})
 _RUNAWAY_STEPS = 60
+# Part tables keep 40 rows and say so. Chart SQL is not sliced.
+# ponytail: a huge chart frame is stored whole. Page it if a chart passes a few thousand rows.
 _ROW_CAP = 40
+_SCHEMA_ISSUE = "schema:required kind, title, parts"
 _IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LOCK = threading.Lock()
 _BUDGET_TEXT = {
@@ -220,6 +223,7 @@ def confirm_final(*, session_id: str, actor: str) -> dict[str, Any]:
         artifact,
         kind=str(session.get("kind") or ""),
         one_page=one_page_requested(asked),
+        brand=session.get("brand") or {},
     )
     session["final"] = True
     session["step"] = "ready"
@@ -430,14 +434,16 @@ def _turn(
     context = _context(session)
     style = _style(session)
     try:
-        turn = complete(
-            spec,
-            context,
-            style,
-            api_key=api_key,
-            role=role,
-            enabled=session.get("tools") or {},
-            prompt_version=str(session.get("prompt_version") or "1"),
+        turn = _timed(
+            lambda: complete(
+                spec,
+                context,
+                style,
+                api_key=api_key,
+                role=role,
+                enabled=session.get("tools") or {},
+                prompt_version=str(session.get("prompt_version") or "1"),
+            )
         )
     except GeneratorError as exc:
         if exc.code == "budget_exceeded":
@@ -492,14 +498,16 @@ def _run_tools(
     spec = dict(spec)
     spec["tool_results"] = results
     try:
-        follow = complete(
-            spec,
-            context,
-            style,
-            api_key=api_key,
-            role=role,
-            enabled=session.get("tools") or {},
-            prompt_version=str(session.get("prompt_version") or "1"),
+        follow = _timed(
+            lambda: complete(
+                spec,
+                context,
+                style,
+                api_key=api_key,
+                role=role,
+                enabled=session.get("tools") or {},
+                prompt_version=str(session.get("prompt_version") or "1"),
+            )
         )
     except GeneratorError as exc:
         if exc.code == "budget_exceeded":
@@ -531,7 +539,7 @@ def _from_turn(
             except GeneratorError as exc:
                 return None, [exc.code]
     if not isinstance(artifact, dict):
-        return None, ["model_unreadable"]
+        return None, ["model_unreadable", _SCHEMA_ISSUE]
     traced, sql_issues = _trace(session, artifact)
     if sql_issues and sql_issues[0] in {"ungranted", "destructive"}:
         return None, sql_issues
@@ -556,7 +564,7 @@ def _trace(
             continue
         sql = part.get("sql")
         if isinstance(sql, str) and sql.strip():
-            rows, sql_issues, abstain = _guard_sql(session, sql)
+            rows, sql_issues, abstain, note = _guard_sql(session, sql)
             if abstain is not None:
                 session["abstain"] = abstain
                 return artifact, [str(abstain.get("abstain_reason") or "ungranted")]
@@ -564,6 +572,8 @@ def _trace(
                 issues.extend(sql_issues)
             else:
                 part["rows"] = rows
+                if note:
+                    part["truncated"] = note
                 part["citations"] = [
                     {"value": str(value), "sql": sql, "source_row": row}
                     for row in rows
@@ -576,7 +586,7 @@ def _trace(
             chart_sql = chart.get("sql")
             if not isinstance(chart_sql, str) or not chart_sql.strip():
                 continue
-            rows, sql_issues, abstain = _guard_sql(session, chart_sql)
+            rows, sql_issues, abstain, note = _guard_sql(session, chart_sql, limit=None)
             if abstain is not None:
                 session["abstain"] = abstain
                 return artifact, [str(abstain.get("abstain_reason") or "ungranted")]
@@ -584,6 +594,8 @@ def _trace(
                 issues.extend(sql_issues)
                 continue
             chart["rows"] = rows
+            if note:
+                chart["truncated"] = note
     return artifact, issues
 
 
@@ -774,7 +786,7 @@ def _overview(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _tool_sql(session: dict[str, Any], sql: str) -> dict[str, Any]:
-    rows, issues, abstain = _execute(session, sql)
+    rows, issues, abstain, _note = _execute(session, sql)
     if abstain is not None:
         return {"error": abstain.get("abstain_reason")}
     if issues:
@@ -783,15 +795,15 @@ def _tool_sql(session: dict[str, Any], sql: str) -> dict[str, Any]:
 
 
 def _guard_sql(
-    session: dict[str, Any], sql: str
-) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
+    session: dict[str, Any], sql: str, limit: int | None = _ROW_CAP
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None, dict[str, int] | None]:
     """Read-only guard. A write abstains. A read-only multi-statement is a format miss."""
-    return _execute(session, sql)
+    return _execute(session, sql, limit=limit)
 
 
 def _execute(
-    session: dict[str, Any], sql: str
-) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
+    session: dict[str, Any], sql: str, limit: int | None = _ROW_CAP
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None, dict[str, int] | None]:
     from dms_executor.grant_struct import serve_gap
     from dms_executor.sql_loop import run_readonly
 
@@ -802,17 +814,20 @@ def _execute(
     if gap:
         kind = _abstain_kind(gap, text)
         if kind:
-            return [], [], _abstain(session, kind, text)
+            return [], [], _abstain(session, kind, text), None
         if gap == "multi_statement":
-            return [], ["sql_format:multi_statement"], None
-        return [], [f"sql_refused:{gap}"], None
+            return [], ["sql_format:multi_statement"], None, None
+        return [], [f"sql_refused:{gap}"], None, None
     first, err = run_readonly(text, warehouse)
     if err or first is None:
-        return [], [err or "sql_failed"], None
+        return [], [err or "sql_failed"], None, None
     second, err2 = run_readonly(text, warehouse)
     if err2 or second is None or _canon(first) != _canon(second):
-        return [], ["rerun_mismatch"], None
-    return [_json_row(row) for row in first[:_ROW_CAP]], [], None
+        return [], ["rerun_mismatch"], None, None
+    rows = [_json_row(row) for row in first]
+    if limit is not None and len(rows) > limit:
+        return rows[:limit], [], None, {"shown": limit, "total": len(rows)}
+    return rows, [], None, None
 
 
 def _abstain_kind(gap: str, sql: str = "") -> str | None:
@@ -889,9 +904,11 @@ def _refresh(session: dict[str, Any]) -> None:
         sql = str(part.get("sql") or "")
         if not sql:
             continue
-        rows, issues, abstain = _execute(session, sql)
+        rows, issues, abstain, note = _execute(session, sql)
         if abstain is not None or issues:
             continue
+        if note:
+            part["truncated"] = note
         before = json.dumps(part.get("rows") or [], sort_keys=True, default=str)
         after = json.dumps(rows, sort_keys=True, default=str)
         if before != after:
@@ -910,6 +927,14 @@ def _push_version(session: dict[str, Any], artifact: Mapping[str, Any], note: st
     return version_id
 
 
+def _timed(fn: Any) -> Any:
+    """Seconds for this call, not the age of the session."""
+    started = time.perf_counter()
+    turn = fn()
+    turn.seconds = time.perf_counter() - started
+    return turn
+
+
 def _remember(session: dict[str, Any], turn: Any) -> None:
     session.setdefault("usage_calls", []).append(
         {
@@ -919,8 +944,13 @@ def _remember(session: dict[str, Any], turn: Any) -> None:
             "completion_tokens": turn.completion_tokens,
             "model": turn.model,
             "provider": turn.provider,
+            "seconds": turn.seconds,
         }
     )
+    if getattr(turn, "model_warning", None):
+        session["model_warning"] = turn.model_warning
+        if not session.get("warning"):
+            session["warning"] = turn.model_warning
     session.setdefault("attempts", []).append(
         {
             "prompt": turn.prompt,
@@ -1069,6 +1099,7 @@ def _view(session: dict[str, Any]) -> dict[str, Any]:
         "stopped": session.get("stopped"),
         "message": session.get("message"),
         "warning": session.get("warning"),
+        "model_warning": session.get("model_warning"),
         "score": session.get("score"),
         "log": _log(session),
     }
@@ -1091,14 +1122,18 @@ def _log(session: dict[str, Any]) -> dict[str, Any]:
         if isinstance(cost, (int, float)) and not isinstance(cost, bool):
             costs.append(float(cost))
     models = [item["model"] for item in calls if isinstance(item.get("model"), str)]
-    seconds = round(time.time() - float(session.get("started") or time.time()), 6)
+    elapsed: list[float] = []
+    for item in calls:
+        value = item.get("seconds")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            elapsed.append(float(value))
     return {
         "model": models[-1] if models else None,
         "prompt_tokens": _sum("prompt_tokens"),
         "completion_tokens": _sum("completion_tokens"),
         "total_tokens": _sum("tokens"),
         "cost": float(sum(costs)) if costs else None,
-        "seconds": seconds,
+        "seconds": round(sum(elapsed), 6) if elapsed else 0.0,
         "provider": calls[-1].get("provider") if calls else None,
     }
 

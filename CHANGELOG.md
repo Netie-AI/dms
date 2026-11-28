@@ -2,6 +2,13 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: schema in the prompt, files that keep the content
+
+- **Prompt.** The plain system message states the JSON schema (kind, title, parts) and a short example. It does not say to call a tool. A parse or shape miss is one repair that sends the schema error back.
+- **Files.** Pdf wraps and paginates, and chart images are matplotlib PNGs. Html is styled and formats numbers. Pptx draws every numeric series in the brand colours, with axis titles, five charts per slide and the rest on the next slide. Nothing is dropped in silence.
+- **Judge.** A percent within one point of a multi-row ratio traces. K/M/B suffixes trace with rounding tolerance. A share claim is checked against the chart or SQL that sentence refers to. A one-row result is skipped. Chart rows are not cut at 40. A sliced part table says how many rows were shown.
+- **Log.** `served_model` is kept. A served model from another family warns. `log.seconds` is the job, not the age of the session.
+
 ## 2026-11-28 - DMS-CREATE-01: plain OpenVault contract and real files
 
 - **Contract.** OpenVault rejects `tools` and ignores a top-level `system`. The default body is a system message, a user message, and `max_tokens` (default 8000). `DMS_CREATE_OV_TOOLS` is the digit 1 only, and it is off. The timeout is 240 seconds. Spend reads top-level `est_cost_usd`.
