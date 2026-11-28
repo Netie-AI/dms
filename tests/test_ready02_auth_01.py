@@ -86,6 +86,17 @@ def _code(response) -> str | None:
     return None
 
 
+def _allow_login(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The auth tests have no Cortex. Supply the allow the login route now requires."""
+    import dms_api.routes.auth_sso as auth_routes
+    from cortex_client.gate import ComplianceDecision
+
+    def allow(*, action: str, **_: object) -> ComplianceDecision:
+        return ComplianceDecision(allowed=True, reason="test_allow", action=action)
+
+    monkeypatch.setattr(auth_routes, "compliance_gate", allow)
+
+
 @pytest.fixture
 def sso(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("DMS_SSO", "1")
@@ -95,6 +106,7 @@ def sso(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     from dms_api.tenant_scope import clear_for_tests
 
     app = create_app()
+    _allow_login(monkeypatch)
     with TestClient(app) as client:
         yield client
     clear_for_tests()
@@ -201,6 +213,28 @@ def test_identity_header_stays_a_400_with_a_valid_bearer(sso: TestClient) -> Non
     assert res.status_code == 400
     assert res.json()["code"] == "identity_header_not_accepted"
     assert RejectIdentityHeadersMiddleware.__name__
+
+
+def test_login_fails_closed_when_the_gate_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Cortex means no session. The password is not in the refusal."""
+    monkeypatch.setenv("DMS_SSO", "1")
+    reset_for_tests()
+    from dms_api.app import create_app
+    from dms_api.tenant_scope import clear_for_tests
+
+    _user("gate-down@example.com", "viewer", _TENANT_B)
+    try:
+        with TestClient(create_app()) as client:
+            res = client.post(
+                "/v1/auth/login",
+                json={"email": "gate-down@example.com", "password": _PASSWORD},
+            )
+        assert res.status_code == 403
+        assert res.json()["detail"] == "gate_unavailable"
+        assert _PASSWORD not in res.text
+    finally:
+        clear_for_tests()
+        reset_for_tests()
 
 
 def test_login_roles_and_a_422_does_not_echo_the_password(sso: TestClient) -> None:
@@ -501,6 +535,7 @@ def test_bootstrap_file_uses_a_hash(monkeypatch: pytest.MonkeyPatch, tmp_path) -
     reset_for_tests()
     from dms_api.app import create_app
 
+    _allow_login(monkeypatch)
     with TestClient(create_app()) as client:
         token = _login(client, "ada@example.com")
         me = client.get("/v1/auth/me", headers=_auth(token))

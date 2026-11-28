@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from typing import NoReturn
 
+from cortex_client import compliance_gate
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dms_api.auth_sso import AuthError, begin_oidc, finish_oidc, login, me
+from dms_api.deps import CortexDep
+from dms_api.gatekeeping import enforce
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -28,7 +31,16 @@ def _raise(exc: AuthError) -> NoReturn:
 
 
 @router.post("/login")
-def auth_login(body: LoginIn) -> dict[str, str]:
+def auth_login(body: LoginIn, cortex: CortexDep) -> dict[str, str]:
+    # A session is a write. The password stays in this process. The gate sees
+    # the action only, and an unreachable gate does not mint a session.
+    decision = compliance_gate(
+        action="auth.login",
+        resource="/v1/auth/login",
+        metadata={"task_id": "auth.login"},
+        client=cortex,
+    )
+    enforce(decision)
     try:
         return login(email=body.email, password=body.password, company=body.company)
     except AuthError as exc:

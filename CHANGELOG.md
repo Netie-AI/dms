@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - READY-02: login calls the compliance gate
+
+- **Gate.** `POST /v1/auth/login` calls `compliance_gate` before a session is minted. No Cortex is 403 `gate_unavailable`. The password is not sent to the gate and not copied into the refusal.
+- **Ask path.** Unchanged. Stub 52 stays the `24f7abb` split: correct=43 wrong=0 reconfirm=5 ai=0 rule=43.
+
 ## 2026-11-28 - READY-02: rebase onto b1af74c
 
 - **Base.** Rebased onto `b1af74c` (#622, #627, #600, #623). `STATUS.md` and the findings index keep those rows.
