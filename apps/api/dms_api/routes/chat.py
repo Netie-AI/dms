@@ -135,6 +135,9 @@ class AskBody(BaseModel):
     #: sets DMS_HARNESS_ASK_PATHS (GEN-03). A body field, not an x-dms header
     #: (DR-0004), and the switch that allows it is server config, not the request.
     ask_path: Literal["product", "exact", "generative"] | None = None
+    #: Steward text for this ask only. Passed to the model when
+    #: DMS_SPACE_KNOWLEDGE is on. Qualifier and PII gates keep ``question``.
+    context: str | None = Field(default=None, max_length=4000)
 
 
 #: The ask_path values only a measurement origin may run (GEN-03).
@@ -568,6 +571,7 @@ def _answer_ask(
                 session_id=body.session_id,
                 tables=body.grounded_tables,
                 ask_path=body.ask_path,
+                ask_context=body.context,
             )
         except Exception as exc:  # noqa: BLE001
             return _release(

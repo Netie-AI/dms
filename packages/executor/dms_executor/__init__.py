@@ -184,6 +184,18 @@ from dms_executor.reveal import (
 )
 from dms_executor.session_followup import maybe_followup, snapshot_turn, turn_key
 from dms_executor.source_links import verify_source_links
+from dms_executor.space_knowledge import (
+    approve_note as approve_space_knowledge_note,  # noqa: F401 - re-exported
+)
+from dms_executor.space_knowledge import (
+    list_notes as list_space_knowledge_notes,  # noqa: F401 - re-exported
+)
+from dms_executor.space_knowledge import (
+    propose_note as propose_space_knowledge_note,  # noqa: F401 - re-exported
+)
+from dms_executor.space_knowledge import (
+    revise_note as revise_space_knowledge_note,  # noqa: F401 - re-exported
+)
 from dms_executor.space_ontology import (
     REASON_STORE_UNAVAILABLE,
     bronze_catalog,
@@ -290,6 +302,7 @@ def _insights_compute_seam(
     asked = question
     examples = ""
     defs = ""
+    knowledge = ""
     ai_rows: list[dict[str, Any]] = []
     # vq_examples is a writer prompt, not an Insights field. Pin 279cbd85
     # stays quiet because the key is removed before the POST.
@@ -302,6 +315,7 @@ def _insights_compute_seam(
         "sql_vote_kind",
         "vq_examples",
         "governed_definitions",
+        "space_knowledge",
         "route_hint",
     }
     if isinstance(ontology, dict) and (
@@ -325,6 +339,9 @@ def _insights_compute_seam(
             raw_defs = lifted.get("governed_definitions")
             if isinstance(raw_defs, str) and raw_defs.strip():
                 defs = raw_defs.strip()
+            raw_knowledge = lifted.get("space_knowledge")
+            if isinstance(raw_knowledge, str) and raw_knowledge.strip():
+                knowledge = raw_knowledge
             onto = {k: v for k, v in lifted.items() if k not in _hidden}
         else:
             onto = lifted
@@ -342,6 +359,10 @@ def _insights_compute_seam(
         from dms_executor.ai_first import understand_question
 
         asked = str(understand_question(asked, examples=ai_rows)["question"])
+    if knowledge:
+        # After the question, the examples, and any AI-first rewrite. The
+        # posted ontology does not carry this key.
+        asked = f"{asked.rstrip()}{knowledge}"
     try:
         kwargs: dict[str, Any] = {
             "session_id": session_id,
@@ -831,6 +852,7 @@ class Executor:
         tables: list[str] | None = None,
         ask_path: str | None = None,
         plan_sql_confirm: Literal["yes", "no"] | None = None,
+        ask_context: str | None = None,
     ) -> dict[str, Any]:
         """``_live_ask``, then SERVED-ATTR-01 (dms#305) on whatever it returned.
 
@@ -904,6 +926,7 @@ class Executor:
                         ask_path=ask_path,
                         seen=seen,
                         plan_sql_confirm=plan_sql_confirm,
+                        ask_context=ask_context,
                     )
                     if serving_deadline_missed():
                         raise ServingDeadlineExceeded()
@@ -1066,6 +1089,7 @@ class Executor:
         ask_path: str | None = None,
         seen: list[dict[str, Any] | None],
         plan_sql_confirm: Literal["yes", "no"] | None = None,
+        ask_context: str | None = None,
     ) -> dict[str, Any]:
         """Mint → session_bind (once per session) → contract ask.
 
@@ -1496,6 +1520,7 @@ class Executor:
                     dialect=SERVING_DIALECT,
                     embedder=openvault_embedder(self._cortex),
                     demo_gate=not armed_product,
+                    ask_context=ask_context,
                 )
             gen_env = arbitrate_generative(
                 gen_env,

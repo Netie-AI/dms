@@ -201,6 +201,44 @@ def list_verified_queries(*, space_id: str) -> list[dict[str, Any]]:
     return dms_executor.list_verified_queries(space_id=space_id)
 
 
+def propose_space_knowledge(
+    *,
+    space_id: str,
+    body: str,
+    sql_fragment: str | None,
+    actor: str,
+) -> dict[str, Any]:
+    return dms_executor.propose_space_knowledge_note(
+        space_id=space_id,
+        body=body,
+        sql_fragment=sql_fragment,
+        actor=actor,
+    )
+
+
+def approve_space_knowledge(*, note_id: str, actor: str) -> dict[str, Any]:
+    return dms_executor.approve_space_knowledge_note(note_id=note_id, actor=actor)
+
+
+def revise_space_knowledge(
+    *,
+    note_id: str,
+    body: str,
+    sql_fragment: str | None,
+    actor: str,
+) -> dict[str, Any]:
+    return dms_executor.revise_space_knowledge_note(
+        note_id=note_id,
+        body=body,
+        sql_fragment=sql_fragment,
+        actor=actor,
+    )
+
+
+def list_space_knowledge(*, space_id: str) -> list[dict[str, Any]]:
+    return dms_executor.list_space_knowledge_notes(space_id=space_id)
+
+
 def preview_adjusted_sql(*, space_id: str, sql: str) -> dict[str, Any]:
     return dms_executor.preview_adjusted_sql(
         space_id=space_id,

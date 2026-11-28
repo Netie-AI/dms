@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import duckdb
 import pytest
+from cortex_client.compute import _insights_body
 from cortex_client.insights import SPACE_KNOWLEDGE_MARK
+from dms_core.pii import NAME_MASK_KEY
+from dms_executor import _insights_compute_seam
+from dms_executor.demo_warehouse import SERVING_DIALECT
+from dms_executor.generative_ask import (
+    currency_mismatch_reason,
+    dropped_stated_value_reason,
+    maybe_generative_ask,
+    unhonored_qualifier_reason,
+)
+from dms_executor.ontology import Ontology
+from dms_executor.reconfirm import question_requests_pii
 from dms_executor.space_knowledge import (
     HEADER,
     ROLE,
@@ -22,6 +36,7 @@ from dms_executor.space_knowledge import (
     revise_note,
     space_knowledge_enabled,
 )
+from dms_executor.sql_currency import asked_currencies
 
 
 def _on(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,3 +257,269 @@ def test_model_rank_uses_a_role_and_no_model_id(
     assert "Czech koruna refers to Currency = 'CZK'" in block
     assert notes_in_rank_order("not-json", [{"note_id": "kn_x", "body": "a"}]) is None
     assert notes_in_rank_order(["nope"], [{"note_id": "kn_x", "body": "a"}]) == []
+
+
+_QUESTION = "what is the total amount"
+_NOTE = "high value means amount > 1000"
+_CONTEXT = "Czech koruna refers to Currency = 'CZK'. email is not a column"
+_SQL = "SELECT amount FROM orders"
+_VOLATILE = {
+    "answer_id",
+    "audit_id",
+    "as_of",
+    "drillthrough_token",
+    "timings",
+    "served_attribution",
+}
+
+
+def _ontology() -> Ontology:
+    onto = Ontology()
+    onto.add_object("orders", "orders", ["tier"])
+    onto.add_measure("total_amount", "orders", "SUM(amount)", description="pile")
+    onto.verified = True
+    return onto
+
+
+def _embed(texts: list[str]) -> list[list[float]]:
+    out: list[list[float]] = []
+    for index, text in enumerate(texts):
+        if index == 0 or "1000" in text:
+            out.append([1.0, 0.0])
+        else:
+            out.append([0.0, 1.0])
+    return out
+
+
+def _quiet(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "DMS_GROUND_DEFS",
+        "DMS_VQ_RAG",
+        "DMS_CLOOP_B",
+        "DMS_DEF_VALIDATE",
+        "DMS_SCHEMA_CONTEXT",
+        "DMS_AI_FIRST",
+        "DMS_SCALE_MISS",
+        "DMS_ASK_LADDER",
+        "DMS_NO_WORD_RULES",
+        "DMS_RULES_OFF",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _lake(tmp_path: Path, name: str) -> Path:
+    path = tmp_path / name
+    con = duckdb.connect(str(path))
+    con.execute("CREATE TABLE orders (amount INTEGER, tier VARCHAR)")
+    con.execute("INSERT INTO orders VALUES (50, 'high'), (20, 'low')")
+    con.close()
+    return path
+
+
+def _stable(env: dict[str, Any] | None) -> str:
+    if not isinstance(env, dict):
+        return ""
+    kept = {key: value for key, value in env.items() if key not in _VOLATILE}
+    return json.dumps(kept, sort_keys=True, default=str)
+
+
+def _ask(
+    monkeypatch: pytest.MonkeyPatch,
+    path: Path,
+    *,
+    flag: str | None,
+    context: str | None,
+    embedder: Any,
+) -> tuple[dict[str, Any] | None, dict[str, Any], list[str]]:
+    _quiet(monkeypatch)
+    if flag is None:
+        monkeypatch.delenv("DMS_SPACE_KNOWLEDGE", raising=False)
+    else:
+        monkeypatch.setenv("DMS_SPACE_KNOWLEDGE", flag)
+    seen: dict[str, Any] = {}
+    gates: list[str] = []
+
+    def _wrap(fn: Any) -> Any:
+        def _inner(question: str, *args: Any, **kwargs: Any) -> Any:
+            gates.append(question)
+            return fn(question, *args, **kwargs)
+
+        return _inner
+
+    monkeypatch.setattr(
+        "dms_executor.generative_ask.unhonored_qualifier_reason",
+        _wrap(unhonored_qualifier_reason),
+    )
+    monkeypatch.setattr(
+        "dms_executor.generative_ask.dropped_stated_value_reason",
+        _wrap(dropped_stated_value_reason),
+    )
+    monkeypatch.setattr(
+        "dms_executor.generative_ask.currency_mismatch_reason",
+        _wrap(currency_mismatch_reason),
+    )
+
+    def submit(statement: str) -> Any:
+        handle = duckdb.connect(str(path))
+        try:
+            cur = handle.execute(statement)
+            cols = [str(c[0]) for c in (cur.description or [])]
+            rows = [dict(zip(cols, row, strict=True)) for row in cur.fetchall()]
+        finally:
+            handle.close()
+        return SimpleNamespace(ok=True, status="ok", run_id="run_k", output={"rows": rows})
+
+    def compute(ctx: dict[str, Any]) -> dict[str, Any]:
+        seen["raw"] = ctx
+        seen["ctx"] = json.dumps(ctx, sort_keys=True, default=str)
+        return {"query_sql": _SQL}
+
+    env = maybe_generative_ask(
+        _QUESTION,
+        space_id="space-k",
+        warehouse=path,
+        grantable={"orders"},
+        compute=compute,
+        submit=submit,
+        ledger_append=lambda _payload: SimpleNamespace(entry_id="led", hash="h"),
+        ontology=_ontology(),
+        dialect=SERVING_DIALECT,
+        embedder=embedder,
+        demo_gate=False,
+        demo_ontology_allowed=False,
+        ask_context=context,
+    )
+    seen["gates"] = gates
+    return env, seen, gates
+
+
+def test_flag_off_prompt_envelope_and_route_stay_byte_identical(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = _lake(tmp_path, "off-ask.duckdb")
+    _on(monkeypatch)
+    proposed = propose_note(
+        space_id="space-k",
+        body=_NOTE,
+        sql_fragment="amount > 1000",
+        actor="steward-a",
+        path=path,
+    )
+    approve_note(note_id=proposed["note_id"], actor="steward-a", path=path)
+
+    def _boom(_texts: list[str]) -> list[list[float]]:
+        raise AssertionError("embedder called with the flag off")
+
+    env, seen, _gates = _ask(
+        monkeypatch, path, flag=None, context=_CONTEXT, embedder=_boom
+    )
+    env0, seen0, _gates0 = _ask(
+        monkeypatch, path, flag="0", context=_CONTEXT, embedder=_boom
+    )
+    bare, seen_bare, _gates_bare = _ask(
+        monkeypatch, path, flag=None, context=None, embedder=_boom
+    )
+    assert seen["ctx"] == seen0["ctx"] == seen_bare["ctx"]
+    assert "space_knowledge" not in seen["raw"]
+    assert _NOTE not in seen["ctx"]
+    assert "CZK" not in seen["ctx"]
+    assert _stable(env) == _stable(env0) == _stable(bare)
+    assert (env or {}).get("route") == (bare or {}).get("route")
+    blob = json.dumps(env, default=str)
+    assert "named_filter=high" not in blob
+
+
+def test_note_reaches_the_model_and_not_the_gates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path = _lake(tmp_path, "on-ask.duckdb")
+    _on(monkeypatch)
+    proposed = propose_note(
+        space_id="space-k",
+        body=_NOTE,
+        sql_fragment="amount > 1000",
+        actor="steward-a",
+        path=path,
+    )
+    approve_note(note_id=proposed["note_id"], actor="steward-a", path=path)
+    env, seen, gates = _ask(
+        monkeypatch, path, flag="1", context=_CONTEXT, embedder=_embed
+    )
+    raw = seen["raw"]
+    assert isinstance(raw, dict)
+    block = raw["space_knowledge"]
+    assert _NOTE in block
+    assert "amount > 1000" in block
+    assert _CONTEXT in block
+    assert gates, "the qualifier gates did not run"
+    for question in gates:
+        assert _NOTE not in question
+        assert "CZK" not in question
+        assert "email" not in question
+        assert "high" not in question
+    leaked = f"{_QUESTION}\n{_NOTE}\n{_CONTEXT}"
+    assert "named_filter=high" in str(
+        dropped_stated_value_reason(_QUESTION + " " + _NOTE, _SQL, path, grantable={"orders"})
+    )
+    assert dropped_stated_value_reason(_QUESTION, _SQL, path, grantable={"orders"}) is None
+    assert "CZK" in asked_currencies(leaked)
+    assert asked_currencies(_QUESTION) == frozenset()
+    assert question_requests_pii(leaked) is True
+    assert question_requests_pii(_QUESTION) is False
+    blob = json.dumps(env, default=str)
+    assert "named_filter=high" not in blob
+    assert env is not None
+    assert env.get("abstained") is not True
+
+    class _Client:
+        def compute_insights(self, question: str, **kwargs: Any) -> dict[str, Any]:
+            seen["asked"] = question
+            seen["posted"] = kwargs.get("ontology")
+            return {"ok": True}
+
+    _insights_compute_seam(
+        _Client(),
+        _QUESTION,
+        session_id=None,
+        space_id="space-k",
+        ontology=raw,
+    )
+    asked = str(seen["asked"])
+    assert _NOTE in asked
+    assert _CONTEXT in asked
+    posted = seen["posted"]
+    assert isinstance(posted, dict)
+    assert "space_knowledge" not in posted
+    assert _NOTE not in json.dumps(posted)
+
+    masked: dict[str, Any] = {}
+
+    def _mask(**kwargs: Any) -> dict[str, str]:
+        masked["text"] = kwargs.get("text")
+        return {"text": str(kwargs.get("text") or "")}
+
+    monkeypatch.setattr("cortex_client.compute.fail_closed_mask_payload", _mask)
+    body = _insights_body(
+        asked,
+        session_id=None,
+        space_id="space-k",
+        ontology={NAME_MASK_KEY: {"name_values": ["Pat"]}},
+    )
+    assert _NOTE not in str(masked.get("text") or "")
+    assert "CZK" not in str(masked.get("text") or "")
+    assert _NOTE in str(body["question"])
+    assert "space_knowledge" not in body.get("ontology", {})
+
+
+def test_knowledge_routes_stay_unmounted_when_the_flag_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _off(monkeypatch)
+    from dms_api.app import create_app
+
+    off_paths = create_app().openapi()["paths"]
+    assert not any(path.startswith("/v1/studio/knowledge") for path in off_paths)
+    monkeypatch.setenv("DMS_SPACE_KNOWLEDGE", "1")
+    on_paths = create_app().openapi()["paths"]
+    assert "/v1/studio/knowledge" in on_paths
+    assert "/v1/studio/knowledge/{note_id}/approve" in on_paths
