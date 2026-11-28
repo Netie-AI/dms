@@ -1974,6 +1974,26 @@ class Executor:
             grantable=grantable,
         )
         if not blocked:
+            from dms_executor.qualifier_ai import qualifier_ai_enabled, review_candidate
+
+            if qualifier_ai_enabled():
+                reviewed = review_candidate(
+                    question,
+                    sql,
+                    warehouse=self._warehouse,
+                    grantable=grantable,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                if reviewed["action"] == "reconfirm" and isinstance(
+                    reviewed.get("envelope"), dict
+                ):
+                    return reviewed["envelope"]
+                if reviewed["action"] == "abstain":
+                    blocked = str(reviewed.get("reason") or "qualifier_ai")
+                else:
+                    return None
+        if not blocked:
             return None
         held = build_abstain(
             reason=blocked,
