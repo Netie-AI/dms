@@ -128,7 +128,7 @@ def _run(url: str) -> int:
     ensure_database(url)
     head = upgrade_head(url)
     print(f"database      {_db_name(url)} @ alembic head {head}")
-    check("alembic head", head, "0010_connections")
+    check("alembic head", head, "0011_webhooks")
 
     os.environ["DMS_ACTIONS"] = "1"
 
