@@ -101,21 +101,6 @@ def _handles() -> tuple[Any, Any, Any, Any, Any, Any]:
     return settings, store, cortex, ask, audit, binding
 
 
-def _gate(tool: str) -> str | None:
-    actor = current_mcp_actor()
-    if not actor:
-        return _dump({"error": "not_authenticated"})
-    _settings, _store, cortex, _ask, _audit, _binding = _handles()
-    decision = compliance_gate(
-        action="mcp.call",
-        actor=actor,
-        metadata={"task_id": "mcp.call", "tool": tool},
-        client=cortex,
-    )
-    enforce(decision, mutation=False)
-    return None
-
-
 def _http_body(exc: HTTPException) -> str:
     return _dump({"status": exc.status_code, "detail": exc.detail})
 
@@ -292,9 +277,14 @@ def register(server: Any) -> None:
         session_id: str | None = None,
         grounded_tables: list[str] | None = None,
     ) -> str:
-        refused = _gate("ask")
-        if refused:
-            return refused
+        settings, store, cortex, ask_svc, audit, _binding = _handles()
+        decision = compliance_gate(
+            action="mcp.call",
+            actor=current_mcp_actor(),
+            metadata={"task_id": "mcp.call", "tool": "ask"},
+            client=cortex,
+        )
+        enforce(decision, mutation=False)
         if not question.strip():
             return _dump({"error": "question_required"})
         bad_tables = grounded_tables is not None and (
@@ -303,7 +293,6 @@ def register(server: Any) -> None:
         )
         if bad_tables:
             return _dump({"error": "invalid_grounded_tables"})
-        settings, store, cortex, ask_svc, audit, _binding = _handles()
         try:
             body = AskBody(
                 question=question.strip(),
@@ -348,10 +337,14 @@ def register(server: Any) -> None:
         structured_output=False,
     )
     async def answer_clarify(clarify_id: str, reading_id: str) -> str:
-        refused = _gate("answer_clarify")
-        if refused:
-            return refused
         _settings, _store, cortex, ask_svc, _audit, _binding = _handles()
+        decision = compliance_gate(
+            action="mcp.call",
+            actor=current_mcp_actor(),
+            metadata={"task_id": "mcp.call", "tool": "answer_clarify"},
+            client=cortex,
+        )
+        enforce(decision, mutation=False)
         try:
             body = ClarifyPickBody(clarify_id=clarify_id, reading_id=reading_id)
         except ValidationError as exc:
@@ -362,20 +355,28 @@ def register(server: Any) -> None:
 
     @server.tool(name="list_spaces", description=LIST_SPACES_DESCRIPTION, structured_output=False)
     async def list_spaces_tool() -> str:
-        refused = _gate("list_spaces")
-        if refused:
-            return refused
-        _settings, store, _cortex, _ask, _audit, binding = _handles()
+        _settings, store, cortex, _ask, _audit, binding = _handles()
+        decision = compliance_gate(
+            action="mcp.call",
+            actor=current_mcp_actor(),
+            metadata={"task_id": "mcp.call", "tool": "list_spaces"},
+            client=cortex,
+        )
+        enforce(decision, mutation=False)
         return await anyio.to_thread.run_sync(
             lambda: _call_handler(lambda: list_spaces(store, binding))
         )
 
     @server.tool(name="list_metrics", description=LIST_METRICS_DESCRIPTION, structured_output=False)
     async def list_metrics(space_id: str | None = None) -> str:
-        refused = _gate("list_metrics")
-        if refused:
-            return refused
-        settings, _store, _cortex, _ask, _audit, _binding = _handles()
+        settings, _store, cortex, _ask, _audit, _binding = _handles()
+        decision = compliance_gate(
+            action="mcp.call",
+            actor=current_mcp_actor(),
+            metadata={"task_id": "mcp.call", "tool": "list_metrics"},
+            client=cortex,
+        )
+        enforce(decision, mutation=False)
         return await anyio.to_thread.run_sync(
             lambda: _call_handler(
                 lambda: ontology_section("metrics", settings, pack=None, space_id=space_id)
@@ -388,12 +389,16 @@ def register(server: Any) -> None:
         structured_output=False,
     )
     async def describe_space(space_id: str) -> str:
-        refused = _gate("describe_space")
-        if refused:
-            return refused
+        _settings, store, cortex, _ask, _audit, _binding = _handles()
+        decision = compliance_gate(
+            action="mcp.call",
+            actor=current_mcp_actor(),
+            metadata={"task_id": "mcp.call", "tool": "describe_space"},
+            client=cortex,
+        )
+        enforce(decision, mutation=False)
         if not space_id.strip():
             return _dump({"error": "space_id_required"})
-        _settings, store, _cortex, _ask, _audit, _binding = _handles()
 
         def _run() -> str:
             try:
@@ -406,10 +411,15 @@ def register(server: Any) -> None:
 
     @server.tool(name="get_proof", description=GET_PROOF_DESCRIPTION, structured_output=False)
     async def get_proof(proof_id: str) -> str:
-        refused = _gate("get_proof")
-        if refused:
-            return refused
+        _settings, _store, cortex, _ask, _audit, _binding = _handles()
         actor = current_mcp_actor()
+        decision = compliance_gate(
+            action="mcp.call",
+            actor=actor,
+            metadata={"task_id": "mcp.call", "tool": "get_proof"},
+            client=cortex,
+        )
+        enforce(decision, mutation=False)
         record = _proofs.get(proof_id)
         if record is None or record.get("actor") != actor:
             return _dump({"error": "proof_not_found"})
