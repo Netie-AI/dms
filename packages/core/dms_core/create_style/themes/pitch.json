@@ -1,0 +1,25 @@
+{
+  "name": "pitch",
+  "colours": {
+    "ink": "#1C1C1C",
+    "paper": "#F4F1EA",
+    "accent": "#1F4B3A",
+    "card": "#FFFFFF",
+    "muted": "#5E6670",
+    "line": "#D9D4CB"
+  },
+  "card_alpha": 0.55,
+  "fonts": {
+    "display": "Calibri",
+    "body": "Calibri"
+  },
+  "logo_b64": "",
+  "spacing": {
+    "unit": 8,
+    "page_margin": 48,
+    "gap": 16,
+    "card_pad": 16
+  },
+  "slide": {"w": 1280, "h": 720},
+  "doc": {"w": 816, "h": 1056}
+}
