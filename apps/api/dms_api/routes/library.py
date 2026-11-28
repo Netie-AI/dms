@@ -191,7 +191,7 @@ def data_map(
             "Postgres sources empty — set DATABASE_URL (compose postgres) "
             "for control-plane sources."
         )
-    return {
+    body: dict[str, Any] = {
         "sources": sources,
         "bronze_tables": bronze,
         "warehouse_tables": warehouse,
@@ -199,6 +199,12 @@ def data_map(
         "note": " ".join(notes),
         "space_id": space_id,
     }
+    # READY-04. Flag off: the key is absent and the body matches the return above.
+    from dms_core.control_plane.ready_flow import candidate_public, joins_enabled
+
+    if joins_enabled():
+        body["join_candidates"] = candidate_public()
+    return body
 
 
 @router.get("/tree")

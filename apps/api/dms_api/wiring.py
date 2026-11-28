@@ -653,7 +653,18 @@ def _bind_sql_source(
         ref=label,
         exposed=names,
     )
-    return {"source_id": source_id, "exposed_tables": names, "granted_tables": []}
+    out: dict[str, Any] = {
+        "source_id": source_id,
+        "exposed_tables": names,
+        "granted_tables": [],
+    }
+    # READY-04. Flag off: the receipt stays source, exposed, and an empty grant.
+    from dms_core.control_plane.ready_flow import grant_enabled, grant_proposal, note_connected
+
+    if grant_enabled():
+        note_connected(source_id, sid, names)
+        out["grant_proposal"] = grant_proposal(names, source_id)
+    return out
 
 
 def _persist_sql_data_source(
