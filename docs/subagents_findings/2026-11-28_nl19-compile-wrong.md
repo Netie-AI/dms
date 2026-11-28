@@ -6,4 +6,4 @@ Main idea: Flag default off. Off, stub 52 is correct=43 wrong=0 reconfirm=5 ai=0
 
 PREFLIGHT: PARTIAL. compile-check-01, shape-check-01, scale-miss-01, wrong-trap-01.
 
-Stub measured at `1a7e599`, rebased onto `515f7a5`.
+Stub measured at `a69ec9e`, rebased onto `cb64f4d`. The refuse helper is `_refuse_destructive`. It is not the compliance gate. The invariant was not weakened.
