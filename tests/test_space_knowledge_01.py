@@ -523,3 +523,73 @@ def test_knowledge_routes_stay_unmounted_when_the_flag_is_off(
     on_paths = create_app().openapi()["paths"]
     assert "/v1/studio/knowledge" in on_paths
     assert "/v1/studio/knowledge/{note_id}/approve" in on_paths
+
+
+def test_listed_gold_sql_never_reaches_the_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A listed statement stored as a note, or sent as context, stays out of the prompt."""
+    from dms_executor.skills_quarantine import WRITE_BLOCKED, item_content_hash
+
+    for name in (
+        "DMS_SCORED_PACK_HASHES",
+        "DMS_SCORED_ITEM_HASHES",
+        "DMS_SCORED_ITEM_HASHES_FILE",
+        "DMS_SCORED_RESULT_HASHES",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    _on(monkeypatch)
+    path = tmp_path / "gold.duckdb"
+    duckdb.connect(str(path)).close()
+    gold = "SELECT total FROM t_gold"
+    kept = propose_note(
+        space_id="space-k",
+        body="qxv marker means zeta_mark is set",
+        actor="steward-a",
+        path=path,
+    )
+    approve_note(note_id=kept["note_id"], actor="steward-a", path=path)
+    leaked = propose_note(
+        space_id="space-k",
+        body="stored fragment label",
+        sql_fragment=gold,
+        actor="steward-a",
+        path=path,
+    )
+    approve_note(note_id=leaked["note_id"], actor="steward-a", path=path)
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(gold))
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        propose_note(
+            space_id="space-k",
+            body="another copy",
+            sql_fragment="select   total  from   t_gold",
+            actor="steward-a",
+            path=path,
+        )
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        revise_note(
+            note_id=kept["note_id"],
+            body="qxv marker means zeta_mark is set",
+            sql_fragment=gold,
+            actor="steward-a",
+            path=path,
+        )
+    spelled = "select   total  from   t_gold"
+    blocked = knowledge_prompt(
+        "what is the total amount",
+        space_id="space-k",
+        warehouse=path,
+        ask_context=spelled,
+    )
+    assert "t_gold" not in blocked
+    assert "stored fragment label" not in blocked
+    assert "zeta_mark" in blocked
+    shown = knowledge_prompt(
+        "what is the total amount",
+        space_id="space-k",
+        warehouse=path,
+        ask_context="high value means amount > 1000",
+    )
+    assert "t_gold" not in shown
+    assert "zeta_mark" in shown
+    assert "high value means amount > 1000" in shown

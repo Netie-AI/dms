@@ -7,7 +7,8 @@ does not read a pack file of its own.
 A row is excluded when any listed key matches:
 
 - provenance pack hash (``DMS_SCORED_PACK_HASHES``)
-- ``item_content_hash`` of its SQL (``DMS_SCORED_ITEM_HASHES`` or
+- ``item_content_hash`` of each SQL-bearing field (``sql``, ``sql_text``,
+  ``sql_fragment``) (``DMS_SCORED_ITEM_HASHES`` or
   ``DMS_SCORED_ITEM_HASHES_FILE``)
 - ``item_result_hash`` of its result rows (``DMS_SCORED_RESULT_HASHES``)
 
@@ -266,12 +267,22 @@ def provenance_pack_hash(row: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _row_sql(row: Mapping[str, Any]) -> str:
-    for key in ("sql", "sql_text"):
+_SQL_FIELDS = ("sql", "sql_text", "sql_fragment")
+
+
+def _sql_texts(row: Mapping[str, Any]) -> list[str]:
+    """Every SQL-bearing field. A listed hash on any one of them excludes the row."""
+    found: list[str] = []
+    for key in _SQL_FIELDS:
         raw = row.get(key)
         if isinstance(raw, str) and raw.strip():
-            return raw
-    return ""
+            found.append(raw)
+    return found
+
+
+def _row_sql(row: Mapping[str, Any]) -> str:
+    found = _sql_texts(row)
+    return found[0] if found else ""
 
 
 def _row_result_hash(row: Mapping[str, Any], warehouse: Path | None) -> str:
@@ -357,9 +368,9 @@ def _excluded(row: Mapping[str, Any], cfg: _Config, warehouse: Path | None) -> b
     carried = provenance_pack_hash(row)
     if carried is not None and carried in cfg.pack:
         return True
-    sql = _row_sql(row)
-    if sql and item_content_hash(sql) in cfg.item:
-        return True
+    for sql in _sql_texts(row):
+        if item_content_hash(sql) in cfg.item:
+            return True
     if not cfg.result:
         return False
     try:

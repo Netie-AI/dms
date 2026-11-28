@@ -12,6 +12,9 @@ context string. Qualifier gates and PII extraction keep the question.
 Ranking is an embedding when the caller has one, else an OpenVault call
 with role ``rank`` when that host is configured, else Okapi BM25. No word
 list. The SQL fragment is an example for the writer, never a stored answer.
+A listed scored statement is refused on write and dropped on read, including
+when the same statement arrives as per-ask context. Both use
+``skills_quarantine`` (``reject_scored_write`` / ``filter_retrieved_rows``).
 """
 
 from __future__ import annotations
@@ -81,7 +84,7 @@ def _clean_body(body: str) -> str:
     return text
 
 
-def _clean_sql(sql: str | None) -> str | None:
+def _clean_sql(sql: str | None, *, warehouse: Path) -> str | None:
     if sql is None:
         return None
     text = " ".join(str(sql).split())
@@ -93,6 +96,9 @@ def _clean_sql(sql: str | None) -> str | None:
 
     if question_is_destructive(text):
         raise ValueError("sql_fragment_rejected")
+    from dms_executor.skills_quarantine import reject_scored_write
+
+    reject_scored_write({"sql_fragment": text}, warehouse=warehouse)
     return text
 
 
@@ -202,11 +208,11 @@ def propose_note(
     sid = scope_key(space_id)
     if not sid:
         raise ValueError("space_id_required")
+    db = path or warehouse_path()
     text = _clean_body(body)
-    fragment = _clean_sql(sql_fragment)
+    fragment = _clean_sql(sql_fragment, warehouse=db)
     note_id = f"kn_{uuid.uuid4().hex[:16]}"
     created = _now()
-    db = path or warehouse_path()
     with _LOCK:
         con = _connect(db, write=True)
         try:
@@ -299,12 +305,12 @@ def revise_note(
 ) -> dict[str, Any]:
     """A new proposed version. The previous row stays until this one is approved."""
     _require_on()
-    text = _clean_body(body)
-    fragment = _clean_sql(sql_fragment)
     nid = (note_id or "").strip()
     if not nid:
         raise ValueError("note_id_required")
     db = path or warehouse_path()
+    text = _clean_body(body)
+    fragment = _clean_sql(sql_fragment, warehouse=db)
     created = _now()
     new_id = f"kn_{uuid.uuid4().hex[:16]}"
     with _LOCK:
@@ -545,18 +551,40 @@ def retrieve_notes(
     notes = _approved(db, scope_key(space_id))
     if not notes:
         return []
+    from dms_executor.skills_quarantine import filter_retrieved_rows
+
+    notes = filter_retrieved_rows(notes, warehouse=db)
+    if not notes:
+        return []
     chooser = ranker if ranker is not None else _default_ranker()
     return _rank(q, notes, embedder, chooser)
 
 
-def _render(notes: list[dict[str, Any]], ask_context: str | None) -> str:
+def _visible_context(ask_context: str | None, warehouse: Path | None) -> str:
+    """Per-ask context, or empty when that text is a listed scored statement."""
+    text = " ".join((ask_context or "").split())
+    if not text:
+        return ""
+    from dms_executor.skills_quarantine import filter_retrieved_rows
+
+    kept = filter_retrieved_rows([{"sql_fragment": text}], warehouse=warehouse)
+    if not kept:
+        return ""
+    return text
+
+
+def _render(
+    notes: list[dict[str, Any]],
+    ask_context: str | None,
+    warehouse: Path | None,
+) -> str:
     lines: list[str] = []
     for row in notes:
         lines.append("note: " + str(row.get("body") or ""))
         fragment = str(row.get("sql_fragment") or "").strip()
         if fragment:
             lines.append("sql: " + fragment)
-    context = " ".join((ask_context or "").split())
+    context = _visible_context(ask_context, warehouse)
     if context:
         lines.append("ask context:")
         lines.append(context)
@@ -581,11 +609,12 @@ def knowledge_prompt(
     """
     if not space_knowledge_enabled():
         return ""
+    db = warehouse or warehouse_path()
     notes = retrieve_notes(
         question,
         space_id=space_id,
-        warehouse=warehouse,
+        warehouse=db,
         embedder=embedder,
         ranker=ranker,
     )
-    return _render(notes, ask_context)
+    return _render(notes, ask_context, db)
