@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from dms_api.ask_audit import record_ask, take_executed
 from dms_api.deps import AskAuditDep, AskServiceDep, CortexDep, SettingsDep, SpaceStoreDep
 from dms_api.gatekeeping import enforce
+from dms_api.gov_guard import guard_feature, guard_text
 from dms_api.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ _MANIFEST_TABLE_RE = re.compile(r"table '([^']+)' is not named by this manifest"
 def _missing_table(detail: str | None) -> str | None:
     m = _MANIFEST_TABLE_RE.search(detail or "")
     return m.group(1) if m else None
+
 
 _POLICY_CODES = frozenset(
     {
@@ -347,6 +349,14 @@ def chat_ask(
                 },
                 client=cortex,
             )
+        guard_feature(settings, "ask")
+        cleaned = guard_text(settings, body.question, source="ask")
+        if cleaned != body.question:
+            body.question = cleaned
+        if body.context:
+            cleaned_context = guard_text(settings, body.context, source="ask")
+            if cleaned_context != body.context:
+                body.context = cleaned_context
 
         # BANK-02 (dms#269): one audit row per ask, written once the outcome is known.
         # Asks that never reach the gate (the lane refusal, an unknown Space) are
@@ -610,6 +620,9 @@ def chat_clarify_pick(
     )
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
+    from dms_api.settings import get_settings
+
+    guard_feature(get_settings(), "ask")
     pick = getattr(ask, "clarify_pick", None)
     if not callable(pick):
         raise HTTPException(
@@ -655,6 +668,7 @@ def chat_ask_confirm(
     )
     if not decision.allowed and decision.reason not in _SOFT_GATE:
         raise HTTPException(status_code=403, detail=decision.reason)
+    guard_feature(settings, "ask")
     confirm = getattr(ask, "confirm_reconfirm", None)
     if not callable(confirm):
         raise HTTPException(
@@ -803,9 +817,7 @@ def chat_export_xlsx(
         ) from exc
     return Response(
         content=data,
-        media_type=(
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ),
+        media_type=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

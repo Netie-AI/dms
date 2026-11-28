@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
+from dms_api.gov_guard import guard_bytes, guard_feature
 from dms_api.wiring import (
     batch_ingest,
     bronze_list,
@@ -61,9 +62,11 @@ async def ingest_file(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "create")
 
     raw = await file.read()
     name = file.filename or "upload.csv"
+    raw = guard_bytes(settings, filename=name, data=raw)
     receipt = batch_ingest([(name, raw)], space_id=space_id)
     attention = receipt.get("need_attention", 0)
     return ReceiptOut(
@@ -105,10 +108,12 @@ async def ingest_batch_files(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "create")
 
     payloads: list[tuple[str, bytes]] = []
     for f in files:
-        payloads.append((f.filename or "upload.csv", await f.read()))
+        name = f.filename or "upload.csv"
+        payloads.append((name, guard_bytes(settings, filename=name, data=await f.read())))
     receipt = batch_ingest(payloads, space_id=space_id)
     attention = receipt.get("need_attention", 0)
     return ReceiptOut(
@@ -352,4 +357,3 @@ def list_verified_queries_route(
     )
     enforce(decision, mutation=False)
     return list_verified_queries(space_id=space_id)
-

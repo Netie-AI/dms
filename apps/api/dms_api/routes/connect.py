@@ -32,6 +32,7 @@ from dms_api.deps import (
     StoreBindingDep,
 )
 from dms_api.gatekeeping import enforce
+from dms_api.gov_guard import guard_feature
 from dms_api.settings import Settings
 from dms_api.wiring import (
     connect_audit_rows,
@@ -200,6 +201,7 @@ async def connect_source(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "connectors")
     try:
         if settings.dms_connect_v2:
             registered = connect_v2_register(
@@ -261,6 +263,7 @@ async def grant_source(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "connectors")
     try:
         if settings.dms_connect_v2:
             return connect_v2_set_granted(
@@ -302,6 +305,7 @@ async def revoke_source(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "connectors")
     try:
         if settings.dms_connect_v2:
             return connect_v2_set_granted(
@@ -411,6 +415,7 @@ async def test_source(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "connectors")
     return connect_v2_probe(
         ask,
         kind=kind,
@@ -487,6 +492,7 @@ async def query_source(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "connectors")
     database_url = _store_url(settings)
     if payload.get("export") is True:
         try:
@@ -551,6 +557,7 @@ async def cancel_query(
         client=cortex,
     )
     enforce(decision)
+    guard_feature(settings, "connectors")
     try:
         return connect_v2_cancel(query_id.strip())
     except (KeyError, ValueError, ConnectStoreError) as exc:

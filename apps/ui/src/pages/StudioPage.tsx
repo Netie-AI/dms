@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SqlSourcePanel } from "@/components/SqlSourcePanel";
+import { GovConsole } from "@/components/studio/GovConsole";
 import { ReadyGuide } from "@/components/studio/ReadyGuide";
 import { ChatTurn } from "@/components/studio/ChatTurn";
 import { useApp } from "@/context/AppContext";
@@ -350,6 +351,7 @@ export function StudioPage() {
         </div>
       </div>
 
+      <GovConsole />
       <button
         type="button"
         data-testid="studio-sources-toggle"

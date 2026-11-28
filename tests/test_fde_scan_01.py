@@ -414,8 +414,13 @@ def test_secret_rules_skip_when_module_absent(tmp_path: Path) -> None:
     assert got.returncode in (0, 1)
     _run_dir, report, _decisions, _md = _latest(eng)
     check = next(c for c in report["checks"] if c["id"] == "K4.11")
-    assert check["status"] == "SKIPPED"
-    assert "not on this tree" in check["evidence"]["reason"]
+    on_tree = importlib.util.find_spec("dms_core.governance.scan") is not None
+    if on_tree:
+        assert check["status"] == "PASS"
+        assert check["evidence"]["secret_hits"] == 0
+    else:
+        assert check["status"] == "SKIPPED"
+        assert "not on this tree" in check["evidence"]["reason"]
 
 
 def test_lake_promise_duplicate_key_fails(tmp_path: Path) -> None:
