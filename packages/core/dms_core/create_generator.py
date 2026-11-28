@@ -30,6 +30,7 @@ from dms_core.pii import mask_payload
 _ROOT = Path(__file__).resolve().parent
 _TOOLS_PATH = _ROOT / "create_tools.json"
 _PROMPTS = _ROOT / "create_prompts"
+_SCORE = _ROOT / "create_score.json"
 _SKILLS = _ROOT / "create_skills"
 _FORMAT_SKILLS: dict[str, dict[str, list[str]]] = {
     "app": {"anthropic": [], "local": ["app"]},
@@ -175,6 +176,18 @@ def render_context(
     )
 
 
+def direct_prompt(
+    spec: Mapping[str, Any],
+    data_context: Mapping[str, Any],
+    style: Mapping[str, Any],
+    *,
+    prompt_version: str = "1",
+) -> str:
+    """The plain Claude ask: system prompt plus the same XML context. No tools."""
+    system, xml = _system_and_xml(spec, data_context, style, prompt_version)
+    return system + "\n" + xml
+
+
 def request_body(
     *,
     provider: str,
@@ -186,9 +199,7 @@ def request_body(
     prompt_version: str,
 ) -> tuple[dict[str, Any], str]:
     library = prompt_library(prompt_version)
-    system = str(library.get("system") or "")
-    xml = render_context(spec, data_context, style)
-    xml = redact_text(xml)
+    system, xml = _system_and_xml(spec, data_context, style, prompt_version)
     if provider == "cursor_api":
         repo = os.environ.get("DMS_CREATE_CURSOR_REPO", "").strip()
         ref = os.environ.get("DMS_CREATE_CURSOR_REF", "main").strip() or "main"
@@ -356,6 +367,55 @@ def judge_artifact(
     if "DMSMASK_" in str(masked):
         issues.append("pii_present")
     return issues
+
+
+def direct_reading(artifact: Mapping[str, Any]) -> dict[str, Any]:
+    """Same words with the SQL and the row citations removed."""
+    copy = json.loads(json.dumps(artifact))
+    for part in copy.get("parts") or []:
+        if isinstance(part, dict):
+            part.pop("sql", None)
+            part.pop("rows", None)
+            part.pop("citations", None)
+    return copy
+
+
+def score_artifact(
+    artifact: Mapping[str, Any],
+    *,
+    kind: str,
+    brand: Mapping[str, str],
+    allowed_numbers: set[str],
+) -> dict[str, Any]:
+    """Points from ``create_score.json``. Unknown checks earn nothing."""
+    loaded = json.loads(_SCORE.read_text(encoding="utf-8"))
+    checks = loaded.get("checks") if isinstance(loaded, dict) else None
+    prose = _prose(artifact)
+    earned = 0
+    detail: list[dict[str, Any]] = []
+    for item in checks or []:
+        if not isinstance(item, dict):
+            continue
+        check_id = str(item.get("id") or "")
+        points = item.get("points")
+        if isinstance(points, bool) or not isinstance(points, int):
+            continue
+        ok = _score_check(
+            check_id,
+            artifact,
+            kind=kind,
+            brand=brand,
+            allowed_numbers=allowed_numbers,
+            prose=prose,
+        )
+        gained = points if ok else 0
+        earned += gained
+        detail.append({"id": check_id, "ok": ok, "points": gained})
+    return {"points": earned, "checks": detail}
+
+
+def holds_direct_bar(create_points: int, direct_points: int) -> bool:
+    return create_points >= direct_points
 
 
 def allowed_from(rows: Sequence[Mapping[str, Any]], overview: Mapping[str, Any]) -> set[str]:
@@ -543,6 +603,54 @@ def _check(schema: Mapping[str, Any], value: Any, path: str) -> list[str]:
             return [f"{path}:type"]
         return []
     return []
+
+
+def _system_and_xml(
+    spec: Mapping[str, Any],
+    data_context: Mapping[str, Any],
+    style: Mapping[str, Any],
+    prompt_version: str,
+) -> tuple[str, str]:
+    library = prompt_library(prompt_version)
+    system = str(library.get("system") or "")
+    xml = redact_text(render_context(spec, data_context, style))
+    return system, xml
+
+
+def _score_check(
+    check_id: str,
+    artifact: Mapping[str, Any],
+    *,
+    kind: str,
+    brand: Mapping[str, str],
+    allowed_numbers: set[str],
+    prose: str,
+) -> bool:
+    if check_id == "schema":
+        return not validate_call(_OUTPUT_TOOL, artifact)
+    if check_id == "kind":
+        return str(artifact.get("kind") or "") == kind
+    if check_id == "parts":
+        parts = artifact.get("parts")
+        return isinstance(parts, list) and any(
+            isinstance(part, dict) and part.get("title") for part in parts
+        )
+    if check_id == "brand":
+        style_raw = artifact.get("style")
+        style: Mapping[str, Any] = style_raw if isinstance(style_raw, dict) else {}
+        for key in ("colours", "fonts", "logo", "tone"):
+            wanted = brand.get(key) or ""
+            if wanted and str(style.get(key) or "") != wanted:
+                return False
+        return True
+    if check_id == "traced":
+        return not _unsupported(prose, allowed_numbers)
+    if check_id == "clean":
+        if redact_text(prose) != prose:
+            return False
+        masked = mask_payload(text=prose).get("text") or ""
+        return "DMSMASK_" not in str(masked)
+    return False
 
 
 def _tag(name: str, value: Any) -> str:

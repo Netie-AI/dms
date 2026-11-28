@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: a shown app scores at least the direct ask
+
+- **Bar.** The Claude body is the direct ask (system prompt plus the same XML) plus tools and skills. A shown app is scored from `create_score.json` against those same words with the SQL and the citations removed. It is shown only when its points are at least that direct reading. A body that cites 18 from a granted row scores above a direct answer that cites 99999.
+- **Studio.** The super guide is a field. A typed guide is saved on the tenant before the session opens.
+
 ## 2026-11-28 - DMS-CREATE-01: the provider generates, DMS governs
 
 - **Harness.** `DMS_CREATE` stays off unless it is the digit 1. DMS does not build components. `dms_core.create_generator` is the shared adapter for this harness and the doc/slides writer. `claude_api` goes through OpenVault with a role, a system prompt, XML context, tool schemas, and adaptive thinking. `cursor_api` is `POST /v0/agents` with no model field. The Cursor key comes from OpenVault and is not stored.

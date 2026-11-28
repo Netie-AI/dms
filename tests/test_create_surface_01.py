@@ -15,7 +15,15 @@ import pytest
 from cortex_client.gate import ComplianceDecision
 from dms_api.app import create_app
 from dms_api.settings import get_settings
-from dms_core.create_generator import GeneratorError, generate, skills_for
+from dms_core.create_generator import (
+    GeneratorError,
+    direct_prompt,
+    generate,
+    holds_direct_bar,
+    request_body,
+    score_artifact,
+    skills_for,
+)
 from dms_executor.create_surface import (
     CreateDisabled,
     CreateProblem,
@@ -691,6 +699,57 @@ def test_stream_and_css(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     assert "def forecast_series" not in source
     ask = Path("packages/executor/dms_executor/generative_ask.py").read_text(encoding="utf-8")
     assert "DMS_CREATE" not in ask
+
+
+def test_claude_body_is_the_direct_ask_plus_tools() -> None:
+    spec = {"kind": "app", "goal": "See order trend", "audience": "Founder"}
+    context = {
+        "schema": [{"name": "orders"}],
+        "data": [{"name": "orders", "stats": [{"column": "amount", "sum_v": 135}]}],
+        "examples": [{"name": "example", "body": "A good chart."}],
+        "skills": skills_for("app"),
+        "choices": {"inputs": ["orders"]},
+    }
+    style = {"prompt": "Quiet", "template": "Plain layout.", "brand": {}, "guide": "One screen."}
+    text = direct_prompt(spec, context, style)
+    body, _xml = request_body(
+        provider="claude_api",
+        role="create_generate",
+        spec=spec,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert body["system"] + "\n" + body["messages"][0]["content"] == text
+    assert body["tools"]
+
+
+def test_shown_app_scores_at_least_the_direct_ask(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    client = _client(monkeypatch, tmp_path, "1")
+    made = _app()
+    made["parts"][0]["body"] = "One month is 18."
+    _patch(monkeypatch, [_usage(made, 11, 0.02)])
+    session_id = _open(client)
+    generated = client.post(
+        f"/v1/studio/create/sessions/{session_id}/generate", headers=HEADERS
+    )
+    assert generated.status_code == 200, generated.text
+    view = generated.json()
+    assert view["shown"] is True
+    assert view["artifact"]["title"] == "Orders"
+    assert view["score"]["holds"] is True
+    assert view["score"]["create"] > view["score"]["direct"]
+    invented = {
+        "kind": "app",
+        "title": "Orders",
+        "parts": [{"id": "by_month", "title": "Orders by month", "body": "The total is 99999."}],
+    }
+    plain = score_artifact(invented, kind="app", brand={}, allowed_numbers=set())
+    assert holds_direct_bar(view["score"]["create"], plain["points"])
+    assert view["score"]["create"] > plain["points"]
 
 
 def test_unknown_template_is_refused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

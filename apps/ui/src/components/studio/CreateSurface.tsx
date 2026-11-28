@@ -26,6 +26,7 @@ type Session = {
   message?: string | null;
   warning?: string | null;
   stopped?: string | null;
+  score?: { create: number; direct: number; holds: boolean } | null;
 };
 
 const FORMATS = ["app", "slides", "doc"] as const;
@@ -66,6 +67,7 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
   const [logo, setLogo] = useState("");
   const [tone, setTone] = useState("");
   const [example, setExample] = useState("");
+  const [guide, setGuide] = useState("");
   const [tools, setTools] = useState<Record<string, boolean>>({});
   const [inputs, setInputs] = useState<string[]>([]);
   const [sectionId, setSectionId] = useState("");
@@ -154,6 +156,10 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
         <textarea value={style} onChange={(event) => setStyle(event.target.value)} />
       </label>
       <label className="create-field">
+        Super guide
+        <textarea value={guide} onChange={(event) => setGuide(event.target.value)} />
+      </label>
+      <label className="create-field">
         Template
         <select value={template} onChange={(event) => setTemplate(event.target.value as typeof template)}>
           {TEMPLATES.map((item) => (
@@ -209,8 +215,19 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
         className="create-go"
         disabled={!spaceId || !goal.trim() || !audience.trim()}
         onClick={() =>
-          run("Opening", () =>
-            post("/api/v1/studio/create/sessions", {
+          run("Opening", async () => {
+            if (guide.trim()) {
+              const saved = await fetch("/api/v1/studio/create/guide", {
+                method: "PUT",
+                headers: headers(),
+                body: JSON.stringify({ guides: { [kind]: guide } }),
+              });
+              if (!saved.ok) {
+                const detail = await saved.json().catch(() => ({}));
+                throw new Error(typeof detail.detail === "string" ? detail.detail : "create_failed");
+              }
+            }
+            return post("/api/v1/studio/create/sessions", {
               space_id: spaceId,
               kind,
               goal,
@@ -224,8 +241,8 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
               inputs,
               examples: example.trim() ? [{ name: "example", body: example }] : [],
               tools,
-            })
-          )
+            });
+          })
         }
       >
         Continue
@@ -265,6 +282,11 @@ export function CreateStudio({ spaceId }: { spaceId: string | null }) {
       ) : null}
       {session?.spend ? <p className="create-spend">{meter(session.spend)}</p> : null}
       {session?.warning ? <p className="create-warn">{session.warning}</p> : null}
+      {session?.score ? (
+        <p className="create-note">
+          Score {session.score.create} against a direct ask {session.score.direct}
+        </p>
+      ) : null}
       {session?.message ? <p className="create-note">{session.message}</p> : null}
       {session?.artifact ? (
         <article className="create-artifact">

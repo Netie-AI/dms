@@ -22,8 +22,11 @@ from dms_core.create_generator import (
     GeneratorError,
     allowed_from,
     complete,
+    direct_reading,
+    holds_direct_bar,
     judge_artifact,
     prompt_digest,
+    score_artifact,
     skills_for,
     splice_section,
     template_text,
@@ -375,9 +378,21 @@ def _governed(
             _save(session)
             return _view(session)
         artifact, issues = _from_turn(session, repair, section_id)
+    scored = _score_pair(session, artifact) if isinstance(artifact, dict) else None
+    if scored is not None:
+        session["score"] = {
+            "create": scored["create"],
+            "direct": scored["direct"],
+            "holds": scored["holds"],
+        }
     if issues or artifact is None:
         session["shown"] = False
         session["issues"] = issues or ["model_unreadable"]
+        session["artifact"] = None
+        session["step"] = "ask"
+    elif scored is not None and not scored["holds"]:
+        session["shown"] = False
+        session["issues"] = ["below_direct"]
         session["artifact"] = None
         session["step"] = "ask"
     else:
@@ -551,6 +566,42 @@ def _trace(
             if value not in (None, "")
         ]
     return artifact, issues
+
+
+def _score_pair(session: dict[str, Any], artifact: Mapping[str, Any]) -> dict[str, Any]:
+    """Create points against the same words read as a direct Claude answer."""
+    overview_raw = session.get("overview")
+    overview: dict[str, Any] = overview_raw if isinstance(overview_raw, dict) else {}
+    rows = _cited_rows(artifact)
+    brand = session.get("brand") or {}
+    kind = str(session["kind"])
+    create = score_artifact(
+        artifact,
+        kind=kind,
+        brand=brand,
+        allowed_numbers=allowed_from(rows, overview),
+    )
+    direct = score_artifact(
+        direct_reading(artifact),
+        kind=kind,
+        brand=brand,
+        allowed_numbers=allowed_from([], overview),
+    )
+    create_points = int(create["points"])
+    direct_points = int(direct["points"])
+    return {
+        "create": create_points,
+        "direct": direct_points,
+        "holds": holds_direct_bar(create_points, direct_points),
+    }
+
+
+def _cited_rows(artifact: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for part in artifact.get("parts") or []:
+        if isinstance(part, dict):
+            rows.extend(item for item in part.get("rows") or [] if isinstance(item, dict))
+    return rows
 
 
 def _allowed(session: dict[str, Any], artifact: Mapping[str, Any]) -> set[str]:
@@ -972,6 +1023,7 @@ def _view(session: dict[str, Any]) -> dict[str, Any]:
         "stopped": session.get("stopped"),
         "message": session.get("message"),
         "warning": session.get("warning"),
+        "score": session.get("score"),
         "log": _log(session),
     }
 
