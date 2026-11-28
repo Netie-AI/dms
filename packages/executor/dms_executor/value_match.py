@@ -631,8 +631,10 @@ def _bm25(
 def _missing_column(statement: str, index: Mapping[str, tuple[str, ...]]) -> str | None:
     from sqlglot import exp, parse_one
 
+    from dms_executor.demo_warehouse import SERVING_DIALECT
+
     try:
-        tree = parse_one(statement, read="duckdb")
+        tree = parse_one(statement, read=SERVING_DIALECT)
     except Exception:
         return None
     if tree is None:
