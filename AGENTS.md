@@ -10,6 +10,7 @@ Cursor and Claude Code start here. This file is an index only. The law is [CLAUD
 | [scripts/verify/](scripts/verify/) | The 52 pack: `capture_layout.py --layout copy-only` captures it, `grade52.py` grades it (the number of record) |
 | [CHANGELOG.md](CHANGELOG.md) / [PARKING_LOT.md](PARKING_LOT.md) | What shipped / deferred work |
 | [handoff/](handoff/) | Netie Lead and Claude Code handoff: RULES, STATE, CLAUDE_CONTINUE, LOG, LESSONS |
+| [docs/HANDOFF.md](docs/HANDOFF.md) | Claude Code handoff: goal, rules, queue, how to launch writers. Deploying DMS: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | [docs/ACTIVE.md](docs/ACTIVE.md) | Pointer to STATUS.md and GitHub issues |
 | [.cursorrules](.cursorrules) | Cursor boundary summary |
 | [docs/PRODUCT_ROLES.md](docs/PRODUCT_ROLES.md) | Who owns what across DMS / Cortex / OpenVault |
