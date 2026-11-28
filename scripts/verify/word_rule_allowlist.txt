@@ -49,36 +49,36 @@ packages/executor/dms_executor/bronze_sheet_ask.py:179	regex	maybe_bronze_sheet_
 packages/executor/dms_executor/bronze_sheet_ask.py:204	regex	maybe_bronze_sheet_ask	_TOTAL.search(question or "")	#1
 packages/executor/dms_executor/cca/geo.py:246	regex	_cased_ok	_WORD.findall(question or "")	#1
 packages/executor/dms_executor/cca/geo.py:262	regex	propose_region	_WORD.findall(question or "")	#1
-packages/executor/dms_executor/demo_ask.py:208	regex	_excluded_skus	re.finditer( r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|remov(?:e|ing)|drop(?:ping)?|without|except)\s+(?:the\s+)?(.+)", question, flags=re.I, )	#1
-packages/executor/dms_executor/demo_ask.py:108	regex	_is_predictive	_PREDICTIVE.search(question or "")	#1
-packages/executor/dms_executor/demo_ask.py:267	regex	_rank_window	re.search( r"\b(?:number|numbers|nos?|ranks?|positions?)\s*" r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b", q, )	#1
-packages/executor/dms_executor/demo_ask.py:277	regex	_rank_window	re.search( r"\b(?:sku|skus|rank|revenue|sales)\b.*\b" r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b", q, )	#1
-packages/executor/dms_executor/demo_ask.py:272	regex	_rank_window	re.search( r"\b(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b" r".*\b(?:sku|skus|rank|revenue|sales)\b", q, )	#1
-packages/executor/dms_executor/demo_ask.py:116	regex	_scale_factor	re.search(r"(?:/|÷)\s*(\d+(?:\.\d+)?)", q)	#1
-packages/executor/dms_executor/demo_ask.py:122	regex	_scale_factor	re.search(r"\b(?:scale|split)\b.*?\b(?:by|/)\s*(\d+(?:\.\d+)?)", q)	#1
-packages/executor/dms_executor/demo_ask.py:113	regex	_scale_factor	re.search(r"\bdivid(?:e|ed|ing)\b.*?\bby\s+(\d+(?:\.\d+)?)", q)	#1
-packages/executor/dms_executor/demo_ask.py:119	regex	_scale_factor	re.search(r"\bone\s+fifth\b", q)	#1
-packages/executor/dms_executor/demo_ask.py:129	regex	_top_n	re.search(r"\btop\s+(\d+)\b", question.lower())	#1
-packages/executor/dms_executor/demo_ask.py:353	in	answer_demo_question	"alert" in q	#1
-packages/executor/dms_executor/demo_ask.py:350	in	answer_demo_question	"below" in q	#1
-packages/executor/dms_executor/demo_ask.py:342	in	answer_demo_question	"capacity" in q	#1
-packages/executor/dms_executor/demo_ask.py:315	in	answer_demo_question	"divid" in q	#1
-packages/executor/dms_executor/demo_ask.py:350	in	answer_demo_question	"reorder" in q	#1
-packages/executor/dms_executor/demo_ask.py:315	in	answer_demo_question	"revenue" in q	#1
-packages/executor/dms_executor/demo_ask.py:315	in	answer_demo_question	"sales" in q	#1
-packages/executor/dms_executor/demo_ask.py:350	in	answer_demo_question	"sku" in q	#1
-packages/executor/dms_executor/demo_ask.py:315	in	answer_demo_question	"total" in q	#1
-packages/executor/dms_executor/demo_ask.py:342	in	answer_demo_question	"utilisation" in q	#1
-packages/executor/dms_executor/demo_ask.py:342	in	answer_demo_question	"utilization" in q	#1
-packages/executor/dms_executor/demo_ask.py:345	regex	answer_demo_question	re.search( r"\btotal\b.*\b(revenue|sales)\b", q )	#1
-packages/executor/dms_executor/demo_ask.py:345	regex	answer_demo_question	re.search(r"\b(revenue|sales)\b", q)	#1
-packages/executor/dms_executor/demo_ask.py:322	regex	answer_demo_question	re.search(r"\b(sell|sold|revenue|sales|sku|skus|revnue|revanue)\b", q)	#1
-packages/executor/dms_executor/demo_ask.py:324	regex	answer_demo_question	re.search(r"\b(top|best|highest|most)\b", q)	#1
-packages/executor/dms_executor/demo_ask.py:325	regex	answer_demo_question	re.search(r"\btop\s+\d+\b", q)	#1
-packages/executor/dms_executor/demo_ask.py:192	regex	normalize_ask_question	_NO_EXCLUSION_CHIP.search(q)	#1
-packages/executor/dms_executor/demo_ask.py:196	regex	normalize_ask_question	_WITHOUT_EXCLUSION_DECLINE.search(q)	#1
-packages/executor/dms_executor/demo_ask.py:182	in	with_grounded_scope	t.lower() not in q.lower()	#1
-packages/executor/dms_executor/demo_ask.py:182	in	with_grounded_scope	t.split(".", 1)[-1].lower() not in q.lower()	#1
+packages/executor/dms_executor/demo_ask.py:259	regex	_excluded_skus	re.finditer( r"\b(?:ignor(?:e|ing)|exclud(?:e|ing)|remov(?:e|ing)|drop(?:ping)?|without|except)\s+(?:the\s+)?(.+)", question, flags=re.I, )	#1
+packages/executor/dms_executor/demo_ask.py:159	regex	_is_predictive	_PREDICTIVE.search(question or "")	#1
+packages/executor/dms_executor/demo_ask.py:318	regex	_rank_window	re.search( r"\b(?:number|numbers|nos?|ranks?|positions?)\s*" r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b", q, )	#1
+packages/executor/dms_executor/demo_ask.py:328	regex	_rank_window	re.search( r"\b(?:sku|skus|rank|revenue|sales)\b.*\b" r"(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b", q, )	#1
+packages/executor/dms_executor/demo_ask.py:323	regex	_rank_window	re.search( r"\b(\d{1,3})(?:st|nd|rd|th)?\s*(?:to|-|–|—|through)\s*(\d{1,3})(?:st|nd|rd|th)?\b" r".*\b(?:sku|skus|rank|revenue|sales)\b", q, )	#1
+packages/executor/dms_executor/demo_ask.py:167	regex	_scale_factor	re.search(r"(?:/|÷)\s*(\d+(?:\.\d+)?)", q)	#1
+packages/executor/dms_executor/demo_ask.py:173	regex	_scale_factor	re.search(r"\b(?:scale|split)\b.*?\b(?:by|/)\s*(\d+(?:\.\d+)?)", q)	#1
+packages/executor/dms_executor/demo_ask.py:164	regex	_scale_factor	re.search(r"\bdivid(?:e|ed|ing)\b.*?\bby\s+(\d+(?:\.\d+)?)", q)	#1
+packages/executor/dms_executor/demo_ask.py:170	regex	_scale_factor	re.search(r"\bone\s+fifth\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:180	regex	_top_n	re.search(r"\btop\s+(\d+)\b", question.lower())	#1
+packages/executor/dms_executor/demo_ask.py:409	in	answer_demo_question	"alert" in q	#1
+packages/executor/dms_executor/demo_ask.py:406	in	answer_demo_question	"below" in q	#1
+packages/executor/dms_executor/demo_ask.py:398	in	answer_demo_question	"capacity" in q	#1
+packages/executor/dms_executor/demo_ask.py:371	in	answer_demo_question	"divid" in q	#1
+packages/executor/dms_executor/demo_ask.py:406	in	answer_demo_question	"reorder" in q	#1
+packages/executor/dms_executor/demo_ask.py:371	in	answer_demo_question	"revenue" in q	#1
+packages/executor/dms_executor/demo_ask.py:371	in	answer_demo_question	"sales" in q	#1
+packages/executor/dms_executor/demo_ask.py:406	in	answer_demo_question	"sku" in q	#1
+packages/executor/dms_executor/demo_ask.py:371	in	answer_demo_question	"total" in q	#1
+packages/executor/dms_executor/demo_ask.py:398	in	answer_demo_question	"utilisation" in q	#1
+packages/executor/dms_executor/demo_ask.py:398	in	answer_demo_question	"utilization" in q	#1
+packages/executor/dms_executor/demo_ask.py:401	regex	answer_demo_question	re.search( r"\btotal\b.*\b(revenue|sales)\b", q )	#1
+packages/executor/dms_executor/demo_ask.py:401	regex	answer_demo_question	re.search(r"\b(revenue|sales)\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:378	regex	answer_demo_question	re.search(r"\b(sell|sold|revenue|sales|sku|skus|revnue|revanue)\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:380	regex	answer_demo_question	re.search(r"\b(top|best|highest|most)\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:381	regex	answer_demo_question	re.search(r"\btop\s+\d+\b", q)	#1
+packages/executor/dms_executor/demo_ask.py:243	regex	normalize_ask_question	_NO_EXCLUSION_CHIP.search(q)	#1
+packages/executor/dms_executor/demo_ask.py:247	regex	normalize_ask_question	_WITHOUT_EXCLUSION_DECLINE.search(q)	#1
+packages/executor/dms_executor/demo_ask.py:233	in	with_grounded_scope	t.lower() not in q.lower()	#1
+packages/executor/dms_executor/demo_ask.py:233	in	with_grounded_scope	t.split(".", 1)[-1].lower() not in q.lower()	#1
 packages/executor/dms_executor/demo_pack.py:601	in	is_curated_l0_without_pack_metric	n in curated_l0_question_norms()	#1
 packages/executor/dms_executor/demo_pack.py:437	in	is_uncertified_paraphrase	qn in _UNCERTIFIED_PARAPHRASE	#1
 packages/executor/dms_executor/envelope.py:857	regex	_forecast_history_pad	_FORECAST_ASK.search(question or "")	#1
