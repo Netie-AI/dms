@@ -7,6 +7,7 @@ import { SimpleChart } from "@/components/SimpleChart";
 import { AccessCard } from "@/components/AccessCard";
 import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
 import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "@/components/studio/abstainReason";
+import { CreateDocsPanel, seedFromEnvelope, type CreateDocsSeed } from "@/components/studio/CreateDocsPanel";
 import { ResultView } from "@/components/studio/ResultView";
 import { useApp } from "@/context/AppContext";
 import {
@@ -164,9 +165,11 @@ function reconfirmCard(envelope: AnswerEnvelope): {
 export function AnswerMessage({
   envelope,
   question,
+  seeds,
 }: {
   envelope: AnswerEnvelope;
   question?: string;
+  seeds?: CreateDocsSeed[];
 }) {
   const {
     selectValue,
@@ -413,7 +416,7 @@ export function AnswerMessage({
   }
 
   if (follow) {
-    return <AnswerMessage envelope={follow} question={question} />;
+    return <AnswerMessage envelope={follow} question={question} seeds={seeds} />;
   }
 
   return (
@@ -541,6 +544,9 @@ export function AnswerMessage({
           </a>
         )}
       </div>
+      <CreateDocsPanel
+        seeds={seeds && seeds.length > 0 ? seeds : [seedFromEnvelope(envelope, question)]}
+      />
       <AbstainNote envelope={envelope} />
       {clarify ? (
         <ClarifyCard block={clarify} busy={cardBusy} error={cardError} onPick={pickReading} />
