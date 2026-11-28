@@ -210,8 +210,7 @@ def render_md(report: dict[str, Any]) -> str:
     if shared is not None:
         try:
             text = shared(report)
-            # The shared schema drops the failed-item section this kit promises.
-            if isinstance(text, str) and "## Failed items" in text:
+            if isinstance(text, str) and text.strip():
                 return text if text.endswith("\n") else text + "\n"
         except Exception:
             pass
