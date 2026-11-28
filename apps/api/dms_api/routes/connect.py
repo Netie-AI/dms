@@ -19,7 +19,7 @@ from dms_core.control_plane.connect_secrets import (
     body_violation,
     key_id_for_ref,
 )
-from dms_core.control_plane.connect_store import ConnectStoreError
+from dms_core.control_plane.connect_store import ConnectStoreError, allowed_kinds
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
@@ -56,7 +56,6 @@ _DISABLED = "connect_api_disabled"
 _RAW_SECRET = "connect_raw_secret_rejected"
 _V2_OFF = "connect_v2_disabled"
 _SAFE_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
-_KINDS = frozenset({"postgresql", "mysql", "mariadb", "sqlserver", "sqlite"})
 _MODES = frozenset({"live", "extract"})
 
 
@@ -181,7 +180,7 @@ async def connect_source(
         port = raw_port if isinstance(raw_port, int) and not isinstance(raw_port, bool) else -1
         tls = payload.get("tls") is True
         if (
-            kind not in _KINDS
+            kind not in allowed_kinds()
             or mode not in _MODES
             or not host.strip()
             or not database.strip()
@@ -394,7 +393,7 @@ async def test_source(
     port = payload.get("port")
     database = payload.get("db")
     cred_ref = payload.get("cred_ref")
-    if not isinstance(kind, str) or kind not in _KINDS:
+    if not isinstance(kind, str) or kind not in allowed_kinds():
         raise HTTPException(status_code=400, detail="bad_request")
     if not isinstance(host, str) or not host.strip():
         raise HTTPException(status_code=400, detail="bad_request")
