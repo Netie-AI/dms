@@ -17,7 +17,11 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from dms_api.deps import CortexDep, SettingsDep
 from dms_api.gatekeeping import enforce
-from dms_api.wiring import export_semantic_space, import_semantic_file
+from dms_api.wiring import (
+    approve_semantic_examples,
+    export_semantic_space,
+    import_semantic_file,
+)
 
 FLAG = "DMS_SEMANTIC_IMPORT"
 _MAX_BYTES = 1_048_576
@@ -77,6 +81,28 @@ async def semantic_import(
         return import_semantic_file(raw, space_id=space_id, dry_run=not write, actor=actor)
     except Exception as exc:  # noqa: BLE001 - a typed code, or the flag, else re-raised
         raise _http(exc) from None
+
+
+@router.post("/{space_id}/semantic-import/approve")
+def semantic_import_approve(
+    space_id: str,
+    cortex: CortexDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Approve imported examples. Steward and the compliance gate, then the write."""
+    actor = _steward(settings)
+    decision = compliance_gate(
+        action="semantic.import.approve",
+        actor=actor,
+        metadata={"task_id": "semantic.import.approve", "space_id": space_id},
+        client=cortex,
+    )
+    enforce(decision, mutation=True)
+    try:
+        approved = approve_semantic_examples(space_id=space_id, actor=actor)
+    except Exception as exc:  # noqa: BLE001 - a typed code, or the flag, else re-raised
+        raise _http(exc) from None
+    return {"approved": approved, "served": False}
 
 
 @router.get("/{space_id}/semantic-export")

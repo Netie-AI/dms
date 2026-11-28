@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,8 @@ def write_examples(
 ) -> list[str]:
     if not rows:
         return []
+    for row in rows:
+        _reject_row(row, warehouse)
     _forget(warehouse)
     ids: list[str] = []
     with _LOCK:
@@ -72,6 +75,8 @@ def write_examples(
 def write_benchmarks(rows: list[dict[str, Any]], *, space_id: str, warehouse: Path) -> list[str]:
     if not rows:
         return []
+    for row in rows:
+        _reject_row(row, warehouse)
     ids: list[str] = []
     with _LOCK:
         con = _writer(warehouse)
@@ -151,6 +156,11 @@ def approved_for_prompt(
         return []
     if not rows:
         return []
+    from dms_executor.skills_quarantine import filter_retrieved_rows
+
+    rows = filter_retrieved_rows(rows, warehouse=warehouse)
+    if not rows:
+        return []
     from dms_executor.grant_struct import serve_gap
 
     kept = [
@@ -170,6 +180,13 @@ def approved_for_prompt(
         floor=0.0,
     )
     return [_prompt_row(kept[index]) for _score, index in ranked]
+
+
+def _reject_row(row: Mapping[str, Any], warehouse: Path) -> None:
+    """Listed pack SQL raises before the insert. The row is not stored."""
+    from dms_executor.skills_quarantine import reject_scored_write
+
+    reject_scored_write({"sql": str(row.get("sql") or "")}, warehouse=warehouse)
 
 
 def _prompt_row(row: dict[str, Any]) -> dict[str, Any]:

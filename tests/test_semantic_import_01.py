@@ -34,7 +34,14 @@ from dms_executor.semantic_import import (
 from dms_executor.semantic_import.normalize import canonical
 from dms_executor.semantic_import.parse_dbt import parse_dbt
 from dms_executor.semantic_import.parse_osi import to_osi
-from dms_executor.semantic_import.store import example_rows, reset_state
+from dms_executor.semantic_import.store import (
+    benchmark_rows,
+    example_rows,
+    reset_state,
+    write_benchmarks,
+    write_examples,
+)
+from dms_executor.skills_quarantine import WRITE_BLOCKED, item_content_hash
 from dms_executor.verified_queries import (
     _rows_for_space,
     examples_text,
@@ -293,6 +300,7 @@ def test_flag_off_routes_are_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     client = TestClient(create_app())
     for method, path in (
         ("post", f"/v1/spaces/{SPACE}/semantic-import"),
+        ("post", f"/v1/spaces/{SPACE}/semantic-import/approve"),
         ("get", f"/v1/spaces/{SPACE}/semantic-export"),
     ):
         res = client.post(path) if method == "post" else client.get(path)
@@ -472,6 +480,24 @@ def test_approved_examples_are_retrieval_only(
     assert examples_text(off) == ""
     assert "SELECT" in examples_text(on).upper()
     assert BENCH not in examples_text(on)
+    monkeypatch.delenv("DMS_VQ_RAG", raising=False)
+    gated = retrieve_verified_examples(
+        "how many orders",
+        space_id=SPACE,
+        warehouse=path,
+        grantable=grants,
+        dialect="duckdb",
+    )
+    assert examples_text(gated) == ""
+    monkeypatch.setenv("DMS_VQ_RAG", "1")
+    opened = retrieve_verified_examples(
+        "how many orders",
+        space_id=SPACE,
+        warehouse=path,
+        grantable=grants,
+        dialect="duckdb",
+    )
+    assert "SELECT" in examples_text(opened).upper()
 
 
 def test_ten_verified_queries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -634,7 +660,19 @@ def test_steward_upload_and_export(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert proposed
     assert approved_items() == []
     ontology_data_store().approve_version(body["version_id"], ACTOR)
-    approve_import_examples(space_id=SPACE, actor=ACTOR, warehouse=path)
+    monkeypatch.setenv("DMS_ACTOR_ROLE", "viewer")
+    _clear_settings()
+    denied_approve = client.post(f"/v1/spaces/{SPACE}/semantic-import/approve")
+    assert denied_approve.status_code == 403
+    assert denied_approve.json()["detail"] == "steward_grant_required"
+    assert {row["status"] for row in example_rows(path, SPACE)} == {"candidate"}
+    monkeypatch.setenv("DMS_ACTOR_ROLE", "steward")
+    _clear_settings()
+    approved = client.post(f"/v1/spaces/{SPACE}/semantic-import/approve")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["approved"] >= 1
+    assert approved.json()["served"] is False
+    assert {row["status"] for row in example_rows(path, SPACE)} == {"approved"}
     exported = client.get(f"/v1/spaces/{SPACE}/semantic-export", params={"format": "osi"})
     assert exported.status_code == 200, exported.text
     document = exported.json()
@@ -651,4 +689,112 @@ def test_steward_upload_and_export(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert bad.status_code == 400
     assert bad.json()["detail"] == "export_format_unsupported"
     assert "semantic.import" in seen["actions"]
+    assert "semantic.import.approve" in seen["actions"]
     assert "semantic.export" in seen["actions"]
+
+
+def test_scored_sql_is_rejected_at_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _flag(monkeypatch, True)
+    path = _lake(tmp_path)
+    scored = "SELECT COUNT(*) AS n FROM orders"
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(scored))
+    ran: list[str] = []
+    real = __import__("dms_executor.sql_loop", fromlist=["run_readonly"]).run_readonly
+
+    def _spy(sql: str, warehouse: Path) -> Any:
+        ran.append(sql)
+        return real(sql, warehouse)
+
+    monkeypatch.setattr("dms_executor.sql_loop.run_readonly", _spy)
+    result = import_file(
+        _document(),
+        space_id=SPACE,
+        dry_run=False,
+        actor=ACTOR,
+        warehouse=path,
+        grantable={"orders", "customers"},
+    )
+    by_name = {item["name"]: item for item in result["items"] if item.get("name")}
+    refused = f"gate_refused:{WRITE_BLOCKED}"
+    assert by_name["paid_count"]["status"] == refused
+    assert by_name["bench_count"]["status"] == refused
+    blob = json.dumps(result)
+    assert scored not in blob
+    assert example_rows(path, SPACE) == []
+    assert benchmark_rows(path, SPACE) == []
+    assert all("count(*)" not in sql.lower() for sql in ran)
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        write_examples(
+            [{"name": "q", "question": "how many orders", "sql": scored}],
+            space_id=SPACE,
+            warehouse=path,
+            actor=ACTOR,
+            provenance="import:osi",
+        )
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        write_benchmarks(
+            [{"name": "b", "question": "bench", "sql": scored}],
+            space_id=SPACE,
+            warehouse=path,
+        )
+    assert example_rows(path, SPACE) == []
+    assert benchmark_rows(path, SPACE) == []
+
+
+def test_scored_measure_blocks_the_proposal_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flag(monkeypatch, True)
+    path = _lake(tmp_path)
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash("SUM(amount)"))
+    with pytest.raises(ValueError, match=WRITE_BLOCKED):
+        import_file(
+            _document(),
+            space_id=SPACE,
+            dry_run=False,
+            actor=ACTOR,
+            warehouse=path,
+            grantable={"orders", "customers"},
+        )
+    assert example_rows(path, SPACE) == []
+    assert benchmark_rows(path, SPACE) == []
+    assert ontology_data_store().diff()["proposed_only"] == []
+
+
+def test_scored_row_is_filtered_at_retrieval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _flag(monkeypatch, True)
+    path = _lake(tmp_path)
+    grants = {"orders", "customers"}
+    scored = "SELECT COUNT(*) AS n FROM orders"
+    keeper = "SELECT SUM(amount) AS n FROM orders"
+    import_file(
+        _document(),
+        space_id=SPACE,
+        dry_run=False,
+        actor=ACTOR,
+        warehouse=path,
+        grantable=grants,
+    )
+    write_examples(
+        [{"name": "keeper", "question": "how many orders", "sql": keeper}],
+        space_id=SPACE,
+        warehouse=path,
+        actor=ACTOR,
+        provenance="import:osi",
+    )
+    assert approve_import_examples(space_id=SPACE, actor=ACTOR, warehouse=path) >= 2
+    monkeypatch.setenv("DMS_SCORED_ITEM_HASHES", item_content_hash(scored))
+    monkeypatch.setenv("DMS_VQ_RAG", "1")
+    shown = examples_text(
+        retrieve_verified_examples(
+            "how many orders",
+            space_id=SPACE,
+            warehouse=path,
+            grantable=grants,
+            dialect="duckdb",
+        )
+    ).lower()
+    assert "sum(" in shown
+    assert "count(" not in shown

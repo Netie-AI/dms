@@ -474,12 +474,31 @@ def check_sql(
     )
     if compiled:
         return _gap(compiled)
+    scored = _scored_write(transpiled, warehouse)
+    if scored:
+        return scored
     from dms_executor.sql_loop import run_readonly
 
     fetched, err = run_readonly(transpiled, warehouse)
     if err or fetched is None:
         return {"status": "exec_error"}
     return {"status": "candidate", "sql": transpiled, "row_count": len(fetched)}
+
+
+def _scored_write(sql: str, warehouse: Path) -> dict[str, Any] | None:
+    """Refuse a listed pack statement before it is executed or stored."""
+    from dms_executor.skills_quarantine import reject_scored_write
+
+    try:
+        reject_scored_write({"sql": sql}, warehouse=warehouse)
+    except ValueError as exc:
+        code = (
+            exc.args[0]
+            if exc.args and isinstance(exc.args[0], str)
+            else "scored_pack_write_blocked"
+        )
+        return {"status": f"gate_refused:{code}"}
+    return None
 
 
 def transpile_sql(sql: str, *, write: str, fmt: str) -> str | None:

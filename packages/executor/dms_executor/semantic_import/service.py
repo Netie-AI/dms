@@ -238,6 +238,7 @@ def _write(
     fmt: str,
 ) -> str | None:
     source = import_source(fmt)
+    _reject_stored(reviewed, warehouse)
     stored = store_proposal(
         {
             "status": "proposed",
@@ -268,6 +269,41 @@ def _write(
     )
     version = stored.get("version_id")
     return version if isinstance(version, str) else None
+
+
+def _reject_stored(reviewed: Mapping[str, Any], warehouse: Path) -> None:
+    """Listed pack SQL raises before any proposal, example, or benchmark insert."""
+    from dms_executor.skills_quarantine import reject_scored_write
+
+    for key in ("examples", "benchmarks"):
+        raw_rows = reviewed.get(key) or []
+        if not isinstance(raw_rows, list):
+            continue
+        for row in raw_rows:
+            if isinstance(row, dict):
+                reject_scored_write({"sql": str(row.get("sql") or "")}, warehouse=warehouse)
+    proposals = reviewed.get("proposals") or []
+    if isinstance(proposals, list):
+        for item in proposals:
+            if isinstance(item, dict):
+                _reject_payload(item.get("payload"), warehouse)
+
+
+def _reject_payload(payload: Any, warehouse: Path) -> None:
+    from dms_executor.skills_quarantine import reject_scored_write
+
+    if isinstance(payload, list):
+        for item in payload:
+            _reject_payload(item, warehouse)
+        return
+    if not isinstance(payload, dict):
+        return
+    for key in ("sql", "expr"):
+        raw = payload.get(key)
+        if isinstance(raw, str) and raw.strip():
+            reject_scored_write({"sql": raw}, warehouse=warehouse)
+    for key in ("filters", "attributes"):
+        _reject_payload(payload.get(key), warehouse)
 
 
 def rows_of(value: Any) -> list[str]:
