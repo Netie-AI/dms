@@ -130,6 +130,8 @@ export type AnswerEnvelope = {
   clarify?: ClarifyBlock | null;
   /** Present only when the table is not shared with this Space. */
   access_needed?: AccessNeeded | null;
+  /** UX-CHART-01. Absent unless DMS_UX_CHART=1. */
+  ux_chart?: boolean;
 };
 
 export type SpaceSummary = {

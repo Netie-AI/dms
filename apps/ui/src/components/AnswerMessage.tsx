@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { AnswerChart } from "@/components/AnswerChart";
 import { Badge } from "@/components/Badge";
 import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { AbstainNote, AnswerDetails, ServedModelLine } from "@/components/answerStamp";
@@ -30,6 +31,7 @@ import {
   rowsToCsv,
   xlsxDownloadName,
 } from "@/lib/rowsToCsv";
+import { connectorButtonLabel, formatGrouped, presentAnswer } from "@/lib/answerChart";
 import { splitInsights } from "@/lib/splitInsights";
 import type { AnswerEnvelope, BadgeKind, ClarifyReading, GrantedSpace } from "@/lib/types";
 
@@ -98,6 +100,7 @@ function renderWithValues(
   text: string,
   values: AnswerEnvelope["values"],
   onValue: (id: string) => void,
+  grouped = false,
 ): ReactNode[] {
   const parts: ReactNode[] = [];
   let remaining = text;
@@ -110,7 +113,10 @@ function renderWithValues(
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     }).format(v.value);
-    const candidates = [`RM ${formatted}`, formatted, String(v.value)];
+    const groupedBody = grouped ? formatGrouped(v.value) : "";
+    const candidates = grouped
+      ? [`RM ${groupedBody}`, groupedBody, `RM ${formatted}`, formatted, String(v.value)]
+      : [`RM ${formatted}`, formatted, String(v.value)];
     let hit: string | null = null;
     let idx = -1;
     for (const c of candidates) {
@@ -169,6 +175,7 @@ export function AnswerMessage({
 }) {
   const {
     selectValue,
+    selectedValueId,
     setSourcePanelOpen,
     ask,
     suggestions,
@@ -209,6 +216,15 @@ export function AnswerMessage({
 
   const rows = envelope.rows ?? [];
   const { prose, insights } = splitInsights(envelope.text);
+  const ux = envelope.ux_chart === true;
+  const abstainEmpty =
+    (envelope.abstained === true || envelope.badge === "ABSTAIN") && rows.length === 0;
+  const showCsv = rows.length > 0 && !(ux && abstainEmpty);
+  const showFile = Boolean(envelope.answer_id) && !(ux && abstainEmpty);
+  const biLive = biPanel?.live_connector === true;
+  const powerLabel = connectorButtonLabel(biLive, "Power BI");
+  const superLabel = connectorButtonLabel(biLive, "Superset");
+  const presented = ux ? presentAnswer(prose, rows, envelope.values) : null;
   const receipt = auditReceiptLines(envelope);
 
   async function fetchDrillRows(): Promise<Record<string, unknown>[] | null> {
@@ -440,7 +456,7 @@ export function AnswerMessage({
         >
           ⟨sql⟩
         </button>
-        {rows.length > 0 && (
+        {showCsv ? (
           <button
             type="button"
             onClick={() => void downloadRowsCsv()}
@@ -448,8 +464,8 @@ export function AnswerMessage({
           >
             Download CSV
           </button>
-        )}
-        {envelope.answer_id ? (
+        ) : null}
+        {showFile ? (
           <button
             type="button"
             onClick={() => void downloadRowsXlsx()}
@@ -458,7 +474,7 @@ export function AnswerMessage({
             Download Excel
           </button>
         ) : null}
-        {envelope.answer_id ? (
+        {showFile && !ux ? (
           <button
             type="button"
             onClick={() => void loadBi("powerbi")}
@@ -467,13 +483,33 @@ export function AnswerMessage({
             Power BI
           </button>
         ) : null}
-        {envelope.answer_id ? (
+        {showFile && ux ? (
+          <button
+            type="button"
+            data-export="powerbi"
+            onClick={() => void loadBi("powerbi")}
+            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+          >
+            {powerLabel}
+          </button>
+        ) : null}
+        {showFile && !ux ? (
           <button
             type="button"
             onClick={() => void loadBi("superset")}
             className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
           >
             Superset
+          </button>
+        ) : null}
+        {showFile && ux ? (
+          <button
+            type="button"
+            data-export="superset"
+            onClick={() => void loadBi("superset")}
+            className="text-xs text-[var(--color-ink-muted)] underline-offset-2 hover:underline"
+          >
+            {superLabel}
           </button>
         ) : null}
         <button
@@ -615,9 +651,38 @@ export function AnswerMessage({
           </p>
         </div>
       )}
-      <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
-        {renderWithValues(prose, envelope.values, selectValue)}
-      </p>
+      {presented?.mode === "summary" ? (
+        <p
+          data-testid="ux-summary"
+          className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]"
+        >
+          {presented.lead ? <span>{presented.lead} </span> : null}
+          {presented.parts.map((part, i) =>
+            part.kind === "figure" ? (
+              <button
+                key={`${part.id}-${i}`}
+                type="button"
+                data-value-id={part.id}
+                onClick={() => selectValue(part.id)}
+                className="mx-0.5 inline border-b-2 border-[var(--color-accent)] font-semibold text-[var(--color-accent)] hover:bg-[var(--color-accent-soft)]"
+              >
+                {part.text}
+              </button>
+            ) : (
+              <span key={`t-${i}`}>{part.text}</span>
+            ),
+          )}
+        </p>
+      ) : (
+        <p className="text-[1.05rem] leading-relaxed text-[var(--color-ink)]">
+          {renderWithValues(
+            presented?.mode === "keep" ? presented.text : prose,
+            envelope.values,
+            selectValue,
+            ux,
+          )}
+        </p>
+      )}
       {insights.length > 0 && (
         <div className="mt-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
@@ -687,8 +752,24 @@ export function AnswerMessage({
           </p>
         </div>
       )}
-      {rows.length > 0 && <AnswerRowsTable rows={rows} />}
-      {envelope.chart && rows.length > 0 && (
+      {ux && rows.length > 0 && !envelope.abstained && envelope.badge !== "ABSTAIN" ? (
+        <AnswerChart
+          rows={rows}
+          values={envelope.values}
+          onValue={selectValue}
+          answerId={envelope.answer_id}
+        />
+      ) : null}
+      {rows.length > 0 && (
+        <AnswerRowsTable
+          rows={rows}
+          maxRows={ux ? rows.length : undefined}
+          figures={ux ? envelope.values : undefined}
+          activeValueId={ux ? selectedValueId : undefined}
+          onFigure={ux ? selectValue : undefined}
+        />
+      )}
+      {!ux && envelope.chart && rows.length > 0 && (
         <SimpleChart chart={envelope.chart} rows={rows} />
       )}
       {showCopilot && rows.length > 0 && (
@@ -731,7 +812,13 @@ export function AnswerMessage({
       {biPanel && biFocus && biStub(biPanel, biFocus) && (
         <div className="mt-3 border border-[var(--color-warn)]/50 bg-[var(--color-warn-soft)] px-3 py-2.5">
           <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-warn)]">
-            {biFocus === "powerbi" ? "Power BI" : "Superset"} -- envelope stub
+            {ux
+              ? biPanel.live_connector
+                ? biFocus === "powerbi"
+                  ? "Power BI"
+                  : "Superset"
+                : "Export file"
+              : `${biFocus === "powerbi" ? "Power BI" : "Superset"} -- envelope stub`}
           </p>
           <p className="mt-1 text-xs text-[var(--color-ink)]">
             {biPanelHeadline(biPanel, biFocus)}

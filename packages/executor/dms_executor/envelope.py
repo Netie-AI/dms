@@ -1824,11 +1824,13 @@ def build_answer_envelope(
             }
     # CHART-SPEC-01. Off, this returns the same dict and sends no prompt.
     # R1-RUNTIME-01. Off, the same dict. On and degraded, banner keys only.
+    # UX-CHART-01. Off, the same dict. On, ux_chart and a listing sentence.
     from cortex_client.runtime_check import attach_runtime_banner
 
     from dms_executor.chart_spec import attach_chart_spec
+    from dms_executor.ux_chart import attach_ux_chart
 
-    return attach_runtime_banner(attach_chart_spec(masked))
+    return attach_ux_chart(attach_runtime_banner(attach_chart_spec(masked)))
 
 
 def _infer_source_kind(name: str, raw_kind: str | None) -> str:

@@ -1,3 +1,4 @@
+import { figureFor, type FigureValue } from "@/lib/answerChart";
 import { formatCellValue } from "@/lib/formatCellValue";
 
 type Props = {
@@ -9,6 +10,10 @@ type Props = {
   pageOffset?: number;
   pageSize?: number;
   onPageChange?: (offset: number) => void;
+  /** UX-CHART-01. Absent keeps the plain cell text. */
+  figures?: FigureValue[];
+  activeValueId?: string | null;
+  onFigure?: (id: string) => void;
 };
 
 /** Ranked / tabular answer body — architecture wants numbers you can scan, not only prose. */
@@ -19,6 +24,9 @@ export function AnswerRowsTable({
   pageOffset = 0,
   pageSize,
   onPageChange,
+  figures,
+  activeValueId,
+  onFigure,
 }: Props) {
   if (!rows.length) return null;
   const cols = Object.keys(rows[0]);
@@ -55,14 +63,43 @@ export function AnswerRowsTable({
               <td className="border-b border-[var(--color-line)]/50 px-2 py-1 tabular-nums text-[var(--color-ink-muted)]">
                 {serverPaging ? pageOffset + i + 1 : i + 1}
               </td>
-              {cols.map((c) => (
-                <td
-                  key={c}
-                  className="border-b border-[var(--color-line)]/50 px-2 py-1 text-[var(--color-ink)]"
-                >
-                  {formatCellValue(row[c])}
-                </td>
-              ))}
+              {cols.map((c) => {
+                if (!figures) {
+                  return (
+                    <td
+                      key={c}
+                      className="border-b border-[var(--color-line)]/50 px-2 py-1 text-[var(--color-ink)]"
+                    >
+                      {formatCellValue(row[c])}
+                    </td>
+                  );
+                }
+                const figure = figureFor(figures, c, row[c]);
+                const hot = Boolean(figure?.id && activeValueId && figure.id === activeValueId);
+                return (
+                  <td
+                    key={c}
+                    className={
+                      hot
+                        ? "border-b border-[var(--color-line)]/50 bg-[var(--color-accent-soft)] px-2 py-1 text-[var(--color-ink)]"
+                        : "border-b border-[var(--color-line)]/50 px-2 py-1 text-[var(--color-ink)]"
+                    }
+                  >
+                    {figure?.id && onFigure ? (
+                      <button
+                        type="button"
+                        data-value-id={figure.id}
+                        onClick={() => onFigure(figure.id as string)}
+                        className="border-b border-[var(--color-accent)]/50 tabular-nums"
+                      >
+                        {figure.text}
+                      </button>
+                    ) : (
+                      (figure?.text ?? formatCellValue(row[c]))
+                    )}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>

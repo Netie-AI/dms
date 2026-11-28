@@ -3,6 +3,7 @@ import { AnswerRowsTable } from "@/components/AnswerRowsTable";
 import { SimpleChart } from "@/components/SimpleChart";
 import { copyText } from "@/lib/copilotPrompts";
 import { postAskConfirm } from "@/lib/api";
+import { presentAnswer, summaryText, type FigureValue } from "@/lib/answerChart";
 import { splitInsights } from "@/lib/splitInsights";
 import { isAbstain, namedAbstainReason, type AbstainFields } from "./abstainReason";
 import { AskStages, type AskStageEvent } from "./AskStages";
@@ -136,7 +137,17 @@ export function ResultView({ envelope, stages, onCancel, question, spaceId, role
     const next = chooseChart(rows, adjust, choice);
     if (next) setPick(next);
   }
-  const { prose, insights } = splitInsights(typeof shown.text === "string" ? shown.text : "");
+  const rawText = typeof shown.text === "string" ? shown.text : "";
+  const uxChart = (shown as { ux_chart?: boolean }).ux_chart === true;
+  const valueList = Array.isArray((shown as { values?: unknown }).values)
+    ? ((shown as { values: FigureValue[] }).values)
+    : [];
+  const presented = uxChart ? presentAnswer(rawText, rows, valueList) : null;
+  const shownText =
+    presented?.mode === "summary"
+      ? `${presented.lead ? `${presented.lead}\n` : ""}${summaryText(presented.parts)}`
+      : rawText;
+  const { prose, insights } = splitInsights(shownText);
   const sql = typeof shown.sql_used === "string" ? shown.sql_used : "";
   const offset = page * PAGE_SIZE;
   const pageRows = rows.slice(offset, offset + PAGE_SIZE);
@@ -407,6 +418,7 @@ export function ResultView({ envelope, stages, onCancel, question, spaceId, role
             pageOffset={offset}
             pageSize={PAGE_SIZE}
             onPageChange={(next) => setPage(Math.floor(next / PAGE_SIZE))}
+            figures={uxChart ? valueList : undefined}
           />
         </div>
       ) : null}

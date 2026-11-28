@@ -127,3 +127,81 @@ describe("Document answer layer copy", () => {
     );
   });
 });
+
+const STOCK_ROWS = [
+  { category: "ELECTRONICS", stock_value_myr: 69729521.94 },
+  { category: "PACKAGING", stock_value_myr: 15015 },
+];
+
+const STOCK_DUMP = [
+  "Found 2 row(s).",
+  "  - category=ELECTRONICS, stock_value_myr=69729521.94",
+  "  - category=PACKAGING, stock_value_myr=15015.0",
+].join("\n");
+
+function stockEnvelope(ux: boolean): AnswerEnvelope {
+  return {
+    answer_id: "ans_stock",
+    text: STOCK_DUMP,
+    values: [
+      { id: "v0", value: 69729521.94, label: "stock_value_myr" },
+      { id: "v1", value: 15015, label: "stock_value_myr" },
+    ],
+    badge: "L2_VALIDATED",
+    abstained: false,
+    sql_used: "SELECT category, stock_value_myr FROM inventory",
+    assumptions: [],
+    as_of: "2026-11-28T00:00:00Z",
+    contributing_sources: [],
+    rows: STOCK_ROWS,
+    ux_chart: ux ? true : undefined,
+  };
+}
+
+describe("UX-CHART-01 answer view", () => {
+  it("flag off keeps the row listing and the Power BI label", () => {
+    const html = markup(stockEnvelope(false));
+    expect(html).toContain("category=ELECTRONICS");
+    expect(html).toContain("stock_value_myr=69729521.94");
+    expect(html).not.toContain('data-testid="ux-chart"');
+    expect(html).not.toContain("Export file");
+    expect(html).toContain("Power BI");
+    expect(html).toContain("Superset");
+    expect(html).not.toContain("envelope stub");
+  });
+
+  it("does not print the row dump beside the table", () => {
+    const html = markup(stockEnvelope(true));
+    expect(html).not.toContain("category=");
+    expect(html).not.toContain("stock_value_myr=");
+    expect(html).toContain('data-testid="ux-summary"');
+    expect(html).toContain("ELECTRONICS is highest at");
+    expect(html).toContain("RM 69,729,521.94");
+    expect(html).toContain("across 2 rows.");
+    expect(html).toContain('data-value-id="v0"');
+    expect(html).toContain('data-chart-kind="bar"');
+    expect(html).toContain('data-point-count="2"');
+    expect(html).toContain(">Export file<");
+    expect(html).not.toContain(">Power BI<");
+    expect(html).not.toContain(">Superset<");
+    expect(html).not.toContain("envelope stub");
+  });
+
+  it("hides file exports on an abstain with no rows", () => {
+    const html = markup({
+      ...stockEnvelope(true),
+      text: "No.",
+      badge: "ABSTAIN",
+      abstained: true,
+      rows: [],
+      values: [],
+      sql_used: undefined,
+    });
+    expect(html).not.toContain("Download CSV");
+    expect(html).not.toContain("Download Excel");
+    expect(html).not.toContain("Export file");
+    expect(html).not.toContain("Power BI");
+    expect(html).not.toContain("Superset");
+    expect(html).not.toContain('data-testid="ux-chart"');
+  });
+});
