@@ -2,6 +2,11 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - READY-02: rebase onto fa0eeef
+
+- **Base.** Rebased onto `fa0eeef` (#655). READY-04 flags stay default off. `DMS_SSO` stays default off. `POST /v1/auth/login` still calls `compliance_gate` before a session is minted.
+- **Stub 52.** `grade52 --main` at `2982960`. correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. mode=stub-exec. stamp_contradiction=0. Unchanged. Armed grade52 and pack H were not run. Not PASS.
+
 ## 2026-11-28 - READY-02: login calls the compliance gate
 
 - **Gate.** `POST /v1/auth/login` calls `compliance_gate` before a session is minted. No Cortex is 403 `gate_unavailable`. The password is not sent to the gate and not copied into the refusal.
