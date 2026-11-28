@@ -6,4 +6,4 @@ Flag `DMS_MEASURE_FROM_SCHEMA` default off. Digit 1 only. Off, prompt bytes, env
 
 Join detection parses with `SERVING_DIALECT`. There is no `duckdb` literal in the module.
 
-Stub 52 at `ed28833`, base `d9e8c45`: flag off and on correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Rule-served did not grow. Armed grade52 and the 41-id rerun unmeasured. Not PASS.
+Stub 52 at `62c30ff`, base `3752fb4`: flag off and on correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. Rule-served did not grow. Armed grade52 and the 41-id rerun unmeasured. Not PASS.
