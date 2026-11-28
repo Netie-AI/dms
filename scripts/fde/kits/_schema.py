@@ -98,7 +98,8 @@ def rollup(checks: list[Check] | list[dict[str, Any]]) -> str:
     """
     foreign = getattr(_t1(), "rollup", None)
     if callable(foreign) and foreign is not rollup:
-        return foreign(checks)
+        as_dicts = [item.to_dict() if isinstance(item, Check) else item for item in checks]
+        return foreign(as_dicts)
     statuses: list[str] = []
     severities: list[str] = []
     for check in checks:

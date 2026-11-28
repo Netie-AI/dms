@@ -330,7 +330,8 @@ def test_wrong_password_hides_the_password_and_driver_text(
     assert PLANTED not in blob
     assert DRIVER_TEXT not in blob
     assert "password authentication" not in blob
-    assert "Validate login: FAIL" in blob
+    assert "### K2.01 Validate login" in blob
+    assert "Status: FAIL" in blob
 
 
 def test_unsupported_engine_is_skipped_not_pass() -> None:
