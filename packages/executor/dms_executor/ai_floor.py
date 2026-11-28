@@ -29,6 +29,13 @@ from typing import Any
 from dms_executor.demo_warehouse import SERVING_DIALECT
 
 AI_FLOOR_ENV = "DMS_AI_FLOOR"
+# The shared schema pack is 480 tokens. Measures take that budget first, and
+# the join columns the model needs are what gets dropped, so it returns no SQL.
+# 4000 fits the demo spine, joins included. A space with hundreds of columns
+# still ranks inside this cap.
+# ponytail: one budget for every question. Upgrade: a per-table cap when a
+# space no longer fits.
+_SCHEMA_TOKENS = 4000
 _CHECKS = ("grant", "read_only", "explain", "shape")
 _READ_ONLY_HEADS = frozenset(
     {
@@ -101,29 +108,6 @@ def _ontology(warehouse: Path | None, space_id: str | None) -> Any:
         return None
 
 
-def _ontology_text(onto: Any) -> str:
-    """Measure names and declared joins. Capped so the prompt stays one block."""
-    if onto is None:
-        return ""
-    lines: list[str] = []
-    measures = getattr(onto, "measures", None) or {}
-    for name, measure in list(measures.items())[:8]:
-        grain = str(getattr(measure, "grain", "") or "")
-        expr = str(getattr(measure, "expression", "") or "")
-        lines.append(f"measure {name} grain={grain} expr={expr}")
-    links = getattr(onto, "links", None) or {}
-    for link in list(links.values())[:8]:
-        left = ".".join(getattr(link, "from_columns", ()) or ())
-        right = ".".join(getattr(link, "to_columns", ()) or ())
-        lines.append(
-            f"join {getattr(link, 'from_object', '')}.{left}"
-            f" = {getattr(link, 'to_object', '')}.{right}"
-        )
-    if not lines:
-        return ""
-    return "ontology:\n" + "\n".join(lines)
-
-
 def _granted_tables(described: Any, grantable: set[str]) -> list[str]:
     """Bare names the catalog read that this Space grants. Cap 6."""
     datasets = described.get("datasets") if isinstance(described, dict) else None
@@ -173,6 +157,7 @@ def _context(
             ontology=onto,
             grantable=grantable,
             space_id=space_id,
+            max_tokens=_SCHEMA_TOKENS,
         )
         prompt = built.prompt
         if isinstance(prompt, str) and prompt.strip() and not schema_context_is_empty(prompt):
@@ -186,9 +171,6 @@ def _context(
         note_stage("find", "failed")
         if isinstance(exc, SERVING_ERRORS):
             raise
-    onto_text = _ontology_text(onto)
-    if onto_text:
-        blocks.append(onto_text)
     try:
         from dms_executor.verified_queries import examples_text, retrieve_verified_examples
 

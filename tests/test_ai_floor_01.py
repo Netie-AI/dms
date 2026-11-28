@@ -18,7 +18,7 @@ import pytest
 from cortex_client.models import AskRequest, AskResponse, LedgerAppendRequest, LedgerAppendResponse
 from cortex_contract.execution import Manifest, QueryResult
 from dms_executor import Executor
-from dms_executor.ai_floor import enabled, offline_label
+from dms_executor.ai_floor import _context, enabled, offline_label
 from dms_executor.demo_warehouse import DEMO_TABLES, SERVING_DIALECT, ensure_demo_warehouse
 from dms_executor.envelope import assert_envelope_valid
 from dms_executor.manifest import ManifestMinter, SessionAcl
@@ -168,7 +168,8 @@ def test_floor_serves_checked_model_sql_in_one_call(
     assert len(cortex.insights) == 1
     assert SKU_Q in cortex.insights[0]
     assert "inventory" in cortex.insights[0].lower()
-    assert "ontology:" in cortex.insights[0]
+    assert "MEASURES" in cortex.insights[0]
+    assert "JOINS" in cortex.insights[0]
     assert cortex.asks == []
     assert "route_hint" not in cortex.kwargs[0]
     assert "model" not in cortex.kwargs[0]
@@ -331,6 +332,57 @@ def test_floor_off_does_not_open_a_stream(monkeypatch: pytest.MonkeyPatch) -> No
     batch, done = wait_events("flooroffstream1", 0, 0.01)
     assert batch == []
     assert done is False
+
+
+def test_default_wiring_seeds_a_warehouse_before_the_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Executor._warehouse is None until a lane seeds it. The floor must seed too.
+
+    Passing None abstains warehouse_missing before any SQL. This fails if the
+    floor is handed self._warehouse raw.
+    """
+    monkeypatch.setenv("DMS_AI_FLOOR", "1")
+    monkeypatch.setenv("DMS_WAREHOUSE_DB", str(tmp_path / "live.duckdb"))
+    cortex = _Spoof(bodies=[_model_body(GOOD_SQL)])
+    exe = Executor(cortex=cortex, minter=_minter())  # type: ignore[arg-type]
+    assert exe._warehouse is None
+    try:
+        env = exe.live_ask(SKU_Q, space_id=FINANCE, session_id="ses_ai_floor")
+    finally:
+        exe.close()
+    assert_envelope_valid(env)
+    blob = " ".join(str(item) for item in (env.get("assumptions") or []))
+    assert "warehouse_missing" not in blob
+    assert env["abstained"] is False
+    assert env["sql_used"] == GOOD_SQL
+    assert (tmp_path / "live.duckdb").is_file()
+
+
+def test_schema_prompt_keeps_join_and_measure_columns(tmp_path: Path) -> None:
+    """A 480-token pack drops the join path. Ranking and trends then get no SQL."""
+    db = tmp_path / "schema.duckdb"
+    ensure_demo_warehouse(db)
+    grants = set(DEMO_TABLES)
+    ranking, _tables = _context(
+        "Who are the top suppliers by number of shipments?",
+        warehouse=db,
+        grantable=grants,
+        dialect=SERVING_DIALECT,
+        space_id=FINANCE,
+    )
+    assert "shipments.sku = inventory.sku" in ranking
+    assert "inventory.supplier_id = suppliers.supplier_id" in ranking
+    assert "cost_myr" in ranking
+    monthly, _names = _context(
+        "Show monthly transaction totals",
+        warehouse=db,
+        grantable=grants,
+        dialect=SERVING_DIALECT,
+        space_id=FINANCE,
+    )
+    assert "quantity_kg" in monthly
+    assert "ts " in monthly or "ts TIMESTAMP" in monthly
 
 
 def test_grade52_ai_floor_switch_is_main_only() -> None:
