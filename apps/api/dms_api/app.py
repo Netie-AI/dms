@@ -37,6 +37,7 @@ from dms_api.routes import (
     insights,
     library,
     mcp,
+    ml_studio,
     ontology,
     ping,
     pipelines,
@@ -268,6 +269,8 @@ def create_app() -> FastAPI:
         from dms_api.routes import sign as sign_routes
 
         app.include_router(sign_routes.router)
+    if ml_studio.enabled():
+        app.include_router(ml_studio.router)
     # Doc and slides stay unmounted until the digit 1. Status is mounted when
     # the package imports, so the UI can see enabled:false without Cortex.
     _mount_create_docs(app)

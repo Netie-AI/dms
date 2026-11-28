@@ -20,6 +20,12 @@ dependencies = [
   # SQL parser for the currency unit gate (dms_executor.sql_currency). Swap:
   # Cortex HTTP verify-unit, or another dialect parser behind that module.
   "sqlglot>=27.0.0,<28",
+  # DMS_ML_STUDIO (default off). Classical models on aggregated frames.
+  # Swap: another CPU library with the same fit and held-out metrics.
+  # ETS is implemented here. Swap for that piece: statsmodels Holt-Winters.
+  "scikit-learn>=1.4,<1.8",
+  # Charts on the results card. Swap: another PNG writer.
+  "pillow>=10,<12",
 ]
 
 [tool.setuptools.packages.find]
