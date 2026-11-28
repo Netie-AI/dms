@@ -1,0 +1,6 @@
+{
+  "sobjects": [
+    {"name": "Sale", "queryable": true},
+    {"name": "Secret__c", "queryable": false}
+  ]
+}

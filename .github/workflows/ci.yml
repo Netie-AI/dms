@@ -652,8 +652,182 @@ jobs:
             exit 1
           fi
           if [ "${DMS_CONNECT_ORACLE_LIVE:-}" = 1 ]; then
-            python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -k live_oracle
+            export CONNECT03_EVIDENCE="$RUNNER_TEMP/connect03-oracle.txt"
+            : > "$CONNECT03_EVIDENCE"
+            python -m pytest tests/test_connect_gauss_oracle_01.py -q --tb=short -p no:cacheprovider -s -k live_oracle
+            echo "---- oracle ask ----"
+            cat "$CONNECT03_EVIDENCE"
+            grep -F "CONNECT-03 oracle ask" "$CONNECT03_EVIDENCE"
           fi
+
+  # DMS-CONNECT-03. MinIO and Azurite must answer. SQL Server skips with a
+  # named reason when the image will not pull or never becomes ready. A live
+  # ask that was started and then fails the sum fails the job. Salesforce is
+  # the recorded fixture, so it always prints an ask.
+  connect-03:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout cortex-contract package
+        uses: actions/checkout@v4
+        with:
+          repository: Netie-AI/Cortex
+          path: _cortex
+          sparse-checkout: |
+            packages/cortex_contract
+          sparse-checkout-cone-mode: true
+          token: ${{ secrets.CORTEX_CONTRACT_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip wheel build
+          python -m build --wheel ./_cortex/packages/cortex_contract
+          pip install ./_cortex/packages/cortex_contract/dist/cortex_contract-*.whl
+          pip install -e "./packages/core" -e "./packages/cortex_client" -e "./packages/executor" -e "./packages/ledger" -e "./packages/ao_vendor"
+          pip install -e ".[dev,azure]"
+          pip install fastapi uvicorn httpx pydantic-settings cryptography
+
+      - name: Ask MinIO, Azurite, SQL Server, and the Salesforce fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="${PWD}/apps/api:${PWD}/packages/core:${PWD}/packages/cortex_client:${PWD}/packages/executor:${PWD}/packages/ledger:${PWD}/packages/ao_vendor"
+          export CONNECT_S3_ACCESS=ci-only-s3
+          export CONNECT_S3_SECRET=Ci_only_S3_secret
+          export CONNECT_BLOB_ACCOUNT=devstoreaccount1
+          export CONNECT_BLOB_KEY='Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=='
+          export CONNECT_AZURE_SQL_PASSWORD=Ci_only_Azure1
+          redact() {
+            python - "$1" << 'PY'
+          import os, sys
+          name = sys.argv[1]
+          import subprocess
+          proc = subprocess.run(["docker", "logs", name], capture_output=True)
+          text = (proc.stdout + proc.stderr).decode("utf-8", "replace")
+          for key in ("CONNECT_S3_SECRET", "CONNECT_BLOB_KEY", "CONNECT_AZURE_SQL_PASSWORD"):
+              value = os.environ.get(key, "")
+              if value:
+                  text = text.replace(value, "[redacted]")
+          print(text[-12000:])
+          PY
+          }
+          # Docker Hub removed minio/minio. Silo is the maintained MinIO server
+          # fork: same MINIO_ROOT_USER and the same path-style S3 API.
+          if ! timeout 180 docker pull pgsty/silo:RELEASE.2026-11-12T00-00-00Z; then
+            echo "S3 image pull failed"
+            exit 1
+          fi
+          docker rm -f dms-minio >/dev/null 2>&1 || true
+          docker run -d --name dms-minio -p 9000:9000 \
+            -e MINIO_ROOT_USER="$CONNECT_S3_ACCESS" \
+            -e MINIO_ROOT_PASSWORD="$CONNECT_S3_SECRET" \
+            pgsty/silo:RELEASE.2026-11-12T00-00-00Z server /data
+          ready=0
+          for _ in $(seq 1 30); do
+            if python -c 'import socket; s=socket.create_connection(("127.0.0.1",9000),2); s.close()'; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then
+            echo "MinIO did not open port 9000"
+            redact dms-minio
+            exit 1
+          fi
+          export DMS_CONNECT_S3_LIVE=1
+          export CONNECT_S3_HOST=127.0.0.1
+          export CONNECT_S3_PORT=9000
+          if ! timeout 180 docker pull mcr.microsoft.com/azure-storage/azurite:latest; then
+            echo "Azurite image pull failed"
+            exit 1
+          fi
+          docker rm -f dms-azurite >/dev/null 2>&1 || true
+          docker run -d --name dms-azurite -p 10000:10000 \
+            mcr.microsoft.com/azure-storage/azurite:latest \
+            azurite-blob --blobHost 0.0.0.0 --blobPort 10000
+          ready=0
+          for _ in $(seq 1 30); do
+            if python -c 'import socket; s=socket.create_connection(("127.0.0.1",10000),2); s.close()'; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then
+            echo "Azurite did not open port 10000"
+            redact dms-azurite
+            exit 1
+          fi
+          export DMS_CONNECT_AZURE_BLOB_LIVE=1
+          export CONNECT_BLOB_HOST=127.0.0.1
+          export CONNECT_BLOB_PORT=10000
+          sql=0
+          if timeout 180 docker pull mcr.microsoft.com/mssql/server:2022-latest; then
+            docker rm -f dms-mssql >/dev/null 2>&1 || true
+            if docker run -d --name dms-mssql -p 1433:1433 \
+              -e ACCEPT_EULA=Y \
+              -e MSSQL_PID=Developer \
+              -e MSSQL_SA_PASSWORD="$CONNECT_AZURE_SQL_PASSWORD" \
+              mcr.microsoft.com/mssql/server:2022-latest; then
+              sql=1
+            else
+              echo "skipped: sql server container did not start"
+            fi
+          else
+            echo "skipped: sql server image unavailable"
+          fi
+          if [ "$sql" = 1 ]; then
+            ready=0
+            for _ in $(seq 1 60); do
+              running="$(docker inspect -f '{{.State.Running}}' dms-mssql 2>/dev/null || echo false)"
+              if [ "$running" != "true" ]; then
+                echo "skipped: sql server container exited"
+                redact dms-mssql
+                break
+              fi
+              if python -c 'import socket; s=socket.create_connection(("127.0.0.1",1433),2); s.close()' \
+                && docker logs dms-mssql 2>&1 | grep -F 'SQL Server is now ready for client connections' >/dev/null; then
+                ready=1
+                break
+              fi
+              sleep 5
+            done
+            if [ "$ready" = 1 ]; then
+              export DMS_CONNECT_AZURE_SQL_LIVE=1
+              export CONNECT_AZURE_SQL_HOST=127.0.0.1
+              export CONNECT_AZURE_SQL_PORT=1433
+              export CONNECT_AZURE_SQL_USER=sa
+              export CONNECT_AZURE_SQL_DB=master
+            else
+              echo "skipped: sql server did not become ready"
+              redact dms-mssql
+            fi
+          fi
+          export CONNECT03_EVIDENCE="$RUNNER_TEMP/connect03.txt"
+          : > "$CONNECT03_EVIDENCE"
+          set +e
+          python -m pytest tests/test_connect_03.py -q --tb=short -p no:cacheprovider -s
+          rc=$?
+          set -e
+          echo "---- connect-03 asks ----"
+          cat "$CONNECT03_EVIDENCE" || true
+          for kind in s3 azure-blob salesforce; do
+            grep -F "CONNECT-03 ${kind} ask" "$CONNECT03_EVIDENCE"
+          done
+          if [ "${DMS_CONNECT_AZURE_SQL_LIVE:-}" = 1 ]; then
+            grep -F "CONNECT-03 azure-sql ask" "$CONNECT03_EVIDENCE"
+          fi
+          exit "$rc"
 
   lint-type-test:
     runs-on: ubuntu-latest

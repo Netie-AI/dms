@@ -69,6 +69,11 @@ FK_SQL = (
     "  AND c.OWNER IN (SELECT OWNER FROM ALL_TABLES) "
     "ORDER BY c.CONSTRAINT_NAME, cc.OWNER, cc.TABLE_NAME, cc.POSITION"
 )
+COLUMNS_SQL = (
+    "SELECT OWNER, TABLE_NAME, COLUMN_NAME, DATA_TYPE "
+    "FROM ALL_TAB_COLUMNS "
+    "ORDER BY OWNER, TABLE_NAME, COLUMN_ID"
+)
 
 
 def enabled() -> bool:
@@ -196,10 +201,121 @@ def keys_payload(con: Any) -> dict[str, Any]:
     return keys_from_rows(_rows(con, PK_SQL, ()), _rows(con, FK_SQL, ()), _SKIP)
 
 
-def prompt(tables: list[str]) -> str:
-    lines = [f"DIALECT: {DIALECT}", "SCHEMA"]
-    lines.extend(f"- {name}" for name in tables)
-    return "\n".join(lines)
+def schema_map(con: Any) -> dict[str, Any]:
+    """Column names and types. Cell values are not read."""
+    from dms_core.control_plane.connect_grants import clean_tables
+
+    from dms_executor.drivers.schema_map import compact_schema
+
+    grouped: dict[str, list[dict[str, str]]] = {}
+    order: list[str] = []
+    for owner, table, column, dtype in _rows(con, COLUMNS_SQL, ()):
+        if str(owner).lower() in _SKIP:
+            continue
+        name = f"{owner}.{table}"
+        try:
+            clean_tables([name])
+        except ValueError:
+            continue
+        if name not in grouped:
+            order.append(name)
+            grouped[name] = []
+        grouped[name].append({"name": str(column), "type": str(dtype)})
+    objects = [{"name": name, "columns": grouped[name]} for name in order]
+    return compact_schema(DIALECT, objects)
+
+
+def prompt(tables: list[str], schema: dict[str, Any] | None = None) -> str:
+    from dms_executor.drivers.schema_map import prompt_lines
+
+    return prompt_lines(DIALECT, tables, schema)
+
+
+def governed_ask(
+    *,
+    host: str,
+    port: int,
+    database: str,
+    user: str,
+    password: str,
+    sql: str,
+    grantable: set[str],
+    tls: bool = False,
+    **_extra: Any,
+) -> dict[str, Any]:
+    """One granted read with a call timeout and the row cap.
+
+    The page path stays a transport window. This is the ask path: the map
+    has types, and a result that does not fit says so.
+    """
+    import time
+
+    from dms_executor.drivers.guard import refuse
+    from dms_executor.drivers.limits import ROW_CAP, STATEMENT_TIMEOUT_S, result
+
+    if not enabled():
+        raise DriverError("network")
+    refuse(KIND, sql, grantable)
+    con = connect_login(
+        host=host,
+        port=int(port),
+        database=database,
+        user=user,
+        password=password,
+        timeout=int(STATEMENT_TIMEOUT_S),
+    )
+    try:
+        inspect(con)
+        lock_read_only(con)
+        try:
+            con.call_timeout = int(STATEMENT_TIMEOUT_S) * 1000
+        except Exception:
+            pass
+        # ROWNUM is the cap Oracle Free accepts on a grouped inline view.
+        wrapped = (
+            f"SELECT * FROM ({_one_statement(sql)}) dms_cap "
+            f"WHERE ROWNUM <= {int(ROW_CAP) + 1}"
+        )
+        mapped: dict[str, Any] = {}
+        columns: list[str] = []
+        fetched: list[tuple[Any, ...]] = []
+        # ponytail: ORA-01466 is SCN lag in the seconds after DDL. Three
+        # tries, one second apart. A table older than that does not retry.
+        for attempt in range(3):
+            try:
+                mapped = schema_map(con)
+                cur = con.cursor()
+                try:
+                    cur.execute(wrapped)
+                    description = cur.description or []
+                    columns = [str(item[0]) for item in description]
+                    fetched = [tuple(row) for row in cur.fetchall()]
+                finally:
+                    cur.close()
+                break
+            except Exception as exc:
+                if _ora_digits(exc) != "01466" or attempt == 2:
+                    raise
+                try:
+                    con.rollback()
+                except Exception:
+                    pass
+                time.sleep(1)
+    except DriverError:
+        raise
+    except Exception as exc:
+        if _call_timed_out(exc):
+            raise DriverError("timeout") from None
+        digits = _ora_digits(exc)
+        if digits:
+            raise DriverError(f"ora-{digits}") from None
+        raise DriverError("bad_request") from None
+    finally:
+        _close(con)
+    rows = []
+    for item in fetched:
+        rows.append({columns[i]: _cell(item[i]) for i in range(min(len(columns), len(item)))})
+    return result(columns, rows, schema=mapped)
 
 
 def explain_sql(_statement: str) -> str:
@@ -207,10 +323,31 @@ def explain_sql(_statement: str) -> str:
 
 
 def page_sql(statement: str, page_size: int, offset: int) -> str:
+    # An unquoted Oracle identifier has to start with a letter. `_dms_page`
+    # is ORA-00904 and the ask comes back bad_request.
     return (
-        f"SELECT * FROM ({statement}) _dms_page "
+        f"SELECT * FROM ({statement}) dms_page "
+        f"ORDER BY 1 "
         f"OFFSET {int(offset)} ROWS FETCH NEXT {int(page_size) + 1} ROWS ONLY"
     )
+
+
+def _one_statement(sql: str) -> str:
+    text = sql.strip()
+    if text.endswith(";"):
+        text = text[:-1].rstrip()
+    return text
+
+
+def _call_timed_out(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return "dpi-1067" in text or "dpy-4024" in text or "call timeout" in text
+
+
+def _cell(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _map_ora(exc: BaseException) -> DriverError | None:
