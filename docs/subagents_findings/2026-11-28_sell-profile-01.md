@@ -12,9 +12,25 @@ A payload `clarify` block with a question and options or readings becomes the ca
 
 The Studio card shows the answer, a chart from the model spec when the columns exist, and buttons for SQL, a row-capped table, and the checks. Steps `understand`, `find`, `write`, `run`, `check`, and `answer` stream on the existing ask SSE. The open step breathes. Reduced motion disables the animation.
 
+## Root cause
+
+Flag-on `/ask` depended on stub `query_sql`:
+
+- `packages/executor/dms_executor/__init__.py` sold the sell-profile `compute` lambda to `_insights_compute_seam`, which calls `cortex.compute_insights`.
+- `packages/executor/dms_executor/sell_profile.py` `_harness` took SQL only from `query_sql_from_payload` (`packages/executor/dms_executor/generative_ask.py`).
+- `scripts/verify/grade52.py` `_Stub.compute_insights` returns the recorded insights object. Those rows have no `query_sql`, so every question was `no_sql` and then reconfirm.
+
+That replay serves nothing, so it cannot show the AI path.
+
+## Provider loop
+
+`provider_turn` posts to OpenVault `/v1/chat/completions` (role `sql`, no model id, `route_hint` only when the floor escalates). SQL is the `execute_sql` tool argument. A bare `query_sql` field is ignored. `run_sell` still calls `run_floor` when that module imports, and passes this provider turn as `compute`, so the floor executes that SQL on the warehouse. No `ov_` key and no fixture returns no payload.
+
+`DMS_SELL_PROVIDER_FIXTURE` is the recorded-response swap for CI. `tests/test_sell_profile_provider_01.py` answers the three demo-warehouse questions. The rows equal a second execute of `sql_used` on the demo warehouse. A poisoned insights `query_sql` and a poisoned `/ask` are not used. `serve_path` is `ai`.
+
 ## Stub 52
 
-`grade52 --main` at `0294d877281ee62393ed7575e69518bc1b44b291`.
+`grade52 --main` at `f7f3dac97116fd6318708a569cb49a76595c5a89`. On, there is no provider fixture and no OpenVault key, so the stub still does not serve.
 
 | Profile | correct | wrong | reconfirm | ai | rule |
 |---------|---------|-------|-----------|----|------|

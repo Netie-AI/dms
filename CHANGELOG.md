@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - READY-07: provider tool call, not stub query_sql
+
+- **Root cause.** Flag-on `/ask` called `_insights_compute_seam` (`packages/executor/dms_executor/__init__.py`, the sell-profile compute lambda) and read only `payload["query_sql"]` (`generative_ask.query_sql_from_payload`, used from `sell_profile._harness`). `grade52` `_Stub.compute_insights` (`scripts/verify/grade52.py`) returns recorded insights with no `query_sql`, so all 52 reconfirmed.
+- **Path.** `DMS_SELL_PROFILE=1` now asks OpenVault `POST /v1/chat/completions` and runs the `execute_sql` tool argument through `run_floor` when that module imports, else the same floor loop. A bare insights `query_sql` is ignored. No `ov_` key and no fixture is a miss, not a figure.
+- **Fixture.** `tests/fixtures/sell_profile/provider_demo.json` is a recorded provider response. `tests/test_sell_profile_provider_01.py` answers the 3 demo-warehouse questions from SQL executed on the warehouse. No live key. Stub 52 at `f7f3dac`: off correct=43 wrong=0 reconfirm=5 ai=0 rule=43; on correct=0 wrong=0 reconfirm=52 ai=0 rule=0. WRONG stays 0.
+
 ## 2026-11-28 - READY-07: Studio sell profile
 
 - **Flag.** `DMS_SELL_PROFILE` default off, digit 1 only. On, Studio `/ask` skips the rule lanes and asks the model to plan, pick tables, write read-only SQL, check, and answer. Self-repair and OpenVault escalation use the existing route hint. A clarify block is a question plus options.
