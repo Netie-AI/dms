@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - FDE-KIT-01: launcher, engagement folder, report schema
+
+- **Flag.** `DMS_FDE_KIT` defaults off. Only the digit `1` turns it on. Unset, `true`, `01`, and ` 1 ` exit 2 with `fde_kit_disabled` and write nothing. `list` works with the flag off.
+- **Report.** `scripts/fde/report.py` is `netie.fde.report/1`. Markdown is rendered from the JSON. An empty check list is SKIPPED. A kit that raises is a FAIL check with the exception class.
+- **Kits.** `run --stage all` calls `fde_pipeline` extract, profile, ontology, and pack. It does not copy those stages. Not PASS.
+
 ## 2026-11-28 - AI-FLOOR-01: direct floor record is not an envelope
 
 - **Record.** `run_direct` returns `stopped`, not a served abstain dict. The dialect string is `SERVING_DIALECT`.

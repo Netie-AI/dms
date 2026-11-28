@@ -1,0 +1,21 @@
+schema: netie.fde.engagement/1
+name: ""
+tenant_id: ""
+steward: ""
+dba: ""
+owner: ""
+budget_roles: []
+flags_on: []
+spaces: []
+# Paths to fde_pipeline tenant YAML files. Empty means use sources below.
+tenant_files: []
+# The password stays in the env var named by password_env, or in an OpenVault ref.
+# Do not write a password key in this file.
+sources:
+  - name: primary
+    kind: ""
+    host: 127.0.0.1
+    port: 5432
+    database: ""
+    user: ""
+    password_env: FDE_SOURCE_PASSWORD
