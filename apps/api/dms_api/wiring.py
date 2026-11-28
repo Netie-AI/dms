@@ -209,6 +209,22 @@ def preview_adjusted_sql(*, space_id: str, sql: str) -> dict[str, Any]:
     )
 
 
+def import_semantic_file(
+    raw: bytes,
+    *,
+    space_id: str,
+    dry_run: bool,
+    actor: str,
+) -> dict[str, Any]:
+    return dms_executor.import_semantic_file(
+        raw, space_id=space_id, dry_run=dry_run, actor=actor
+    )
+
+
+def export_semantic_space(*, space_id: str, export_format: str) -> dict[str, Any]:
+    return dms_executor.export_semantic_space(space_id=space_id, export_format=export_format)
+
+
 def save_steward_adjusted(
     *,
     space_id: str,

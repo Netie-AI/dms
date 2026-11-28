@@ -1,0 +1,110 @@
+{
+  "benchmarks": [],
+  "description": "Sales model",
+  "entities": [
+    {
+      "columns": [
+        {
+          "data_type": "NUMBER",
+          "description": "Line amount",
+          "expr": "amount",
+          "name": "amount",
+          "role": "fact",
+          "synonyms": []
+        },
+        {
+          "data_type": "DATE",
+          "description": "Order date",
+          "expr": "ordered_at",
+          "name": "ordered_at",
+          "role": "time_dimension",
+          "synonyms": []
+        },
+        {
+          "data_type": "VARCHAR",
+          "description": "Order status",
+          "expr": "status",
+          "name": "status",
+          "role": "dimension",
+          "synonyms": [
+            "state"
+          ]
+        }
+      ],
+      "description": "Order rows",
+      "name": "orders",
+      "primary_key": [
+        "order_id"
+      ],
+      "table": "analytics.public.orders"
+    }
+  ],
+  "filters": [
+    {
+      "description": "Paid rows",
+      "expr": "status = 'paid'",
+      "name": "is_paid",
+      "synonyms": [],
+      "table": "orders"
+    }
+  ],
+  "format": "snowflake",
+  "instructions": [
+    "Prefer paid orders."
+  ],
+  "measures": [
+    {
+      "description": "Total amount",
+      "expr": "SUM(amount)",
+      "name": "total_amount",
+      "synonyms": [
+        "revenue"
+      ],
+      "table": "orders"
+    }
+  ],
+  "name": "sales",
+  "onboarding": [
+    "how many paid orders"
+  ],
+  "relationships": [
+    {
+      "cardinality": "many_to_one",
+      "from_columns": [
+        "customer_id"
+      ],
+      "from_table": "orders",
+      "join_type": "left_outer",
+      "name": "orders_customers",
+      "to_columns": [
+        "customer_id"
+      ],
+      "to_table": "customers"
+    }
+  ],
+  "unsupported": [
+    {
+      "name": "lod_amount",
+      "path": "tables.orders.metrics.lod_amount",
+      "reason": "lod"
+    },
+    {
+      "name": "running_amount",
+      "path": "tables.orders.metrics.running_amount",
+      "reason": "window_metric"
+    },
+    {
+      "name": "status",
+      "path": "tables.orders.dimensions.status",
+      "reason": "cortex_search_service"
+    }
+  ],
+  "verified_queries": [
+    {
+      "name": "paid_count",
+      "onboarding": true,
+      "question": "how many paid orders",
+      "sql": "SELECT COUNT(*) AS n FROM orders"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "version": 2,
+  "serialized_space": {
+    "name": "sales",
+    "description": "Sales model",
+    "sample_questions": ["how many paid orders"],
+    "text_instructions": ["Prefer paid orders."],
+    "tables": [
+      {
+        "identifier": "analytics.public.orders",
+        "description": "Order rows",
+        "column_configs": [
+          {"column_name": "order_id", "description": "Order id"},
+          {
+            "column_name": "status",
+            "description": "Order status",
+            "synonyms": ["state"]
+          }
+        ]
+      }
+    ],
+    "metric_views": [
+      {
+        "name": "total_amount",
+        "expression": "SUM(amount)",
+        "description": "Total amount"
+      }
+    ],
+    "example_question_sqls": [
+      {
+        "name": "paid_count",
+        "question": "how many paid orders",
+        "sql": "SELECT COUNT(*) AS n FROM orders"
+      }
+    ],
+    "join_specs": [
+      {
+        "left": {"identifier": "orders", "columns": ["customer_id"]},
+        "right": {"identifier": "customers", "columns": ["customer_id"]},
+        "cardinality": "many_to_one"
+      }
+    ],
+    "sql_snippets": [
+      {"name": "is_paid", "sql": "status = 'paid'", "description": "Paid rows"}
+    ],
+    "benchmarks": [
+      {
+        "name": "bench_count",
+        "question": "bench how many orders",
+        "sql": "SELECT COUNT(*) AS n FROM orders"
+      }
+    ]
+  }
+}

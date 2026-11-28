@@ -1,0 +1,92 @@
+{
+  "benchmarks": [
+    {
+      "name": "bench_count",
+      "question": "bench how many orders",
+      "sql": "SELECT COUNT(*) AS n FROM orders"
+    }
+  ],
+  "description": "Sales model",
+  "entities": [
+    {
+      "columns": [
+        {
+          "data_type": "",
+          "description": "Order id",
+          "expr": "order_id",
+          "name": "order_id",
+          "role": "dimension",
+          "synonyms": []
+        },
+        {
+          "data_type": "DATE",
+          "description": "Order date",
+          "expr": "ordered_at",
+          "name": "ordered_at",
+          "role": "time_dimension",
+          "synonyms": [
+            "order date"
+          ]
+        }
+      ],
+      "description": "Order rows",
+      "name": "orders",
+      "primary_key": [
+        "order_id"
+      ],
+      "table": "analytics.public.orders"
+    }
+  ],
+  "filters": [
+    {
+      "description": "Paid rows",
+      "expr": "status = 'paid'",
+      "name": "is_paid",
+      "synonyms": [],
+      "table": "orders"
+    }
+  ],
+  "format": "osi",
+  "instructions": [
+    "Prefer paid orders."
+  ],
+  "measures": [
+    {
+      "description": "Total amount",
+      "expr": "SUM(amount)",
+      "name": "total_amount",
+      "synonyms": [
+        "revenue"
+      ],
+      "table": "orders"
+    }
+  ],
+  "name": "sales",
+  "onboarding": [
+    "how many paid orders"
+  ],
+  "relationships": [
+    {
+      "cardinality": "many_to_one",
+      "from_columns": [
+        "customer_id"
+      ],
+      "from_table": "orders",
+      "join_type": "",
+      "name": "orders_customers",
+      "to_columns": [
+        "customer_id"
+      ],
+      "to_table": "customers"
+    }
+  ],
+  "unsupported": [],
+  "verified_queries": [
+    {
+      "name": "paid_count",
+      "onboarding": true,
+      "question": "how many paid orders",
+      "sql": "SELECT COUNT(*) AS n FROM orders"
+    }
+  ]
+}
