@@ -2,6 +2,14 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - Slim: DMS_RULES_LEGACY, attic for stale scripts and old findings
+
+- **Switch.** `DMS_RULES_LEGACY` defaults on. Unset, or any token other than the digit `0`, keeps today's rule serves. Digit `0` holds the L1 phrase pack, ontology compile, and the question-word lanes. Grants, abstain, ontology, and a model SQL leg stay. `DMS_AI_FIRST` is not redefined.
+- **52.** On origin/main `fa0eeef` and on this tree with the switch unset: `grade52 --main` correct=43 wrong=0 reconfirm=5 ai=0 rule=43 L1=23 compile=20. With `DMS_RULES_LEGACY=0`: correct=0 wrong=0 reconfirm=34 abstain=10 refusal_ok=8 ai=0 rule=0. Rule paths serve 43 of 52 today and 0 of 52 when the switch is off. Not PASS. Armed grade52 was not run.
+- **Attic.** `git mv` of four stale scripts and 121 pre-November findings. Source SHA `fa0eeef7026e5c09c2ebffd7b573087bb41fc700`. See `attic/README.md` and `SLIM_INVENTORY.md`. Connectors, grants, governance, proof, ontology, Studio, auth, `SERVING_DIALECT`, `build_abstain`, import contracts, and the OpenVault client stayed.
+- **Not moved.** READY-01 (AI-first SQL), READY-04 (onboarding), READY-02 (auth), and create app/doc/slides. This branch touches `generative_ask.py` and `__init__.py` only at the serve predicate. Rebased onto `5b8da59` (#656). The READY-02 rows stay.
+- **Suite.** `DMS_SKIP_CONTROL_PLANE_TESTS=1` and `DMS_DEMO_FALLBACK=0`, tree still dirty: 5094 passed, 138 skipped, 34 xfailed, 8 failed, 4 errors. Every failure is `grade52` refusing uncommitted `apps/` or `packages/`. Control-plane tests were skipped. Postgres was not started.
+
 ## 2026-11-28 - READY-02: rebase onto fa0eeef
 
 - **Base.** Rebased onto `fa0eeef` (#655). READY-04 flags stay default off. `DMS_SSO` stays default off. `POST /v1/auth/login` still calls `compliance_gate` before a session is minted.

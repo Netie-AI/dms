@@ -6,7 +6,6 @@ A follow-up deletes this module after the armed A/B. Do not add a phrase.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Any
@@ -87,7 +86,7 @@ def asks_for_dimension(question: str) -> bool:
 
 def _rules_off() -> bool:
     """Digit 1 only. Implies ``DMS_NO_WORD_RULES`` for this locker."""
-    return os.environ.get("DMS_RULES_OFF", "0").strip() == "1"
+    return __import__("dms_executor.rules_legacy", fromlist=["rules_off_lane"]).rules_off_lane()
 
 
 def locked_measure(question: str) -> str | None:
