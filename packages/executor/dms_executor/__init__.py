@@ -1052,6 +1052,30 @@ class Executor:
                     if deadline_hit and not scale_miss_enabled():
                         env["serving_deadline_s"] = ask_budget_s
                     assert_envelope_valid(env)
+                    if not (deadline_hit and scale_miss_enabled()):
+                        from dms_executor.reply_hygiene import stamp_capacity
+
+                        def _capacity_rung(hint: str | None) -> dict[str, Any] | None:
+                            fn = getattr(self._cortex, "compute_insights", None)
+                            if not callable(fn):
+                                return None
+                            kwargs: dict[str, Any] = {}
+                            if hint:
+                                kwargs["route_hint"] = hint
+                            got = fn(question, **kwargs)
+                            return got if isinstance(got, dict) else None
+
+                        granted = [str(name) for name in (tables or []) if str(name).strip()]
+                        env = stamp_capacity(
+                            env,
+                            exc.code,
+                            call=_capacity_rung,
+                            question=question,
+                            names=granted,
+                            space_id=space_id,
+                            session_id=session_id,
+                            tables=granted,
+                        )
                 finally:
                     reset_serving_lease_block(token)
             # An answer whose served SQL reads outside the turn's grant is a
@@ -1846,6 +1870,10 @@ class Executor:
             ontology_text,
             schema_text,
         )
+        from dms_executor.reply_hygiene import reason_completion
+
+        def _next_rung(prompt: str, hint: str | None) -> str:
+            return reason_completion(cortex, prompt, route_hint=hint)
 
         return apply_reconfirm(
             env,
@@ -1857,6 +1885,8 @@ class Executor:
             ontology=ontology_text(space_id),
             schema=schema_text(None, granted_schema_names(space_id, tables)),
             complete=lambda prompt: complete_with_model(cortex, prompt),
+            reason_complete=lambda prompt: reason_completion(cortex, prompt),
+            retry=_next_rung,
         )
 
     def reconfirm_ask_path(self, token: str) -> str | None:

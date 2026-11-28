@@ -537,6 +537,8 @@ def apply_reconfirm(
     ontology: str,
     schema: str,
     complete: Complete,
+    reason_complete: Complete | None = None,
+    retry: Any = None,
 ) -> dict[str, Any]:
     """Attach ``reconfirm`` when the ladder did not check an answer."""
 
@@ -546,16 +548,30 @@ def apply_reconfirm(
             os.environ.get("DMS_ONTO_GAP_PROPOSE", "0").strip() != "1"
             or os.environ.get("DMS_ONTO_PG", "0").strip() != "1"
         ):
-            return out
-        from dms_executor.onto_gap import note_reconfirm
+            passed = out
+        else:
+            from dms_executor.onto_gap import note_reconfirm
 
-        note_reconfirm(
-            out,
+            note_reconfirm(
+                out,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+            )
+            passed = out
+        from dms_executor.reply_hygiene import finish_reconfirm
+
+        return finish_reconfirm(
+            passed,
             question=question,
+            schema=schema,
             space_id=space_id,
             session_id=session_id,
+            tables=tables,
+            complete=reason_complete,
+            ontology=ontology,
+            retry=retry,
         )
-        return out
 
     if not isinstance(env, dict):
         return env
@@ -570,10 +586,24 @@ def apply_reconfirm(
     from dms_executor.abstain import _envelope_reason
 
     reason = _envelope_reason(env)
+    from dms_executor.reply_hygiene import reply_hygiene_enabled, transport_code, transport_envelope
+
+    code = transport_code(env, reason=reason)
+    if code is not None:
+        return _finish(
+            transport_envelope(
+                env,
+                code,
+                question=question,
+                space_id=space_id,
+                session_id=session_id,
+            )
+        )
     reason_text = str(env.get("text") or "").strip() or reason
     # The in-budget reading already named a question. Do not spend another call.
     suggested = _existing_suggestion(env)
-    if not suggested:
+    # Flag on: a dead suggestion is an ask-back, not this closest-question call.
+    if not suggested and not reply_hygiene_enabled():
         from cortex_client.ask_clock import ask_lean_defer, note_skipped
         from cortex_client.compute import insights_call_cap, recorded_model_calls
 
