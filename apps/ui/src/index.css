@@ -75,3 +75,41 @@ input,
 textarea {
   font: inherit;
 }
+
+@keyframes ask-breath {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ask-breath {
+  animation: ask-breath 1.4s ease-in-out infinite;
+}
+
+@keyframes answer-land {
+  0% {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.answer-landed {
+  animation: answer-land 280ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask-breath,
+  .answer-landed {
+    animation: none;
+  }
+}

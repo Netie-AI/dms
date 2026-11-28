@@ -42,6 +42,7 @@ export type ActivityState = {
 type AppState = {
   apiOnline: boolean | null;
   askMode: "demo" | "live" | null;
+  sellProfile: boolean;
   demoFallbackEnabled: boolean | null;
   databaseConfigured: boolean | null;
   spacesPersisted: boolean | null;
@@ -112,6 +113,7 @@ function classifyPause(message: string): string | null {
 export function AppProvider({ children }: { children: ReactNode }) {
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [askMode, setAskMode] = useState<"demo" | "live" | null>(null);
+  const [sellProfile, setSellProfile] = useState(false);
   const [demoFallbackEnabled, setDemoFallbackEnabled] = useState<boolean | null>(null);
   const [databaseConfigured, setDatabaseConfigured] = useState<boolean | null>(null);
   const [spacesPersisted, setSpacesPersisted] = useState<boolean | null>(null);
@@ -217,6 +219,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (typeof body?.demo_fallback === "boolean") {
             setDemoFallbackEnabled(body.demo_fallback);
           }
+          setSellProfile(body?.sell_profile === true);
           if (typeof body?.database_configured === "boolean") {
             setDatabaseConfigured(body.database_configured);
           }
@@ -438,6 +441,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppState = {
     apiOnline,
     askMode,
+    sellProfile,
     demoFallbackEnabled,
     databaseConfigured,
     spacesPersisted,

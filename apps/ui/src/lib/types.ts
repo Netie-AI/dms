@@ -130,6 +130,11 @@ export type AnswerEnvelope = {
   clarify?: ClarifyBlock | null;
   /** Present only when the table is not shared with this Space. */
   access_needed?: AccessNeeded | null;
+  /** Set only when DMS_SELL_PROFILE is the digit 1. */
+  sell_profile?: boolean;
+  sell_checks?: string[];
+  sell_row_cap?: number;
+  chart_spec?: unknown;
 };
 
 export type SpaceSummary = {

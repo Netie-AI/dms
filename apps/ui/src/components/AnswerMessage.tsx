@@ -8,6 +8,7 @@ import { AccessCard } from "@/components/AccessCard";
 import { ClarifyCard, clarifyPickBody } from "@/components/studio/ClarifyCard";
 import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "@/components/studio/abstainReason";
 import { ResultView } from "@/components/studio/ResultView";
+import { SellAnswerCard } from "@/components/studio/SellAnswerCard";
 import { useApp } from "@/context/AppContext";
 import {
   auditReceiptLines,
@@ -414,6 +415,24 @@ export function AnswerMessage({
 
   if (follow) {
     return <AnswerMessage envelope={follow} question={question} />;
+  }
+
+  if (envelope.sell_profile === true) {
+    return (
+      <article
+        data-testid="sell-answer-message"
+        className="border border-[var(--color-line)] bg-[var(--color-surface)]/70 px-4 py-4"
+      >
+        <SellAnswerCard
+          envelope={envelope}
+          busy={cardBusy}
+          error={cardError}
+          onPick={(reading) => {
+            void pickReading(reading);
+          }}
+        />
+      </article>
+    );
   }
 
   return (

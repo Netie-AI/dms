@@ -1304,6 +1304,46 @@ class Executor:
         if ungrantable:
             raise GroundingRefused(ungrantable=ungrantable, grantable=granted)
 
+        if allow_gen and granted:
+            from dms_executor.sell_profile import enabled as sell_enabled
+            from dms_executor.sell_profile import run_sell
+
+            if sell_enabled():
+                # Fixed lanes stay off this path. The floor is the ask.
+                env = run_sell(
+                    question,
+                    compute=lambda catalog: _seen(
+                        seen,
+                        _insights_compute_seam(
+                            self._cortex,
+                            question,
+                            session_id=session_id,
+                            space_id=space_id,
+                            ontology=catalog,
+                        ),
+                    ),
+                    submit=lambda sql: self._submit_verified_sql(
+                        sql,
+                        space_id=space_id,
+                        session_id=session_id,
+                        tables=tables,
+                    ),
+                    ledger_append=lambda payload: self._ledger_verified_query(
+                        asset_sql=str(payload.get("sql") or ""),
+                        run_id=str(payload.get("run_id") or ""),
+                        space_id=space_id,
+                        session_id=session_id,
+                        event_type="ask.generated_ontology",
+                    ),
+                    warehouse=self._warehouse,
+                    grantable=set(granted),
+                    dialect=self.dialect or SERVING_DIALECT,
+                    space_id=space_id,
+                    session_id=session_id,
+                )
+                self._store_turn(session_id, space_id, env)
+                return env
+
         key = turn_key(session_id, space_id)
         if allow_follow:
             try:

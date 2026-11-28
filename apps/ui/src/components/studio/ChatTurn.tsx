@@ -4,6 +4,7 @@ import { useApp } from "@/context/AppContext";
 import { describeApiError, postAsk, postClarifyPick } from "@/lib/api";
 import type { AnswerEnvelope, ClarifyReading, GrantedSpace } from "@/lib/types";
 import { AskStages, useAskStages } from "./AskStages";
+import { SellAnswerCard } from "./SellAnswerCard";
 import { ClarifyCard, clarifyPickBody } from "./ClarifyCard";
 import { readAccess, readClarify, serverSpaceIds, switchableSpaces } from "./abstainReason";
 
@@ -75,7 +76,7 @@ function joinLabel(row: JoinItem): string {
 }
 
 export function ChatTurn({ spaceId }: { spaceId: string | null }) {
-  const { setActiveSpaceId, spaces, spacesFromApi } = useApp();
+  const { setActiveSpaceId, spaces, spacesFromApi, sellProfile, sessionId } = useApp();
   const [draft, setDraft] = useState("");
   const [edit, setEdit] = useState("");
   const [reply, setReply] = useState("");
@@ -87,7 +88,7 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
   const [result, setResult] = useState<AnswerEnvelope | null>(null);
   const [askId, setAskId] = useState<string | null>(null);
   const [cardError, setCardError] = useState<string | null>(null);
-  const stages = useAskStages(running ? askId : null);
+  const stages = useAskStages(sellProfile ? askId : running ? askId : null);
   const askAbort = useRef<AbortController | null>(null);
   const reask = useRef<string | null>(null);
   const askInSpaceRef = useRef<(question: string, nextSpace: string | null) => Promise<void>>(
@@ -163,6 +164,37 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
       setTurn(null);
       setErr(e instanceof Error ? e.message : "plan failed");
     } finally {
+      setBusy(false);
+    }
+  };
+
+  const askNow = async () => {
+    const asked = draft.trim();
+    if (!asked || busy) return;
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    try {
+      const id = crypto.randomUUID();
+      const ctrl = new AbortController();
+      askAbort.current = ctrl;
+      setAskId(id);
+      setRunning(true);
+      const env = await postAsk(
+        { question: asked, space_id: spaceId, session_id: sessionId },
+        ctrl.signal,
+        id,
+      );
+      setResult(env);
+    } catch (e) {
+      if (askAbort.current?.signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+        setErr("Cancelled.");
+      } else {
+        setErr(e instanceof Error ? e.message : "ask failed");
+      }
+    } finally {
+      askAbort.current = null;
+      setRunning(false);
       setBusy(false);
     }
   };
@@ -254,7 +286,9 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
         Studio ask
       </p>
       <p className="mt-2 max-w-3xl text-sm text-[var(--color-ink-muted)]">
-        Plan first. SQL runs only after you confirm. An edit makes a new plan.
+        {sellProfile
+          ? "Ask a business question. The answer comes back after the check."
+          : "Plan first. SQL runs only after you confirm. An edit makes a new plan."}
       </p>
       <label className="mt-3 block text-sm text-[var(--color-ink)]" htmlFor="studio-chat-question">
         Question
@@ -267,21 +301,33 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
           className="mt-1 w-full border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-2 text-sm"
         />
       </label>
-      <button
-        type="button"
-        data-testid="studio-chat-plan"
-        disabled={busy || !draft.trim()}
-        onClick={() => void plan(draft)}
-        className="mt-2 border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white disabled:opacity-50"
-      >
-        {busy ? "Working..." : "Show plan"}
-      </button>
+      {sellProfile ? (
+        <button
+          type="button"
+          data-testid="studio-sell-ask"
+          disabled={busy || !draft.trim()}
+          onClick={() => void askNow()}
+          className="mt-2 border border-[var(--color-accent)] bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+        >
+          {busy ? "Working..." : "Ask"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          data-testid="studio-chat-plan"
+          disabled={busy || !draft.trim()}
+          onClick={() => void plan(draft)}
+          className="mt-2 border border-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white disabled:opacity-50"
+        >
+          {busy ? "Working..." : "Show plan"}
+        </button>
+      )}
       {err && (
         <p className="mt-3 text-sm text-[var(--color-danger)]" data-testid="studio-chat-error">
           {err}
         </p>
       )}
-      {turn && (
+      {turn && !sellProfile && (
         <div className="mt-4 grid gap-3">
           <div data-testid="studio-chat-plan-body">
             <p className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--color-ink-muted)]">
@@ -387,7 +433,17 @@ export function ChatTurn({ spaceId }: { spaceId: string | null }) {
       {running || stages.length > 0 ? (
         <AskStages stages={stages} onCancel={running ? () => askAbort.current?.abort() : undefined} />
       ) : null}
-      {result && (
+      {result && result.sell_profile ? (
+        <SellAnswerCard
+          envelope={result}
+          busy={busy}
+          error={cardError}
+          onPick={(reading) => {
+            void pickReading(reading);
+          }}
+        />
+      ) : null}
+      {result && !result.sell_profile && (
         <div className="mt-4" data-testid="studio-chat-result">
           <p className="text-sm text-[var(--color-ink)]">{result.text}</p>
           {clarify ? (

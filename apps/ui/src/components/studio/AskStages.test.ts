@@ -39,6 +39,24 @@ describe("AskStages", () => {
     expect(empty).toBe("");
   });
 
+  it("names the sell-profile steps and breathes on the open one", () => {
+    const live: AskStageEvent[] = [
+      { stage: "understand", t_ms: 20, status: "done" },
+      { stage: "find", t_ms: 40, status: "done" },
+      { stage: "write", t_ms: 80, status: "started" },
+    ];
+    const markup = renderToStaticMarkup(createElement(AskStages, { stages: live }));
+    expect(markup).toContain("Understanding question");
+    expect(markup).toContain("Finding tables");
+    expect(markup).toContain("Writing SQL");
+    expect(markup).toContain('data-testid="ask-breath"');
+    expect(markup).toContain("ask-breath");
+    expect(markup).toContain("motion-reduce:transition-none");
+    expect(stageLabel({ stage: "run", t_ms: 1, status: "done" })).toBe("Running on database");
+    expect(stageLabel({ stage: "check", t_ms: 1, status: "done" })).toBe("Checking");
+    expect(stageLabel({ stage: "answer", t_ms: 1, status: "done" })).toBe("Answer");
+  });
+
   it("treats a flag-off end event as disabled, not a stage", () => {
     expect(isDisabledStreamEvent({ enabled: false })).toBe(true);
     expect(isDisabledStreamEvent({ stage: "plan", t_ms: 1, status: "done" })).toBe(false);

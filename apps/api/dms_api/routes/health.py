@@ -226,6 +226,8 @@ def health(settings: SettingsDep, binding: StoreBindingDep) -> dict[str, Any]:
         "contract": settings.cortex_contract_version,
         "ask_mode": settings.dms_ask_mode,
         "demo_fallback": settings.dms_demo_fallback,
+        # Digit 1 only. The API does not import the executor for this read.
+        "sell_profile": os.environ.get("DMS_SELL_PROFILE", "").strip() == "1",
         "gen_path_climb": {**GEN_PATH_CLIMB, **health_pack_fields()},
         "backend": binding.backend,
         # The control plane is "configured" when it is actually serving, not when

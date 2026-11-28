@@ -22,6 +22,7 @@ export type HealthBody = {
   contract?: string;
   ask_mode?: "demo" | "live";
   demo_fallback?: boolean;
+  sell_profile?: boolean;
   database_configured?: boolean;
   backend?: string;
   database?: {

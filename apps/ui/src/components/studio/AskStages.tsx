@@ -15,6 +15,13 @@ const LABELS: Record<string, string> = {
   retry: "Retry",
   vote: "Vote",
   reconfirm: "Reconfirm",
+  understand: "Understanding question",
+  find: "Finding tables",
+  write: "Writing SQL",
+  run: "Running on database",
+  check: "Checking",
+  answer: "Answer",
+  escalate: "Retrying with a stronger model",
 };
 
 function rungNumber(status: string): string | null {
@@ -42,8 +49,8 @@ type Props = {
  */
 export function AskStages({ stages, onCancel }: Props) {
   const [tick, setTick] = useState(0);
-  const last = stages.length > 0 ? stages[stages.length - 1] : null;
-  const open = last != null && last.status === "started";
+  const tail = stages.length > 0 ? stages[stages.length - 1] : null;
+  const open = tail != null && tail.status === "started";
   useEffect(() => {
     if (!open) return;
     setTick(0);
@@ -51,6 +58,13 @@ export function AskStages({ stages, onCancel }: Props) {
     return () => window.clearInterval(id);
   }, [open, stages]);
   if (stages.length === 0) return null;
+  // One row per step. Started then done is the same step, not two lines.
+  const rows: AskStageEvent[] = [];
+  for (const event of stages) {
+    const at = rows.findIndex((row) => row.stage === event.stage);
+    if (at >= 0) rows[at] = event;
+    else rows.push(event);
+  }
 
   return (
     <div data-testid="ask-stages" className="mt-3 border border-[var(--color-line)] bg-[var(--color-panel)] px-3 py-3">
@@ -70,18 +84,28 @@ export function AskStages({ stages, onCancel }: Props) {
         ) : null}
       </div>
       <ol className="mt-2 grid gap-1">
-        {stages.map((event, index) => {
+        {rows.map((event, index) => {
           const base = Math.max(0, Math.floor(event.t_ms / 1000));
-          const seconds = index === stages.length - 1 && event.status === "started" ? base + tick : base;
+          const seconds = index === rows.length - 1 && event.status === "started" ? base + tick : base;
           return (
             <li
-              key={`${event.stage}-${event.status}-${event.t_ms}-${index}`}
+              key={event.stage}
               data-testid="ask-stage"
               data-stage={event.stage}
               data-status={event.status}
-              className="flex items-baseline justify-between gap-3 text-sm text-[var(--color-ink)]"
+              className="flex items-baseline justify-between gap-3 text-sm text-[var(--color-ink)] transition-opacity duration-300 motion-reduce:transition-none"
             >
-              <span>{stageLabel(event)}</span>
+              <span className="flex items-center gap-2">
+                {index === rows.length - 1 && event.status === "started" ? (
+                  <span
+                    data-testid="ask-breath"
+                    className="ask-breath inline-block h-2 w-2 shrink-0 rounded-full bg-[var(--color-accent)]"
+                  />
+                ) : (
+                  <span className="inline-block h-2 w-2 shrink-0 rounded-full bg-[var(--color-line)]" />
+                )}
+                {stageLabel(event)}
+              </span>
               <span className="text-xs text-[var(--color-ink-muted)]">{seconds}s</span>
             </li>
           );

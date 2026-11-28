@@ -2459,6 +2459,7 @@ def _prepare_flag_off() -> None:
     os.environ.pop("DMS_ASK_CLARIFY", None)
     os.environ.pop("DMS_CLOOP_B", None)
     os.environ.pop("DMS_AI_FIRST", None)
+    os.environ.pop("DMS_SELL_PROFILE", None)
     os.environ["DMS_DEMO_FALLBACK"] = "0"
     _scrub_credentials()
 
@@ -2504,16 +2505,21 @@ def _resolve_mode(mode: str | None) -> str:
     return str(mode)
 
 
-def replay_executing(*, ai_first: bool = False) -> list[dict[str, Any]]:
+def replay_executing(
+    *, ai_first: bool = False, sell_profile: bool = False
+) -> list[dict[str, Any]]:
     """Same capture, but submit executes the SQL it is given.
 
-    ``ai_first`` sets ``DMS_AI_FIRST`` after the flag-off scrub. The default
-    stays off, which is the number of record. The flag is cleared before
-    return so a later in-process grade stays off.
+    ``ai_first`` sets ``DMS_AI_FIRST`` after the flag-off scrub. ``sell_profile``
+    sets ``DMS_SELL_PROFILE`` the same way. The default stays off, which is the
+    number of record. The flag is cleared before return so a later in-process
+    grade stays off.
     """
     _prepare_flag_off()
     if ai_first:
         os.environ["DMS_AI_FIRST"] = "1"
+    if sell_profile:
+        os.environ["DMS_SELL_PROFILE"] = "1"
     from cortex_client.models import (
         AskRequest,
         AskResponse,
@@ -2645,6 +2651,8 @@ def replay_executing(*, ai_first: bool = False) -> list[dict[str, Any]]:
         raise SystemExit(f"replay size {len(rows)} != 52")
     if ai_first:
         os.environ.pop("DMS_AI_FIRST", None)
+    if sell_profile:
+        os.environ.pop("DMS_SELL_PROFILE", None)
     return rows
 
 
@@ -3820,16 +3828,21 @@ def grade_loaded(
     return _finish(report, mode, _commit_sha(dms_sha), layout, cortex_sha=cortex_sha, **finish)
 
 
-def grade_main(mode: str | None = None, *, ai_first: bool = False) -> dict[str, Any]:
+def grade_main(
+    mode: str | None = None, *, ai_first: bool = False, sell_profile: bool = False
+) -> dict[str, Any]:
     """In-repo proof: exec-SQL stub. Default flags off.
 
     ``ai_first`` turns ``DMS_AI_FIRST`` on for this replay only.
+    ``sell_profile`` turns ``DMS_SELL_PROFILE`` on for this replay only.
     """
     chosen = MODE_STUB_EXEC if mode is None else _resolve_mode(mode)
     if chosen != MODE_STUB_EXEC:
         raise SystemExit("grade52: --main grades the exec-SQL stub as stub-exec")
     return grade_loaded(
-        replay_executing(ai_first=ai_first), mode=MODE_STUB_EXEC, dms_sha=product_sha()
+        replay_executing(ai_first=ai_first, sell_profile=sell_profile),
+        mode=MODE_STUB_EXEC,
+        dms_sha=product_sha(),
     )
 
 
@@ -4834,6 +4847,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--sell-profile",
+        action="store_true",
+        help="with --main, set DMS_SELL_PROFILE=1 for the stub replay",
+    )
+    parser.add_argument(
         "--ai-first-also",
         action="append",
         choices=AI_FIRST_HELD_FLAGS,
@@ -4891,6 +4909,10 @@ def main(argv: list[str] | None = None) -> int:
             "grade52: --ai-first is the stub switch for --main or the profile for --armed; "
             "a capture names its own profile"
         )
+    if args.sell_profile and not args.main:
+        raise SystemExit("grade52: --sell-profile is the stub switch for --main")
+    if args.sell_profile and args.ai_first:
+        raise SystemExit("grade52: --sell-profile does not combine with --ai-first")
     profile = PROFILE_AI_FIRST if args.ai_first and args.armed else None
     if (args.ai_first_also or args.runs is not None) and profile is None:
         raise SystemExit("grade52: --ai-first-also and --runs are for --armed --ai-first")
@@ -4923,7 +4945,7 @@ def main(argv: list[str] | None = None) -> int:
             args.layout or "copy-only", all_flags=bool(args.all_flags), baseline=baseline
         )
     elif args.main:
-        grade_main(ai_first=bool(args.ai_first))
+        grade_main(ai_first=bool(args.ai_first), sell_profile=bool(args.sell_profile))
     if args.gate and report is not None and _yes_pass(report):
         return ai_first_gate(report)
     if args.gate and report is not None:

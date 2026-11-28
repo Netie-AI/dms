@@ -41,6 +41,13 @@ _LADDER = {
     "vote": "vote",
     "reconfirm_build": "reconfirm",
     "reconfirm": "reconfirm",
+    "understand": "understand",
+    "find": "find",
+    "write": "write",
+    "run": "run",
+    "check": "check",
+    "answer": "answer",
+    "escalate": "escalate",
 }
 _PUBLIC = frozenset(_LADDER.values()) | {"retry"}
 _STATUS = frozenset({"started", "done", "failed", "cancelled"})
@@ -51,13 +58,17 @@ _slots: dict[str, _Slot] = {}
 
 
 def stream_enabled() -> bool:
-    """``DMS_ASK_STREAM``, or ``DMS_DEADLINE_ADAPTIVE`` so a long ask shows stages.
+    """``DMS_ASK_STREAM``, adaptive deadline, or the digit-1 sell profile.
 
-    Adaptive reads the env here. ``dms_core`` does not import ``cortex_client``.
+    Adaptive and the profile read the env here. ``dms_core`` does not import
+    ``cortex_client``. The profile accepts only the digit 1.
     """
     if os.environ.get(FLAG, "").strip().lower() in _TRUE:
         return True
-    return os.environ.get("DMS_DEADLINE_ADAPTIVE", "0").strip() == "1"
+    if os.environ.get("DMS_DEADLINE_ADAPTIVE", "0").strip() == "1":
+        return True
+    # Sell profile accepts only the digit 1, same as its serve flag.
+    return os.environ.get("DMS_SELL_PROFILE", "").strip() == "1"
 
 
 def valid_ask_id(value: object) -> bool:
