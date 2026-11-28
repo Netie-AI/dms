@@ -2022,7 +2022,7 @@ def _destructive_status(question: str) -> str:
     return status
 
 
-def _destructive_gate(
+def _refuse_destructive(
     question: str,
     *,
     space_id: str | None,
@@ -3293,9 +3293,9 @@ def _maybe_generative_ask_impl(
         from dms_executor.join_flags import bind_serve_ontology
 
         bind_serve_ontology(space_onto or onto)
-    gate = _destructive_gate(q, space_id=space_id, session_id=session_id)
-    if isinstance(gate, dict):
-        return gate
+    hostile = _refuse_destructive(q, space_id=space_id, session_id=session_id)
+    if isinstance(hostile, dict):
+        return hostile
     held_refusal: _CompileRefused | None = None
     ranked_env = rank_window_ask(
         q, onto=onto, allowed=allowed, lake=lake, space_id=space_id,

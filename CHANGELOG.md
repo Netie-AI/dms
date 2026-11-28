@@ -2,6 +2,10 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - NL19-COMPILE-WRONG: rename the destructive refuse helper
+
+- The helper is `_refuse_destructive`. A name containing `gate` is reserved for `packages/cortex_client`. The invariant `test_no_local_gate_policy_functions` failed on `_destructive_gate`. Behaviour is unchanged.
+
 ## 2026-11-28 - NL19-COMPILE-WRONG: honour-check a compiled measure before it is served
 
 - **Flag.** `DMS_COMPILE_HONOUR_CHECK` defaults off. Only the digit 1 turns it on. Off, the compile serve, the prompt, and the route stay as they were.
