@@ -273,6 +273,7 @@ def request_body(
     line = _fit_line(spec)
     if line:
         system = system + "\n" + line
+    body: dict[str, Any]
     if provider == "cursor_api":
         plain, cleaned = _plain_pair(xml, spec)
         text = plain + "\n" + cleaned
@@ -600,6 +601,8 @@ def default_cursor(body: dict[str, Any], api_key: str) -> Any:
     auth = (api_key, "")
     payload = dict(body)
     follow = payload.pop("agent_id", None)
+    agent_id: Any
+    run_id: Any
     if isinstance(follow, str) and follow:
         if _AGENT_ID.fullmatch(follow) is None:
             raise GeneratorError("cursor_failed")
@@ -607,12 +610,15 @@ def default_cursor(body: dict[str, Any], api_key: str) -> Any:
             httpx, "post", f"{base}/v1/agents/{follow}/runs", auth, timeout, json=payload
         )
         agent_id = follow
-        run = started.get("run") if isinstance(started.get("run"), dict) else {}
+        run_raw = started.get("run")
+        run = run_raw if isinstance(run_raw, dict) else {}
         run_id = run.get("id")
     else:
         started = _cursor_json(httpx, "post", base + "/v1/agents", auth, timeout, json=payload)
-        agent = started.get("agent") if isinstance(started.get("agent"), dict) else {}
-        run = started.get("run") if isinstance(started.get("run"), dict) else {}
+        agent_raw = started.get("agent")
+        agent = agent_raw if isinstance(agent_raw, dict) else {}
+        run_raw = started.get("run")
+        run = run_raw if isinstance(run_raw, dict) else {}
         agent_id = agent.get("id")
         run_id = run.get("id") or agent.get("latestRunId")
     if not isinstance(agent_id, str) or _AGENT_ID.fullmatch(agent_id) is None:
@@ -661,9 +667,12 @@ def _finish_cursor(
     paths = _artifact_paths(httpx, base, auth, agent_id, timeout)
     if found is None:
         found = _artifact_file(httpx, base, auth, agent_id, paths, timeout)
-    git = run_payload.get("git") if isinstance(run_payload.get("git"), dict) else {}
-    branches = git.get("branches") if isinstance(git.get("branches"), list) else []
-    first = branches[0] if branches and isinstance(branches[0], dict) else {}
+    git_raw = run_payload.get("git")
+    git = git_raw if isinstance(git_raw, dict) else {}
+    branch_raw = git.get("branches")
+    branches = branch_raw if isinstance(branch_raw, list) else []
+    first_raw = branches[0] if branches else None
+    first = first_raw if isinstance(first_raw, dict) else {}
     out: dict[str, Any] = {
         "id": agent_id,
         "status": status,
@@ -691,7 +700,8 @@ def _artifact_paths(
         )
     except GeneratorError:
         return []
-    items = listed.get("items") if isinstance(listed.get("items"), list) else []
+    items_raw = listed.get("items")
+    items = items_raw if isinstance(items_raw, list) else []
     paths: list[str] = []
     for item in items:
         if isinstance(item, dict) and isinstance(item.get("path"), str):
