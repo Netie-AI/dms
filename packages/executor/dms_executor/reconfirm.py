@@ -559,6 +559,9 @@ def apply_reconfirm(
 
     if not isinstance(env, dict):
         return env
+    # A closed specific ask-back has no Yes token. Flag off never sets the key.
+    if env.get("askback_specific") == "closed":
+        return _finish(env)
     direct = direct_abstain_reason(env, question)
     if direct is not None:
         return _finish(_direct_envelope(env, question, direct))
@@ -627,6 +630,18 @@ def apply_reconfirm(
             pending["join_confirm"] = True
             raw_links = hold.get("links")
             pending["links"] = list(raw_links) if isinstance(raw_links, list) else []
+    if isinstance(prior, dict) and prior.get("askback_specific") is True:
+        pending["askback_specific"] = True
+        pending["sql"] = str(prior.get("reading_sql") or "")
+        raw_grants = prior.get("grantable")
+        pending["grantable"] = (
+            [str(name) for name in raw_grants if str(name).strip()]
+            if isinstance(raw_grants, list)
+            else []
+        )
+        warehouse = prior.get("warehouse")
+        if isinstance(warehouse, str) and warehouse.strip():
+            pending["warehouse"] = warehouse.strip()
     token = _save_pending(pending)
     out = dict(env)
     block: dict[str, Any] = {
@@ -639,6 +654,12 @@ def apply_reconfirm(
         closest = prior.get("closest_question")
         if isinstance(closest, str) and closest.strip():
             block["closest_question"] = closest.strip()
+        if prior.get("askback_specific") is True:
+            readings = prior.get("readings")
+            if isinstance(readings, list):
+                block["readings"] = readings
+            block["askback_specific"] = True
+            block["question"] = question
     if definition:
         block["definition"] = definition
     out["reconfirm"] = block

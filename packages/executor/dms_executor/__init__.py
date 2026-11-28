@@ -1921,6 +1921,8 @@ class Executor:
                         env["assumptions"] = assumptions
                     assumptions.append("join_link:not_filed")
                 return env
+        if pending.get("askback_specific") is True:
+            return self._run_specific_reading(pending)
         if reconfirm_run_held_enabled() and held_ready(pending):
             return self._run_held_sql(pending)
         suggested = str(pending.get("suggested_question") or "").strip()
@@ -1961,6 +1963,104 @@ class Executor:
                 or str(offered.get("badge") or "") == "ABSTAIN",
             )
         return offered
+
+    def _run_specific_reading(self, pending: dict[str, Any]) -> dict[str, Any]:
+        """Yes runs the reading SQL. The asked question is what gets stored."""
+        from datetime import UTC, datetime
+
+        from dms_executor.envelope import assert_envelope_valid, build_answer_envelope
+        from dms_executor.generative_ask import validate_compiled_sql, validated_sql_reason
+        from dms_executor.sql_loop import run_readonly
+
+        sql = str(pending.get("sql") or "").strip()
+        question = str(pending.get("question") or "").strip()
+        raw_grants = pending.get("grantable")
+        grantable = (
+            {str(name) for name in raw_grants if str(name).strip()}
+            if isinstance(raw_grants, list)
+            else set()
+        )
+        space_id = pending.get("space_id") if isinstance(pending.get("space_id"), str) else None
+        session_id = (
+            pending.get("session_id") if isinstance(pending.get("session_id"), str) else None
+        )
+        raw_wh = pending.get("warehouse")
+        warehouse = (
+            Path(raw_wh) if isinstance(raw_wh, str) and raw_wh.strip() else self._warehouse
+        )
+
+        def abstain(reason: str) -> dict[str, Any]:
+            env = build_abstain(
+                reason=reason or "reading_rejected",
+                question=question,
+                stage="reconfirm_yes",
+                answer_id="ans_askback_specific_yes",
+                text="That reading did not pass the check, so I am not running it.",
+                abstain_reason=reason or "reading_rejected",
+                values=[],
+                rows=[],
+                sql_used=None,
+                assumptions=[reason or "reading_rejected"],
+                space_id=space_id,
+                session_id=session_id,
+                ask_mode="live",
+                route="abstain",
+            )
+            assert_envelope_valid(env)
+            return env
+
+        if not sql or not question:
+            return abstain("reading_missing")
+        gate = validated_sql_reason(
+            sql,
+            question=question,
+            warehouse=warehouse,
+            grantable=grantable,
+        )
+        compiled = validate_compiled_sql(
+            sql,
+            grantable=grantable,
+            warehouse=warehouse,
+            dialect=self.dialect,
+        )
+        if gate or compiled:
+            return abstain(gate or compiled or "reading_rejected")
+        if warehouse is None or not Path(warehouse).is_file():
+            return abstain("warehouse_missing")
+        rows, err = run_readonly(sql, Path(warehouse))
+        if err or rows is None:
+            return abstain(err or "execute_failed")
+        env = build_answer_envelope(
+            answer_id="ans_askback_specific_yes",
+            text="The confirmed reading ran.",
+            badge="L2_VALIDATED",
+            abstained=False,
+            rows=rows,
+            sql_used=sql,
+            assumptions=["yes:reconfirm"],
+            as_of=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            space_id=space_id,
+            session_id=session_id,
+            ask_mode="live",
+            route="generated",
+            question=question,
+        )
+        assert_envelope_valid(env)
+        env["reconfirm_accepted"] = True
+        env["provenance"] = "yes:reconfirm"
+        route = env.get("served_route")
+        maybe_save_checked_sql(
+            question=question,
+            sql=sql,
+            space_id=space_id,
+            warehouse=warehouse,
+            grantable=grantable,
+            dialect=self.dialect,
+            provenance="yes:reconfirm",
+            served_route=route.strip() if isinstance(route, str) else "",
+            abstained=False,
+        )
+        return env
 
     def _cortex_confirm_no(self, pending: dict[str, Any]) -> dict[str, Any]:
         """No on a Cortex reconfirm. Cortex logs the pipeline-failure ticket.
