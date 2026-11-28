@@ -1,9 +1,10 @@
 """Live ask stages for Studio. Flag ``DMS_ASK_STREAM``, default off.
 
 Off, every call returns immediately and nothing is stored. On, one in-process
-slot per ask id holds ``{stage, t_ms, status}`` only. The publisher accepts
-ladder stage names and a ``rung1``..``rung9`` token. SQL, row values, and
-relation names are not fields on the event, so they cannot be copied in.
+slot per ask id holds ``{stage, t_ms, status}``. A fetch event may also name
+one catalog identifier the ask read. The publisher accepts ladder stage names
+and a ``rung1``..``rung9`` token. SQL and row values are not fields. A
+relation passed as the stage name is dropped.
 
 ponytail: the slots live in this process. A second API worker would not see
 them. Move the slot to a queue the ask process and the SSE process share
@@ -13,6 +14,7 @@ before DMS runs more than one worker.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from contextvars import ContextVar, Token
@@ -41,9 +43,18 @@ _LADDER = {
     "vote": "vote",
     "reconfirm_build": "reconfirm",
     "reconfirm": "reconfirm",
+    "understand": "understand",
+    "find": "find",
+    "fetch": "fetch",
+    "write": "write",
+    "run": "run",
+    "check": "check",
+    "escalate": "escalate",
 }
 _PUBLIC = frozenset(_LADDER.values()) | {"retry"}
 _STATUS = frozenset({"started", "done", "failed", "cancelled"})
+# One catalog identifier. Not question text, and not a qualified path.
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 
 _current: ContextVar[str | None] = ContextVar("dms_ask_stream_id", default=None)
 _lock = threading.Lock()
@@ -51,13 +62,16 @@ _slots: dict[str, _Slot] = {}
 
 
 def stream_enabled() -> bool:
-    """``DMS_ASK_STREAM``, or ``DMS_DEADLINE_ADAPTIVE`` so a long ask shows stages.
+    """``DMS_ASK_STREAM``, adaptive deadline, or the digit-1 AI floor.
 
-    Adaptive reads the env here. ``dms_core`` does not import ``cortex_client``.
+    Adaptive and the floor read the env here. ``dms_core`` does not import
+    ``cortex_client``. The floor accepts only the digit 1, same as its serve flag.
     """
     if os.environ.get(FLAG, "").strip().lower() in _TRUE:
         return True
-    return os.environ.get("DMS_DEADLINE_ADAPTIVE", "0").strip() == "1"
+    if os.environ.get("DMS_DEADLINE_ADAPTIVE", "0").strip() == "1":
+        return True
+    return os.environ.get("DMS_AI_FLOOR", "").strip() == "1"
 
 
 def valid_ask_id(value: object) -> bool:
@@ -82,12 +96,14 @@ class _Slot:
         self.cond = threading.Condition()
         self.done = False
 
-    def add(self, stage: str, status: str) -> None:
+    def add(self, stage: str, status: str, table: str | None = None) -> None:
         event: dict[str, str | int] = {
             "stage": stage,
             "t_ms": max(0, int((time.perf_counter() - self.t0) * 1000)),
             "status": status,
         }
+        if table is not None:
+            event["table"] = table
         with self.cond:
             if self.done or len(self.events) >= _MAX_EVENTS:
                 return
@@ -163,7 +179,7 @@ def mark_cancelled() -> None:
         return
 
 
-def _emit(stage: str, status: str) -> None:
+def _emit(stage: str, status: str, table: str | None = None) -> None:
     if stage not in _PUBLIC:
         return
     if status not in _STATUS and _rung_token(status) is None:
@@ -174,7 +190,30 @@ def _emit(stage: str, status: str) -> None:
     slot = _slots.get(ask_id)
     if slot is None:
         return
-    slot.add(stage, status)
+    slot.add(stage, status, table)
+
+
+def note_fetch(table: str) -> None:
+    """One granted catalog table the ask actually read. Anything else is dropped."""
+    try:
+        if not stream_enabled() or not isinstance(table, str) or _IDENT.fullmatch(table) is None:
+            return
+        _emit("fetch", "done", table)
+    except Exception:
+        return
+
+
+def public_event(event: dict[str, Any]) -> dict[str, Any]:
+    """SSE body. ``table`` is included only for one catalog identifier."""
+    out: dict[str, Any] = {
+        "stage": event.get("stage"),
+        "t_ms": event.get("t_ms"),
+        "status": event.get("status"),
+    }
+    table = event.get("table")
+    if isinstance(table, str) and _IDENT.fullmatch(table) is not None:
+        out["table"] = table
+    return out
 
 
 def note_stage(stage: str, status: str = "done") -> None:

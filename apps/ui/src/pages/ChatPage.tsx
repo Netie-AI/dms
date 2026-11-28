@@ -217,7 +217,9 @@ export function ChatPage() {
                 onCancel={asking ? cancelAsk : undefined}
               />
             ) : null}
-            {asking && <p className="text-sm text-[var(--color-ink-muted)]">Thinking…</p>}
+            {asking && askStages.length === 0 && (
+              <p className="text-sm text-[var(--color-ink-muted)]">Thinking…</p>
+            )}
             {messages.some((m) => m.role === "assistant") && (
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--color-ink-muted)]">
