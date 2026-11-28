@@ -40,13 +40,19 @@ class ConfirmBody(BaseModel):
     preview: dict[str, Any]
 
 
+def _public_error(message: str) -> str:
+    from dms_core.harness_sec import public_text
+
+    return public_text(redact_secrets(message))[:400]
+
+
 def _closed(message: str, *, status_code: int = 503) -> JSONResponse:
     return JSONResponse(
         {
             "ok": False,
             "sql_ran": False,
             "code": "cortex_unavailable",
-            "message": redact_secrets(message)[:400],
+            "message": _public_error(message),
         },
         status_code=status_code,
     )
@@ -104,6 +110,9 @@ def studio_chat_confirm(body: ConfirmBody, cortex: CortexDep) -> dict[str, Any]:
 def _frame(event: dict[str, Any]) -> bytes:
     """One SSE data line. Stage, time, status, and a catalog table when one was read."""
     body = json.dumps(public_event(event), separators=(",", ":"), sort_keys=True)
+    from dms_core.harness_sec import redact_sse
+
+    body = redact_sse(body)
     return f"data: {body}\n\n".encode()
 
 

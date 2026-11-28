@@ -119,7 +119,11 @@ def generate_bearer_refuse(api_key: str | None, base_url: str) -> str | None:
     no ``None`` exception: KEY-01 (dms#273) removed ``missing_none=False``, so an
     unconfigured Python default is a refusal like any other, never a call.
     """
+    from dms_core.harness_sec import demo_key_denied
+
     if api_key is None or not str(api_key).strip() or is_published_demo_key(api_key):
+        return INSIGHTS_FAIL_BEARER_MISSING
+    if demo_key_denied(api_key):
         return INSIGHTS_FAIL_BEARER_MISSING
     if not generate_transport_is_safe(base_url):
         return INSIGHTS_FAIL_BEARER_INSECURE_TRANSPORT
@@ -177,6 +181,14 @@ def _request(
     timeout: float,
     extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    from dms_core.harness_sec import demo_key_denied
+
+    if demo_key_denied(api_key):
+        raise InsightsError(
+            "insights_bearer_missing",
+            status_code=401,
+            code="insights_bearer_missing",
+        )
     url = f"{base_url.rstrip('/')}{path}"
     headers = auth_headers(api_key)
     if extra_headers:
@@ -328,6 +340,19 @@ def insights_post(
     timeout: float = 120.0,
     schema_context: str | None = None,
 ) -> dict[str, Any]:
+    from dms_core.harness_sec import budget_allows, note_audit
+    from dms_core.harness_sec import enabled as harness_enabled
+
+    if harness_enabled():
+        tenant = os.environ.get("DMS_TENANT_ID", "").strip() or "default"
+        if not budget_allows(tenant):
+            return generate_abstain_payload("tenant_budget_denied")
+        note_audit(
+            actor=os.environ.get("DMS_ACTOR_USER_ID", "").strip() or "unknown",
+            prompt=question or intent,
+            tables=[],
+            cost=1,
+        )
     if generate:
         refuse = generate_bearer_refuse(api_key, base_url)
         if refuse:

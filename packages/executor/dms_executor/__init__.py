@@ -593,6 +593,23 @@ class Executor:
     ) -> list[dict[str, Any]]:
         if sql_has_reserved_as_of(sql):
             raise ReservedParamError(RESERVED_PARAM_AS_OF)
+        from dms_core.harness_sec import enabled as harness_enabled
+
+        if harness_enabled():
+            from dms_executor.harness_sql import guard_sql
+            from dms_executor.sql_loop import run_readonly
+
+            granted = set(grantable or ())
+            code = guard_sql(sql, tables=granted, dialect=self.dialect)
+            if code:
+                raise SecurityEvent(code, code)
+            wh = self._warehouse
+            if wh is None:
+                raise SecurityEvent("warehouse_missing", "warehouse_missing")
+            rows, err = run_readonly(sql, Path(wh), grants=granted, prompt=sql)
+            if err or rows is None:
+                raise SecurityEvent(err or "execute_failed", err or "execute_failed")
+            return rows
         gap = serve_gap(
             sql,
             grantable=set(grantable or ()),
@@ -2252,7 +2269,9 @@ class Executor:
             return abstain(gate or compiled or "reading_rejected")
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")
-        rows, err = run_readonly(sql, Path(warehouse))
+        rows, err = run_readonly(
+            sql, Path(warehouse), grants=grantable, prompt=question
+        )
         if err or rows is None:
             return abstain(err or "execute_failed")
         env = build_answer_envelope(
@@ -2493,7 +2512,9 @@ class Executor:
         warehouse = self._warehouse
         if warehouse is None or not Path(warehouse).is_file():
             return abstain("warehouse_missing")
-        rows, err = run_readonly(sql, Path(warehouse))
+        rows, err = run_readonly(
+            sql, Path(warehouse), grants=grantable, prompt=question
+        )
         if err or rows is None:
             return abstain(err or "execute_failed")
         env = build_answer_envelope(

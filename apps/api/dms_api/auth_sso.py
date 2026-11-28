@@ -464,6 +464,10 @@ def resolve_bearer(headers: Mapping[str, str]) -> Principal | None:
     token = _bearer(headers)
     if token is None:
         return None
+    from dms_core.harness_sec import demo_key_denied
+
+    if demo_key_denied(token):
+        return None
     found = principal_for_token(token)
     if found is not None:
         return found

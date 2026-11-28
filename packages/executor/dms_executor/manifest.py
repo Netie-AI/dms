@@ -104,6 +104,10 @@ def match_service_bearer(presented: str) -> str | None:
     Same token ``_load_service_token`` already sends to OpenVault. No new mint.
     The return value is a hash prefix. The token is not returned or logged.
     """
+    from dms_core.harness_sec import demo_key_denied
+
+    if demo_key_denied(presented):
+        return None
     expected = _load_service_token()
     if not expected or not presented:
         return None

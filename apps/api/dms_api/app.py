@@ -108,6 +108,9 @@ def _build_ask_audit_store(settings, binding: StoreBinding) -> AskAuditStorePort
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    from cortex_client.harness_budget import install_ov_budget
+
+    install_ov_budget()
     settings = get_settings()
     # R1-RUNTIME-01. Always log the effective insights timeout. The self-check
     # warning runs only when DMS_RUNTIME_SELFCHECK is on. Neither prints a key.
@@ -174,6 +177,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    from dms_core.harness_sec import install_redaction
+
+    install_redaction()
     settings = get_settings()
     app = FastAPI(
         title="DMS API",

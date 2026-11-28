@@ -60,6 +60,10 @@ def lookup_bearer(token: str | None) -> tuple[Caller | None, str]:
     """Map a bearer to a caller. ``token`` is never stored on the caller."""
     if not token:
         return None, "missing_bearer"
+    from dms_core.harness_sec import demo_key_denied
+
+    if demo_key_denied(token):
+        return None, "demo_key_denied"
     role = parse_api_keys(os.environ.get("DMS_API_KEYS", "")).get(token)
     if role is None:
         return None, "invalid_bearer"

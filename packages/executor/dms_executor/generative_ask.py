@@ -2743,6 +2743,7 @@ def _run_extract_loop(
         ),
         budget=budget,
         schema_ladder=schema_ladder,
+        grants=set(grantable),
     )
     if first.get("abstained") or not first.get("rows"):
         return first
@@ -2910,6 +2911,7 @@ def _second_reading(
         recover_failures=True,
         budget=budget,
         schema_ladder=schema_ladder,
+        grants=set(grantable),
     )
     note_rungs(second_attempts)
     second_sql = str(second.get("sql_used") or "")
