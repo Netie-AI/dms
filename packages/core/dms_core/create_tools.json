@@ -79,7 +79,19 @@
               "id": {"type": "string"},
               "title": {"type": "string"},
               "body": {"type": "string"},
-              "sql": {"type": "string"}
+              "sql": {"type": "string"},
+              "charts": {
+                "type": "array",
+                "maxItems": 5,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {"type": "string"},
+                    "sql": {"type": "string"}
+                  },
+                  "required": ["label", "sql"]
+                }
+              }
             },
             "required": ["id", "title"]
           }

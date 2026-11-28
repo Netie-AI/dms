@@ -17,12 +17,16 @@ from dms_api.app import create_app
 from dms_api.settings import get_settings
 from dms_core.create_generator import (
     GeneratorError,
+    bind_secret_store,
     direct_prompt,
     generate,
     holds_direct_bar,
+    judge_artifact,
+    local_skill,
     request_body,
     score_artifact,
     skills_for,
+    validate_call,
 )
 from dms_executor.create_surface import (
     CreateDisabled,
@@ -95,6 +99,7 @@ def _env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flag: str | None) -> P
     monkeypatch.setenv("DMS_CREATE_GRANTS", "orders")
     monkeypatch.setenv("DMS_CREATE_STORE", str(tmp_path / "store"))
     monkeypatch.setenv("DMS_CREATE_GENERATOR", "claude_api")
+    monkeypatch.delenv("DMS_CREATE_OV_ROLE", raising=False)
     monkeypatch.delenv("OPENVAULT_API_KEY", raising=False)
     monkeypatch.delenv("CORTEX_API_KEY", raising=False)
     _clear_settings()
@@ -242,7 +247,7 @@ def test_request_is_provider_context_without_a_model(
     )
     assert generated.status_code == 200, generated.text
     body = stub.bodies[0]
-    assert body["role"] == "create_generate"
+    assert body["role"] == "reason"
     assert body["thinking"] == {"type": "adaptive"}
     assert body["tool_choice"] == {"type": "auto"}
     names = [item["name"] for item in body["tools"]]
@@ -304,13 +309,12 @@ def test_stub_app_and_deck_through_the_adapter(
     assert "model" not in app_stub.bodies[0]
 
     monkeypatch.setenv("DMS_CREATE_GENERATOR", "cursor_api")
+    monkeypatch.setenv("CURSOR_API_KEY", CURSOR_KEY)
     deck_context = dict(context)
     deck_context["skills"] = skills_for("slides")
 
     def ov(body: dict[str, Any], api_key: str) -> dict[str, Any]:
-        assert body["role"] == "create_cursor_key"
-        assert api_key == OV_KEY
-        return {"content": {"cursor_key": CURSOR_KEY}, "usage": {}}
+        raise AssertionError(body.get("role") or api_key)
 
     def cursor(body: dict[str, Any], api_key: str) -> dict[str, Any]:
         assert api_key == CURSOR_KEY
@@ -699,6 +703,121 @@ def test_stream_and_css(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     assert "def forecast_series" not in source
     ask = Path("packages/executor/dms_executor/generative_ask.py").read_text(encoding="utf-8")
     assert "DMS_CREATE" not in ask
+
+
+def test_ov_role_defaults_to_reason_and_can_be_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DMS_CREATE_OV_ROLE", raising=False)
+    spec = {"kind": "app", "goal": "See order trend", "audience": "Founder"}
+    context = {"schema": [], "data": [], "examples": [], "skills": skills_for("app"), "choices": {}}
+    style = {"prompt": "", "template": "", "brand": {}, "guide": ""}
+    body, _xml = request_body(
+        provider="claude_api",
+        role="generate",
+        spec=spec,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert body["role"] == "reason"
+    monkeypatch.setenv("DMS_CREATE_OV_ROLE", "summarize")
+    named, _xml = request_body(
+        provider="claude_api",
+        role="improve",
+        spec=spec,
+        data_context=context,
+        style=style,
+        enabled=None,
+        prompt_version="1",
+    )
+    assert named["role"] == "summarize"
+    monkeypatch.setenv("DMS_CREATE_OV_ROLE", "create_generate")
+    with pytest.raises(GeneratorError) as exc:
+        request_body(
+            provider="claude_api",
+            role="create_generate",
+            spec=spec,
+            data_context=context,
+            style=style,
+            enabled=None,
+            prompt_version="1",
+        )
+    assert exc.value.code == "ov_role_unknown"
+
+
+def test_cursor_key_comes_from_the_secret_store(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _env(monkeypatch, tmp_path, "1")
+    monkeypatch.setenv("DMS_CREATE_GENERATOR", "cursor_api")
+    monkeypatch.setenv("DMS_CREATE_CURSOR_REPO", "https://example.com/acme/create")
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    context = {
+        "schema": [],
+        "data": [],
+        "examples": [],
+        "skills": skills_for("slides"),
+        "choices": {},
+    }
+    style = {"prompt": "", "template": "", "brand": {}, "guide": ""}
+
+    class Store:
+        def get(self, name: str) -> str | None:
+            assert name == "CURSOR_API_KEY"
+            return CURSOR_KEY
+
+    def ov(body: dict[str, Any], api_key: str) -> dict[str, Any]:
+        raise AssertionError(body.get("role") or api_key)
+
+    def cursor(body: dict[str, Any], api_key: str) -> dict[str, Any]:
+        assert api_key == CURSOR_KEY
+        assert CURSOR_KEY not in body["prompt"]["text"]
+        return {"content": _deck(), "usage": {"cost": 0.01, "total_tokens": 1}}
+
+    bind_secret_store(Store())
+    try:
+        deck = generate(
+            {"kind": "slides", "goal": "See order trend", "audience": "Founder"},
+            context,
+            style,
+            api_key=OV_KEY,
+            transport=ov,
+            cursor_transport=cursor,
+        )
+    finally:
+        bind_secret_store(None)
+    assert deck.artifact is not None
+    assert CURSOR_KEY not in deck.prompt
+
+
+def test_slides_skill_caps_charts_and_traces_numbers() -> None:
+    text = local_skill("slides")
+    assert "create-slides" in text
+    assert "pptx" in text
+    assert "narrative" in text
+    assert "5" in text
+    assert "run_sql" in text
+    charts = [
+        {"label": f"Month {index}", "sql": "SELECT month, amount FROM orders"}
+        for index in range(5)
+    ]
+    ok = {
+        "kind": "slides",
+        "title": "Orders",
+        "parts": [{"id": "s1", "title": "Trend", "body": "Orders moved.", "charts": charts}],
+    }
+    assert validate_call("return_artifact", ok) == []
+    extra = json.loads(json.dumps(ok))
+    extra["parts"][0]["charts"].append(
+        {"label": "Extra", "sql": "SELECT month, amount FROM orders"}
+    )
+    assert any(item.endswith(":maxItems") for item in validate_call("return_artifact", extra))
+    labelled = json.loads(json.dumps(ok))
+    labelled["parts"][0]["charts"][0]["label"] = "Peak 99999"
+    issues = judge_artifact(labelled, kind="slides", brand={}, allowed_numbers={"15", "30"})
+    assert "unsupported_claim" in issues
 
 
 def test_claude_body_is_the_direct_ask_plus_tools() -> None:

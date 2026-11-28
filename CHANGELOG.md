@@ -2,6 +2,12 @@
 
 Append-only. Never edited, only added to. Newest first.
 
+## 2026-11-28 - DMS-CREATE-01: OpenVault role is reason, slides skill is a deck
+
+- **Role.** Prove-box OpenVault allows `sql`, `tool`, `reason`, `summarize`, `grain`, and `ontology`. Create sends `DMS_CREATE_OV_ROLE` (default `reason`). It does not send `create_generate`, `create_improve`, or `create_cursor_key`.
+- **Cursor key.** `CURSOR_API_KEY`, or the DMS secret store when that env is unset. The key is not an OpenVault role and is not logged. Model routing stays in OpenVault.
+- **Slides.** `create_skills/slides/SKILL.md` tells the provider pptx Skill to build the file: up to 5 labelled comparison charts on a slide, a human-language narrative, and numbers that trace to SQL.
+
 ## 2026-11-28 - DMS-CREATE-01: CI replays a recorded provider app
 
 - **Fixture.** `tests/fixtures/create/provider_app.json` is the provider response CI replays through `generate`. Title Orders, cost 0.02. Not a live bill.

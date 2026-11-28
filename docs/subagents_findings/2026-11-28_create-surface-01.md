@@ -8,7 +8,7 @@ PREFLIGHT: PARTIAL. The earlier create-surface finding covered the flag, the Ope
 
 `DMS_CREATE` defaults off. Only the digit 1 turns it on. DMS formats context, routes through OpenVault or the Cursor agents API, and judges. The model plans and checks. `packages/core/dms_core/create_generator.py` is the module the doc/slides writer imports too.
 
-Claude requests carry a system prompt, XML tags (`schema`, `data`, `choices`, `style`, `examples`, `skills`), tool schemas, `thinking: {type: adaptive}`, and Anthropic skills (`pptx`, `docx`, `xlsx`, `pdf`) when the format needs them. Cursor is `POST /v0/agents` with no model field. The Cursor key comes from role `create_cursor_key` and is not logged.
+Claude requests carry a system prompt, XML tags (`schema`, `data`, `choices`, `style`, `examples`, `skills`), tool schemas, `thinking: {type: adaptive}`, and Anthropic skills (`pptx`, `docx`, `xlsx`, `pdf`) when the format needs them. The OpenVault role is `DMS_CREATE_OV_ROLE`, default `reason`. Cursor is `POST /v0/agents` with no model field. The Cursor key is `CURSOR_API_KEY` or the secrets port, and is not logged. The slides skill asks the pptx Skill for up to 5 labelled comparison charts per slide, a narrative, and numbers from SQL.
 
 Tools, prompts, and local `SKILL.md` files are data. A tenant can edit the brand kit, the guide, examples, and which tools are on. A section edit splices one part and keeps every version. A shown app is scored from `create_score.json` against the same words with the SQL removed, and it is shown only when its points are at least that direct reading. Studio has a super guide field that is saved on the tenant.
 

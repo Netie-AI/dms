@@ -1,8 +1,9 @@
 """Shared generator adapter for the Create harness and the doc/slides writer.
 
 DMS does not pick a model. ``DMS_CREATE_GENERATOR`` selects ``claude_api``
-(OpenVault role) or ``cursor_api`` (Cursor Cloud Agents HTTP). The Cursor
-key comes from OpenVault and is never returned.
+(OpenVault, role from ``DMS_CREATE_OV_ROLE``, default ``reason``) or
+``cursor_api`` (Cursor Cloud Agents HTTP). The Cursor key is
+``CURSOR_API_KEY`` or the secrets port. It is never returned.
 
 Docs followed:
 - https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/overview
@@ -50,6 +51,9 @@ _CLIENT_TOOLS = frozenset(
 )
 _OUTPUT_TOOL = "return_artifact"
 _TEMPLATES = frozenset({"plain", "brief", "bold"})
+# Prove-box OpenVault allowlist. A name outside this set is not sent.
+_OV_ROLES = frozenset({"sql", "tool", "reason", "summarize", "grain", "ontology"})
+_secret_store: Any = None
 _NUM = re.compile(r"(?<![\w.])(-?\d+(?:\.\d+)?)(?![\w]|\.\d)")
 _MODEL_KEYS = frozenset(
     {"model", "model_id", "model_name", "provider", "served_model", "served_provider", "strict"}
@@ -94,6 +98,20 @@ def prompt_library(version: str = "1") -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise GeneratorError("prompt_unknown")
     return loaded
+
+
+def ov_role() -> str:
+    """OpenVault role. ``DMS_CREATE_OV_ROLE`` overrides the default ``reason``."""
+    raw = os.environ.get("DMS_CREATE_OV_ROLE", "reason").strip() or "reason"
+    if raw not in _OV_ROLES:
+        raise GeneratorError("ov_role_unknown")
+    return raw
+
+
+def bind_secret_store(store: Any) -> None:
+    """Install the secrets port used when ``CURSOR_API_KEY`` is unset."""
+    global _secret_store
+    _secret_store = store
 
 
 def selected_provider() -> str:
@@ -219,6 +237,8 @@ def request_body(
         messages.append({"role": "assistant", "content": prefill})
     kind = str(spec.get("kind") or "")
     picked = skills_for(kind, workbook=bool(spec.get("workbook")))
+    # Caller ``role`` is the task name. The wire role is the OpenVault allowlist.
+    role = ov_role()
     body = {
         "role": role,
         "system": system,
@@ -248,7 +268,7 @@ def complete(
     style: Mapping[str, Any],
     *,
     api_key: str,
-    role: str = "create_generate",
+    role: str = "generate",
     enabled: Mapping[str, bool] | None = None,
     prompt_version: str = "1",
     transport: Transport | None = None,
@@ -266,8 +286,8 @@ def complete(
         prompt_version=prompt_version,
     )
     if provider == "cursor_api":
-        key = _cursor_key(api_key, transport or default_transport)
-        if key and key in prompt:
+        key = _cursor_key()
+        if key in prompt:
             raise GeneratorError("cursor_key_leaked")
         raw = (cursor_transport or default_cursor)(body, key)
     else:
@@ -299,7 +319,7 @@ def generate(
     style: Mapping[str, Any],
     *,
     api_key: str,
-    role: str = "create_generate",
+    role: str = "generate",
     enabled: Mapping[str, bool] | None = None,
     prompt_version: str = "1",
     transport: Transport | None = None,
@@ -501,18 +521,18 @@ def default_cursor(body: dict[str, Any], api_key: str) -> Any:
         raise GeneratorError("model_unreadable") from None
 
 
-def _cursor_key(ov_key: str, transport: Transport) -> str:
-    body = {
-        "role": "create_cursor_key",
-        "messages": [{"role": "user", "content": "{}"}],
-        "schema": "CursorKey",
-    }
-    raw = transport(body, ov_key)
-    content, _calls, _usage = _parse(raw)
-    key = content.get("cursor_key") if isinstance(content, dict) else None
-    if not isinstance(key, str) or len(key) < 8:
+def _cursor_key() -> str:
+    """Env first, then the secrets port. The value is not logged."""
+    raw = os.environ.get("CURSOR_API_KEY", "").strip()
+    if not raw and _secret_store is not None:
+        try:
+            found = _secret_store.get("CURSOR_API_KEY")
+        except Exception:
+            raise GeneratorError("cursor_key_missing") from None
+        raw = found.strip() if isinstance(found, str) else ""
+    if len(raw) < 8:
         raise GeneratorError("cursor_key_missing")
-    return key
+    return raw
 
 
 def _parse(raw: Any) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any]]:
@@ -587,6 +607,9 @@ def _check(schema: Mapping[str, Any], value: Any, path: str) -> list[str]:
             return [f"{path}:type"]
         item = schema.get("items")
         issues = []
+        cap = schema.get("maxItems")
+        if isinstance(cap, int) and not isinstance(cap, bool) and len(value) > cap:
+            issues.append(f"{path}:maxItems")
         if isinstance(item, dict):
             for index, entry in enumerate(value):
                 issues.extend(_check(item, entry, f"{path}[{index}]"))
@@ -665,6 +688,9 @@ def _prose(artifact: Mapping[str, Any]) -> str:
         if isinstance(part, dict):
             chunks.append(str(part.get("title") or ""))
             chunks.append(str(part.get("body") or ""))
+            for chart in part.get("charts") or []:
+                if isinstance(chart, dict):
+                    chunks.append(str(chart.get("label") or ""))
     return "\n".join(chunks)
 
 

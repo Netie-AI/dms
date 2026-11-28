@@ -162,7 +162,7 @@ def generate_artifact(
     if inputs is not None:
         session["inputs"] = list(inputs)
     session["repaired"] = False
-    return _governed(session, api_key, role="create_generate", instruction=None)
+    return _governed(session, api_key, role="generate", instruction=None)
 
 
 def improve_artifact(
@@ -180,7 +180,7 @@ def improve_artifact(
     return _governed(
         session,
         api_key,
-        role="create_improve",
+        role="improve",
         instruction=instruction,
         section_id=section_id,
     )
@@ -369,7 +369,7 @@ def _governed(
         repair = _turn(
             session,
             api_key,
-            role="create_improve",
+            role="improve",
             instruction=instruction,
             section_id=section_id,
             judge_issues=issues,
