@@ -8,23 +8,88 @@ The demo Space stays without ``space_catalog`` even when the flag is on.
 
 from __future__ import annotations
 
+import base64
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 from cortex_client.client import _to_gen_manifest
 from cortex_client.models import AskResponse
 from cortex_contract.execution import Manifest, QueryResult, canonical_manifest_bytes
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from dms_executor import Executor
-from dms_executor.manifest import ManifestMinter, SessionAcl
+from dms_executor.manifest import (
+    IntermediateKey,
+    ManifestMinter,
+    SessionAcl,
+    sign_space_catalog_bytes,
+)
 from dms_executor.ontology import Ontology
 from dms_executor.space_catalog_manifest import (
+    canonical_space_catalog_bytes,
     catalog_prompt,
     handoff_reason,
     release_chooser_handoff,
     session_space_catalog,
     space_catalog_after_ask,
     suggestions_for,
+)
+
+# Synthetic Ed25519 seed. A test key, not an issuer key.
+_TEST_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+_VECTOR_SPACE = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+_VECTOR_SESSION = "ses_bbbbbbbb"
+_VECTOR_CATALOG: dict[str, Any] = {
+    "objects": [
+        {"name": "synth_fill", "relation": "bronze.synth_fills", "key": ["fill_id"]},
+        {"name": "synth_counter", "relation": "bronze.synth_counters", "key": []},
+    ],
+    "links": [
+        {
+            "name": "fill_to_counter",
+            "from_object": "synth_fill",
+            "from_columns": ["counter_id"],
+            "to_object": "synth_counter",
+            "to_columns": ["counter_id"],
+            "cardinality": "many_to_one",
+        }
+    ],
+    "measures": [
+        {
+            "name": "synth_fill_count",
+            "grain": "synth_fill",
+            "expression": "SELECT COUNT(*) AS n FROM synth_fill",
+            "description": "count of synth fills",
+        }
+    ],
+    "definitions": [
+        {
+            "name": "synth_fill_count",
+            "grain": "synth_fill",
+            "text": "count of synth fills",
+        }
+    ],
+    "granted_tables": ["bronze.synth_fills", "bronze.synth_counters"],
+}
+# canonical_space_catalog_bytes from cortex_contract 1.12.0 at Cortex 46a7f2b.
+# The empty key on synth_counter is pruned. The binding object stays.
+_VECTOR_JSON = (
+    '{"session_id":"ses_bbbbbbbb","space_catalog":{"definitions":'
+    '[{"grain":"synth_fill","name":"synth_fill_count","text":"count of synth fills"}]'
+    ',"granted_tables":["bronze.synth_fills","bronze.synth_counters"],"links":'
+    '[{"cardinality":"many_to_one","from_columns":["counter_id"],"from_object":'
+    '"synth_fill","name":"fill_to_counter","to_columns":["counter_id"],"to_object":'
+    '"synth_counter"}],"measures":[{"description":"count of synth fills","expression":'
+    '"SELECT COUNT(*) AS n FROM synth_fill","grain":"synth_fill","name":'
+    '"synth_fill_count"}],"objects":[{"key":["fill_id"],"name":"synth_fill",'
+    '"relation":"bronze.synth_fills"},{"name":"synth_counter","relation":'
+    '"bronze.synth_counters"}]},"space_id":'
+    '"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"}'
+)
+_VECTOR_SIG = (
+    "JD5isriNEQP3_FpsMZ28fv7HbTQ4fodyTC6-Vm8RwTilYQmHOFP4JiVJmouilo8PlXrPg0aUoY0gtKeyG1OLAQ"
 )
 
 _SPACE_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
@@ -201,8 +266,34 @@ def test_handoff_reason_names_only_the_asking_space(monkeypatch: pytest.MonkeyPa
     )
 
 
+def _catalog_verifies(
+    catalog: dict[str, Any],
+    signature: str,
+    *,
+    space_id: str,
+    session_id: str,
+) -> bool:
+    pad = "=" * (-len(signature) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(signature + pad)
+        _TEST_KEY.public_key().verify(
+            raw,
+            canonical_space_catalog_bytes(
+                catalog, space_id=space_id, session_id=session_id
+            ),
+        )
+    except (InvalidSignature, ValueError):
+        return False
+    return True
+
+
 def _minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
     minter = ManifestMinter()
+
+    def _sign(catalog: dict[str, Any], *, space_id: str, session_id: str) -> str:
+        return sign_space_catalog_bytes(
+            _TEST_KEY, catalog, space_id=space_id, session_id=session_id
+        )
 
     def _mint(acl: SessionAcl) -> Manifest:
         return Manifest(
@@ -219,6 +310,7 @@ def _minter(monkeypatch: pytest.MonkeyPatch) -> ManifestMinter:
         )
 
     monkeypatch.setattr(minter, "mint_manifest", _mint)
+    monkeypatch.setattr(minter, "sign_space_catalog", _sign)
     monkeypatch.setattr(minter, "fetch_intermediate", lambda: None)
     monkeypatch.setattr(minter, "close", lambda: None)
     monkeypatch.setattr(minter, "invalidate", lambda *_a, **_k: None)
@@ -264,6 +356,7 @@ def test_flag_off_manifest_matches_the_unsigned_bind(monkeypatch: pytest.MonkeyP
     assert canonical_manifest_bytes(submitted) == canonical_manifest_bytes(minted)
     wire = _wire(fake.submits[0])
     assert "space_catalog" not in wire
+    assert "space_catalog_sig" not in wire
     assert wire == _to_gen_manifest(minted).to_dict()
 
 
@@ -289,7 +382,18 @@ def test_flag_on_sends_only_the_asking_space(monkeypatch: pytest.MonkeyPatch) ->
     assert _B_FILL not in catalog_prompt(wire_a["space_catalog"])
     minted = exe._minter.mint_manifest(_acl(_SPACE_B, [_B_FILL, _B_COUNTER]))
     assert canonical_manifest_bytes(fake.submits[1].manifest) == canonical_manifest_bytes(minted)
-    bare = {key: value for key, value in wire_b.items() if key != "space_catalog"}
+    assert b"space_catalog" not in canonical_manifest_bytes(fake.submits[1].manifest)
+    assert _catalog_verifies(
+        wire_b["space_catalog"],
+        wire_b["space_catalog_sig"],
+        space_id=_SPACE_B,
+        session_id="ses_bbbbbbbb",
+    )
+    bare = {
+        key: value
+        for key, value in wire_b.items()
+        if key not in ("space_catalog", "space_catalog_sig")
+    }
     monkeypatch.delenv("DMS_SPACE_CATALOG", raising=False)
     off = _Fake()
     exe_off = Executor(cortex=off, minter=_minter(monkeypatch))  # type: ignore[arg-type]
@@ -308,6 +412,7 @@ def test_demo_space_stays_without_a_catalog(monkeypatch: pytest.MonkeyPatch) -> 
     exe.bind_session(_acl(_DEMO, ["inventory", "transactions"]))
     wire_on = _wire(fake.submits[0])
     assert "space_catalog" not in wire_on
+    assert "space_catalog_sig" not in wire_on
     monkeypatch.delenv("DMS_SPACE_CATALOG", raising=False)
     off = _Fake()
     exe_off = Executor(cortex=off, minter=_minter(monkeypatch))  # type: ignore[arg-type]
@@ -377,3 +482,95 @@ def test_early_bind_puts_the_catalog_on_the_session_before_generate(
     assert _B_MEASURE in env["suggestions"]
     for word in ("inventory", "suppliers", "metric chooser", "synth_visit"):
         assert word not in blob
+
+
+def test_catalog_signature_matches_the_contract_vector() -> None:
+    """Fixed catalog and test key. Bytes and signature match contract 1.12.0."""
+    raw = canonical_space_catalog_bytes(
+        _VECTOR_CATALOG, space_id=_VECTOR_SPACE, session_id=_VECTOR_SESSION
+    )
+    assert raw.decode() == _VECTOR_JSON
+    assert b'"key":[]' not in raw
+    signature = sign_space_catalog_bytes(
+        _TEST_KEY,
+        _VECTOR_CATALOG,
+        space_id=_VECTOR_SPACE,
+        session_id=_VECTOR_SESSION,
+    )
+    assert signature == _VECTOR_SIG
+    assert _catalog_verifies(
+        _VECTOR_CATALOG,
+        signature,
+        space_id=_VECTOR_SPACE,
+        session_id=_VECTOR_SESSION,
+    )
+
+
+def test_catalog_signature_tamper_is_rejected() -> None:
+    signature = sign_space_catalog_bytes(
+        _TEST_KEY,
+        _VECTOR_CATALOG,
+        space_id=_VECTOR_SPACE,
+        session_id=_VECTOR_SESSION,
+    )
+    flipped = signature[:-1] + ("A" if not signature.endswith("A") else "B")
+    assert not _catalog_verifies(
+        _VECTOR_CATALOG,
+        flipped,
+        space_id=_VECTOR_SPACE,
+        session_id=_VECTOR_SESSION,
+    )
+    changed = json.loads(json.dumps(_VECTOR_CATALOG))
+    changed["granted_tables"] = ["bronze.synth_other"]
+    assert not _catalog_verifies(
+        changed,
+        signature,
+        space_id=_VECTOR_SPACE,
+        session_id=_VECTOR_SESSION,
+    )
+    assert not _catalog_verifies(
+        _VECTOR_CATALOG,
+        signature,
+        space_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        session_id=_VECTOR_SESSION,
+    )
+    assert not _catalog_verifies(
+        _VECTOR_CATALOG,
+        signature,
+        space_id=_VECTOR_SPACE,
+        session_id="ses_other",
+    )
+
+
+def test_catalog_signature_must_fail_without_the_binding() -> None:
+    """Signing the catalog object alone is not the contract signature."""
+    lone_bytes = json.dumps(
+        _VECTOR_CATALOG, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    lone = base64.urlsafe_b64encode(_TEST_KEY.sign(lone_bytes)).decode("ascii").rstrip("=")
+    assert lone != _VECTOR_SIG
+    assert not _catalog_verifies(
+        _VECTOR_CATALOG,
+        lone,
+        space_id=_VECTOR_SPACE,
+        session_id=_VECTOR_SESSION,
+    )
+    assert not _catalog_verifies(
+        _VECTOR_CATALOG,
+        "",
+        space_id=_VECTOR_SPACE,
+        session_id=_VECTOR_SESSION,
+    )
+
+
+def test_minter_signs_the_catalog_with_the_manifest_key() -> None:
+    minter = ManifestMinter()
+    minter._key = IntermediateKey(
+        kid="test-kid",
+        private_key=_TEST_KEY,
+        not_after=datetime.now(UTC) + timedelta(hours=1),
+    )
+    signature = minter.sign_space_catalog(
+        _VECTOR_CATALOG, space_id=_VECTOR_SPACE, session_id=_VECTOR_SESSION
+    )
+    assert signature == _VECTOR_SIG

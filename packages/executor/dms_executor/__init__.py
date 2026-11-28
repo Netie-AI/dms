@@ -765,7 +765,12 @@ class Executor:
             return manifest
         onto = load_space_catalog_ontology(acl.space_id)
         catalog = session_space_catalog(onto, list(acl.row_predicates))
-        return stamp_manifest(manifest, catalog)
+        signature = self._minter.sign_space_catalog(
+            catalog,
+            space_id=acl.space_id or "",
+            session_id=acl.session_id,
+        )
+        return stamp_manifest(manifest, catalog, signature)
 
     def bind_session(self, session: SessionContext | SessionAcl) -> Any:
         """Mint + submit plan.kind=session_bind (C4-min)."""

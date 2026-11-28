@@ -114,11 +114,14 @@ def _bool_mask_flags(payload: Any) -> Any:
 
 def _to_gen_manifest(m: ContractManifest) -> GenManifest:
     gen = GenManifest.from_dict(m.model_dump(mode="json"))
-    # FDE-CORTEX-SPACE-CATALOG-01. The catalog is not a signed field. Flag
-    # off never sets the attr, so the wire dict stays the model dump.
+    # FDE-CORTEX-SPACE-CATALOG-01. Catalog and signature are not signed
+    # manifest fields. Flag off never sets the attrs, so the wire dict stays
+    # the model dump. An unsigned catalog is not sent.
     catalog = getattr(m, "_dms_space_catalog", None)
-    if isinstance(catalog, dict):
+    signature = getattr(m, "_dms_space_catalog_sig", None)
+    if isinstance(catalog, dict) and isinstance(signature, str) and signature:
         gen.additional_properties["space_catalog"] = catalog
+        gen.additional_properties["space_catalog_sig"] = signature
     return gen
 
 

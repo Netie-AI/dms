@@ -4,12 +4,14 @@
 signed manifest bytes stay the ones ``canonical_manifest_bytes`` already
 produces.
 
-On, a non-demo Space's bind carries ``space_catalog`` on the manifest JSON.
-The key is not a signed field: it is stamped beside the manifest and left
-out of ``model_dump``, so the signature covers the same bytes as today.
-Cortex reads that object when its own flag is on and builds chooser context
-only from it. The demo Space sends no object, so the demo catalog stays the
-demo Space's.
+On, a non-demo Space's bind carries ``space_catalog`` and
+``space_catalog_sig`` on the manifest JSON. Neither key is a field of the
+signed manifest: both stay off ``model_dump``, so
+``canonical_manifest_bytes`` is unchanged. The catalog signature is Ed25519
+over :func:`canonical_space_catalog_bytes`, the same issuer key and unpadded
+base64url scheme as the manifest signature (contract 1.12.0, Cortex
+``46a7f2b``). Cortex ignores the catalog when that signature does not
+verify. The demo Space sends neither key.
 
 Agreed shape (objects, links, measures, definitions, granted tables):
 
@@ -48,9 +50,11 @@ SPACE_CATALOG_ENV = "DMS_SPACE_CATALOG"
 SPACE_CATALOG_FIELD = "space_catalog"
 HANDOFF_FIELD = "space_catalog_handoff"
 HANDOFF_GENERATIVE = "generative"
-#: Private attr on the contract Manifest. Not a model field, so it is absent
-#: from ``model_dump`` and from ``canonical_manifest_bytes``.
+#: Private attrs on the contract Manifest. Not model fields, so both are
+#: absent from ``model_dump`` and from ``canonical_manifest_bytes``.
 _ATTR = "_dms_space_catalog"
+_SIG_ATTR = "_dms_space_catalog_sig"
+SPACE_CATALOG_SIG_FIELD = "space_catalog_sig"
 
 _ASCII_LOWER = str.maketrans(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
@@ -161,6 +165,55 @@ def session_space_catalog(
     }
 
 
+def _prune(value: Any) -> Any:
+    """Drop nulls, empty arrays, and empty objects. Empty strings stay.
+
+    Same rule as ``cortex_contract.execution._prune`` in contract 1.12.0.
+    """
+    if isinstance(value, Mapping):
+        pruned = {key: _prune(item) for key, item in value.items()}
+        return {
+            key: item
+            for key, item in pruned.items()
+            if item is not None and item != [] and item != {}
+        }
+    if isinstance(value, list):
+        return [_prune(item) for item in value]
+    return value
+
+
+def canonical_space_catalog_bytes(
+    catalog: Mapping[str, Any],
+    *,
+    space_id: str,
+    session_id: str,
+) -> bytes:
+    """Bytes ``space_catalog_sig`` covers. Contract 1.12.0.
+
+    The signed object binds the catalog to this grant::
+
+        {"session_id": <session_id>, "space_catalog": <catalog>, "space_id": <space_id>}
+
+    Then the manifest JSON rules: drop null, empty arrays, and empty objects;
+    sort keys by Unicode code point; serialise with no whitespace; encode
+    UTF-8. ``space_catalog_sig`` is not inside these bytes.
+    ``canonical_manifest_bytes`` is not used here and is not changed.
+    """
+    if not isinstance(catalog, Mapping):
+        raise TypeError("space_catalog must be a mapping")
+    payload = {
+        "session_id": session_id,
+        "space_catalog": dict(catalog),
+        "space_id": space_id,
+    }
+    return json.dumps(
+        _prune(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
 def catalog_prompt(catalog: Mapping[str, Any]) -> str:
     """The catalog bytes Cortex is given. One JSON object, keys sorted."""
     return json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -198,10 +251,11 @@ def handoff_reason(catalog: Mapping[str, Any]) -> str:
     )
 
 
-def stamp_manifest(manifest: Any, catalog: Mapping[str, Any]) -> Any:
-    """Copy ``manifest`` and attach the catalog off the signed field set."""
+def stamp_manifest(manifest: Any, catalog: Mapping[str, Any], signature: str) -> Any:
+    """Copy ``manifest`` and attach the catalog and its signature off the signed fields."""
     copied = manifest.model_copy()
     object.__setattr__(copied, _ATTR, dict(catalog))
+    object.__setattr__(copied, _SIG_ATTR, signature)
     return copied
 
 
